@@ -3,6 +3,16 @@
 Alle wichtigen Änderungen am Sorare Football Stats Overlay werden in dieser
 Datei dokumentiert.
 
+## 0.2.3 – 24. Juli 2026
+
+### Pack-Ansicht
+
+- Das Overlay hält oberhalb jeder Pack-Karte Platz für Sorare-Hinweise frei,
+  auch wenn „Neue Karte“, „Neue Edition“ oder ein Bonusstatus nicht sichtbar
+  beziehungsweise noch nicht geladen ist.
+- Bei einem erkannten Status sitzt das Overlay mit zusätzlichem Abstand
+  oberhalb der Meldung und verdeckt sie nicht.
+
 ## 0.2.2 – 24. Juli 2026
 
 ### Lineup Builder
