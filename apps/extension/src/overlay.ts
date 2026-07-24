@@ -671,6 +671,8 @@ const packRevealText =
 const packCardStatusText =
   /^(?:neue\s+karte|neue\s+edition|neue\s+spielerin|neuer\s+spieler|new\s+(?:card|edition|player|signing))$/i;
 const packDialogText = /\b(?:deine\s+karten|your\s+cards|neuverpflichtungen|new\s+signings)\b/i;
+const packStatusClearancePx = 10;
+const packReservedStatusHeightPx = 24;
 
 function normalizedElementText(element: Element): string {
   return (element.textContent ?? '').replace(/\s+/g, ' ').trim();
@@ -862,11 +864,18 @@ export class OverlayView {
           const anchorRect = decisionAnchor.getBoundingClientRect();
           this.host.dataset.placement = 'pack-status-above';
           this.host.style.top = '';
-          this.host.style.bottom = `${Math.round(window.innerHeight - anchorRect.top + 3)}px`;
+          this.host.style.bottom = `${
+            Math.round(window.innerHeight - anchorRect.top + packStatusClearancePx)
+          }px`;
         } else {
-          this.host.dataset.placement = 'pack-below';
-          this.host.style.top = `${Math.round(rect.bottom + 32)}px`;
-          this.host.style.bottom = '';
+          // Sorare can delay or visually suppress the "New card/edition"
+          // label. Reserve a complete status row anyway so the overlay never
+          // makes an absent label indistinguishable from a covered one.
+          this.host.dataset.placement = 'pack-safe-above';
+          this.host.style.top = '';
+          this.host.style.bottom = `${
+            Math.round(window.innerHeight - rect.top + packReservedStatusHeightPx)
+          }px`;
         }
       } else {
         this.host.dataset.placement = 'above';

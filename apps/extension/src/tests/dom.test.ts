@@ -745,7 +745,7 @@ describe('Sorare card DOM discovery', () => {
     expect(packOverlay?.style.width).toBe('180px');
     expect(packOverlay?.dataset.placement).toBe('pack-status-above');
     expect(packOverlay?.style.top).toBe('');
-    expect(packOverlay?.style.bottom).toBe(`${window.innerHeight - 165 + 3}px`);
+    expect(packOverlay?.style.bottom).toBe(`${window.innerHeight - 165 + 10}px`);
 
     scanner.stop();
   });
@@ -808,7 +808,55 @@ describe('Sorare card DOM discovery', () => {
     expect(overlay?.dataset.playerName).toBe('Tyrese Spicer');
     expect(overlay?.dataset.placement).toBe('pack-status-above');
     expect(overlay?.style.top).toBe('');
-    expect(overlay?.style.bottom).toBe(`${window.innerHeight - 136 + 3}px`);
+    expect(overlay?.style.bottom).toBe(`${window.innerHeight - 136 + 10}px`);
+  });
+
+  it('reserves a status row above a pack card when Sorare shows no decision label', async () => {
+    document.body.innerHTML = `
+      <section>
+        <h1>DEINE KARTEN: 1/5</h1>
+        <button type="button">
+          <img alt="Luis Otávio - common" src="https://assets.sorare.com/pack.png">
+        </button>
+      </section>
+    `;
+    const card = document.querySelector<HTMLElement>('button');
+    if (!card) throw new Error('Expected pack card without decision label');
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue({
+      x: 110,
+      y: 160,
+      top: 160,
+      right: 300,
+      bottom: 468,
+      left: 110,
+      width: 190,
+      height: 308,
+      toJSON: () => ({}),
+    });
+    const response: PlayerStatsSuccessResponse = {
+      data: [
+        {
+          slug: 'luis-otavio',
+          displayName: 'Luis Otávio',
+          position: 'Midfielder',
+          aaL10: { value: 5.1, sampleSize: 10 },
+          cleanSheetL10: { value: 0.1, sampleSize: 10 },
+          goalL10: { value: 0.1, sampleSize: 10 },
+          nextGame: null,
+          excludedLowCoverage: 0,
+        },
+      ],
+      meta: { requested: 1, returned: 1, cacheHits: 0, source: 'sorare' },
+    };
+    const coordinator = new StatsBatchCoordinator(vi.fn(async () => response), 60_000);
+    new SorareCardScanner(coordinator).scan(document);
+    await coordinator.flush();
+
+    const overlay = document.querySelector<HTMLElement>('[data-sorare-overlay-root]');
+    expect(overlay?.dataset.playerName).toBe('Luis Otávio');
+    expect(overlay?.dataset.placement).toBe('pack-safe-above');
+    expect(overlay?.style.top).toBe('');
+    expect(overlay?.style.bottom).toBe(`${window.innerHeight - 160 + 24}px`);
   });
 
   it.each([
@@ -906,7 +954,7 @@ describe('Sorare card DOM discovery', () => {
     expect(overlay?.dataset.placement).toBe('pack-status-above');
     expect(overlay?.style.top).toBe('');
     expect(overlay?.style.bottom).toBe(
-      `${window.innerHeight - expectedAnchorTop + 3}px`,
+      `${window.innerHeight - expectedAnchorTop + 10}px`,
     );
     },
   );
