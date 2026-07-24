@@ -82,3 +82,29 @@ describe('POST /api/player-stats', () => {
     });
   });
 });
+
+describe('public extension pages', () => {
+  it.each([
+    ['/', 'Football Stats Overlay'],
+    ['/privacy', 'Datenschutzerklärung'],
+    ['/support', 'Hilfe zum Overlay'],
+  ])('serves %s as a hardened HTML page', async (path, expectedText) => {
+    const response = await testApp().request(path);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/html');
+    expect(response.headers.get('content-security-policy')).toContain("default-src 'none'");
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(await response.text()).toContain(expectedText);
+  });
+
+  it('states the extension data boundary and Limited Use commitment', async () => {
+    const response = await testApp().request('/privacy');
+    const html = await response.text();
+
+    expect(html).toContain('Chrome Web Store User Data Policy');
+    expect(html).toContain('Limited-Use-Anforderungen');
+    expect(html).toContain('liest oder überträgt insbesondere nicht');
+    expect(html).toContain('Sorare-E-Mail-Adresse, Passwort, JWT, Cookies');
+  });
+});

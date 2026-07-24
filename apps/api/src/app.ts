@@ -4,10 +4,17 @@ import {
   PlayerStatsSuccessResponseSchema,
 } from '@sorare-overlay/shared';
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { cors } from 'hono/cors';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { AppError } from './errors.js';
 import type { AppLogger } from './logger.js';
+import {
+  homePage,
+  privacyPage,
+  publicPageHeaders,
+  supportPage,
+} from './public-pages.js';
 import type { StatsService } from './services/stats-service.js';
 
 type AppEnv = {
@@ -15,6 +22,11 @@ type AppEnv = {
     requestId: string;
   };
 };
+
+function servePublicHtml(context: Context<AppEnv>, html: string): Response {
+  for (const [name, value] of Object.entries(publicPageHeaders)) context.header(name, value);
+  return context.html(html);
+}
 
 export interface CreateAppOptions {
   statsService: StatsService;
@@ -57,6 +69,9 @@ export function createApp(options: CreateAppOptions): Hono<AppEnv> {
     }),
   );
 
+  app.get('/', (context) => servePublicHtml(context, homePage));
+  app.get('/privacy', (context) => servePublicHtml(context, privacyPage));
+  app.get('/support', (context) => servePublicHtml(context, supportPage));
   app.get('/health', (context) => context.json({ status: 'ok' }));
 
   app.post('/api/player-stats', async (context) => {

@@ -3,6 +3,33 @@
 Alle wichtigen Änderungen am Sorare Football Stats Overlay werden in dieser
 Datei dokumentiert.
 
+## 0.2.2 – 24. Juli 2026
+
+### Lineup Builder
+
+- Unter der semantisch erkannten Teamzeile erscheint ein durchgehender,
+  proportional segmentierter H/D/A-Quotenstrahl.
+- Spielerteam, Remis und Gegner werden grün, grau und rot dargestellt; die
+  Segmentbreiten entsprechen exakt den normalisierten Wahrscheinlichkeiten.
+- Die zusätzliche Shadow-DOM-Anzeige fügt sich in den Kartenaufbau ein, ohne
+  Teamnamen oder Anstoßzeit zu verdecken, und erzeugt bei dynamischen
+  Aktualisierungen keine Duplikate.
+
+## 0.2.1 – 24. Juli 2026
+
+### Chrome-Web-Store-Vorbereitung
+
+- Store-konforme Icons, ein 1280×800-Screenshot und eine 440×280-Promo-Kachel
+  ergänzt.
+- Extension-Name und Beschreibung weisen die Erweiterung ausdrücklich als
+  inoffizielles Projekt aus.
+- Reproduzierbarer Store-Build erzeugt eine ZIP mit Manifest im
+  Wurzelverzeichnis, ohne Source Maps und ohne Secrets.
+- Öffentliche Homepage, Supportseite und ausführliche Datenschutzerklärung
+  werden vom vorhandenen Cloudflare Worker bereitgestellt.
+- Store-Beschreibung, Single-Purpose-Erklärung, Berechtigungsbegründungen,
+  Datenschutzangaben und Einreichungscheckliste dokumentiert.
+
 ## 0.2.0 – 24. Juli 2026
 
 Diese Version fasst die Verbesserungen seit der zuletzt weitergegebenen ZIP

@@ -10,6 +10,8 @@ import { findCardTargets, type CardTarget } from './dom.js';
 import { OverlayView } from './overlay.js';
 
 type StatsFetcher = (request: PlayerStatsRequest) => Promise<PlayerStatsSuccessResponse>;
+const extensionMountSelector =
+  '[data-sorare-overlay-root], [data-sorare-overlay-companion]';
 
 interface PendingTarget {
   slug?: string;
@@ -205,18 +207,25 @@ export class SorareCardScanner {
       let shouldRefresh = false;
       for (const mutation of mutations) {
         const mutationElement = mutation.target instanceof Element ? mutation.target : null;
-        if (mutationElement?.closest('[data-sorare-overlay-root]')) continue;
+        if (mutationElement?.closest(extensionMountSelector)) continue;
         const externalAddedNodes =
           mutation.type === 'childList'
             ? [...mutation.addedNodes].filter(
                 (node) =>
-                  !(node instanceof Element && node.closest('[data-sorare-overlay-root]')),
+                  !(node instanceof Element && node.closest(extensionMountSelector)),
+              )
+            : [];
+        const externalRemovedNodes =
+          mutation.type === 'childList'
+            ? [...mutation.removedNodes].filter(
+                (node) =>
+                  !(node instanceof Element && node.matches(extensionMountSelector)),
               )
             : [];
         if (
           mutation.type === 'childList' &&
           externalAddedNodes.length === 0 &&
-          mutation.removedNodes.length === 0
+          externalRemovedNodes.length === 0
         ) {
           continue;
         }

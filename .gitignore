@@ -10,6 +10,7 @@ coverage/
 !.dev.vars.example
 .wrangler/
 artifacts/
+.codex-remote-attachments/
 *.log
 .DS_Store
 Thumbs.db

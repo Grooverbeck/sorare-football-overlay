@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { context } from 'esbuild';
-import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const watch = process.argv.includes('--watch');
@@ -11,17 +11,27 @@ if (!['http:', 'https:'].includes(apiUrl.protocol)) {
 }
 
 const root = path.resolve(import.meta.dirname, '..');
+const packageJson = JSON.parse(
+  await readFile(path.join(root, 'package.json'), 'utf8'),
+);
 const outdir = path.join(root, 'dist');
 await rm(outdir, { recursive: true, force: true });
 await mkdir(outdir, { recursive: true });
+await mkdir(path.join(outdir, 'icons'), { recursive: true });
 
 const manifest = {
   manifest_version: 3,
-  name: 'Sorare Football Stats Overlay',
-  version: '0.2.0',
-  description: 'Shows position-aware L10 metrics on Sorare football cards.',
+  name: 'Sorare Football Stats Overlay – Unofficial',
+  version: packageJson.version,
+  description: 'Unofficial overlay showing position-aware football metrics on Sorare cards.',
   permissions: ['storage'],
   host_permissions: [`${apiUrl.origin}/*`],
+  icons: {
+    16: 'icons/icon-16.png',
+    32: 'icons/icon-32.png',
+    48: 'icons/icon-48.png',
+    128: 'icons/icon-128.png',
+  },
   background: { service_worker: 'service-worker.js' },
   content_scripts: [
     {
@@ -33,6 +43,11 @@ const manifest = {
   action: {
     default_title: 'Sorare Football Stats Overlay',
     default_popup: 'popup.html',
+    default_icon: {
+      16: 'icons/icon-16.png',
+      32: 'icons/icon-32.png',
+      48: 'icons/icon-48.png',
+    },
   },
   content_security_policy: {
     extension_pages: "script-src 'self'; object-src 'self'",
@@ -42,6 +57,12 @@ await writeFile(path.join(outdir, 'manifest.json'), `${JSON.stringify(manifest, 
 await Promise.all([
   copyFile(path.join(root, 'src', 'popup.html'), path.join(outdir, 'popup.html')),
   copyFile(path.join(root, 'src', 'popup.css'), path.join(outdir, 'popup.css')),
+  ...[16, 32, 48, 128].map((size) =>
+    copyFile(
+      path.join(root, 'assets', 'icons', `icon-${size}.png`),
+      path.join(outdir, 'icons', `icon-${size}.png`),
+    ),
+  ),
 ]);
 
 const buildContext = await context({
@@ -61,7 +82,7 @@ const buildContext = await context({
     __API_BASE_URL__: JSON.stringify(apiBaseUrl),
   },
   logLevel: 'info',
-  sourcemap: true,
+  sourcemap: watch,
 });
 
 if (watch) {
