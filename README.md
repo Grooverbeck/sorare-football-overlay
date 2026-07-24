@@ -261,7 +261,7 @@ Für `NEXT W%` stammen die Grenzen aus den historischen Sorare-Siegquoten beider
 - Blau: `51–56 %`
 - Lila: `≥57 %`
 
-Der Win-Snapshot umfasst bis zum 23. Juli 2026 insgesamt 238 abgeschlossene Spiele beziehungsweise 470 Teamseiten mit vollständigen W/D/L-Quoten. Die Quotenabdeckung beträgt 98,7 %. Eine Siegchance von 46 % liegt ungefähr auf P71,5 und wird deshalb grün dargestellt. Fehlende oder für AA noch nicht belastbare Daten bleiben neutral grau.
+Der Win-Snapshot umfasst bis zum 23. Juli 2026 insgesamt 238 abgeschlossene Spiele beziehungsweise 470 Teamseiten mit vollständigen W/D/L-Quoten. Die Quotenabdeckung beträgt 98,7 %. Fehlende oder für AA noch nicht belastbare Daten bleiben neutral grau.
 
 Für `NEXT CS%` stammen die Grenzen aus den historischen Sorare-Clean-Sheet-Quoten der laufenden MLS-Saison:
 

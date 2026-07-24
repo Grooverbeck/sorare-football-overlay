@@ -51,8 +51,6 @@ zusammen.
 
 ### Spielquoten und Tooltip
 
-- Begegnungen stehen immer in der eindeutigen Reihenfolge
-  `Heimteam – Auswärtsteam`.
 - Quoten werden konsistent als `H / D / A` angezeigt.
 - Spielerteam und zugehörige Siegquote werden fett-kursiv hervorgehoben.
 - Aufgeklappte Tooltips kleiner Karten werden breiter und kompakter, damit sie
