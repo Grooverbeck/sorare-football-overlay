@@ -866,19 +866,11 @@ describe('Sorare card DOM discovery', () => {
     'places a +$bonusPercent% special-edition overlay above the upper visible decision hint',
     async ({ bonusPercent, bonusTop, expectedAnchorTop }) => {
     document.body.innerHTML = `
-      <div role="dialog">
-        <h1>Deine Karten: 2/5</h1>
-        <section>
-          <div>
-            <div>Neuer Spieler</div>
-          </div>
-          <div>
-            <svg role="img" aria-labelledby="special-bonus">
+      <div role="dialog"><span>570</span><h1>Deine Karten: 2/5</h1><section><div>
+            <div>Neuer Spieler</div></div><div><svg role="img" aria-labelledby="special-bonus">
               <title id="special-bonus">Bonus von ${bonusPercent} %</title>
               <text>+${bonusPercent} % Bonus</text>
-            </svg>
-          </div>
-          <div>
+            </svg></div><div>
             <div>
               <div>
                 <div>
@@ -886,9 +878,7 @@ describe('Sorare card DOM discovery', () => {
                 </div>
               </div>
             </div>
-          </div>
-        </section>
-      </div>
+          </div></section></div>
     `;
     const card = document.querySelector<HTMLImageElement>('img')?.parentElement;
     const status = document.querySelector<HTMLElement>('section > div:first-child > div');

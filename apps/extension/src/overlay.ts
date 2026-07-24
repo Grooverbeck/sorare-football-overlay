@@ -675,7 +675,15 @@ const packStatusClearancePx = 10;
 const packReservedStatusHeightPx = 24;
 
 function normalizedElementText(element: Element): string {
-  return (element.textContent ?? '').replace(/\s+/g, ' ').trim();
+  // `textContent` concatenates adjacent elements without a separator. Sorare's
+  // pack reveal currently renders e.g. `Neuer Spieler` and the bonus graphic
+  // as siblings, which otherwise becomes `Neuer SpielerBonus ...` and misses
+  // the semantic pack/status expressions below.
+  return Array.from(element.childNodes)
+    .map((node) => node.textContent ?? '')
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function packBonusGraphic(scope: Element): SVGElement | null {
