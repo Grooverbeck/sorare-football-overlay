@@ -1,0 +1,41 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "sorare-football-overlay-api",
+  "main": "src/cloudflare/worker.ts",
+  "compatibility_date": "2026-07-23",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "workers_dev": true,
+  "placement": {
+    "mode": "smart"
+  },
+  "vars": {
+    "LOG_LEVEL": "info",
+    "MOCK_MODE": "false",
+    "EXCLUDE_LOW_COVERAGE": "true",
+    "PLAYER_FORM_CACHE_TTL_SECONDS": "86400",
+    "FIXTURE_CACHE_TTL_SECONDS": "14400",
+    "NAME_CACHE_TTL_SECONDS": "2592000",
+    "NAME_MISS_CACHE_TTL_SECONDS": "7200",
+    "SORARE_BATCH_SIZE": "25",
+    "SORARE_REQUEST_TIMEOUT_MS": "10000",
+    "SORARE_MAX_RETRIES": "3",
+    "SORARE_GRAPHQL_URL": "https://api.sorare.com/graphql",
+    "CORS_ORIGINS": "http://localhost:5173"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "STATS_CACHE"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.05
+    }
+  }
+}

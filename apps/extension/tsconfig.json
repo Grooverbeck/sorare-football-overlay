@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "module": "NodeNext",
+    "noEmit": true,
+    "types": ["chrome"]
+  },
+  "include": ["src/**/*.ts", "vitest.config.ts"],
+  "exclude": ["src/**/*.test.ts", "src/tests/**"]
+}

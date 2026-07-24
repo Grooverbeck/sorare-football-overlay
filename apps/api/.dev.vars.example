@@ -1,0 +1,6 @@
+# Optional Sorare credentials for `wrangler dev`.
+# Copy to `.dev.vars`; never commit the real values.
+MOCK_MODE=true
+SORARE_API_KEY=
+SORARE_AUTH_TOKEN=
+SORARE_JWT_AUD=

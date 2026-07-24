@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sorare Overlay</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <h1>Sorare Overlay</h1>
+      <label class="toggle-row" for="overlay-enabled">
+        <span class="switch">
+          <input id="overlay-enabled" type="checkbox" aria-describedby="overlay-status">
+          <span class="slider" aria-hidden="true"></span>
+        </span>
+        <span id="overlay-status">Overlay wird geladen</span>
+      </label>
+      <p>Gilt auf allen geöffneten Sorare-Seiten.</p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

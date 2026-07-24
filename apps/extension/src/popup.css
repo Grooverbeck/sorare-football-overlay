@@ -1,0 +1,94 @@
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", Inter, system-ui, sans-serif;
+}
+
+body {
+  width: 240px;
+  margin: 0;
+  background: #0c0f16;
+  color: #f7f9fc;
+}
+
+main {
+  padding: 14px;
+}
+
+h1 {
+  margin: 0 0 13px;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 22px;
+}
+
+.switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.slider {
+  position: absolute;
+  inset: 0;
+  border: 1px solid #445064;
+  border-radius: 999px;
+  background: #252c38;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.slider::after {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #e4e9f1;
+  content: "";
+  transition: transform 140ms ease;
+}
+
+input:checked + .slider {
+  border-color: #39d275;
+  background: #176b3b;
+}
+
+input:checked + .slider::after {
+  transform: translateX(16px);
+}
+
+input:focus-visible + .slider {
+  outline: 2px solid #7eb7ff;
+  outline-offset: 2px;
+}
+
+#overlay-status[data-enabled="true"] {
+  color: #8ce7ad;
+}
+
+#overlay-status[data-enabled="false"] {
+  color: #c2cad6;
+}
+
+p {
+  margin: 11px 0 0 48px;
+  color: #8f9bad;
+  font-size: 11px;
+  line-height: 1.35;
+}
