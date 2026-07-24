@@ -3,6 +3,15 @@
 Alle wichtigen Änderungen am Sorare Football Stats Overlay werden in dieser
 Datei dokumentiert.
 
+## 0.2.4 – 24. Juli 2026
+
+### Pack-Ansicht
+
+- Pack-Hinweise und Bonusanimationen werden auch dann zuverlässig erkannt,
+  wenn Sorare ihre Texte ohne Leerraum in benachbarten Elementen rendert.
+- Die Stats bleiben dadurch vollständig oberhalb von „Neuer Spieler“ und
+  `+5 % BONUS`, statt die Animation zu überdecken.
+
 ## 0.2.3 – 24. Juli 2026
 
 ### Pack-Ansicht
