@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Football Stats Overlay icon</title>
+  <defs>
+    <linearGradient id="background" x1="48" y1="40" x2="466" y2="474" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#182432"/>
+      <stop offset="1" stop-color="#070b10"/>
+    </linearGradient>
+    <linearGradient id="outline" x1="102" y1="88" x2="410" y2="426" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#a855f7"/>
+      <stop offset=".33" stop-color="#3b82f6"/>
+      <stop offset=".66" stop-color="#22c55e"/>
+      <stop offset="1" stop-color="#facc15"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000" flood-opacity=".5"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#background)"/>
+  <path d="M88 112c0-22 18-40 40-40h256c22 0 40 18 40 40v288c0 22-18 40-40 40H128c-22 0-40-18-40-40V112Z"
+        fill="#0c121a" stroke="url(#outline)" stroke-width="14" filter="url(#shadow)"/>
+  <rect x="116" y="102" width="132" height="76" rx="20" fill="#101923" stroke="#a855f7" stroke-width="7"/>
+  <rect x="264" y="102" width="132" height="76" rx="20" fill="#101923" stroke="#22c55e" stroke-width="7"/>
+  <text x="137" y="133" fill="#b7c4d3" font-family="Arial, sans-serif" font-size="22" font-weight="700">AA</text>
+  <text x="137" y="164" fill="#fff" font-family="Arial, sans-serif" font-size="34" font-weight="800">14.8</text>
+  <text x="284" y="133" fill="#b7c4d3" font-family="Arial, sans-serif" font-size="22" font-weight="700">W%</text>
+  <text x="284" y="164" fill="#fff" font-family="Arial, sans-serif" font-size="34" font-weight="800">57</text>
+  <circle cx="256" cy="266" r="59" fill="#dbe6f1"/>
+  <path d="M157 383c10-62 48-94 99-94s89 32 99 94H157Z" fill="#dbe6f1"/>
+  <rect x="125" y="401" width="34" height="15" rx="7.5" fill="#ef4444"/>
+  <rect x="171" y="387" width="34" height="29" rx="7.5" fill="#f97316"/>
+  <rect x="217" y="371" width="34" height="45" rx="7.5" fill="#facc15"/>
+  <rect x="263" y="353" width="34" height="63" rx="7.5" fill="#22c55e"/>
+  <rect x="309" y="337" width="34" height="79" rx="7.5" fill="#3b82f6"/>
+  <rect x="355" y="319" width="34" height="97" rx="7.5" fill="#a855f7"/>
+</svg>

@@ -172,6 +172,115 @@ describe('Sorare card DOM discovery', () => {
     });
   });
 
+  it('shows home, draw, and away probabilities below the team row in the lineup builder', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/de/football/series/test-series/compose-team',
+    );
+    document.body.innerHTML = `
+      <section data-testid="lineup-player">
+        <button type="button" data-position="Goalkeeper">
+          <img
+            alt="Angus Gunn - common"
+            src="https://assets.sorare.com/card.png"
+          >
+        </button>
+        <button type="button">
+          <div data-testid="fixture-teams">
+            <div aria-label="Team">SJ</div>
+            <div aria-label="Team">LA</div>
+          </div>
+          <time>So., 04:30</time>
+        </button>
+      </section>
+    `;
+    const card = document.querySelector<HTMLElement>(
+      '[data-testid="lineup-player"] > button',
+    );
+    const teamRow = document.querySelector<HTMLElement>(
+      '[data-testid="fixture-teams"]',
+    );
+    if (!card || !teamRow) throw new Error('Expected lineup card and team row');
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue({
+      x: 40,
+      y: 100,
+      top: 100,
+      right: 150,
+      bottom: 278,
+      left: 40,
+      width: 110,
+      height: 178,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(teamRow, 'getBoundingClientRect').mockReturnValue({
+      x: 40,
+      y: 300,
+      top: 300,
+      right: 150,
+      bottom: 320,
+      left: 40,
+      width: 110,
+      height: 20,
+      toJSON: () => ({}),
+    });
+    const response: PlayerStatsSuccessResponse = {
+      data: [
+        {
+          slug: 'angus-gunn',
+          displayName: 'Angus Gunn',
+          position: 'Goalkeeper',
+          aaL10: { value: 8.7, sampleSize: 10 },
+          cleanSheetL10: { value: 0.4, sampleSize: 10 },
+          goalL10: { value: 0, sampleSize: 10 },
+          nextGame: {
+            date: '2026-07-26T02:30:00.000Z',
+            homeTeamName: 'San Jose Earthquakes',
+            awayTeamName: 'LA Galaxy',
+            playerTeamName: 'LA Galaxy',
+            opponentTeamName: 'San Jose Earthquakes',
+            cleanSheetProbability: 0.29,
+            matchProbabilities: { win: 0.52, draw: 0.22, loss: 0.26 },
+          },
+          excludedLowCoverage: 0,
+        },
+      ],
+      meta: { requested: 1, returned: 1, cacheHits: 0, source: 'sorare' },
+    };
+    const coordinator = new StatsBatchCoordinator(vi.fn(async () => response), 60_000);
+    const scanner = new SorareCardScanner(coordinator);
+    scanner.start();
+    await coordinator.flush();
+
+    const companion = document.querySelector<HTMLElement>(
+      '[data-sorare-overlay-companion="lineup-odds"]',
+    );
+    const bar = companion?.shadowRoot?.querySelector<HTMLElement>('.lineup-odds-bar');
+    expect(companion?.hidden).toBe(false);
+    expect(teamRow.nextElementSibling).toBe(companion);
+    expect(bar?.textContent).toBe('26%22%52%');
+    const home = bar?.querySelector<HTMLElement>(
+      '[data-outcome="home"][data-role="opponent"]',
+    );
+    const draw = bar?.querySelector<HTMLElement>(
+      '[data-outcome="draw"][data-role="draw"]',
+    );
+    const away = bar?.querySelector<HTMLElement>(
+      '[data-outcome="away"][data-role="player"]',
+    );
+    expect(home?.textContent).toBe('26%');
+    expect(home?.style.getPropertyValue('--probability-share')).toBe('26%');
+    expect(draw?.textContent).toBe('22%');
+    expect(draw?.style.getPropertyValue('--probability-share')).toBe('22%');
+    expect(away?.textContent).toBe('52%');
+    expect(away?.style.getPropertyValue('--probability-share')).toBe('52%');
+    expect(document.querySelectorAll('[data-sorare-overlay-root]')).toHaveLength(1);
+    expect(
+      document.querySelectorAll('[data-sorare-overlay-companion="lineup-odds"]'),
+    ).toHaveLength(1);
+    scanner.stop();
+  });
+
   it('maps a common card name to Sorare\'s longer official display name', async () => {
     document.body.innerHTML = `
       <button type="button">

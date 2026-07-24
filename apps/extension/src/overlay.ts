@@ -244,6 +244,71 @@ const styles = `
   @keyframes pulse { 50% { opacity: .45; } }
 `;
 
+const lineupOddsStyles = `
+  :host {
+    all: initial;
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    height: 17px;
+    margin-top: 1px;
+    flex: 0 0 17px;
+    pointer-events: none;
+  }
+  :host([hidden]) { display: none; }
+  .lineup-odds-bar {
+    display: flex;
+    box-sizing: border-box;
+    width: 100%;
+    height: 17px;
+    overflow: hidden;
+    border: 1px solid rgba(255,255,255,.13);
+    border-radius: 0 0 6px 6px;
+    background: rgba(23, 27, 34, .97);
+    box-shadow: 0 2px 5px rgba(0,0,0,.4);
+    font: 800 9px/1 "Segoe UI", Inter, ui-sans-serif, system-ui, sans-serif;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: geometricPrecision;
+  }
+  .lineup-odd {
+    --outcome-color: #d7dce5;
+    --outcome-fill: rgba(215, 220, 229, .22);
+    position: relative;
+    display: flex;
+    min-width: 0;
+    flex: 0 0 var(--probability-share, 0%);
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.08), transparent 48%),
+      var(--outcome-fill);
+    color: var(--outcome-color);
+    isolation: isolate;
+  }
+  .lineup-odd + .lineup-odd {
+    border-left: 1px solid rgba(255,255,255,.1);
+  }
+  .lineup-odd[data-role="player"] {
+    --outcome-color: #eaffdc;
+    --outcome-fill: linear-gradient(90deg, #4aa922, #76d63b);
+    box-shadow: inset 0 0 9px rgba(156, 247, 99, .28);
+    font-style: italic;
+    font-weight: 900;
+  }
+  .lineup-odd[data-role="draw"] {
+    --outcome-color: #f2f4f7;
+    --outcome-fill: linear-gradient(90deg, #59616e, #757e8c);
+  }
+  .lineup-odd[data-role="opponent"] {
+    --outcome-color: #fff0f0;
+    --outcome-fill: linear-gradient(90deg, #cf3f45, #ff5d62);
+    box-shadow: inset 0 0 9px rgba(255, 93, 98, .24);
+  }
+`;
+
 function percent(metric: Metric): string {
   return metric.value === null ? '—' : `${Math.round(metric.value * 100)}%`;
 }
@@ -254,6 +319,63 @@ function score(metric: Metric): string {
 
 function probability(value: number | null): string {
   return value === null ? '—' : `${Math.round(value * 100)}%`;
+}
+
+interface HomeAwayProbabilities {
+  home: number | null;
+  draw: number | null;
+  away: number | null;
+  playerIsHome: boolean;
+  playerIsAway: boolean;
+}
+
+function homeAwayProbabilities(
+  nextGame: PlayerStats['nextGame'],
+): HomeAwayProbabilities | null {
+  const probabilities = nextGame?.matchProbabilities;
+  if (!probabilities) return null;
+  const playerIsHome = Boolean(
+    nextGame.playerTeamName &&
+      nextGame.homeTeamName &&
+      nextGame.playerTeamName === nextGame.homeTeamName,
+  );
+  const playerIsAway = Boolean(
+    nextGame.playerTeamName &&
+      nextGame.awayTeamName &&
+      nextGame.playerTeamName === nextGame.awayTeamName,
+  );
+  if (!playerIsHome && !playerIsAway) return null;
+
+  return {
+    home: playerIsHome ? probabilities.win : probabilities.loss,
+    draw: probabilities.draw,
+    away: playerIsAway ? probabilities.win : probabilities.loss,
+    playerIsHome,
+    playerIsAway,
+  };
+}
+
+function lineupBuilderTeamRow(container: HTMLElement): HTMLElement | null {
+  if (!/\/compose-team(?:\/|$)/i.test(location.pathname)) return null;
+
+  let scope = container.parentElement;
+  for (let depth = 0; scope && depth < 6; depth += 1) {
+    const teamNodes = Array.from(
+      scope.querySelectorAll<HTMLElement>('[aria-label="Team"]'),
+    );
+    const teamsByRow = new Map<HTMLElement, HTMLElement[]>();
+    for (const teamNode of teamNodes) {
+      const row = teamNode.parentElement;
+      if (!row) continue;
+      const siblings = teamsByRow.get(row) ?? [];
+      siblings.push(teamNode);
+      teamsByRow.set(row, siblings);
+    }
+    const teamRow = [...teamsByRow].find(([, teams]) => teams.length === 2)?.[0];
+    if (teamRow) return teamRow;
+    scope = scope.parentElement;
+  }
+  return null;
 }
 
 function compactStatNode(label: string, value: string, modifier = ''): HTMLElement {
@@ -365,16 +487,9 @@ function oddsNode(
   const labelNode = row.querySelector<HTMLElement>('.detail-label');
   const valueNode = row.querySelector<HTMLElement>('.detail-value');
   if (!valueNode) return row;
-  const playerIsHome = Boolean(
-    nextGame?.playerTeamName &&
-      nextGame.homeTeamName &&
-      nextGame.playerTeamName === nextGame.homeTeamName,
-  );
-  const playerIsAway = Boolean(
-    nextGame?.playerTeamName &&
-      nextGame.awayTeamName &&
-      nextGame.playerTeamName === nextGame.awayTeamName,
-  );
+  const orderedProbabilities = homeAwayProbabilities(nextGame);
+  const playerIsHome = orderedProbabilities?.playerIsHome ?? false;
+  const playerIsAway = orderedProbabilities?.playerIsAway ?? false;
   if (labelNode && nextGame?.homeTeamName && nextGame.awayTeamName) {
     const fixture = document.createElement('div');
     fixture.className = 'fixture-line';
@@ -404,16 +519,8 @@ function oddsNode(
     return row;
   }
 
-  const homeProbability = playerIsHome
-    ? probabilities.win
-    : playerIsAway
-      ? probabilities.loss
-      : null;
-  const awayProbability = playerIsAway
-    ? probabilities.win
-    : playerIsHome
-      ? probabilities.loss
-      : null;
+  const homeProbability = orderedProbabilities?.home ?? null;
+  const awayProbability = orderedProbabilities?.away ?? null;
   const values: Array<[string, number | null, string, boolean]> = [
     [
       'H',
@@ -669,6 +776,8 @@ function isVisiblyRendered(container: HTMLElement, rect: DOMRect): boolean {
 export class OverlayView {
   readonly host: HTMLDivElement;
   private readonly panel: HTMLDivElement;
+  private readonly lineupOddsHost: HTMLSpanElement;
+  private readonly lineupOddsBar: HTMLDivElement;
   private readonly cleanupCallbacks: Array<() => void> = [];
   private readonly reposition: () => void;
   private destroyed = false;
@@ -691,10 +800,35 @@ export class OverlayView {
     this.reposition = (): void => {
       if (!this.container.isConnected) {
         this.host.style.display = 'none';
+        this.lineupOddsHost.hidden = true;
         return;
       }
       const rect = this.container.getBoundingClientRect();
       this.host.style.display = isVisiblyRendered(this.container, rect) ? '' : 'none';
+      const teamRow = lineupBuilderTeamRow(this.container);
+      if (
+        this.host.style.display === 'none' ||
+        this.lineupOddsBar.dataset.ready !== 'true' ||
+        !teamRow
+      ) {
+        this.lineupOddsHost.hidden = true;
+        if (!teamRow) this.lineupOddsHost.remove();
+      } else {
+        const teamRowRect = teamRow.getBoundingClientRect();
+        const isVisible =
+          teamRowRect.width > 0 &&
+          teamRowRect.height > 0 &&
+          teamRowRect.bottom > 0 &&
+          teamRowRect.top < window.innerHeight &&
+          teamRowRect.right > 0 &&
+          teamRowRect.left < window.innerWidth;
+        this.lineupOddsHost.hidden = !isVisible;
+        if (isVisible) {
+          if (teamRow.nextElementSibling !== this.lineupOddsHost) {
+            teamRow.insertAdjacentElement('afterend', this.lineupOddsHost);
+          }
+        }
+      }
       const packScope = packRevealScope(this.container);
       const compactLeft = rect.left + 4;
       const compactWidth = Math.max(40, rect.width - 8);
@@ -797,15 +931,23 @@ export class OverlayView {
       container.removeEventListener('focusin', expand);
       container.removeEventListener('focusout', collapse);
     });
-    collapse();
     const shadow = this.host.attachShadow({ mode: 'open' });
     const style = document.createElement('style');
     style.textContent = styles;
     this.panel = document.createElement('div');
     this.panel.className = 'panel';
+    this.lineupOddsHost = document.createElement('span');
+    this.lineupOddsHost.dataset.sorareOverlayCompanion = 'lineup-odds';
+    this.lineupOddsHost.hidden = true;
+    const lineupShadow = this.lineupOddsHost.attachShadow({ mode: 'open' });
+    const lineupStyle = document.createElement('style');
+    lineupStyle.textContent = lineupOddsStyles;
+    this.lineupOddsBar = document.createElement('div');
+    this.lineupOddsBar.className = 'lineup-odds-bar';
+    lineupShadow.append(lineupStyle, this.lineupOddsBar);
     shadow.append(style, this.panel);
     (document.body ?? document.documentElement).append(this.host);
-    this.reposition();
+    collapse();
     window.addEventListener('resize', this.reposition);
     window.addEventListener('scroll', this.reposition, true);
     this.cleanupCallbacks.push(() => {
@@ -829,18 +971,22 @@ export class OverlayView {
     this.destroyed = true;
     for (const cleanup of this.cleanupCallbacks) cleanup();
     this.cleanupCallbacks.length = 0;
+    this.lineupOddsHost.remove();
     this.host.remove();
   }
 
   loading(): void {
+    this.clearLineupOdds();
     this.state('Lade L10 …', 'pulse');
   }
 
   error(message = 'Stats nicht verfügbar'): void {
+    this.clearLineupOdds();
     this.state(message, 'error');
   }
 
   noData(): void {
+    this.clearLineupOdds();
     this.state('Keine L10-Daten', '');
   }
 
@@ -851,6 +997,7 @@ export class OverlayView {
       this.noData();
       return;
     }
+    this.renderLineupOdds(stats.nextGame);
     this.panel.replaceChildren();
     const isDefensive = stats.position === 'Goalkeeper' || stats.position === 'Defender';
     const roleMetric = isDefensive ? stats.cleanSheetL10 : stats.goalL10;
@@ -891,6 +1038,74 @@ export class OverlayView {
     }
     details.append(detailList);
     this.panel.append(compact, details);
+    this.reposition();
+  }
+
+  private renderLineupOdds(nextGame: PlayerStats['nextGame']): void {
+    const probabilities = homeAwayProbabilities(nextGame);
+    if (
+      !probabilities ||
+      probabilities.home === null ||
+      probabilities.draw === null ||
+      probabilities.away === null
+    ) {
+      this.clearLineupOdds();
+      return;
+    }
+
+    const values: Array<{
+      outcome: 'home' | 'draw' | 'away';
+      value: number;
+      role: 'player' | 'draw' | 'opponent';
+      label: string;
+    }> = [
+      {
+        outcome: 'home',
+        value: probabilities.home,
+        role: probabilities.playerIsHome ? 'player' : 'opponent',
+        label: 'Heim',
+      },
+      {
+        outcome: 'draw',
+        value: probabilities.draw,
+        role: 'draw',
+        label: 'Remis',
+      },
+      {
+        outcome: 'away',
+        value: probabilities.away,
+        role: probabilities.playerIsAway ? 'player' : 'opponent',
+        label: 'Auswärts',
+      },
+    ];
+    const total = values.reduce((sum, { value }) => sum + Math.max(0, value), 0);
+    if (total <= 0) {
+      this.clearLineupOdds();
+      return;
+    }
+    this.lineupOddsBar.replaceChildren(
+      ...values.map(({ outcome, value, role, label }) => {
+        const segment = document.createElement('span');
+        segment.className = 'lineup-odd';
+        segment.dataset.outcome = outcome;
+        segment.dataset.role = role;
+        const bounded = Math.max(0, Math.min(1, value));
+        segment.style.setProperty(
+          '--probability-share',
+          `${(Math.max(0, value) / total) * 100}%`,
+        );
+        segment.textContent = `${Math.round(bounded * 100)}%`;
+        segment.setAttribute('aria-label', `${label}: ${Math.round(bounded * 100)} Prozent`);
+        return segment;
+      }),
+    );
+    this.lineupOddsBar.dataset.ready = 'true';
+  }
+
+  private clearLineupOdds(): void {
+    this.lineupOddsBar.replaceChildren();
+    delete this.lineupOddsBar.dataset.ready;
+    this.lineupOddsHost.hidden = true;
   }
 
   private state(message: string, modifier: string): void {

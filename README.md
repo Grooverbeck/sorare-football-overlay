@@ -60,6 +60,19 @@ Bekannte Mock-Slugs sind `kylian-mbappe-lottin`, `virgil-van-dijk`, `manuel-neue
 
 `EXTENSION_API_BASE_URL` wird beim Build eingebettet und zugleich als eng begrenzte `host_permission` ins generierte Manifest geschrieben. Nach einer URL-Änderung muss neu gebaut und neu geladen werden. In diese Variable gehört nur die URL des eigenen Backends, niemals ein Token.
 
+### Chrome-Web-Store-Paket
+
+Für eine Store-konforme, nicht gelistete Beta:
+
+```bash
+npm run package:chrome-web-store
+```
+
+Der Befehl erzeugt die Icons und Listing-Grafiken, baut die Extension gegen
+das produktive Cloudflare-Backend und schreibt eine ZIP ohne Source Maps nach
+`artifacts/`. Store-Texte, Datenschutzangaben und die Einreichungscheckliste
+liegen unter `docs/chrome-web-store/`.
+
 ## Backend-Konfiguration
 
 Alle Werte werden aus `apps/api/.env` oder der Prozessumgebung gelesen.
@@ -105,6 +118,12 @@ Für Cloudflare wird `STATS_CACHE` als KV-Namespace gebunden. Darin liegen:
 - vorübergehend auch nicht auflösbare Namen, damit anonyme Sorare-Anfragen nicht ständig wiederholt werden.
 
 Die Einträge werden beim Lesen erneut mit Zod validiert. Ungültige oder veraltete Cache-Formate werden verworfen. KV-Schreibvorgänge laufen über `ExecutionContext.waitUntil()`, damit die API-Antwort nicht auf den Schreibvorgang warten muss und Cloudflare ihn trotzdem zuverlässig zu Ende führt.
+
+Der Worker stellt zusätzlich öffentliche Seiten für die Store-Einreichung bereit:
+
+- `/` – Projekt- und Limited-Use-Informationen
+- `/privacy` – Datenschutzerklärung
+- `/support` – Supporthinweise
 
 ### Lokal in der Worker-Laufzeit testen
 
