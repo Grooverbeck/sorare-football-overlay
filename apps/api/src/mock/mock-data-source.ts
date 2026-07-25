@@ -2,6 +2,7 @@ import type { FootballPosition, PlayerAppearance } from '@sorare-overlay/shared'
 import type {
   PlayerStatsDataSource,
   SourcePlayer,
+  SourcePlayerFixture,
   SourcePlayerRequest,
 } from '../services/data-source.js';
 import { mockPlayers, type MockPlayerTemplate } from './players.js';
@@ -29,6 +30,10 @@ function generatedTemplate(slug: string, position?: FootballPosition): MockPlaye
     position: selectedPosition,
     aa: Array.from({ length: 10 }, (_, index) => 6 + ((seed + index * 7) % 15)),
     goals: Array.from({ length: 10 }, (_, index) => ((seed + index * 11) % 5 === 0 ? 1 : 0)),
+    assists: Array.from(
+      { length: 10 },
+      (_, index) => ((seed + index * 13) % 6 === 0 ? 1 : 0),
+    ),
     minutes: Array.from({ length: 10 }, (_, index) => (index === 8 ? 0 : 60 + ((seed + index) % 31))),
     cleanSheets: Array.from({ length: 10 }, (_, index) => ((seed + index * 3) % 3 === 0 ? 1 : 0)),
     lowCoverageIndexes: [6],
@@ -61,15 +66,28 @@ export class MockDataSource implements PlayerStatsDataSource {
     return requests.map((request) => {
       const template = mockPlayers[request.slug] ?? generatedTemplate(request.slug, request.position);
       const position = request.position ?? template.position;
-      const appearances: PlayerAppearance[] = template.aa.map((allAroundScore, index) => ({
-        date: new Date(Date.UTC(2026, 6, 20 - index * 7, 18)).toISOString(),
-        allAroundScore,
-        goals: template.goals[index] ?? 0,
-        minsPlayed: template.minutes[index] ?? 0,
-        cleanSheet60: template.cleanSheets[index] ?? 0,
-        lowCoverage: template.lowCoverageIndexes?.includes(index) ?? false,
-        position,
-      }));
+      const appearanceCount = request.includeHistoricalAssists
+        ? 50
+        : template.aa.length;
+      const appearances: PlayerAppearance[] = Array.from(
+        { length: appearanceCount },
+        (_, index) => {
+          const sourceIndex = index % template.aa.length;
+          return {
+            date: new Date(Date.UTC(2026, 6, 20 - index * 7, 18)).toISOString(),
+            allAroundScore: template.aa[sourceIndex] ?? null,
+            goals: template.goals[sourceIndex] ?? 0,
+            assists:
+              template.assists?.[sourceIndex] ??
+              ((hash(`${request.slug}:${index}`) % 6 === 0) ? 1 : 0),
+            minsPlayed: template.minutes[sourceIndex] ?? 0,
+            cleanSheet60: template.cleanSheets[sourceIndex] ?? 0,
+            lowCoverage:
+              template.lowCoverageIndexes?.includes(sourceIndex) ?? false,
+            position,
+          };
+        },
+      );
 
       return {
         slug: request.slug,
@@ -87,5 +105,14 @@ export class MockDataSource implements PlayerStatsDataSource {
         },
       };
     });
+  }
+
+  async fetchNextGames(
+    requests: readonly SourcePlayerRequest[],
+  ): Promise<SourcePlayerFixture[]> {
+    return (await this.fetchPlayers(requests)).map(({ slug, nextGame }) => ({
+      slug,
+      nextGame,
+    }));
   }
 }

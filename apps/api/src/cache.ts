@@ -5,8 +5,16 @@ interface CacheEntry<T> {
   expiresAt: number;
 }
 
-export type PlayerFormStats = Omit<PlayerStats, 'nextGame'>;
+export type PlayerFormStats = Omit<
+  PlayerStats,
+  'nextGame' | 'pendingRefreshes'
+>;
 export type PlayerFixtureStats = PlayerStats['nextGame'];
+
+export interface PlayerStatsCacheParts {
+  form?: PlayerFormStats;
+  fixture?: PlayerFixtureStats;
+}
 
 export interface Cache<T> {
   get(key: string): T | undefined | Promise<T | undefined>;
@@ -16,6 +24,21 @@ export interface Cache<T> {
 
 export interface ReadonlyCache<T> {
   get(key: string): T | undefined | Promise<T | undefined>;
+}
+
+export interface SplitPlayerStatsCacheAccess extends Cache<PlayerStats> {
+  getParts(key: string): Promise<PlayerStatsCacheParts>;
+  setFixture(key: string, value: PlayerFixtureStats): void | Promise<void>;
+}
+
+export function supportsSplitPlayerStatsCache(
+  cache: Cache<PlayerStats>,
+): cache is SplitPlayerStatsCacheAccess {
+  const candidate = cache as Partial<SplitPlayerStatsCacheAccess>;
+  return (
+    typeof candidate.getParts === 'function' &&
+    typeof candidate.setFixture === 'function'
+  );
 }
 
 export class TtlCache<T> implements Cache<T> {
@@ -52,22 +75,18 @@ export class TtlCache<T> implements Cache<T> {
   }
 }
 
-export class SplitPlayerStatsCache implements Cache<PlayerStats> {
+export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
   constructor(
     private readonly formCache: Cache<PlayerFormStats>,
     private readonly fixtureCache: Cache<PlayerFixtureStats>,
     private readonly legacyCache?: ReadonlyCache<PlayerStats>,
   ) {}
 
-  async get(key: string): Promise<PlayerStats | undefined> {
+  async getParts(key: string): Promise<PlayerStatsCacheParts> {
     const [form, fixture] = await Promise.all([
       this.formCache.get(key),
       this.fixtureCache.get(key),
     ]);
-
-    if (form !== undefined && fixture !== undefined) {
-      return { ...form, nextGame: fixture };
-    }
 
     // Only consult the old combined cache before either new cache part exists.
     // This migrates existing entries without allowing a 24h legacy fixture to
@@ -76,23 +95,43 @@ export class SplitPlayerStatsCache implements Cache<PlayerStats> {
       const legacy = await this.legacyCache.get(key);
       if (legacy) {
         await this.set(key, legacy);
-        return legacy;
+        const {
+          nextGame,
+          pendingRefreshes: _pendingRefreshes,
+          ...legacyForm
+        } = legacy;
+        return { form: legacyForm, fixture: nextGame };
       }
     }
 
-    return undefined;
+    return {
+      ...(form !== undefined ? { form } : {}),
+      ...(fixture !== undefined ? { fixture } : {}),
+    };
+  }
+
+  async get(key: string): Promise<PlayerStats | undefined> {
+    const parts = await this.getParts(key);
+    if (parts.form === undefined || parts.fixture === undefined) {
+      return undefined;
+    }
+    return { ...parts.form, nextGame: parts.fixture };
   }
 
   async set(key: string, value: PlayerStats): Promise<void> {
-    const { nextGame, ...form } = value;
+    const { nextGame, pendingRefreshes: _pendingRefreshes, ...form } = value;
     await Promise.all([
       this.formCache.set(key, form),
       this.fixtureCache.set(key, nextGame),
     ]);
   }
 
+  setFixture(key: string, value: PlayerFixtureStats): void | Promise<void> {
+    return this.fixtureCache.set(key, value);
+  }
+
   async fillMissing(key: string, value: PlayerStats): Promise<PlayerStats> {
-    const { nextGame, ...form } = value;
+    const { nextGame, pendingRefreshes: _pendingRefreshes, ...form } = value;
     const [existingForm, existingFixture] = await Promise.all([
       this.formCache.get(key),
       this.fixtureCache.get(key),

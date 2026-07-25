@@ -10,8 +10,16 @@ import {
   type Cache,
   type PlayerFixtureStats,
   type PlayerFormStats,
+  type PlayerStatsCacheParts,
   type ReadonlyCache,
+  type SplitPlayerStatsCacheAccess,
 } from '../cache.js';
+import {
+  MarketSnapshotSchema,
+  type MarketSnapshot,
+  type MarketSnapshotStore,
+  type OddsMarketKey,
+} from '../providers/market-odds-provider.js';
 import type {
   PlayerNameResolutionCache,
   SourcePlayerRequest,
@@ -27,7 +35,10 @@ const NameResolutionEnvelopeSchema = z.discriminatedUnion('found', [
   z.object({ found: z.literal(false) }),
 ]);
 
-const PlayerFormStatsSchema = PlayerStatsSchema.omit({ nextGame: true });
+const PlayerFormStatsSchema = PlayerStatsSchema.omit({
+  nextGame: true,
+  pendingRefreshes: true,
+});
 const PlayerFixtureEnvelopeSchema = z.object({
   nextGame: PlayerStatsSchema.shape.nextGame,
 });
@@ -56,6 +67,58 @@ abstract class CloudflareKvCache {
         expirationTtl: ttlSeconds,
       }),
     );
+  }
+}
+
+export class CloudflareMarketSnapshotStore
+  extends CloudflareKvCache
+  implements MarketSnapshotStore
+{
+  constructor(
+    namespace: KVNamespace,
+    private readonly missTtlSeconds: number,
+    context: ExecutionContext,
+  ) {
+    super(namespace, context);
+  }
+
+  async get(
+    fixtureKey: string,
+    market: OddsMarketKey,
+  ): Promise<MarketSnapshot | undefined> {
+    const key = this.key(fixtureKey, market);
+    const raw = await this.namespace.get<unknown>(key, 'json');
+    if (raw === null) return undefined;
+    const parsed = MarketSnapshotSchema.safeParse(raw);
+    if (!parsed.success) {
+      this.removeInvalid(key);
+      return undefined;
+    }
+    return parsed.data;
+  }
+
+  async set(fixtureKey: string, snapshot: MarketSnapshot): Promise<void> {
+    const key = this.key(fixtureKey, snapshot.market);
+    const value = JSON.stringify(MarketSnapshotSchema.parse(snapshot));
+    if (snapshot.status === 'available') {
+      // A successful pre-match market capture is immutable by design. This
+      // avoids paid API re-fetches and keeps every user on the same snapshot.
+      await this.namespace.put(key, value);
+      return;
+    }
+    if (snapshot.expiresAt) {
+      await this.namespace.put(key, value, {
+        expiration: Math.floor(Date.parse(snapshot.expiresAt) / 1_000),
+      });
+      return;
+    }
+    await this.namespace.put(key, value, {
+      expirationTtl: this.missTtlSeconds,
+    });
+  }
+
+  private key(fixtureKey: string, market: OddsMarketKey): string {
+    return `market-odds:v1:${encodeURIComponent(fixtureKey)}:${market}`;
   }
 }
 
@@ -154,7 +217,9 @@ class CloudflareLegacyPlayerStatsCache
   }
 }
 
-export class CloudflarePlayerStatsCache implements Cache<PlayerStats> {
+export class CloudflarePlayerStatsCache
+  implements SplitPlayerStatsCacheAccess
+{
   private readonly splitCache: SplitPlayerStatsCache;
 
   constructor(
@@ -174,12 +239,20 @@ export class CloudflarePlayerStatsCache implements Cache<PlayerStats> {
     return this.splitCache.get(key);
   }
 
+  getParts(key: string): Promise<PlayerStatsCacheParts> {
+    return this.splitCache.getParts(key);
+  }
+
   set(key: string, value: PlayerStats): Promise<void> {
     return this.splitCache.set(key, value);
   }
 
   fillMissing(key: string, value: PlayerStats): Promise<PlayerStats> {
     return this.splitCache.fillMissing(key, value);
+  }
+
+  setFixture(key: string, value: PlayerFixtureStats): void | Promise<void> {
+    return this.splitCache.setFixture(key, value);
   }
 }
 

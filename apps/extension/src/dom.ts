@@ -9,6 +9,9 @@ export interface CardTarget {
 
 const playerPath = /\/(?:football\/)?players\/([a-z0-9]+(?:-[a-z0-9]+)*)/i;
 const cardImageAlt = /^(.+?)\s+-\s+(?:common|limited|rare|super rare|unique)$/i;
+const cardPicturePath = /\/cardsamplepicture\/([a-z0-9-]+)\//i;
+const knownPlayerNamesByPictureId = new Map<string, string>();
+const discoveredPlayerNamesByPictureId = new Map<string, string>();
 const positionAliases: Readonly<Record<string, FootballPosition>> = {
   gk: 'Goalkeeper',
   goalkeeper: 'Goalkeeper',
@@ -130,6 +133,71 @@ export function extractPlayerName(image: HTMLImageElement): string | null {
   return image.alt.match(cardImageAlt)?.[1]?.trim() ?? null;
 }
 
+function extractCardPictureId(image: HTMLImageElement): string | null {
+  try {
+    return new URL(image.currentSrc || image.src, location.href).pathname
+      .match(cardPicturePath)?.[1]
+      ?.toLowerCase() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function hydrateCardPictureNames(
+  entries: Readonly<Record<string, string>>,
+): void {
+  knownPlayerNamesByPictureId.clear();
+  discoveredPlayerNamesByPictureId.clear();
+  for (const [pictureId, playerName] of Object.entries(entries)) {
+    if (!/^[a-z0-9-]+$/i.test(pictureId) || !playerName.trim()) continue;
+    knownPlayerNamesByPictureId.set(pictureId.toLowerCase(), playerName.trim());
+  }
+}
+
+export function drainDiscoveredCardPictureNames(): Record<string, string> {
+  const entries = Object.fromEntries(discoveredPlayerNamesByPictureId);
+  discoveredPlayerNamesByPictureId.clear();
+  return entries;
+}
+
+function rememberCardPictureName(
+  image: HTMLImageElement,
+  playerName: string,
+): void {
+  const pictureId = extractCardPictureId(image);
+  if (!pictureId || knownPlayerNamesByPictureId.get(pictureId) === playerName) {
+    return;
+  }
+  knownPlayerNamesByPictureId.set(pictureId, playerName);
+  discoveredPlayerNamesByPictureId.set(pictureId, playerName);
+}
+
+function hasNearbyTeamRow(container: HTMLElement): boolean {
+  let scope = container.parentElement;
+  for (let depth = 0; scope && depth < 5; depth += 1) {
+    const teamsByRow = new Map<HTMLElement, number>();
+    for (const teamNode of scope.querySelectorAll<HTMLElement>(
+      '[aria-label="Team"]',
+    )) {
+      const row = teamNode.parentElement;
+      if (!row) continue;
+      teamsByRow.set(row, (teamsByRow.get(row) ?? 0) + 1);
+    }
+    if ([...teamsByRow.values()].includes(2)) return true;
+    scope = scope.parentElement;
+  }
+  return false;
+}
+
+function resolvePlayerName(image: HTMLImageElement): string | null {
+  const explicitName = extractPlayerName(image);
+  if (explicitName) return explicitName;
+  const pictureId = extractCardPictureId(image);
+  return pictureId
+    ? knownPlayerNamesByPictureId.get(pictureId) ?? null
+    : null;
+}
+
 export function findImageCardContainer(image: HTMLImageElement): HTMLElement | null {
   return image.closest<HTMLElement>(
     '[data-player-slug], [data-card-slug], [data-testid*="card" i], button, [role="button"], article, li',
@@ -156,8 +224,13 @@ export function findCardTargets(root: ParentNode): CardTarget[] {
   images.push(...root.querySelectorAll<HTMLImageElement>('img[alt]'));
   for (const image of images) {
     const playerName = extractPlayerName(image);
+    if (playerName) rememberCardPictureName(image, playerName);
+  }
+  for (const image of images) {
+    const playerName = resolvePlayerName(image);
     const container = playerName ? findImageCardContainer(image) : null;
     if (!playerName || !container) continue;
+    if (!extractPlayerName(image) && !hasNearbyTeamRow(container)) continue;
     if (targets.some((target) => target.container === container)) continue;
     const position = inferCardPosition(container);
     targets.push({ playerName, container, ...(position ? { position } : {}) });

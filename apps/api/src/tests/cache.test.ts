@@ -50,6 +50,12 @@ describe('SplitPlayerStatsCache', () => {
 
     now = 5_000;
     await expect(cache.get('player')).resolves.toBeUndefined();
+    await expect(cache.getParts('player')).resolves.toEqual({
+      form: expect.objectContaining({
+        slug: 'cache-test-player',
+        aaL10: { value: 10.5, sampleSize: 10 },
+      }),
+    });
     expect(formCache.get('player')).toBeDefined();
     expect(fixtureCache.get('player')).toBeUndefined();
   });

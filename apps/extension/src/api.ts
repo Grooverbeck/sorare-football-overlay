@@ -16,6 +16,8 @@ export async function fetchPlayerStats(
     });
   });
 
-  if (!response.ok) throw new Error(response.error.message);
+  if (!response.ok) {
+    throw new Error(`${response.error.code}: ${response.error.message}`);
+  }
   return response.value;
 }

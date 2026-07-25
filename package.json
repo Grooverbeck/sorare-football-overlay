@@ -1,6 +1,6 @@
 {
   "name": "sorare-football-overlay",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "private": true,
   "description": "Production-oriented Sorare football browser overlay monorepo",
   "type": "module",
@@ -16,7 +16,10 @@
     "build": "npm run build --workspace=@sorare-overlay/shared && npm run build --workspace=@sorare-overlay/api && npm run build --workspace=@sorare-overlay/extension",
     "benchmark:mls-aa": "npm run benchmark:mls-aa --workspace=@sorare-overlay/api",
     "benchmark:mls-cs": "npm run benchmark:mls-cs --workspace=@sorare-overlay/api",
+    "benchmark:mls-market": "npm run benchmark:mls-market --workspace=@sorare-overlay/api",
     "benchmark:mls-win": "npm run benchmark:mls-win --workspace=@sorare-overlay/api",
+    "analyze:mls-props": "npm run analyze:mls-props --workspace=@sorare-overlay/api",
+    "prewarm:mls-props": "npm run prewarm:mls-props --workspace=@sorare-overlay/api",
     "codegen": "npm run codegen --workspace=@sorare-overlay/api",
     "dev:api": "npm run dev --workspace=@sorare-overlay/api",
     "dev:cloudflare": "npm run cf:dev --workspace=@sorare-overlay/api",

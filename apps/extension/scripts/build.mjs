@@ -5,10 +5,15 @@ import path from 'node:path';
 
 const watch = process.argv.includes('--watch');
 const apiBaseUrl = (process.env.EXTENSION_API_BASE_URL ?? 'http://localhost:8787').replace(/\/$/, '');
+const marketOddsPreview = process.env.EXTENSION_MARKET_ODDS_PREVIEW === 'true';
 const apiUrl = new URL(apiBaseUrl);
 if (!['http:', 'https:'].includes(apiUrl.protocol)) {
   throw new Error('EXTENSION_API_BASE_URL must use http or https');
 }
+// Chrome match patterns do not include a port. A host permission such as
+// http://127.0.0.1/* covers every port on that host, while the actual fetch
+// URL below still keeps its configured development port.
+const apiHostPermission = `${apiUrl.protocol}//${apiUrl.hostname}/*`;
 
 const root = path.resolve(import.meta.dirname, '..');
 const packageJson = JSON.parse(
@@ -25,7 +30,7 @@ const manifest = {
   version: packageJson.version,
   description: 'Unofficial overlay showing position-aware football metrics on Sorare cards.',
   permissions: ['storage'],
-  host_permissions: [`${apiUrl.origin}/*`],
+  host_permissions: [apiHostPermission],
   icons: {
     16: 'icons/icon-16.png',
     32: 'icons/icon-32.png',
@@ -36,6 +41,7 @@ const manifest = {
   content_scripts: [
     {
       matches: ['https://sorare.com/*', 'https://www.sorare.com/*'],
+      css: ['sorare-native.css'],
       js: ['content.js'],
       run_at: 'document_idle',
     },
@@ -57,6 +63,10 @@ await writeFile(path.join(outdir, 'manifest.json'), `${JSON.stringify(manifest, 
 await Promise.all([
   copyFile(path.join(root, 'src', 'popup.html'), path.join(outdir, 'popup.html')),
   copyFile(path.join(root, 'src', 'popup.css'), path.join(outdir, 'popup.css')),
+  copyFile(
+    path.join(root, 'src', 'sorare-native.css'),
+    path.join(outdir, 'sorare-native.css'),
+  ),
   ...[16, 32, 48, 128].map((size) =>
     copyFile(
       path.join(root, 'assets', 'icons', `icon-${size}.png`),
@@ -80,6 +90,7 @@ const buildContext = await context({
   target: ['chrome120', 'edge120'],
   define: {
     __API_BASE_URL__: JSON.stringify(apiBaseUrl),
+    __MARKET_ODDS_PREVIEW__: JSON.stringify(marketOddsPreview),
   },
   logLevel: 'info',
   sourcemap: watch,
@@ -87,9 +98,13 @@ const buildContext = await context({
 
 if (watch) {
   await buildContext.watch();
-  console.log(`Watching extension sources (backend: ${apiBaseUrl})`);
+  console.log(
+    `Watching extension sources (backend: ${apiBaseUrl}, market preview: ${marketOddsPreview})`,
+  );
 } else {
   await buildContext.rebuild();
   await buildContext.dispose();
-  console.log(`Built extension in dist (backend: ${apiBaseUrl})`);
+  console.log(
+    `Built extension in dist (backend: ${apiBaseUrl}, market preview: ${marketOddsPreview})`,
+  );
 }

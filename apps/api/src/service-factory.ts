@@ -6,30 +6,50 @@ import { SorareDataSource } from './graphql/sorare-data-source.js';
 import type { AppLogger } from './logger.js';
 import { MockDataSource } from './mock/mock-data-source.js';
 import { HistoricalGoalscorerProvider } from './providers/goalscorer-provider.js';
+import {
+  InMemoryMarketSnapshotStore,
+  MockPlayerMarketOddsProvider,
+  TheOddsApiPlayerMarketOddsProvider,
+  UnavailablePlayerMarketOddsProvider,
+  type MarketSnapshotStore,
+  type PlayerMarketOddsProvider,
+} from './providers/market-odds-provider.js';
+import {
+  SportsGameOddsPlayerMarketOddsProvider,
+  SupplementingPlayerMarketOddsProvider,
+} from './providers/sports-game-odds-provider.js';
 import type {
   PlayerNameResolutionCache,
   PlayerStatsDataSource,
 } from './services/data-source.js';
-import { StatsService } from './services/stats-service.js';
+import {
+  StatsService,
+  type BackgroundTaskScheduler,
+} from './services/stats-service.js';
 
 export interface CreateStatsRuntimeOptions {
   config: AppConfig;
   logger: AppLogger;
   statsCache: Cache<PlayerStats>;
   nameResolutionCache?: PlayerNameResolutionCache;
+  marketSnapshotStore?: MarketSnapshotStore;
+  scheduleBackground?: BackgroundTaskScheduler;
 }
 
 export interface StatsRuntime {
   statsService: StatsService;
+  marketOddsProvider: PlayerMarketOddsProvider;
   source: 'sorare' | 'mock';
 }
 
 export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRuntime {
   const { config, logger } = options;
   let dataSource: PlayerStatsDataSource;
+  let marketOddsProvider: PlayerMarketOddsProvider;
 
   if (config.mockMode) {
     dataSource = new MockDataSource();
+    marketOddsProvider = new MockPlayerMarketOddsProvider();
   } else {
     const client = new SorareGraphqlClient({
       url: config.graphqlUrl,
@@ -48,6 +68,41 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
       config.excludeLowCoverage,
       options.nameResolutionCache,
     );
+    const theOddsProvider = config.oddsApiKey
+      ? new TheOddsApiPlayerMarketOddsProvider({
+          apiKey: config.oddsApiKey,
+          baseUrl: config.oddsApiBaseUrl,
+          sportKey: config.oddsApiSportKey,
+          region: config.oddsApiRegion,
+          ...(config.oddsApiFallbackRegion
+            ? { fallbackRegion: config.oddsApiFallbackRegion }
+            : {}),
+          fetchWindowMs: config.oddsFetchWindowMs,
+          requestTimeoutMs: config.requestTimeoutMs,
+          maxRetries: config.maxRetries,
+          store:
+            options.marketSnapshotStore ??
+            new InMemoryMarketSnapshotStore(config.oddsMissCacheTtlMs),
+          logger,
+        })
+      : new UnavailablePlayerMarketOddsProvider();
+    marketOddsProvider = config.sportsGameOddsApiKey
+      ? new SupplementingPlayerMarketOddsProvider(
+          new SportsGameOddsPlayerMarketOddsProvider({
+            apiKey: config.sportsGameOddsApiKey,
+            baseUrl: config.sportsGameOddsBaseUrl,
+            leagueId: config.sportsGameOddsLeagueId,
+            fetchWindowMs: config.oddsFetchWindowMs,
+            requestTimeoutMs: config.requestTimeoutMs,
+            maxRetries: config.maxRetries,
+            store:
+              options.marketSnapshotStore ??
+              new InMemoryMarketSnapshotStore(config.oddsMissCacheTtlMs),
+            logger,
+          }),
+          theOddsProvider,
+        )
+      : theOddsProvider;
   }
 
   return {
@@ -56,7 +111,10 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
       new HistoricalGoalscorerProvider(),
       options.statsCache,
       config.excludeLowCoverage,
+      marketOddsProvider,
+      options.scheduleBackground,
     ),
+    marketOddsProvider,
     source: dataSource.source,
   };
 }

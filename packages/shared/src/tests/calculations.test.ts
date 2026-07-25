@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { calculatePlayerMetrics, type PlayerAppearance } from '../index.js';
+import {
+  calculateHistoricalAssistMetrics,
+  calculateHistoricalDecisiveMetrics,
+  calculateHistoricalGoalMetrics,
+  calculatePlayerMetrics,
+  type PlayerAppearance,
+} from '../index.js';
 
 const appearances: PlayerAppearance[] = [
   {
     date: '2026-07-20T18:00:00.000Z',
     allAroundScore: 12,
     goals: 1,
+    assists: 1,
     minsPlayed: 90,
     cleanSheet60: 1,
     lowCoverage: false,
@@ -15,6 +22,7 @@ const appearances: PlayerAppearance[] = [
     date: '2026-07-13T18:00:00.000Z',
     allAroundScore: 8,
     goals: 0,
+    assists: 0,
     minsPlayed: 59,
     cleanSheet60: 0,
     lowCoverage: false,
@@ -24,6 +32,7 @@ const appearances: PlayerAppearance[] = [
     date: '2026-07-06T18:00:00.000Z',
     allAroundScore: 99,
     goals: 1,
+    assists: 1,
     minsPlayed: 90,
     cleanSheet60: 1,
     lowCoverage: true,
@@ -33,6 +42,7 @@ const appearances: PlayerAppearance[] = [
     date: '2026-06-29T18:00:00.000Z',
     allAroundScore: 50,
     goals: 1,
+    assists: 1,
     minsPlayed: 0,
     cleanSheet60: 0,
     lowCoverage: false,
@@ -69,5 +79,46 @@ describe('calculatePlayerMetrics', () => {
 
     expect(result.aaL10).toEqual({ value: null, sampleSize: 0 });
     expect(result.goalL10).toEqual({ value: null, sampleSize: 0 });
+  });
+
+  it('calculates historical assist rates for selectable valid-appearance windows', () => {
+    const history: PlayerAppearance[] = Array.from(
+      { length: 42 },
+      (_, index) => ({
+        date: new Date(Date.UTC(2026, 6, 24 - index)).toISOString(),
+        allAroundScore: 10,
+        goals: index % 5 === 0 ? 1 : 0,
+        assists: index % 4 === 0 ? 1 : 0,
+        minsPlayed: index === 40 ? 0 : 90,
+        cleanSheet60: 0,
+        lowCoverage: index === 41,
+        position: 'Forward',
+      }),
+    );
+
+    const result = calculateHistoricalAssistMetrics(
+      history,
+      'Forward',
+      true,
+    );
+
+    expect(result.l10).toEqual({ value: 0.3, sampleSize: 10 });
+    expect(result.l15.value).toBeCloseTo(4 / 15);
+    expect(result.l15.sampleSize).toBe(15);
+    expect(result.l40).toEqual({ value: 0.25, sampleSize: 40 });
+
+    const goals = calculateHistoricalGoalMetrics(history, 'Forward', true);
+    expect(goals.l10).toEqual({ value: 0.2, sampleSize: 10 });
+    expect(goals.l15).toEqual({ value: 0.2, sampleSize: 15 });
+    expect(goals.l40).toEqual({ value: 0.2, sampleSize: 40 });
+
+    const decisives = calculateHistoricalDecisiveMetrics(
+      history,
+      'Forward',
+      true,
+    );
+    expect(decisives.l10).toEqual({ value: 0.4, sampleSize: 10 });
+    expect(decisives.l15).toEqual({ value: 0.4, sampleSize: 15 });
+    expect(decisives.l40).toEqual({ value: 0.4, sampleSize: 40 });
   });
 });

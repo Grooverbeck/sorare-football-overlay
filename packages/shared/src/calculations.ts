@@ -1,9 +1,15 @@
-import type { FootballPosition, Metric, PlayerStats } from './contracts.js';
+import type {
+  FootballPosition,
+  HistoricalAssistMetrics,
+  Metric,
+  PlayerStats,
+} from './contracts.js';
 
 export interface PlayerAppearance {
   date: string;
   allAroundScore: number | null;
   goals: number | null;
+  assists?: number | null;
   minsPlayed: number | null;
   cleanSheet60: number | null;
   lowCoverage: boolean;
@@ -36,6 +42,18 @@ function ratio(successes: number, total: number): Metric {
   return total === 0 ? emptyMetric() : { value: successes / total, sampleSize: total };
 }
 
+function validAppearancesForPosition(
+  appearances: readonly PlayerAppearance[],
+  position: FootballPosition,
+  excludeLowCoverage: boolean,
+): PlayerAppearance[] {
+  return appearances
+    .filter((appearance) => appearance.position === position)
+    .filter((appearance) => !excludeLowCoverage || !appearance.lowCoverage)
+    .filter((appearance) => (appearance.minsPlayed ?? 0) > 0)
+    .sort((left, right) => Date.parse(right.date) - Date.parse(left.date));
+}
+
 export function calculatePlayerMetrics(
   appearances: readonly PlayerAppearance[],
   position: FootballPosition,
@@ -47,10 +65,11 @@ export function calculatePlayerMetrics(
     ? forPosition.filter((appearance) => appearance.lowCoverage).length
     : 0;
 
-  const validAppearances = forPosition
-    .filter((appearance) => !options.excludeLowCoverage || !appearance.lowCoverage)
-    .filter((appearance) => (appearance.minsPlayed ?? 0) > 0)
-    .sort((left, right) => Date.parse(right.date) - Date.parse(left.date))
+  const validAppearances = validAppearancesForPosition(
+    appearances,
+    position,
+    options.excludeLowCoverage,
+  )
     .slice(0, limit);
 
   const allAroundScores = validAppearances.flatMap((appearance) =>
@@ -72,6 +91,82 @@ export function calculatePlayerMetrics(
       goalEligible.length,
     ),
     excludedLowCoverage,
+  };
+}
+
+export function calculateHistoricalAssistMetrics(
+  appearances: readonly PlayerAppearance[],
+  position: FootballPosition,
+  excludeLowCoverage: boolean,
+): HistoricalAssistMetrics {
+  const validAppearances = validAppearancesForPosition(
+    appearances,
+    position,
+    excludeLowCoverage,
+  );
+  const forWindow = (limit: number): Metric => {
+    const selected = validAppearances.slice(0, limit);
+    return ratio(
+      selected.filter((appearance) => (appearance.assists ?? 0) >= 1).length,
+      selected.length,
+    );
+  };
+  return {
+    l10: forWindow(10),
+    l15: forWindow(15),
+    l40: forWindow(40),
+  };
+}
+
+export function calculateHistoricalGoalMetrics(
+  appearances: readonly PlayerAppearance[],
+  position: FootballPosition,
+  excludeLowCoverage: boolean,
+): HistoricalAssistMetrics {
+  const validAppearances = validAppearancesForPosition(
+    appearances,
+    position,
+    excludeLowCoverage,
+  );
+  const forWindow = (limit: number): Metric => {
+    const selected = validAppearances.slice(0, limit);
+    return ratio(
+      selected.filter((appearance) => (appearance.goals ?? 0) >= 1).length,
+      selected.length,
+    );
+  };
+  return {
+    l10: forWindow(10),
+    l15: forWindow(15),
+    l40: forWindow(40),
+  };
+}
+
+export function calculateHistoricalDecisiveMetrics(
+  appearances: readonly PlayerAppearance[],
+  position: FootballPosition,
+  excludeLowCoverage: boolean,
+): HistoricalAssistMetrics {
+  const validAppearances = validAppearancesForPosition(
+    appearances,
+    position,
+    excludeLowCoverage,
+  );
+  const forWindow = (limit: number): Metric => {
+    const selected = validAppearances.slice(0, limit);
+    return ratio(
+      selected.filter(
+        (appearance) =>
+          (appearance.goals ?? 0) >= 1 ||
+          (appearance.assists ?? 0) >= 1,
+      ).length,
+      selected.length,
+    );
+  };
+  return {
+    l10: forWindow(10),
+    l15: forWindow(15),
+    l40: forWindow(40),
   };
 }
 

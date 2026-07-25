@@ -3,6 +3,8 @@ import { parse } from 'graphql';
 import type {
   PlayerAppearanceHistoryQuery,
   PlayerAppearanceHistoryQueryVariables,
+  PlayerNextGamesQuery,
+  PlayerNextGamesQueryVariables,
   PlayerStatsBatchQuery,
   PlayerStatsBatchQueryVariables,
   Position,
@@ -11,11 +13,13 @@ import type {
   PlayerNameResolutionCache,
   PlayerStatsDataSource,
   SourcePlayer,
+  SourcePlayerFixture,
   SourcePlayerRequest,
 } from '../services/data-source.js';
 import { SorareGraphqlClient } from './client.js';
 import {
   PLAYER_APPEARANCE_HISTORY_QUERY,
+  PLAYER_NEXT_GAMES_QUERY,
   PLAYER_STATS_BATCH_QUERY,
 } from './player-stats.query.js';
 
@@ -175,6 +179,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
   private readonly resolvedNames = new Map<string, SourcePlayerRequest>();
   private readonly unresolvedNamesUntil = new Map<string, number>();
   private readonly batchSize: number;
+  private readonly fixtureBatchSize: number;
 
   constructor(
     private readonly client: SorareGraphqlClient,
@@ -189,6 +194,10 @@ export class SorareDataSource implements PlayerStatsDataSource {
     this.batchSize = elevatedComplexityLimit
       ? requestedBatchSize
       : Math.min(requestedBatchSize, 3);
+    // The fixture-only query omits the expensive score history and remains
+    // comfortably below Sorare's anonymous complexity ceiling in larger
+    // batches.
+    this.fixtureBatchSize = Math.min(requestedBatchSize, 50);
   }
 
   async resolvePlayerNames(
@@ -273,19 +282,58 @@ export class SorareDataSource implements PlayerStatsDataSource {
   }
 
   async fetchPlayers(requests: readonly SourcePlayerRequest[]): Promise<SourcePlayer[]> {
-    const groups = new Map<FootballPosition | undefined, SourcePlayerRequest[]>();
+    const groups = new Map<
+      string,
+      {
+        position: FootballPosition | undefined;
+        includeHistoricalAssists: boolean;
+        requests: SourcePlayerRequest[];
+      }
+    >();
     for (const request of requests) {
-      const group = groups.get(request.position) ?? [];
-      group.push(request);
-      groups.set(request.position, group);
+      const includeHistoricalAssists =
+        request.includeHistoricalAssists === true;
+      const key = `${request.position ?? 'auto'}:${includeHistoricalAssists ? 'assist-history' : 'base'}`;
+      const group = groups.get(key) ?? {
+        position: request.position,
+        includeHistoricalAssists,
+        requests: [],
+      };
+      group.requests.push(request);
+      groups.set(key, group);
     }
 
     const calls: Promise<SourcePlayer[]>[] = [];
-    for (const [position, groupedRequests] of groups) {
+    for (const {
+      position,
+      includeHistoricalAssists,
+      requests: groupedRequests,
+    } of groups.values()) {
       for (const batch of chunks(groupedRequests, this.batchSize)) {
-        calls.push(this.fetchBatch(batch, position));
+        calls.push(
+          this.fetchBatch(batch, position, includeHistoricalAssists),
+        );
       }
     }
+    return (await Promise.all(calls)).flat();
+  }
+
+  async fetchNextGames(
+    requests: readonly SourcePlayerRequest[],
+  ): Promise<SourcePlayerFixture[]> {
+    const calls = chunks(requests, this.fixtureBatchSize).map(async (batch) => {
+      const variables: PlayerNextGamesQueryVariables = {
+        slugs: batch.map(({ slug }) => slug),
+      };
+      const data = await this.client.request<
+        PlayerNextGamesQuery,
+        PlayerNextGamesQueryVariables
+      >(PLAYER_NEXT_GAMES_QUERY, variables);
+      return data.players.flatMap((player): SourcePlayerFixture[] => {
+        if (player.__typename !== 'Player') return [];
+        return [{ slug: player.slug, nextGame: this.nextGame(player) }];
+      });
+    });
     return (await Promise.all(calls)).flat();
   }
 
@@ -390,6 +438,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
   private async fetchBatch(
     requests: readonly SourcePlayerRequest[],
     requestedPosition: FootballPosition | undefined,
+    includeHistoricalAssists: boolean,
   ): Promise<SourcePlayer[]> {
     const variables: PlayerStatsBatchQueryVariables = {
       slugs: requests.map(({ slug }) => slug),
@@ -445,6 +494,16 @@ export class SorareDataSource implements PlayerStatsDataSource {
 
     return Promise.all(
       candidates.map(async ({ player, scoreWindowWasFull }) => {
+        if (includeHistoricalAssists) {
+          const appearances = await this.fetchAppearanceHistory(
+            player.slug,
+            player.position,
+          );
+          return {
+            ...player,
+            appearances: this.selectAppearanceWindow(appearances, 40),
+          };
+        }
         const validForSelectedPosition = this.validAppearanceCount(
           player.appearances,
           player.position,
@@ -459,7 +518,10 @@ export class SorareDataSource implements PlayerStatsDataSource {
           return player;
         }
         const appearances = await this.fetchAppearanceHistory(player.slug, player.position);
-        return { ...player, appearances: this.selectAppearanceWindow(appearances) };
+        return {
+          ...player,
+          appearances: this.selectAppearanceWindow(appearances),
+        };
       }),
     );
   }
@@ -476,7 +538,10 @@ export class SorareDataSource implements PlayerStatsDataSource {
     ).length;
   }
 
-  private selectAppearanceWindow(appearances: readonly PlayerAppearance[]): PlayerAppearance[] {
+  private selectAppearanceWindow(
+    appearances: readonly PlayerAppearance[],
+    limit = 10,
+  ): PlayerAppearance[] {
     const selected: PlayerAppearance[] = [];
     let valid = 0;
     const played = appearances
@@ -486,7 +551,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
     for (const appearance of played) {
       selected.push(appearance);
       if (!this.excludeLowCoverage || !appearance.lowCoverage) valid += 1;
-      if (valid >= 10) break;
+      if (valid >= limit) break;
     }
     return selected;
   }
@@ -521,6 +586,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
           date: game.date,
           allAroundScore: score.allAroundScore,
           goals: score.footballPlayerGameStats.goals ?? null,
+          assists: score.footballPlayerGameStats.goalAssist ?? null,
           minsPlayed: score.footballPlayerGameStats.minsPlayed ?? null,
           cleanSheet60: score.footballPlayerGameStats.cleanSheet60 ?? null,
           lowCoverage: game.lowCoverage,
@@ -530,7 +596,17 @@ export class SorareDataSource implements PlayerStatsDataSource {
     });
   }
 
-  private nextGame(player: Extract<PlayerStatsBatchQuery['players'][number], { __typename?: 'Player' }>) {
+  private nextGame(
+    player:
+      | Extract<
+          PlayerStatsBatchQuery['players'][number],
+          { __typename?: 'Player' }
+        >
+      | Extract<
+          PlayerNextGamesQuery['players'][number],
+          { __typename?: 'Player' }
+        >,
+  ) {
     const game = player.nextGame;
     if (!game || game.__typename !== 'Game') return null;
     const clubId = player.activeClub?.id;

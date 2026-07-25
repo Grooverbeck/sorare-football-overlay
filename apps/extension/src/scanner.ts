@@ -6,12 +6,28 @@ import type {
 } from '@sorare-overlay/shared';
 import { hasAnyDisplayData } from '@sorare-overlay/shared';
 import { fetchPlayerStats } from './api.js';
-import { findCardTargets, type CardTarget } from './dom.js';
+import {
+  drainDiscoveredCardPictureNames,
+  findCardTargets,
+  type CardTarget,
+} from './dom.js';
 import { OverlayView } from './overlay.js';
+import {
+  clearNativeSorareLineupProbabilityDecorations,
+  decorateNativeSorareLineupProbabilities,
+} from './sorare-native-ui.js';
 
 type StatsFetcher = (request: PlayerStatsRequest) => Promise<PlayerStatsSuccessResponse>;
 const extensionMountSelector =
   '[data-sorare-overlay-root], [data-sorare-overlay-companion]';
+const discoveryAttributes = new Set([
+  'href',
+  'alt',
+  'src',
+  'aria-label',
+  'data-position',
+  'data-card-position',
+]);
 
 interface PendingTarget {
   slug?: string;
@@ -49,18 +65,39 @@ function targetKey(target: Pick<PendingTarget, 'slug' | 'playerName' | 'position
   return `name:${normalizeName(target.playerName ?? '')}:${target.position ?? 'default'}`;
 }
 
+function chunks<T>(values: readonly T[], size: number): T[][] {
+  const output: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    output.push(values.slice(index, index + size));
+  }
+  return output;
+}
+
 export class StatsBatchCoordinator {
   private readonly pending = new Map<string, PendingTarget>();
   private readonly cache = new Map<string, PlayerStats>();
   private readonly retryAttempts = new Map<string, number>();
   private readonly retryTimers = new Map<string, number>();
+  private readonly refreshAttempts = new Map<string, number>();
+  private readonly refreshTimers = new Map<string, number>();
+  private readonly refreshViews = new Map<string, Set<OverlayView>>();
   private timer: number | undefined;
+  private includeHistoricalAssists = false;
 
   constructor(
     private readonly fetcher: StatsFetcher = fetchPlayerStats,
     private readonly debounceMs = 40,
     private readonly retryDelaysMs: readonly number[] = [5_000, 30_000],
+    private readonly progressiveBatchSize = 8,
+    private readonly maxConcurrentBatches = 2,
+    private readonly refreshDelaysMs: readonly number[] = [2_500, 8_000],
   ) {}
+
+  setIncludeHistoricalAssists(enabled: boolean): void {
+    if (this.includeHistoricalAssists === enabled) return;
+    this.includeHistoricalAssists = enabled;
+    if (enabled) this.cache.clear();
+  }
 
   enqueue(target: CardTarget, view: OverlayView): void {
     const key = targetKey(target);
@@ -77,6 +114,11 @@ export class StatsBatchCoordinator {
       );
     if (cached) {
       view.render(cached);
+      if (cached.pendingRefreshes?.length) {
+        this.schedulePendingRefresh(target, [view]);
+      } else {
+        this.clearPendingRefresh(key);
+      }
       return;
     }
 
@@ -104,10 +146,34 @@ export class StatsBatchCoordinator {
   async flush(): Promise<void> {
     if (this.timer !== undefined) window.clearTimeout(this.timer);
     this.timer = undefined;
-    const batch = [...this.pending.values()];
+    const queued = [...this.pending.values()];
     this.pending.clear();
-    if (batch.length === 0) return;
+    if (queued.length === 0) return;
 
+    const batches = chunks(
+      queued,
+      Math.max(1, this.progressiveBatchSize),
+    );
+    let nextBatch = 0;
+    const workers = Array.from(
+      {
+        length: Math.min(
+          Math.max(1, this.maxConcurrentBatches),
+          batches.length,
+        ),
+      },
+      async () => {
+        while (nextBatch < batches.length) {
+          const batch = batches[nextBatch];
+          nextBatch += 1;
+          if (batch) await this.loadBatch(batch);
+        }
+      },
+    );
+    await Promise.all(workers);
+  }
+
+  private async loadBatch(batch: PendingTarget[]): Promise<void> {
     const slugs = [...new Set(batch.flatMap(({ slug }) => (slug ? [slug] : [])))];
     const playerNames = [
       ...new Set(batch.flatMap(({ playerName }) => (playerName ? [playerName] : []))),
@@ -118,13 +184,21 @@ export class StatsBatchCoordinator {
         return identity && position ? [[identity, position]] : [];
       }),
     );
+    const includeHistoricalAssists = this.includeHistoricalAssists;
 
     try {
       const response = await this.fetcher({
         slugs,
         playerNames,
         ...(Object.keys(positions).length ? { positions } : {}),
+        ...(includeHistoricalAssists
+          ? { includeHistoricalAssists: true }
+          : {}),
       });
+      if (includeHistoricalAssists !== this.includeHistoricalAssists) {
+        for (const target of batch) this.queueTarget(target, target.views);
+        return;
+      }
       for (const stats of response.data) {
         if (!hasAnyDisplayData(stats)) continue;
         this.cache.set(targetKey({ slug: stats.slug, position: stats.position }), stats);
@@ -155,13 +229,79 @@ export class StatsBatchCoordinator {
         }
         if (stats && hasAnyDisplayData(stats)) this.clearRetry(targetKey(target));
         else this.scheduleRetry(target);
+        if (stats?.pendingRefreshes?.length) {
+          this.schedulePendingRefresh(target, target.views);
+        } else if (stats) {
+          this.clearPendingRefresh(targetKey(target));
+        }
       }
-    } catch {
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'UNKNOWN_ERROR: Stats nicht verfügbar';
+      console.warn('[Sorare Overlay] Statistikabruf fehlgeschlagen:', error);
       for (const target of batch) {
-        for (const view of target.views) view.error();
+        for (const view of target.views) view.error(message);
         this.scheduleRetry(target);
       }
     }
+  }
+
+  private schedulePendingRefresh(
+    target: Pick<PendingTarget, 'slug' | 'playerName' | 'position'>,
+    views: Iterable<OverlayView>,
+  ): void {
+    const key = targetKey(target);
+    const activeCandidates =
+      this.refreshViews.get(key) ?? new Set<OverlayView>();
+    for (const view of views) activeCandidates.add(view);
+    this.refreshViews.set(key, activeCandidates);
+    if (this.refreshTimers.has(key)) return;
+    const attempt = this.refreshAttempts.get(key) ?? 0;
+    const delay = this.refreshDelaysMs[attempt];
+    if (delay === undefined) {
+      this.refreshViews.delete(key);
+      return;
+    }
+
+    this.refreshAttempts.set(key, attempt + 1);
+    const timer = window.setTimeout(() => {
+      this.refreshTimers.delete(key);
+      const activeViews = [...(this.refreshViews.get(key) ?? [])].filter(
+        (view) => view.host.isConnected,
+      );
+      this.refreshViews.delete(key);
+      if (activeViews.length === 0) {
+        this.refreshAttempts.delete(key);
+        return;
+      }
+      this.removeCachedTarget(target);
+      this.queueTarget(target, activeViews);
+    }, delay);
+    this.refreshTimers.set(key, timer);
+  }
+
+  private removeCachedTarget(
+    target: Pick<PendingTarget, 'slug' | 'playerName' | 'position'>,
+  ): void {
+    for (const [key, stats] of this.cache) {
+      const identityMatches =
+        (target.slug !== undefined && stats.slug === target.slug) ||
+        (target.playerName !== undefined &&
+          namesLikelyMatch(target.playerName, stats.displayName));
+      const positionMatches =
+        target.position === undefined || stats.position === target.position;
+      if (identityMatches && positionMatches) this.cache.delete(key);
+    }
+  }
+
+  private clearPendingRefresh(key: string): void {
+    const timer = this.refreshTimers.get(key);
+    if (timer !== undefined) window.clearTimeout(timer);
+    this.refreshTimers.delete(key);
+    this.refreshViews.delete(key);
+    this.refreshAttempts.delete(key);
   }
 
   private scheduleRetry(target: PendingTarget): void {
@@ -195,16 +335,37 @@ export class StatsBatchCoordinator {
 
 export class SorareCardScanner {
   private observer: MutationObserver | undefined;
-  private readonly overlays = new Map<HTMLElement, { key: string; view: OverlayView }>();
+  private readonly overlays = new Map<
+    HTMLElement,
+    { key: string; target: CardTarget; view: OverlayView }
+  >();
+  private readonly pendingScanRoots = new Set<Element>();
+  private mutationFrame: number | undefined;
+  private shouldRefreshPositions = false;
 
-  constructor(private readonly coordinator = new StatsBatchCoordinator()) {}
+  constructor(
+    private readonly coordinator = new StatsBatchCoordinator(),
+    private readonly onCardPictureNamesDiscovered?: (
+      entries: Readonly<Record<string, string>>,
+    ) => void,
+  ) {}
+
+  configureHistoricalAssistFallback(enabled: boolean): void {
+    this.coordinator.setIncludeHistoricalAssists(enabled);
+    this.refreshAllOverlays();
+  }
+
+  refreshAllOverlays(): void {
+    for (const { target, view } of this.overlays.values()) {
+      this.coordinator.enqueue(target, view);
+    }
+  }
 
   start(): void {
     if (this.observer) return;
     const root = document.body ?? document.documentElement;
     this.scan(root);
     this.observer = new MutationObserver((mutations) => {
-      let shouldRefresh = false;
       for (const mutation of mutations) {
         const mutationElement = mutation.target instanceof Element ? mutation.target : null;
         if (mutationElement?.closest(extensionMountSelector)) continue;
@@ -229,20 +390,20 @@ export class SorareCardScanner {
         ) {
           continue;
         }
-        shouldRefresh = true;
+        this.shouldRefreshPositions = true;
         if (mutation.type === 'attributes') {
-          this.scan(mutation.target as Element);
+          if (mutation.attributeName && discoveryAttributes.has(mutation.attributeName)) {
+            this.queueScanRoot(mutation.target as Element);
+            this.queueScanContext(mutation.target);
+          }
         } else {
           for (const added of externalAddedNodes) {
-            if (added instanceof Element) this.scan(added);
+            if (added instanceof Element) this.queueScanRoot(added);
           }
+          this.queueScanContext(mutation.target);
         }
-        this.scanMutationContext(mutation.target);
       }
-      if (shouldRefresh) {
-        this.cleanupDisconnectedOverlays();
-        for (const { view } of this.overlays.values()) view.refreshPosition();
-      }
+      this.scheduleMutationFlush();
     });
     this.observer.observe(root, {
       subtree: true,
@@ -267,12 +428,33 @@ export class SorareCardScanner {
   stop(): void {
     this.observer?.disconnect();
     this.observer = undefined;
+    if (this.mutationFrame !== undefined) {
+      if (typeof window.cancelAnimationFrame === 'function') {
+        window.cancelAnimationFrame(this.mutationFrame);
+      } else {
+        window.clearTimeout(this.mutationFrame);
+      }
+      this.mutationFrame = undefined;
+    }
+    this.pendingScanRoots.clear();
+    this.shouldRefreshPositions = false;
     for (const { view } of this.overlays.values()) view.destroy();
     this.overlays.clear();
+    clearNativeSorareLineupProbabilityDecorations();
   }
 
   scan(root: ParentNode): void {
-    for (const target of findCardTargets(root)) {
+    decorateNativeSorareLineupProbabilities(root);
+    const targets = findCardTargets(root);
+    const discoveredPictureNames = drainDiscoveredCardPictureNames();
+    if (Object.keys(discoveredPictureNames).length > 0) {
+      this.onCardPictureNamesDiscovered?.(discoveredPictureNames);
+      if (root !== document && root !== document.documentElement) {
+        this.queueScanRoot(document.documentElement);
+        this.scheduleMutationFlush();
+      }
+    }
+    for (const target of targets) {
       const key = targetKey(target);
       const mounted = this.overlays.get(target.container);
       if (mounted?.key === key) continue;
@@ -283,7 +465,7 @@ export class SorareCardScanner {
         target.position,
       );
       target.container.dataset.sorareOverlayKey = key;
-      this.overlays.set(target.container, { key, view });
+      this.overlays.set(target.container, { key, target, view });
       this.coordinator.enqueue(target, view);
     }
   }
@@ -296,14 +478,46 @@ export class SorareCardScanner {
     }
   }
 
-  private scanMutationContext(node: Node): void {
+  private queueScanRoot(root: Element): void {
+    this.pendingScanRoots.add(root);
+  }
+
+  private queueScanContext(node: Node): void {
     let context =
       node instanceof Element
         ? node
         : node.parentElement;
     for (let depth = 0; context && depth < 4; depth += 1) {
-      this.scan(context);
+      this.pendingScanRoots.add(context);
       context = context.parentElement;
+    }
+  }
+
+  private scheduleMutationFlush(): void {
+    if (
+      this.mutationFrame !== undefined ||
+      (this.pendingScanRoots.size === 0 && !this.shouldRefreshPositions)
+    ) {
+      return;
+    }
+    const flush = (): void => {
+      this.mutationFrame = undefined;
+      this.flushMutations();
+    };
+    this.mutationFrame =
+      typeof window.requestAnimationFrame === 'function'
+        ? window.requestAnimationFrame(flush)
+        : window.setTimeout(flush, 0);
+  }
+
+  private flushMutations(): void {
+    const roots = [...this.pendingScanRoots];
+    this.pendingScanRoots.clear();
+    for (const root of roots) this.scan(root);
+    this.cleanupDisconnectedOverlays();
+    if (this.shouldRefreshPositions) {
+      this.shouldRefreshPositions = false;
+      for (const { view } of this.overlays.values()) view.refreshPosition();
     }
   }
 }

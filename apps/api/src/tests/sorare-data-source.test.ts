@@ -585,4 +585,136 @@ describe('SorareDataSource player-name resolution', () => {
     expect(metrics.aaL10).toEqual({ value: 5.5, sampleSize: 10 });
     expect(metrics.goalL10).toEqual({ value: 0.3, sampleSize: 10 });
   });
+
+  it('loads up to forty assist appearances only when explicitly requested', async () => {
+    const historyNodes = Array.from({ length: 40 }, (_, index) => ({
+      id: `history-${index}`,
+      date: new Date(Date.UTC(2026, 6, 24 - index)).toISOString(),
+      lowCoverage: false,
+      playerGameScore: {
+        __typename: 'PlayerGameScore',
+        positionTyped: 'Forward',
+        allAroundScore: 8 + (index % 5),
+        footballPlayerGameStats: {
+          goals: 0,
+          goalAssist: index % 4 === 0 ? 1 : 0,
+          minsPlayed: 90,
+          cleanSheet60: 0,
+          playedInGame: true,
+        },
+      },
+    }));
+    const recentScores = Array.from({ length: 15 }, (_, index) => ({
+      __typename: 'PlayerGameScore',
+      positionTyped: 'Forward',
+      allAroundScore: 10,
+      footballGame: {
+        date: new Date(Date.UTC(2026, 6, 24 - index)).toISOString(),
+        lowCoverage: false,
+      },
+      footballPlayerGameStats: {
+        goals: 0,
+        minsPlayed: 90,
+        cleanSheet60: 0,
+        playedInGame: true,
+      },
+    }));
+    const request = vi.fn(
+      async (_document: unknown, variables: { slug?: string }) =>
+        variables.slug
+          ? {
+              anyPlayer: {
+                __typename: 'Player',
+                slug: 'assist-history-player',
+                pastGames: { nodes: historyNodes },
+              },
+            }
+          : {
+              players: [
+                {
+                  __typename: 'Player',
+                  slug: 'assist-history-player',
+                  displayName: 'Assist History Player',
+                  position: 'Forward',
+                  activeClub: null,
+                  nextGame: null,
+                  playerGameScores: recentScores,
+                },
+              ],
+            },
+    );
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    const [player] = await source.fetchPlayers([
+      {
+        slug: 'assist-history-player',
+        position: 'Forward',
+        includeHistoricalAssists: true,
+      },
+    ]);
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(player?.appearances).toHaveLength(40);
+    expect(
+      player?.appearances.filter((appearance) => appearance.assists === 1),
+    ).toHaveLength(10);
+  });
+
+  it('refreshes next fixtures with a lightweight query instead of reloading L10 history', async () => {
+    const request = vi.fn(
+      async (_document: unknown, variables: { slugs: string[] }) => ({
+        players: variables.slugs.map((slug) => ({
+          __typename: 'Player',
+          slug,
+          activeClub: { id: `club-${slug}` },
+          nextGame: {
+            __typename: 'Game',
+            date: '2026-08-01T18:00:00Z',
+            homeTeam: { id: `club-${slug}`, shortName: 'Home' },
+            awayTeam: { id: 'away-club', shortName: 'Away' },
+            homeStats: {
+              __typename: 'FootballTeamGameStats',
+              cleanSheetOdds: 2.5,
+              winOddsBasisPoints: 5_500,
+              drawOddsBasisPoints: 2_500,
+              loseOddsBasisPoints: 2_000,
+            },
+            awayStats: null,
+          },
+        })),
+      }),
+    );
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+    const players = Array.from({ length: 7 }, (_, index) => ({
+      slug: `fixture-player-${index + 1}`,
+      position: 'Midfielder' as const,
+    }));
+
+    const fixtures = await source.fetchNextGames(players);
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith(
+      expect.anything(),
+      { slugs: players.map(({ slug }) => slug) },
+    );
+    expect(fixtures).toHaveLength(7);
+    expect(fixtures[0]).toEqual({
+      slug: 'fixture-player-1',
+      nextGame: {
+        date: '2026-08-01T18:00:00Z',
+        homeTeamName: 'Home',
+        awayTeamName: 'Away',
+        playerTeamName: 'Home',
+        opponentTeamName: 'Away',
+        cleanSheetProbability: 0.4,
+        matchProbabilities: { win: 0.55, draw: 0.25, loss: 0.2 },
+      },
+    });
+  });
 });

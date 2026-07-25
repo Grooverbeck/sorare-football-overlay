@@ -60,7 +60,7 @@ Bekannte Mock-Slugs sind `kylian-mbappe-lottin`, `virgil-van-dijk`, `manuel-neue
 4. „Entpackte Erweiterung laden“ wählen und `apps/extension/dist` auswählen.
 5. Nach jedem Neubau die Extension auf der Extensions-Seite neu laden.
 
-Über das Extension-Symbol in der Browserleiste öffnet sich ein kleines Popup mit dem Schalter „Overlay aktiviert/deaktiviert“. Der Zustand wird über `chrome.storage.local` gespeichert und gilt für alle Sorare-Tabs. Ausschalten entfernt vorhandene Overlays sofort und pausiert den Scanner; Einschalten scannt die aktuell geöffnete Seite erneut.
+Über das Extension-Symbol in der Browserleiste öffnet sich ein kleines Popup mit dem Schalter „Overlay aktiviert/deaktiviert“ und der Wahl, ob die Tor-/Assistklammer links oder rechts an der Karte sitzt. Die Klammerwerte lassen sich als Prozent oder als faire Dezimalquote anzeigen. Dort können außerdem historische Ersatzwerte für fehlende Tor- und Assistquoten ein- und ausgeschaltet sowie auf `L10`, `L15` oder `L40` gestellt werden. Die Einstellungen werden über `chrome.storage.local` gespeichert und gelten für alle Sorare-Tabs. Änderungen wirken sofort: Ausschalten entfernt vorhandene Overlays und pausiert den Scanner; Einschalten scannt die aktuell geöffnete Seite erneut.
 
 `EXTENSION_API_BASE_URL` wird beim Build eingebettet und zugleich als eng begrenzte `host_permission` ins generierte Manifest geschrieben. Nach einer URL-Änderung muss neu gebaut und neu geladen werden. In diese Variable gehört nur die URL des eigenen Backends, niemals ein Token.
 
@@ -97,6 +97,16 @@ Alle Werte werden aus `apps/api/.env` oder der Prozessumgebung gelesen.
 | `SORARE_API_KEY` | leer | Optionaler Sorare-API-Key, Header `APIKEY` |
 | `SORARE_AUTH_TOKEN` | leer | Optionales serverseitiges Bearer-Token |
 | `SORARE_JWT_AUD` | leer | Optionaler `JWT-AUD`-Header |
+| `THE_ODDS_API_KEY` | leer | Serverseitiger Schlüssel für echte Tor-/Assist-Märkte |
+| `ODDS_API_BASE_URL` | `https://api.the-odds-api.com/v4` | Basis-URL von The Odds API |
+| `ODDS_API_SPORT_KEY` | `soccer_usa_mls` | Liga bei The Odds API |
+| `ODDS_API_REGION` | `us` | Primäre Buchmacherregion |
+| `ODDS_API_FALLBACK_REGION` | leer | Optionale zweite Region, die nur für weiterhin fehlende Spieler-Märkte abgefragt wird; Produktion nutzt `uk` |
+| `ODDS_FETCH_WINDOW_HOURS` | `24` | Marktquoten frühestens so viele Stunden vor Anpfiff abrufen |
+| `ODDS_MISS_CACHE_TTL_SECONDS` | `21600` | Legacy-Fallback für alte negative Quoten-Cacheeinträge; neue Einträge nutzen 12h/24h plus eine letzte Prüfung vier Stunden vor Anpfiff |
+| `SPORTS_GAME_ODDS_API_KEY` | leer | Serverseitiger Schlüssel für direkte Tor-, Assist- und Tor-oder-Assist-Märkte |
+| `SPORTS_GAME_ODDS_BASE_URL` | `https://api.sportsgameodds.com/v2` | Basis-URL von SportsGameOdds |
+| `SPORTS_GAME_ODDS_LEAGUE_ID` | `MLS` | Liga bei SportsGameOdds |
 | `CORS_ORIGINS` | `http://localhost:5173` | Zusätzliche, kommagetrennte Web-Origins |
 | `LOG_LEVEL` | `info` | Pino-Log-Level |
 
@@ -111,6 +121,23 @@ Unauthentifizierte Abfragen sind ebenfalls möglich, unterliegen aber dem niedri
 
 Das Backend pollt Sorare nicht periodisch. Es fragt einen Spieler nur bei einem tatsächlichen Cache-Miss an. In Cloudflare KV werden Formwerte und Informationen zum nächsten Spiel getrennt gespeichert: L10-Werte bleiben 24 Stunden gültig, Spielwahrscheinlichkeiten vier Stunden, erfolgreiche Name-zu-Slug-Zuordnungen 30 Tage und ein „nicht gefunden“ zwei Stunden. Alte kombinierte `player-stats:v1`-Einträge werden beim ersten Zugriff in die neuen Schlüssel migriert und laufen danach automatisch aus. Die frühere Variable `CACHE_TTL_SECONDS` wird aus Kompatibilitätsgründen noch als Fallback für die Form-TTL akzeptiert.
 
+SportsGameOdds wird primär für direkte Tor-, Assist- und
+Tor-oder-Assist-Märkte verwendet. The Odds API ergänzt nur weiterhin fehlende
+Tor- oder Assistwerte. Beide Anbieter werden nicht bei jedem Kartenaufruf
+abgefragt. Innerhalb des konfigurierten Zeitfensters lädt das Backend die
+angebotenen Märkte einmalig. Ein täglich um 05:00 UTC laufender Cloudflare-Cron
+wärmt MLS-Begegnungen vor, die in den nächsten 24 Stunden beginnen. Erfolgreich
+erfasste Spielerwerte bleiben als unveränderlicher Begegnungs-Snapshot ohne
+Ablaufdatum gespeichert. Ein Ergänzungslauf kann später gelistete Spieler und
+Buchmacherdetails hinzufügen, verändert aber keine bereits eingefrorene
+Spielerwahrscheinlichkeit. Fehlende Märkte und konkret angefragte, noch nicht
+gelistete Spieler verwenden einen spielbezogenen Retry-Zustand: nach dem ersten
+Fehlschlag frühestens nach zwölf Stunden, danach nach 24 Stunden und höchstens
+noch einmal vier Stunden vor Anpfiff. Nach der letzten Prüfung und nach
+Spielbeginn werden keine weiteren Quotenabrufe ausgelöst. Bei dem produktiven
+24-Stunden-Abruffenster ergeben sich dadurch höchstens drei Marktprüfungen pro
+Begegnung statt einer Prüfung alle sechs Stunden.
+
 ## Cloudflare-Worker-Deployment
 
 Das API-Backend kann unverändert lokal unter Node.js oder als Cloudflare Worker laufen. Der Worker-Einstieg liegt in `apps/api/src/cloudflare/worker.ts`; `apps/api/wrangler.jsonc` enthält die versionierte Deployment-Konfiguration.
@@ -120,8 +147,10 @@ Für Cloudflare wird `STATS_CACHE` als KV-Namespace gebunden. Darin liegen:
 - berechnete Spielerstatistiken, getrennt nach Slug, Kartenposition und Low-Coverage-Einstellung;
 - erfolgreiche Namensauflösungen von Kartenbildern;
 - vorübergehend auch nicht auflösbare Namen, damit anonyme Sorare-Anfragen nicht ständig wiederholt werden.
+- unveränderliche Tor-/Assist-Marktsnapshots pro Begegnung und kurzlebige
+  Negativtreffer für noch nicht angebotene Märkte.
 
-Die Einträge werden beim Lesen erneut mit Zod validiert. Ungültige oder veraltete Cache-Formate werden verworfen. KV-Schreibvorgänge laufen über `ExecutionContext.waitUntil()`, damit die API-Antwort nicht auf den Schreibvorgang warten muss und Cloudflare ihn trotzdem zuverlässig zu Ende führt.
+Die Einträge werden beim Lesen erneut mit Zod validiert. Ungültige oder veraltete Cache-Formate werden verworfen. Normale Statistik-Schreibvorgänge laufen über `ExecutionContext.waitUntil()`. Der erstmalige Marktquoten-Snapshot wird dagegen vor der Antwort bestätigt, damit parallele Aufrufe möglichst keinen zweiten kostenpflichtigen Abruf auslösen.
 
 Der Worker stellt zusätzlich öffentliche Seiten für die Store-Einreichung bereit:
 
@@ -164,6 +193,8 @@ Optionale Zugangsdaten werden ausschließlich als verschlüsselte Worker-Secrets
 npx wrangler secret put SORARE_API_KEY --config apps/api/wrangler.jsonc
 npx wrangler secret put SORARE_AUTH_TOKEN --config apps/api/wrangler.jsonc
 npx wrangler secret put SORARE_JWT_AUD --config apps/api/wrangler.jsonc
+npx wrangler secret put THE_ODDS_API_KEY --config apps/api/wrangler.jsonc
+npx wrangler secret put SPORTS_GAME_ODDS_API_KEY --config apps/api/wrangler.jsonc
 ```
 
 Nach dem Deployment zeigt Wrangler die öffentliche `workers.dev`-URL an. Diese URL kommt anschließend in `apps/extension/.env`:
@@ -171,6 +202,15 @@ Nach dem Deployment zeigt Wrangler die öffentliche `workers.dev`-URL an. Diese 
 ```powershell
 Copy-Item apps/extension/.env.cloudflare.example apps/extension/.env
 npm run build --workspace=@sorare-overlay/extension
+```
+
+Die automatische Vorwärmung wird mit dem Cron-Ausdruck `0 5 * * *` direkt
+beim Worker-Deployment aktiviert. Für eine einmalige manuelle Vorwärmung, etwa
+unmittelbar nach einem Deployment, kann ohne lokalen Odds-API-Key der
+Produktiv-Worker aufgerufen werden:
+
+```bash
+npm run prewarm:mls-props --workspace=@sorare-overlay/api
 ```
 
 Die aktuell veröffentlichte API ist unter
@@ -197,7 +237,7 @@ Mindestens eine Spielerreferenz ist Pflicht. Direkte Spieler-Links liefern `slug
 }
 ```
 
-Zulässige Positionen sind `Goalkeeper`, `Defender`, `Midfielder` und `Forward`. Insgesamt werden maximal 50 eindeutige Slugs und Namen akzeptiert. Zur sparsamen Namensauflösung prüft das Backend zunächst alle aus den Namen abgeleiteten Slug-Kandidaten in einer einzigen Sorare-Abfrage; nur ungelöste Namen verwenden anschließend parallel `searchPlayers`. Danach werden die Spieler nach Position gruppiert. Ohne API-Key sind vollständige L10-Batches automatisch auf drei Spieler begrenzt, weil bereits vier Spieler Sorare's anonyme GraphQL-Komplexitätsgrenze überschreiten. Mit API-Key gilt die konfigurierbare `SORARE_BATCH_SIZE`. Dadurch entstehen innerhalb der jeweils erlaubten Grenze möglichst wenige Abfragen.
+Zulässige Positionen sind `Goalkeeper`, `Defender`, `Midfielder` und `Forward`. Insgesamt werden maximal 50 eindeutige Slugs und Namen akzeptiert. Zur sparsamen Namensauflösung prüft das Backend zunächst alle aus den Namen abgeleiteten Slug-Kandidaten in einer einzigen Sorare-Abfrage; nur ungelöste Namen verwenden anschließend parallel `searchPlayers`. Danach werden die Spieler nach Position gruppiert. Ohne Sorare-API-Key sind die vollständigen Statistik-Batches automatisch auf drei Spieler begrenzt, damit die anonyme GraphQL-Komplexitätsgrenze nicht überschritten wird. Mit API-Key gilt die konfigurierbare `SORARE_BATCH_SIZE`. Dadurch entstehen innerhalb der jeweils erlaubten Grenze möglichst wenige Abfragen.
 
 Beispielantwort:
 
@@ -213,11 +253,43 @@ Beispielantwort:
       "goalL10": { "value": 0.11, "sampleSize": 9 },
       "nextGame": {
         "date": "2026-07-27T18:45:00.000Z",
+        "homeTeamName": "Arsenal",
+        "awayTeamName": "Liverpool",
+        "playerTeamName": "Liverpool",
+        "opponentTeamName": "Arsenal",
         "cleanSheetProbability": 0.47,
         "matchProbabilities": {
           "win": 0.48,
           "draw": 0.27,
           "loss": 0.25
+        },
+        "marketOdds": {
+          "source": "the-odds-api",
+          "capturedAt": "2026-07-27T10:05:00.000Z",
+          "goal": {
+            "probability": 0.18,
+            "bookmakerCount": 4,
+            "bookmakerQuotes": [
+              {
+                "key": "example-book",
+                "title": "Example Book",
+                "decimalOdds": 5.5,
+                "probability": 0.18
+              }
+            ]
+          },
+          "assist": {
+            "probability": 0.11,
+            "bookmakerCount": 3,
+            "bookmakerQuotes": [
+              {
+                "key": "example-book",
+                "title": "Example Book",
+                "decimalOdds": 9,
+                "probability": 0.11
+              }
+            ]
+          }
         }
       },
       "excludedLowCoverage": 1
@@ -236,16 +308,72 @@ Beispielantwort:
 - AA L10 ist der Mittelwert von `allAroundScore` über höchstens zehn gültige Einsätze.
 - CS L10 ist `cleanSheet60 >= 1` geteilt durch Einsätze mit mindestens 60 Minuten.
 - Goal L10 ist `goals >= 1` geteilt durch Einsätze mit mindestens einer Minute.
-- Jede Kennzahl trägt ihre tatsächliche Stichprobe als `n=…`; fehlende Werte erscheinen als „keine Daten“.
-- Für Goalkeeper/Defender zeigt das Overlay CS L10, AA L10 und – sofern vorhanden – die teambezogene `Next CS`-Quote des nächsten Spiels.
-- Für Midfielder/Forward zeigt es Goal L10 und AA L10. **Goal L10 ist ausdrücklich ein historischer Wert und keine Next-Game-Prognose.**
+- Assist L10/L15/L40 ist `goalAssist >= 1` geteilt durch die tatsächlichen Einsätze des gewählten Fensters.
+- Decisive L10/L15/L40 ist `(goals >= 1 ODER goalAssist >= 1)` geteilt durch die tatsächlichen Einsätze. Ein Spiel mit Tor und Assist zählt dabei nur einmal. DNPs und – je nach Backend-Konfiguration – Low-Coverage-Spiele werden ausgeschlossen.
+- Die API führt für jede historische Kennzahl die tatsächliche Stichprobe als `n=…`; fehlende Kopfleistenwerte erscheinen als `—`.
+- `AA L10` sitzt bei Feldspielern als eigene, farbcodierte Seitenklammer an der Karte.
+- Goalkeeper zeigen stattdessen ausschließlich die teambezogene `CS%` als Seitenklammer. Defender zeigen `NEXT CS%` zusätzlich im Kartenheader; bei Midfieldern und Forwards bleibt die Kopfleiste ausgeblendet.
 - Für alle Positionen rechnet die Extension die von Sorare aus Sicht des Spielerteams gelieferten Sieg-/Unentschieden-/Niederlagen-Wahrscheinlichkeiten in die feste Spielreihenfolge `H/D/A` um. Fehlende Werte werden als „keine Quote“ dargestellt.
 
 `HistoricalGoalscorerProvider` implementiert die austauschbare `GoalscorerProbabilityProvider`-Schnittstelle. Ein späterer externer Prognoseanbieter kann dadurch ergänzt werden, ohne API-Route oder UI-Vertrag umzubauen.
 
-### MLS-Perzentile für AA, Next W und Next CS
+### Tor- und Assist-Marktquoten
 
-Der kompakte Kartenheader zeigt `AA L10` sowie bei Goalkeepern/Defendern `NEXT CS%` und bei Midfieldern/Forwards `NEXT W%`. Die Next-Werte beziehen sich immer auf das nächste noch nicht gestartete Spiel des Teams und sind ausdrücklich keine Live-Wahrscheinlichkeiten für ein bereits laufendes Spiel. Alle Kennzahlen verwenden dasselbe sechsstufige Leistungsband: Rot, Orange, Gelb, Grün, Blau und Lila.
+Für Defender, Midfielder und Forward zeigt die seitlich an der Karte sitzende
+Quotenklammer die von SportsGameOdds und ergänzend The Odds API gelieferten
+Märkte für „erzielt mindestens ein Tor“ und „liefert mindestens einen Assist“,
+sofern Buchmacher diese Märkte anbieten.
+Das Backend wandelt Dezimalquoten in implizite Wahrscheinlichkeiten um,
+entfernt bei vorhandenen Gegenquoten die Buchmachermarge und verwendet den
+Median der verfügbaren Buchmacher.
+Die kompakte Klammer kann wahlweise diese Wahrscheinlichkeit in Prozent oder
+die daraus berechnete faire Dezimalquote (`1 / Wahrscheinlichkeit`) anzeigen.
+Beim Überfahren der Tor- oder Assist-Klammer zeigt die Extension zusätzlich
+jeden verfügbaren Buchmacher mit seiner originalen Dezimalquote und der daraus
+berechneten, margenbereinigten Einzelwahrscheinlichkeit. Ältere eingefrorene
+Snapshots ohne diese Details werden innerhalb des Abruffensters genau einmal
+angereichert; bleibt der Abruf erfolglos, wird der vorhandene Konsenswert nicht
+überschrieben.
+
+Optional kann die Extension für fehlende Tor- und Assistquoten die jeweiligen
+historischen Anteile aus `L10`, `L15` oder `L40` anzeigen.
+Ersatzwerte stehen in runden Klammern; der Tooltip nennt Zeitraum, Stichprobe
+und ausdrücklich „Keine Marktquote“. Die jeweilige echte Marktquote hat immer
+Vorrang. Die zusätzliche Einsatzhistorie wird nur geladen, wenn diese Option
+aktiv ist. Die Option ist bei einer neuen Installation standardmäßig
+deaktiviert.
+
+Historische Werte verwenden bewusst eine andere, niedrigere Farbskala als
+Next-Match-Quoten. Die sechs Grenzen sind Rot, Orange, Gelb, Grün, Blau und
+Lila:
+
+| Historischer Wert | Position | Rot unter | Orange unter | Gelb unter | Grün unter | Blau unter | Lila ab |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Tor | Defender | 1 % | 4 % | 7,5 % | 10 % | 15 % | 15 % |
+| Tor | Midfielder | 3 % | 7,5 % | 12 % | 18 % | 25 % | 25 % |
+| Tor | Forward | 5 % | 10 % | 18 % | 25 % | 35 % | 35 % |
+| Assist | Defender | 1 % | 4 % | 7,5 % | 12 % | 18 % | 18 % |
+| Assist | Midfielder | 3 % | 8 % | 13 % | 20 % | 27 % | 27 % |
+| Assist | Forward | 3 % | 7,5 % | 12 % | 18 % | 25 % | 25 % |
+
+Damit ist beispielsweise ein historischer Assist-Anteil von 20 % bei einem
+Forward bereits blau („sehr gut“), während dieselbe direkte Next-Match-Quote
+weiterhin nur gelb („mittel“) ist. Die historische Skala ist separat
+versioniert und kann später anhand einer vollständigen MLS-Saisonverteilung
+neu kalibriert werden.
+
+Das Backend lädt die Märkte erst in den letzten 24 Stunden vor Anpfiff und
+friert jeden erfolgreich gelieferten Markt anschließend dauerhaft in
+Cloudflare KV ein. SportsGameOdds wird als primäre Quelle abgefragt; The Odds
+API ergänzt nur weiterhin fehlende Tor- und Assistwerte. Beide API-Secrets
+bleiben ausschließlich im Worker.
+
+### MLS-Perzentile für AA und Next CS
+
+`AA L10` erscheint bei Feldspielern in einer eigenen Seitenklammer über Tor und
+Assist. Goalkeeper zeigen an dieser Stelle ausschließlich `CS%`. Nur bei
+Defendern bleibt `NEXT CS%` zusätzlich in der Kopfleiste. Für Midfielder und
+Forwards gibt es keine Kopfleiste mehr.
 
 Für AA basiert die Farbe auf dem positionsbezogenen MLS-Perzentil:
 
@@ -255,17 +383,6 @@ Für AA basiert die Farbe auf dem positionsbezogenen MLS-Perzentil:
 - Grün: `P60–80`
 - Blau: `P80–90`
 - Lila: `P90–100`
-
-Für `NEXT W%` stammen die Grenzen aus den historischen Sorare-Siegquoten beider Teamseiten in der laufenden MLS-Saison:
-
-- Rot: `<24 %`
-- Orange: `24–31 %`
-- Gelb: `32–41 %`
-- Grün: `42–50 %`
-- Blau: `51–56 %`
-- Lila: `≥57 %`
-
-Der Win-Snapshot umfasst bis zum 23. Juli 2026 insgesamt 238 abgeschlossene Spiele beziehungsweise 470 Teamseiten mit vollständigen W/D/L-Quoten. Die Quotenabdeckung beträgt 98,7 %. Fehlende oder für AA noch nicht belastbare Daten bleiben neutral grau.
 
 Für `NEXT CS%` stammen die Grenzen aus den historischen Sorare-Clean-Sheet-Quoten der laufenden MLS-Saison:
 
@@ -278,13 +395,26 @@ Für `NEXT CS%` stammen die Grenzen aus den historischen Sorare-Clean-Sheet-Quot
 
 Der CS-Snapshot umfasst bis zum 23. Juli 2026 insgesamt 238 abgeschlossene Spiele beziehungsweise 470 Teamseiten mit historischer Quote. Die Quotenabdeckung beträgt 98,7 %. Die tatsächliche Clean-Sheet-Rate steigt über die sechs Farbbänder monoton von 8,8 % über 13,8 %, 19,8 %, 26,3 % und 30,7 % bis 42,3 %. Der Ligadurchschnitt lag bei 21,5 % tatsächlichen Clean Sheets; Sorare's mittlere implizite Prognose lag bei 26,2 %.
 
-Die versionierten Snapshots liegen in `packages/shared/src/mls-aa-benchmarks.ts` und `packages/shared/src/mls-clean-sheet-benchmarks.ts`. Grundlage für AA sind Spieler der Sorare-Competition `mlspa` mit mindestens fünf gültigen Club-Einsätzen. Das Analyseskript verwendet dieselbe Berechnung wie das Overlay: die neuesten zehn tatsächlich gespielten Partien der konkreten Kartenposition, ohne DNPs und Low-Coverage-Spiele. Bei weniger als fünf Einsätzen bleibt die AA-Anzeige neutral. Der AA-Snapshot vom 24. Juli 2026 umfasst 551 Spieler. Die drei höchsten AA-L10-Spieler jeder Position erhalten am AA-Feld zusätzlich einen Podiumsrahmen in Gold, Silber oder Bronze sowie die Kennzeichnung `★1`, `★2` oder `★3`; der Mouseover nennt den Rang als `#1`, `#2` oder `#3`. Die Podiumsmarkierung bleibt anhand von Position und Spieler-Slug bis zur nächsten bewussten Snapshot-Aktualisierung stabil; sie kann zwischen zwei Aktualisierungen daher vorübergehend veraltet sein.
+Die versionierten Snapshots liegen in `packages/shared/src/mls-aa-benchmarks.ts`,
+`packages/shared/src/mls-clean-sheet-benchmarks.ts` und
+`packages/shared/src/market-probability-benchmarks.ts`. Grundlage für AA sind
+Spieler der Sorare-Competition `mlspa` mit mindestens fünf gültigen
+Club-Einsätzen. Das Analyseskript verwendet dieselbe Berechnung wie das Overlay:
+die neuesten zehn tatsächlich gespielten Partien der konkreten Kartenposition,
+ohne DNPs und Low-Coverage-Spiele. Bei weniger als fünf Einsätzen bleibt die
+AA-Anzeige neutral. Der AA-Snapshot vom 24. Juli 2026 umfasst 551 Spieler. Die
+drei höchsten AA-L10-Spieler jeder Position erhalten am AA-Feld zusätzlich
+einen Podiumsrahmen in Gold, Silber oder Bronze sowie die Kennzeichnung `#1`,
+`#2` oder `#3`. Die Podiumsmarkierung bleibt anhand von Position und
+Spieler-Slug bis zur nächsten bewussten Snapshot-Aktualisierung stabil; sie kann
+zwischen zwei Aktualisierungen daher vorübergehend veraltet sein.
 
 Die Analyse wird nicht im normalen Backendbetrieb ausgeführt. Sie kann bei Bedarf – beispielsweise monatlich – anonym neu erzeugt werden:
 
 ```bash
 npm run benchmark:mls-aa
 npm run benchmark:mls-cs
+npm run benchmark:mls-market
 ```
 
 Die Skripte paginieren mit kleinen Seiten unterhalb des anonymen Sorare-Komplexitätslimits. Die CS-Analyse vergleicht `1 / cleanSheetOdds` mit dem tatsächlichen Ergebnis „Gegner erzielt null Tore“ und gibt Verteilung, Kalibrierung, Heim-/Auswärtswerte und Teamwerte als JSON aus. Dadurch verursacht die Extension selbst keine zusätzlichen Liga-Massenabfragen.
@@ -293,9 +423,10 @@ Die Skripte paginieren mit kleinen Seiten unterhalb des anonymen Sorare-Komplexi
 
 Der Content-Script-Scanner erkennt Spieler über Sorare-Links wie `/football/players/<slug>` und in Live-/Aufstellungsübersichten über Bildbeschriftungen wie `alt="Matt Turner - common"`. Primär verwendet er stabile `data-*`-/`data-testid`-Attribute, semantische Elemente und Bild-Metadaten, keine generierten CSS-Klassen. Ein `MutationObserver` verarbeitet nachgeladene Nodes und relevante Attributänderungen. Pro Kartencontainer und Spieler wird nur ein Host eingefügt; die eigentliche UI ist durch ein Shadow DOM isoliert.
 
-Loading-, Backend-Fehler- und No-Data-Zustände werden direkt in derselben kompakten Oberfläche dargestellt.
-
-Beim Mouseover erweitert sich der Header um ergänzenden Kontext, ohne die beiden kompakten Kennzahlen zu wiederholen: Rollenmetrik mit Sample Size, AA-Perzentil im positionsbezogenen MLS-Vergleich, Spielquoten sowie ausgeschlossene Low-Coverage-Spiele. Die Begegnung steht immer in der festen Reihenfolge Heimteam – Auswärtsteam. Das Spielerteam wird fett-kursiv hervorgehoben. Darunter erscheinen die umgerechneten Quoten als `H / D / A`; auch die zum Spielerteam gehörende Siegquote wird fett-kursiv dargestellt.
+Loading-, Backend-Fehler- und No-Data-Zustände werden direkt in derselben
+kompakten Oberfläche dargestellt. Der Header bleibt beim Mouseover unverändert.
+Im Lineup Builder erscheinen die umgerechneten Spielquoten als durchgehender
+`H / D / A`-Balken unter den Teamnamen.
 
 ## GraphQL-Schema und TypeScript-Codegen
 
