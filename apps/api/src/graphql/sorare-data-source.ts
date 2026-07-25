@@ -215,15 +215,39 @@ export class SorareDataSource implements PlayerStatsDataSource {
           .map((name) => [normalizeName(name), name]),
       ).values(),
     ];
-    await Promise.all(
-      missing.map(async (name) =>
-        this.resolveName(name, expectedPositionForName(name, expectedPositions))),
-    );
-    const unresolved = missing.filter((name) => {
+
+    // Most Sorare card names map directly to their public player slug. Resolve
+    // all such candidates in one cheap query before falling back to the much
+    // slower full-text searches. A broken search for one unusual name must not
+    // hold back every other player in the request.
+    try {
+      await this.resolveSlugCandidates(missing, expectedPositions);
+    } catch {
+      // Search fallbacks below can still resolve each name independently.
+    }
+    const searchFallbacks = missing.filter((name) => {
       const position = expectedPositionForName(name, expectedPositions);
       return !this.resolvedNames.has(resolutionKey(name, position));
     });
-    await this.resolveSlugCandidates(unresolved, expectedPositions);
+    const completedSearches = new Set<string>();
+    await Promise.all(
+      searchFallbacks.map(async (name) => {
+        const position = expectedPositionForName(name, expectedPositions);
+        const key = resolutionKey(name, position);
+        try {
+          await this.resolveName(name, position);
+          completedSearches.add(key);
+        } catch {
+          // Do not fail or negative-cache the entire batch when one Sorare
+          // search times out. The extension can retry only this player later.
+        }
+      }),
+    );
+    const unresolved = searchFallbacks.filter((name) => {
+      const position = expectedPositionForName(name, expectedPositions);
+      const key = resolutionKey(name, position);
+      return completedSearches.has(key) && !this.resolvedNames.has(key);
+    });
     await Promise.all(
       unresolved.map(async (name) => {
         const position = expectedPositionForName(name, expectedPositions);

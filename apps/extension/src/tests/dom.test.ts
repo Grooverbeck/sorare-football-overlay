@@ -663,6 +663,51 @@ describe('Sorare card DOM discovery', () => {
     for (const view of views) view.destroy();
   });
 
+  it('uses anonymous-safe groups of three by default', async () => {
+    const fetcher = vi.fn(
+      async (
+        request: PlayerStatsRequest,
+      ): Promise<PlayerStatsSuccessResponse> => ({
+        data: request.slugs.map((slug) => ({
+          slug,
+          displayName: slug,
+          position: 'Midfielder',
+          aaL10: { value: 10, sampleSize: 10 },
+          cleanSheetL10: { value: 0.2, sampleSize: 10 },
+          goalL10: { value: 0.1, sampleSize: 10 },
+          nextGame: null,
+          excludedLowCoverage: 0,
+        })),
+        meta: {
+          requested: request.slugs.length,
+          returned: request.slugs.length,
+          cacheHits: 0,
+          source: 'sorare',
+        },
+      }),
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const views: OverlayView[] = [];
+    for (let index = 0; index < 8; index += 1) {
+      const card = document.createElement('article');
+      document.body.append(card);
+      const slug = `anonymous-safe-${index + 1}`;
+      const view = new OverlayView(card, { slug }, 'Midfielder');
+      views.push(view);
+      coordinator.enqueue(
+        { slug, position: 'Midfielder', container: card },
+        view,
+      );
+    }
+
+    await coordinator.flush();
+
+    expect(
+      fetcher.mock.calls.map(([request]) => request.slugs.length),
+    ).toEqual([3, 3, 2]);
+    for (const view of views) view.destroy();
+  });
+
   it('refreshes response-only pending data without making the card wait', async () => {
     const baseStats: PlayerStatsSuccessResponse['data'][number] = {
       slug: 'pending-market-player',
