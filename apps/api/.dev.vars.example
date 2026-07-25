@@ -4,3 +4,9 @@ MOCK_MODE=true
 SORARE_API_KEY=
 SORARE_AUTH_TOKEN=
 SORARE_JWT_AUD=
+
+# Server-only key for real goal/assist bookmaker markets.
+# Create one at https://the-odds-api.com and never add it to the extension.
+THE_ODDS_API_KEY=
+ODDS_API_FALLBACK_REGION=uk
+SPORTS_GAME_ODDS_API_KEY=

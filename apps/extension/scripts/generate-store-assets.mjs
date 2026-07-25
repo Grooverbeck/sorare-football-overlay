@@ -64,14 +64,14 @@ const screenshotFrame = Buffer.from(`
     </g>
     <g transform="translate(238 278)">
       <rect width="174" height="76" rx="14" fill="#101923" stroke="#22c55e" stroke-width="2"/>
-      <text x="18" y="29" fill="#aebdca" font-family="Arial, sans-serif" font-size="16" font-weight="700">NEXT W%</text>
-      <text x="18" y="60" fill="#fff" font-family="Arial, sans-serif" font-size="28" font-weight="800">57</text>
+      <text x="18" y="29" fill="#aebdca" font-family="Arial, sans-serif" font-size="16" font-weight="700">NEXT CS%</text>
+      <text x="18" y="60" fill="#fff" font-family="Arial, sans-serif" font-size="28" font-weight="800">37</text>
     </g>
     <g fill="#dce7f0" font-family="Arial, sans-serif" font-size="22" font-weight="700">
       <text x="48" y="425">• MLS-Perzentile nach Position</text>
-      <text x="48" y="472">• Next W% oder Next CS%</text>
-      <text x="48" y="519">• Quoten, Samples und Rang</text>
-      <text x="48" y="566">• Tooltips bei Mouseover</text>
+      <text x="48" y="472">• Next CS% für GK und DEF</text>
+      <text x="48" y="519">• Echte Tor- und Assistquoten</text>
+      <text x="48" y="566">• Kompakt direkt an der Karte</text>
     </g>
     <rect x="48" y="649" width="364" height="66" rx="18" fill="#111a24" stroke="#2b3c4d"/>
     <text x="76" y="688" fill="#fff" font-family="Arial, sans-serif" font-size="20" font-weight="800">

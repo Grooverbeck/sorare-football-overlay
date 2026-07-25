@@ -3,6 +3,50 @@
 Alle wichtigen Änderungen am Sorare Football Stats Overlay werden in dieser
 Datei dokumentiert.
 
+## 0.3.0 – 25. Juli 2026
+
+### Spielerquoten
+
+- Tor- und Assistwahrscheinlichkeiten für das nächste MLS-Spiel werden aus
+  echten Buchmacherquoten von SportsGameOdds und The Odds API zusammengeführt.
+- Verfügbare Einzelquoten der Buchmacher sind direkt an der jeweiligen
+  Tor- oder Assistklammer nachvollziehbar.
+- Fehlende Marktquoten können optional durch klar gekennzeichnete historische
+  Werte aus L10, L15 oder L40 ersetzt werden.
+- Wahrscheinlichkeiten lassen sich wahlweise als Prozent oder als faire
+  Dezimalquote anzeigen.
+
+### Positionsabhängige Kartenanzeige
+
+- Feldspieler erhalten eine AA-Klammer sowie – soweit verfügbar – separate
+  Tor- und Assistklammern.
+- Goalkeeper zeigen ausschließlich die Clean-Sheet-Wahrscheinlichkeit; Defender
+  behalten zusätzlich die nächste Clean-Sheet-Wahrscheinlichkeit im Header.
+- Die Tor-/Assistklammer kann in den Einstellungen links oder rechts an der
+  Karte platziert werden.
+- Die besten drei MLS-Spieler jeder Feldposition werden anhand ihres AA L10 mit
+  Gold-, Silber- oder Bronze-Rang gekennzeichnet.
+
+### Sorare-Ansichten
+
+- Im Lineup Builder zeigt ein proportionaler H/D/A-Balken die
+  Spielwahrscheinlichkeiten; Teamnamen öffnen den zugehörigen Match-Tooltip.
+- Dynamische Karten in Packs, Karussells und ausgewählten Lineups werden
+  aktualisiert, ohne Sorare-Status- oder Bonusinformationen zu verdecken.
+- Große Kartenlisten werden schrittweise geladen, damit die Spielerauswahl
+  reaktionsfähig bleibt.
+
+### Backend und Datenqualität
+
+- Spieler-, Positions- und Begegnungszuordnung wurden für Karten ohne stabile
+  Spielerlinks robuster gemacht.
+- Spielerform, nächste Begegnung und Marktquoten werden getrennt gecacht und
+  unabhängig aktualisiert, sodass vorhandene L10-Werte sofort erscheinen.
+- Erfolgreiche Marktquoten werden pro Begegnung eingefroren; ein täglicher
+  Vorwärmlauf und begrenzte Wiederholungsversuche reduzieren externe
+  API-Anfragen.
+- Torhüter werden nicht bei den Spielerquoten-Anbietern abgefragt.
+
 ## 0.2.4 – 24. Juli 2026
 
 ### Pack-Ansicht

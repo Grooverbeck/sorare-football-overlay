@@ -101,7 +101,7 @@ export const homePage = page(
       </section>
       <section class="card">
         <h2>Sparsame Berechtigungen</h2>
-        <p>Aktiv nur auf sorare.com; lokal wird ausschließlich der An/Aus-Status gespeichert.</p>
+        <p>Aktiv nur auf sorare.com; lokal werden ausschließlich der An/Aus-Status und die gewählte Klammerseite gespeichert.</p>
       </section>
       <section class="card">
         <h2>Keine Zugangsdaten</h2>
@@ -123,7 +123,7 @@ export const privacyPage = page(
   'Datenschutzerklärung – Football Stats Overlay',
   'Datenschutzerklärung für das inoffizielle Football Stats Overlay.',
   `
-    <span class="eyebrow">Stand: 24. Juli 2026 · Version 1.0</span>
+    <span class="eyebrow">Stand: 24. Juli 2026 · Version 1.1</span>
     <h1>Datenschutzerklärung</h1>
     <p class="lead">
       Diese Erklärung beschreibt, welche Daten das inoffizielle Football Stats Overlay
@@ -158,7 +158,8 @@ export const privacyPage = page(
     <h3>Lokale Einstellung</h3>
     <p>
       Im lokalen Chrome-Speicher wird ausschließlich gespeichert, ob das Overlay ein- oder
-      ausgeschaltet ist. Diese Einstellung verlässt das Gerät nicht.
+      ausgeschaltet ist und ob die Tor-/Assistklammer links oder rechts angezeigt werden soll.
+      Diese Einstellungen verlassen das Gerät nicht.
     </p>
 
     <h3>Technische Betriebsdaten</h3>
@@ -186,6 +187,9 @@ export const privacyPage = page(
       einem einzelnen Nutzer zwischengespeichert, um Sorare-Abfragen und Ladezeiten zu reduzieren.
       Typische Cache-Zeiten sind bis zu 4 Stunden für das nächste Spiel, 24 Stunden für Formwerte,
       30 Tage für erfolgreiche Namenszuordnungen und 2 Stunden für erfolglose Zuordnungen.
+      Öffentliche, vor dem Spiel erfasste Tor-, Assist- und Tor-oder-Assist-Marktsnapshots werden unabhängig von
+      Nutzern ohne automatisches Ablaufdatum gespeichert, damit dieselben Buchmacherquoten nicht
+      wiederholt kostenpflichtig abgerufen werden.
       Technische Logs unterliegen den konfigurierten Cloudflare-Aufbewahrungsfristen und werden
       nicht zum Aufbau von Nutzerprofilen verwendet.
     </p>
@@ -200,6 +204,17 @@ export const privacyPage = page(
         Die offizielle Sorare GraphQL API wird vom Backend ausschließlich mit öffentlichen
         Spieler- und Spieldaten abgefragt. Sorare erhält dabei keine Zugangsdaten des
         Extension-Nutzers.
+      </li>
+      <li>
+        <strong>The Odds API</strong> wird vom Backend für öffentliche Tor- und
+        Assist-Buchmachermärkte einer Begegnung abgefragt.
+      </li>
+      <li>
+        <strong>SportsGameOdds</strong> wird für öffentliche Tor-, Assist- und
+        Tor-oder-Assist-Buchmachermärkte einer Begegnung abgefragt. Bei beiden
+        Quotendiensten werden keine Zugangsdaten,
+        IP-Adressen oder sonstigen Identifikatoren des Extension-Nutzers an den Anbieter
+        übermittelt.
       </li>
     </ul>
     <p>
@@ -228,7 +243,7 @@ export const privacyPage = page(
     <h2>9. Sicherheit und Änderungen</h2>
     <p>
       Die Kommunikation mit dem Backend erfolgt ausschließlich über HTTPS. Secrets und
-      Sorare-API-Zugangsdaten sind nicht Bestandteil der Erweiterung. Änderungen dieser
+      API-Zugangsdaten für Sorare, The Odds API und SportsGameOdds sind nicht Bestandteil der Erweiterung. Änderungen dieser
       Erklärung werden auf dieser Seite mit einem neuen Stand veröffentlicht.
     </p>
 
@@ -236,10 +251,12 @@ export const privacyPage = page(
     <p>
       The extension reads only the public player name or slug and the visible card position on
       sorare.com and sends them via HTTPS to its own statistics service. It stores only the
-      enabled/disabled setting locally. It does not access Sorare credentials, cookies, wallet,
+      enabled/disabled setting and the selected bracket side locally. It does not access Sorare credentials, cookies, wallet,
       payment, ownership, lineup, private account or general browsing-history data. Cloudflare
-      provides the backend infrastructure. Data is used only for the disclosed overlay feature,
-      security and reliability, and is never sold or used for personalized advertising.
+      provides the backend infrastructure. The backend queries Sorare for public football data
+      and the configured odds providers for public goal, assist and goals-or-assists betting markets without forwarding extension-user
+      identifiers. Data is used only for the disclosed overlay feature, security and reliability,
+      and is never sold or used for personalized advertising.
     </p>
   `,
 );

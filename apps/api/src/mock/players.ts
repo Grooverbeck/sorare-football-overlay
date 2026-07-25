@@ -5,6 +5,7 @@ export interface MockPlayerTemplate {
   position: FootballPosition;
   aa: number[];
   goals: number[];
+  assists?: number[];
   minutes: number[];
   cleanSheets: number[];
   lowCoverageIndexes?: number[];

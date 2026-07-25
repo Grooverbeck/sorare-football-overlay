@@ -9,6 +9,13 @@ describe('loadConfig cache TTLs', () => {
     expect(config.fixtureCacheTtlMs).toBe(14_400_000);
     expect(config.nameCacheTtlMs).toBe(2_592_000_000);
     expect(config.nameMissCacheTtlMs).toBe(7_200_000);
+    expect(config.oddsFetchWindowMs).toBe(86_400_000);
+    expect(config.oddsMissCacheTtlMs).toBe(21_600_000);
+    expect(config.oddsApiFallbackRegion).toBeUndefined();
+    expect(config.sportsGameOddsBaseUrl).toBe(
+      'https://api.sportsgameodds.com/v2',
+    );
+    expect(config.sportsGameOddsLeagueId).toBe('MLS');
   });
 
   it('accepts the legacy cache TTL as a form-cache fallback', () => {
@@ -25,6 +32,11 @@ describe('loadConfig cache TTLs', () => {
       FIXTURE_CACHE_TTL_SECONDS: '10800',
       NAME_CACHE_TTL_SECONDS: '1209600',
       NAME_MISS_CACHE_TTL_SECONDS: '3600',
+      ODDS_FETCH_WINDOW_HOURS: '6',
+      ODDS_MISS_CACHE_TTL_SECONDS: '900',
+      ODDS_API_FALLBACK_REGION: 'uk',
+      THE_ODDS_API_KEY: 'server-only-test-key',
+      SPORTS_GAME_ODDS_API_KEY: 'server-only-sgo-key',
     });
 
     expect(config).toMatchObject({
@@ -32,6 +44,11 @@ describe('loadConfig cache TTLs', () => {
       fixtureCacheTtlMs: 10_800_000,
       nameCacheTtlMs: 1_209_600_000,
       nameMissCacheTtlMs: 3_600_000,
+      oddsFetchWindowMs: 21_600_000,
+      oddsMissCacheTtlMs: 900_000,
+      oddsApiFallbackRegion: 'uk',
+      oddsApiKey: 'server-only-test-key',
+      sportsGameOddsApiKey: 'server-only-sgo-key',
     });
   });
 });

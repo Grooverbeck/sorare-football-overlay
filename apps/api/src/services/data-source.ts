@@ -7,6 +7,7 @@ import type {
 export interface SourcePlayerRequest {
   slug: string;
   position?: FootballPosition;
+  includeHistoricalAssists?: boolean;
 }
 
 export interface PlayerNameResolutionCache {
@@ -39,6 +40,11 @@ export interface SourcePlayer {
   nextGame: SourceNextGame | null;
 }
 
+export interface SourcePlayerFixture {
+  slug: string;
+  nextGame: SourceNextGame | null;
+}
+
 export interface PlayerStatsDataSource {
   readonly source: 'sorare' | 'mock';
   resolvePlayerNames(
@@ -46,4 +52,7 @@ export interface PlayerStatsDataSource {
     positions?: Readonly<Record<string, FootballPosition>>,
   ): Promise<SourcePlayerRequest[]>;
   fetchPlayers(requests: readonly SourcePlayerRequest[]): Promise<SourcePlayer[]>;
+  fetchNextGames(
+    requests: readonly SourcePlayerRequest[],
+  ): Promise<SourcePlayerFixture[]>;
 }

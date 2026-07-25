@@ -1,10 +1,21 @@
 import {
+  calculateHistoricalAssistMetrics,
+  calculateHistoricalDecisiveMetrics,
+  calculateHistoricalGoalMetrics,
   calculatePlayerMetrics,
   type FootballPosition,
   type PlayerStats,
   type ValidatedPlayerStatsRequest,
 } from '@sorare-overlay/shared';
-import type { Cache } from '../cache.js';
+import {
+  supportsSplitPlayerStatsCache,
+  type Cache,
+  type PlayerFormStats,
+} from '../cache.js';
+import {
+  playerMarketOddsKey,
+  type PlayerMarketOddsProvider,
+} from '../providers/market-odds-provider.js';
 import type { GoalscorerProbabilityProvider } from '../providers/goalscorer-provider.js';
 import type {
   PlayerStatsDataSource,
@@ -23,6 +34,37 @@ function cacheKey(request: SourcePlayerRequest, excludeLowCoverage: boolean): st
   return `${request.slug}:${positionKey}:${excludeLowCoverage ? 'no-low' : 'all'}`;
 }
 
+function inFlightKey(
+  request: SourcePlayerRequest,
+  excludeLowCoverage: boolean,
+): string {
+  return `${cacheKey(request, excludeLowCoverage)}:${
+    request.includeHistoricalAssists ? 'assist-history' : 'base'
+  }`;
+}
+
+function hasRequestedHistoricalWindows(
+  stats: PlayerFormStats,
+  includeHistoricalAssists: boolean,
+): boolean {
+  return (
+    !includeHistoricalAssists ||
+    (stats.historicalAssists !== undefined &&
+      stats.historicalGoals !== undefined &&
+      stats.historicalDecisives !== undefined)
+  );
+}
+
+type PendingRefresh = 'fixture' | 'marketOdds';
+
+interface CachedFormOnly {
+  key: string;
+  request: SourcePlayerRequest;
+  form: PlayerFormStats;
+}
+
+export type BackgroundTaskScheduler = (task: Promise<void>) => void;
+
 export class StatsService {
   private readonly inFlight = new Map<string, Promise<PlayerStats | undefined>>();
 
@@ -31,16 +73,33 @@ export class StatsService {
     private readonly goalscorerProvider: GoalscorerProbabilityProvider,
     private readonly cache: Cache<PlayerStats>,
     private readonly excludeLowCoverage: boolean,
+    private readonly marketOddsProvider: PlayerMarketOddsProvider,
+    private readonly scheduleBackground?: BackgroundTaskScheduler,
   ) {}
 
   async getPlayerStats(request: ValidatedPlayerStatsRequest): Promise<StatsServiceResult> {
     const directRequests = request.slugs.map((slug): SourcePlayerRequest => {
       const position = request.positions?.[slug];
-      return position ? { slug, position } : { slug };
+      return {
+        slug,
+        ...(position ? { position } : {}),
+        ...(request.includeHistoricalAssists
+          ? { includeHistoricalAssists: true }
+          : {}),
+      };
     });
-    const resolvedRequests = await this.dataSource.resolvePlayerNames(
-      request.playerNames,
-      request.positions,
+    const resolvedRequests = (
+      await this.dataSource.resolvePlayerNames(
+        request.playerNames,
+        request.positions,
+      )
+    ).map(
+      (resolved): SourcePlayerRequest => ({
+        ...resolved,
+        ...(request.includeHistoricalAssists
+          ? { includeHistoricalAssists: true }
+          : {}),
+      }),
     );
     const playerRequests = [
       ...new Map(
@@ -51,49 +110,202 @@ export class StatsService {
       ).values(),
     ];
     const immediate = new Map<string, PlayerStats>();
+    const cachedFormsWithoutFixture: CachedFormOnly[] = [];
     let cacheHits = 0;
+    const splitCache = supportsSplitPlayerStatsCache(this.cache)
+      ? this.cache
+      : undefined;
 
-    const cachedPlayers = await Promise.all(
-      playerRequests.map(async (playerRequest) => {
-        const key = cacheKey(playerRequest, this.excludeLowCoverage);
-        return { key, cached: await this.cache.get(key) };
-      }),
-    );
-    for (const { key, cached } of cachedPlayers) {
-      if (cached) {
-        immediate.set(key, cached);
+    if (splitCache) {
+      const cachedParts = await Promise.all(
+        playerRequests.map(async (playerRequest) => ({
+          key: cacheKey(playerRequest, this.excludeLowCoverage),
+          playerRequest,
+          parts: await splitCache.getParts(
+            cacheKey(playerRequest, this.excludeLowCoverage),
+          ),
+        })),
+      );
+      for (const { key, playerRequest, parts } of cachedParts) {
+        if (
+          parts.form === undefined ||
+          !hasRequestedHistoricalWindows(
+            parts.form,
+            request.includeHistoricalAssists,
+          )
+        ) {
+          continue;
+        }
         cacheHits += 1;
+        if (parts.fixture !== undefined) {
+          immediate.set(key, { ...parts.form, nextGame: parts.fixture });
+        } else {
+          immediate.set(key, {
+            ...parts.form,
+            nextGame: null,
+            ...(this.scheduleBackground
+              ? { pendingRefreshes: ['fixture'] as PendingRefresh[] }
+              : {}),
+          });
+          cachedFormsWithoutFixture.push({
+            key,
+            request: playerRequest,
+            form: parts.form,
+          });
+        }
+      }
+    } else {
+      const cachedPlayers = await Promise.all(
+        playerRequests.map(async (playerRequest) => {
+          const key = cacheKey(playerRequest, this.excludeLowCoverage);
+          return { key, cached: await this.cache.get(key) };
+        }),
+      );
+      for (const { key, cached } of cachedPlayers) {
+        if (
+          cached &&
+          hasRequestedHistoricalWindows(
+            cached,
+            request.includeHistoricalAssists,
+          )
+        ) {
+          immediate.set(key, cached);
+          cacheHits += 1;
+        }
       }
     }
 
     const fresh = playerRequests.filter((playerRequest) => {
       const key = cacheKey(playerRequest, this.excludeLowCoverage);
-      return !immediate.has(key) && !this.inFlight.has(key);
+      return (
+        !immediate.has(key) &&
+        !this.inFlight.has(
+          inFlightKey(playerRequest, this.excludeLowCoverage),
+        )
+      );
     });
 
     if (fresh.length > 0) {
       const batch = this.loadBatch(fresh);
       for (const playerRequest of fresh) {
         const key = cacheKey(playerRequest, this.excludeLowCoverage);
+        const pendingKey = inFlightKey(
+          playerRequest,
+          this.excludeLowCoverage,
+        );
         const pending = batch.then((loaded) => loaded.get(key));
-        this.inFlight.set(key, pending);
+        this.inFlight.set(pendingKey, pending);
         void pending.then(
-          () => this.inFlight.delete(key),
-          () => this.inFlight.delete(key),
+          () => this.inFlight.delete(pendingKey),
+          () => this.inFlight.delete(pendingKey),
         );
       }
     }
 
-    const data = (
+    const cachedOrLoaded = (
       await Promise.all(
         playerRequests.map(async (playerRequest) => {
           const key = cacheKey(playerRequest, this.excludeLowCoverage);
-          return immediate.get(key) ?? (await this.inFlight.get(key));
+          return (
+            immediate.get(key) ??
+            (await this.inFlight.get(
+              inFlightKey(playerRequest, this.excludeLowCoverage),
+            ))
+          );
         }),
       )
     ).filter((stats): stats is PlayerStats => Boolean(stats));
+    const oddsEligiblePlayers = cachedOrLoaded.filter(
+      (stats) => stats.position !== 'Goalkeeper' && stats.nextGame !== null,
+    );
+    const marketOdds = await this.marketOddsProvider
+      .load(oddsEligiblePlayers, { cacheOnly: true })
+      .catch(() => new Map());
+    const marketRefreshPlayers: PlayerStats[] = [];
+    const data = cachedOrLoaded.map((stats): PlayerStats => {
+      const pending = new Set<PendingRefresh>(
+        stats.pendingRefreshes ?? [],
+      );
+      const key = playerMarketOddsKey(stats);
+      const odds =
+        stats.position === 'Goalkeeper'
+          ? null
+          : marketOdds.get(key) ?? null;
+      if (
+        this.scheduleBackground &&
+        stats.position !== 'Goalkeeper' &&
+        stats.nextGame &&
+        (!odds?.goal || !odds.assist)
+      ) {
+        pending.add('marketOdds');
+        marketRefreshPlayers.push(stats);
+      }
+      return {
+        ...stats,
+        nextGame: stats.nextGame
+          ? {
+              ...stats.nextGame,
+              marketOdds: odds,
+            }
+          : null,
+        ...(pending.size > 0
+          ? { pendingRefreshes: [...pending] }
+          : { pendingRefreshes: undefined }),
+      };
+    });
+
+    if (this.scheduleBackground) {
+      const tasks: Promise<void>[] = [];
+      if (cachedFormsWithoutFixture.length > 0) {
+        tasks.push(this.refreshFixtures(cachedFormsWithoutFixture));
+      }
+      if (marketRefreshPlayers.length > 0) {
+        tasks.push(
+          this.marketOddsProvider
+            .load(marketRefreshPlayers)
+            .then(() => undefined),
+        );
+      }
+      if (tasks.length > 0) {
+        this.scheduleBackground(Promise.all(tasks).then(() => undefined));
+      }
+    }
 
     return { data, cacheHits, source: this.dataSource.source };
+  }
+
+  private async refreshFixtures(entries: CachedFormOnly[]): Promise<void> {
+    const splitCache = supportsSplitPlayerStatsCache(this.cache)
+      ? this.cache
+      : undefined;
+    if (!splitCache) return;
+    const requests = [
+      ...new Map(
+        entries.map(({ request }) => [
+          `${request.slug}:${request.position ?? 'default'}`,
+          request,
+        ]),
+      ).values(),
+    ];
+    const fixtures = await this.dataSource.fetchNextGames(requests);
+    const fixtureBySlug = new Map(
+      fixtures.map(({ slug, nextGame }) => [slug, nextGame]),
+    );
+    const refreshedPlayers: PlayerStats[] = [];
+    await Promise.all(
+      entries.map(async ({ key, request, form }) => {
+        if (!fixtureBySlug.has(request.slug)) return;
+        const nextGame = fixtureBySlug.get(request.slug) ?? null;
+        await splitCache.setFixture(key, nextGame);
+        refreshedPlayers.push({ ...form, nextGame });
+      }),
+    );
+    const oddsEligible = refreshedPlayers.filter(
+      (stats) => stats.position !== 'Goalkeeper' && stats.nextGame !== null,
+    );
+    if (oddsEligible.length > 0) {
+      await this.marketOddsProvider.load(oddsEligible);
+    }
   }
 
   private async loadBatch(requests: SourcePlayerRequest[]): Promise<Map<string, PlayerStats>> {
@@ -108,10 +320,16 @@ export class StatsService {
         requestByResultKey.get(`${player.slug}:${player.position}`) ??
         requestByResultKey.get(`${player.slug}:default`);
       if (!requested) continue;
-      const stats = this.toPlayerStats(player, requested.position ?? player.position);
+      const stats = this.toPlayerStats(
+        player,
+        requested.position ?? player.position,
+        requested.includeHistoricalAssists === true,
+      );
       const key = cacheKey(requested, this.excludeLowCoverage);
       let storedStats = stats;
-      if (this.cache.fillMissing) {
+      if (requested.includeHistoricalAssists) {
+        await this.cache.set(key, stats);
+      } else if (this.cache.fillMissing) {
         storedStats = await this.cache.fillMissing(key, stats);
       } else {
         await this.cache.set(key, stats);
@@ -121,7 +339,11 @@ export class StatsService {
     return result;
   }
 
-  private toPlayerStats(player: SourcePlayer, position: FootballPosition): PlayerStats {
+  private toPlayerStats(
+    player: SourcePlayer,
+    position: FootballPosition,
+    includeHistoricalAssists: boolean,
+  ): PlayerStats {
     const options = { excludeLowCoverage: this.excludeLowCoverage, limit: 10 };
     const metrics = calculatePlayerMetrics(player.appearances, position, options);
     const goalProbability = this.goalscorerProvider.calculate(
@@ -129,7 +351,6 @@ export class StatsService {
       position,
       options,
     );
-
     return {
       slug: player.slug,
       displayName: player.displayName,
@@ -137,6 +358,25 @@ export class StatsService {
       aaL10: metrics.aaL10,
       cleanSheetL10: metrics.cleanSheetL10,
       goalL10: goalProbability.metric,
+      ...(includeHistoricalAssists
+        ? {
+            historicalGoals: calculateHistoricalGoalMetrics(
+              player.appearances,
+              position,
+              this.excludeLowCoverage,
+            ),
+            historicalAssists: calculateHistoricalAssistMetrics(
+              player.appearances,
+              position,
+              this.excludeLowCoverage,
+            ),
+            historicalDecisives: calculateHistoricalDecisiveMetrics(
+              player.appearances,
+              position,
+              this.excludeLowCoverage,
+            ),
+          }
+        : {}),
       nextGame: player.nextGame,
       excludedLowCoverage: metrics.excludedLowCoverage,
     };

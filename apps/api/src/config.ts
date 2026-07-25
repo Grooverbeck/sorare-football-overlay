@@ -33,6 +33,22 @@ const EnvSchema = z.object({
   SORARE_API_KEY: optionalString,
   SORARE_AUTH_TOKEN: optionalString,
   SORARE_JWT_AUD: optionalString,
+  THE_ODDS_API_KEY: optionalString,
+  ODDS_API_BASE_URL: z
+    .string()
+    .url()
+    .default('https://api.the-odds-api.com/v4'),
+  ODDS_API_SPORT_KEY: z.string().trim().min(1).default('soccer_usa_mls'),
+  ODDS_API_REGION: z.string().trim().min(1).default('us'),
+  ODDS_API_FALLBACK_REGION: optionalString,
+  ODDS_FETCH_WINDOW_HOURS: z.coerce.number().int().min(1).max(168).default(24),
+  ODDS_MISS_CACHE_TTL_SECONDS: optionalTtlSeconds(86_400),
+  SPORTS_GAME_ODDS_API_KEY: optionalString,
+  SPORTS_GAME_ODDS_BASE_URL: z
+    .string()
+    .url()
+    .default('https://api.sportsgameodds.com/v2'),
+  SPORTS_GAME_ODDS_LEAGUE_ID: z.string().trim().min(1).default('MLS'),
   CORS_ORIGINS: z.string().default('http://localhost:5173'),
 });
 
@@ -54,6 +70,16 @@ export interface AppConfig {
   apiKey?: string;
   authToken?: string;
   jwtAud?: string;
+  oddsApiKey?: string;
+  oddsApiBaseUrl: string;
+  oddsApiSportKey: string;
+  oddsApiRegion: string;
+  oddsApiFallbackRegion?: string;
+  oddsFetchWindowMs: number;
+  oddsMissCacheTtlMs: number;
+  sportsGameOddsApiKey?: string;
+  sportsGameOddsBaseUrl: string;
+  sportsGameOddsLeagueId: string;
   corsOrigins: string[];
 }
 
@@ -79,6 +105,23 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): A
     ...(parsed.SORARE_API_KEY ? { apiKey: parsed.SORARE_API_KEY } : {}),
     ...(parsed.SORARE_AUTH_TOKEN ? { authToken: parsed.SORARE_AUTH_TOKEN } : {}),
     ...(parsed.SORARE_JWT_AUD ? { jwtAud: parsed.SORARE_JWT_AUD } : {}),
+    ...(parsed.THE_ODDS_API_KEY
+      ? { oddsApiKey: parsed.THE_ODDS_API_KEY }
+      : {}),
+    oddsApiBaseUrl: parsed.ODDS_API_BASE_URL,
+    oddsApiSportKey: parsed.ODDS_API_SPORT_KEY,
+    oddsApiRegion: parsed.ODDS_API_REGION,
+    ...(parsed.ODDS_API_FALLBACK_REGION
+      ? { oddsApiFallbackRegion: parsed.ODDS_API_FALLBACK_REGION }
+      : {}),
+    oddsFetchWindowMs: parsed.ODDS_FETCH_WINDOW_HOURS * 60 * 60 * 1_000,
+    oddsMissCacheTtlMs:
+      (parsed.ODDS_MISS_CACHE_TTL_SECONDS ?? 21_600) * 1_000,
+    ...(parsed.SPORTS_GAME_ODDS_API_KEY
+      ? { sportsGameOddsApiKey: parsed.SPORTS_GAME_ODDS_API_KEY }
+      : {}),
+    sportsGameOddsBaseUrl: parsed.SPORTS_GAME_ODDS_BASE_URL,
+    sportsGameOddsLeagueId: parsed.SPORTS_GAME_ODDS_LEAGUE_ID,
     corsOrigins: parsed.CORS_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean),
   };
 }

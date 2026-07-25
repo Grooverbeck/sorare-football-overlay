@@ -48,7 +48,8 @@ async function handleMessage(
     return parsed.success
       ? { ok: true, value: parsed.data }
       : errorResponse('INVALID_BACKEND_RESPONSE', 'Backend response has an unexpected shape');
-  } catch {
+  } catch (error) {
+    console.warn('[Sorare Overlay] Backend request failed:', error);
     return errorResponse('BACKEND_UNAVAILABLE', 'Statistikdienst ist nicht erreichbar');
   }
 }

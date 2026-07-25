@@ -14,6 +14,8 @@ export default defineWorkersConfig({
           bindings: {
             LOG_LEVEL: 'silent',
             MOCK_MODE: 'true',
+            THE_ODDS_API_KEY: 'test-key',
+            SPORTS_GAME_ODDS_API_KEY: 'test-sgo-key',
           },
         },
       },

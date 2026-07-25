@@ -1,13 +1,16 @@
 {
   "name": "@sorare-overlay/api",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "benchmark:mls-aa": "node scripts/analyze-mls-aa.mjs",
     "benchmark:mls-cs": "node scripts/analyze-mls-clean-sheets.mjs",
+    "benchmark:mls-market": "tsx scripts/derive-mls-market-benchmarks.mjs",
     "benchmark:mls-win": "node scripts/analyze-mls-win-probabilities.mjs",
+    "analyze:mls-props": "tsx --env-file-if-exists=.dev.vars scripts/analyze-mls-player-props.mjs",
+    "prewarm:mls-props": "node scripts/prewarm-mls-market-odds.mjs",
     "cf:deploy": "wrangler deploy --config wrangler.jsonc",
     "cf:dev": "wrangler dev --config wrangler.jsonc",
     "cf:dry-run": "wrangler deploy --dry-run --config wrangler.jsonc",

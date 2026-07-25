@@ -8,6 +8,7 @@ import {
 import { parse } from 'graphql';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
+  CloudflareMarketSnapshotStore,
   CloudflareNameResolutionCache,
   CloudflarePlayerStatsCache,
 } from '../cloudflare/cache.js';
@@ -31,6 +32,52 @@ afterEach(() => {
 });
 
 describe('Cloudflare Worker', () => {
+  it('keeps successful market snapshots and expires only temporary misses', async () => {
+    const context = createExecutionContext();
+    const store = new CloudflareMarketSnapshotStore(
+      env.STATS_CACHE,
+      1_800,
+      context,
+    );
+    const fixtureKey = '2026-07-25T18:00:00.000Z|home fc|away fc';
+    const missExpiration = Math.floor(
+      (Date.now() + 24 * 60 * 60 * 1_000) / 1_000,
+    );
+
+    await store.set(fixtureKey, {
+      status: 'available',
+      market: 'player_goal_scorer_anytime',
+      eventId: 'fixture-odds-1',
+      capturedAt: '2026-07-24T12:00:00.000Z',
+      players: {
+        'test player': { probability: 0.4, bookmakerCount: 2 },
+      },
+    });
+    await store.set(fixtureKey, {
+      status: 'unavailable',
+      market: 'player_assists',
+      checkedAt: '2026-07-24T12:00:00.000Z',
+      attemptCount: 1,
+      nextRetryAt: '2026-07-25T00:00:00.000Z',
+      expiresAt: new Date(missExpiration * 1_000).toISOString(),
+    });
+
+    await expect(
+      store.get(fixtureKey, 'player_goal_scorer_anytime'),
+    ).resolves.toMatchObject({ status: 'available', eventId: 'fixture-odds-1' });
+    const listed = await env.STATS_CACHE.list({
+      prefix: `market-odds:v1:${encodeURIComponent(fixtureKey)}`,
+    });
+    const goalKey = listed.keys.find((key) =>
+      key.name.endsWith(':player_goal_scorer_anytime'),
+    );
+    const assistKey = listed.keys.find((key) =>
+      key.name.endsWith(':player_assists'),
+    );
+    expect(goalKey?.expiration).toBeUndefined();
+    expect(assistKey?.expiration).toBe(missExpiration);
+  });
+
   it('serves the readiness endpoint', async () => {
     const response = await SELF.fetch('https://overlay.example/health');
 

@@ -69,15 +69,60 @@ export const PLAYER_STATS_BATCH_QUERY = gql`
   }
 `;
 
+export const PLAYER_NEXT_GAMES_QUERY = gql`
+  query PlayerNextGames($slugs: [String!]) {
+    players(slugs: $slugs) {
+      __typename
+      ... on Player {
+        slug
+        activeClub {
+          id
+        }
+        nextGame {
+          __typename
+          ... on Game {
+            id
+            date
+            homeTeam {
+              id
+              shortName
+            }
+            awayTeam {
+              id
+              shortName
+            }
+            homeStats {
+              __typename
+              ... on FootballTeamGameStats {
+                cleanSheetOdds
+                winOddsBasisPoints
+                drawOddsBasisPoints
+                loseOddsBasisPoints
+              }
+            }
+            awayStats {
+              __typename
+              ... on FootballTeamGameStats {
+                cleanSheetOdds
+                winOddsBasisPoints
+                drawOddsBasisPoints
+                loseOddsBasisPoints
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
 export const PLAYER_APPEARANCE_HISTORY_QUERY = gql`
   query PlayerAppearanceHistory($slug: String!, $position: Position) {
     anyPlayer(slug: $slug) {
       __typename
       ... on Player {
-        slug
         pastGames(first: 40) {
           nodes {
-            id
             date
             lowCoverage
             playerGameScore(playerSlug: $slug, position: $position) {
@@ -87,6 +132,7 @@ export const PLAYER_APPEARANCE_HISTORY_QUERY = gql`
                 allAroundScore
                 footballPlayerGameStats {
                   goals
+                  goalAssist
                   minsPlayed
                   cleanSheet60
                   playedInGame

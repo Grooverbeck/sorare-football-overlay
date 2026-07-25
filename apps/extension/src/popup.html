@@ -17,6 +17,59 @@
         <span id="overlay-status">Overlay wird geladen</span>
       </label>
       <p>Gilt auf allen geöffneten Sorare-Seiten.</p>
+      <fieldset class="side-setting">
+        <legend>Tor-/Assistklammer</legend>
+        <div class="side-options">
+          <label>
+            <input name="market-bracket-side" type="radio" value="left">
+            <span>Links</span>
+          </label>
+          <label>
+            <input name="market-bracket-side" type="radio" value="right" checked>
+            <span>Rechts</span>
+          </label>
+        </div>
+      </fieldset>
+      <fieldset class="side-setting">
+        <legend>Werte anzeigen als</legend>
+        <div class="side-options">
+          <label>
+            <input name="market-value-format" type="radio" value="percentage" checked>
+            <span>Prozent</span>
+          </label>
+          <label>
+            <input name="market-value-format" type="radio" value="decimal">
+            <span>Quote</span>
+          </label>
+        </div>
+        <p class="setting-help">„Quote“ zeigt die faire Dezimalquote aus der angezeigten Wahrscheinlichkeit.</p>
+      </fieldset>
+      <fieldset class="assist-setting">
+        <legend>Fehlende Tor-/Assistquote</legend>
+        <label class="toggle-row compact-toggle" for="historical-assist-enabled">
+          <span class="switch">
+            <input id="historical-assist-enabled" type="checkbox" aria-describedby="historical-assist-status">
+            <span class="slider" aria-hidden="true"></span>
+          </span>
+          <span id="historical-assist-status">Historische Werte verwenden</span>
+        </label>
+        <div id="historical-assist-windows" class="side-options three-options" aria-label="Zeitraum für historische Werte">
+          <label>
+            <input name="historical-assist-window" type="radio" value="10">
+            <span>L10</span>
+          </label>
+          <label>
+            <input name="historical-assist-window" type="radio" value="15" checked>
+            <span>L15</span>
+          </label>
+          <label>
+            <input name="historical-assist-window" type="radio" value="40">
+            <span>L40</span>
+          </label>
+        </div>
+        <p class="setting-help">Nur als klar markierter Ersatz, wenn die jeweilige echte Buchmacherquote fehlt.</p>
+      </fieldset>
+      <p id="local-backend-status" class="local-backend-status" hidden></p>
     </main>
     <script src="popup.js"></script>
   </body>

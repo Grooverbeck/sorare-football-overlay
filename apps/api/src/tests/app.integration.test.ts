@@ -5,6 +5,7 @@ import { createApp } from '../app.js';
 import { TtlCache } from '../cache.js';
 import { MockDataSource } from '../mock/mock-data-source.js';
 import { HistoricalGoalscorerProvider } from '../providers/goalscorer-provider.js';
+import { MockPlayerMarketOddsProvider } from '../providers/market-odds-provider.js';
 import { StatsService } from '../services/stats-service.js';
 
 const logger = pino({ level: 'silent' });
@@ -15,6 +16,7 @@ function testApp() {
     new HistoricalGoalscorerProvider(),
     new TtlCache<PlayerStats>(60_000),
     true,
+    new MockPlayerMarketOddsProvider(),
   );
   return createApp({ statsService: service, logger, corsOrigins: ['http://localhost:5173'] });
 }
@@ -52,6 +54,11 @@ describe('POST /api/player-stats', () => {
       draw: 0.27,
       loss: 0.25,
     });
+    expect(firstBody.data[0].nextGame.marketOdds).toMatchObject({
+      source: 'mock',
+      goal: { bookmakerCount: 3 },
+      assist: { bookmakerCount: 3 },
+    });
 
     const second = await request();
     expect((await second.json()).meta.cacheHits).toBe(2);
@@ -81,6 +88,46 @@ describe('POST /api/player-stats', () => {
       meta: { requested: 1, returned: 1, source: 'mock' },
     });
   });
+
+  it('returns selectable historical assist windows only on demand', async () => {
+    const app = testApp();
+    const baseResponse = await app.request('/api/player-stats', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slugs: ['jude-bellingham'] }),
+    });
+    const baseBody = await baseResponse.json();
+    expect(baseBody.data[0].historicalAssists).toBeUndefined();
+    expect(baseBody.data[0].historicalGoals).toBeUndefined();
+    expect(baseBody.data[0].historicalDecisives).toBeUndefined();
+
+    const historicalResponse = await app.request('/api/player-stats', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        slugs: ['jude-bellingham'],
+        includeHistoricalAssists: true,
+      }),
+    });
+    const historicalBody = await historicalResponse.json();
+
+    expect(historicalResponse.status).toBe(200);
+    expect(historicalBody.data[0].historicalAssists).toMatchObject({
+      l10: { sampleSize: 10 },
+      l15: { sampleSize: 15 },
+      l40: { sampleSize: 40 },
+    });
+    expect(historicalBody.data[0].historicalGoals).toMatchObject({
+      l10: { sampleSize: 10 },
+      l15: { sampleSize: 15 },
+      l40: { sampleSize: 40 },
+    });
+    expect(historicalBody.data[0].historicalDecisives).toMatchObject({
+      l10: { sampleSize: 10 },
+      l15: { sampleSize: 15 },
+      l40: { sampleSize: 40 },
+    });
+  });
 });
 
 describe('public extension pages', () => {
@@ -106,5 +153,7 @@ describe('public extension pages', () => {
     expect(html).toContain('Limited-Use-Anforderungen');
     expect(html).toContain('liest oder überträgt insbesondere nicht');
     expect(html).toContain('Sorare-E-Mail-Adresse, Passwort, JWT, Cookies');
+    expect(html).toContain('The Odds API');
+    expect(html).toContain('keine Zugangsdaten');
   });
 });
