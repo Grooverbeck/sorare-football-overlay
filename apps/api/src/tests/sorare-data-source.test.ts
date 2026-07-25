@@ -8,7 +8,7 @@ import type {
 } from '../services/data-source.js';
 
 describe('SorareDataSource player-name resolution', () => {
-  it('resolves multiple names with valid individual Sorare searches and caches them', async () => {
+  it('resolves direct slug candidates before using individual Sorare searches and caches them', async () => {
     const players = {
       'Tim Ream': { slug: 'tim-ream', displayName: 'Tim Ream', position: 'Defender' },
       'Sam Surridge': {
@@ -35,11 +35,71 @@ describe('SorareDataSource player-name resolution', () => {
       { slug: 'sam-surridge' },
     ]);
     expect(request).toHaveBeenCalledTimes(2);
-    expect(request.mock.calls.map(([, variables]) => variables)).toEqual(
-      expect.arrayContaining([{ query: 'Tim Ream' }, { query: 'Sam Surridge' }]),
-    );
+    expect(request.mock.calls.map(([, variables]) => variables)).toEqual([
+      { slugs: ['tim-ream', 'sam-surridge'] },
+      { query: 'Sam Surridge' },
+    ]);
 
     await source.resolvePlayerNames(['Tim Ream', 'Sam Surridge']);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('resolves accented Sorare card names through a diacritic-safe slug candidate', async () => {
+    const request = vi.fn(
+      async (_document: unknown, variables: { query?: string; slugs?: string[] }) => {
+        if (variables.query) throw new Error('Full-text search must not run');
+        return {
+          players: [
+            {
+              __typename: 'Player',
+              slug: 'nicolas-fernandez-mercau',
+              displayName: 'Nicolás Fernández-Mercau',
+              position: 'Midfielder',
+            },
+          ],
+        };
+      },
+    );
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    await expect(
+      source.resolvePlayerNames(['Nicolás Fernández-Mercau']),
+    ).resolves.toEqual([{ slug: 'nicolas-fernandez-mercau' }]);
+    expect(request).toHaveBeenCalledOnce();
+    expect(request.mock.calls[0]?.[1]).toEqual({
+      slugs: ['nicolas-fernandez-mercau'],
+    });
+  });
+
+  it('keeps resolved players when another full-text fallback times out', async () => {
+    const request = vi.fn(
+      async (_document: unknown, variables: { query?: string; slugs?: string[] }) => {
+        if (variables.slugs) {
+          return {
+            players: [
+              {
+                __typename: 'Player',
+                slug: 'tim-ream',
+                displayName: 'Tim Ream',
+                position: 'Defender',
+              },
+            ],
+          };
+        }
+        throw new Error('Sorare search timed out');
+      },
+    );
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    await expect(
+      source.resolvePlayerNames(['Tim Ream', 'Slow Player']),
+    ).resolves.toEqual([{ slug: 'tim-ream' }]);
     expect(request).toHaveBeenCalledTimes(2);
   });
 
@@ -94,10 +154,10 @@ describe('SorareDataSource player-name resolution', () => {
       { slug: 'diego-luna-2003-09-07', position: 'Midfielder' },
       { slug: 'joaquin-nicolas-pereyra', position: 'Midfielder' },
     ]);
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenCalledTimes(3);
 
     await source.resolvePlayerNames(['Diego Luna', 'Joaquin Pereyra'], positions);
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenCalledTimes(3);
   });
 
   it('keeps the card position when Sorare search only exposes another profile position', async () => {
@@ -200,7 +260,7 @@ describe('SorareDataSource player-name resolution', () => {
     ).resolves.toEqual([
       { slug: 'lucas-adrian-hoyos', position: 'Goalkeeper' },
     ]);
-    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it('keeps anonymous L10 batches below Sorare\'s complexity limit', async () => {
@@ -270,7 +330,7 @@ describe('SorareDataSource player-name resolution', () => {
     await expect(first.resolvePlayerNames(['Diego Luna'], positions)).resolves.toEqual([
       { slug: 'diego-luna-2003-09-07', position: 'Midfielder' },
     ]);
-    expect(firstRequest).toHaveBeenCalledTimes(1);
+    expect(firstRequest).toHaveBeenCalledTimes(2);
 
     const secondRequest = vi.fn();
     const second = new SorareDataSource(

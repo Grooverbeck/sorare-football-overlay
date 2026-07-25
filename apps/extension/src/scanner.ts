@@ -88,7 +88,7 @@ export class StatsBatchCoordinator {
     private readonly fetcher: StatsFetcher = fetchPlayerStats,
     private readonly debounceMs = 40,
     private readonly retryDelaysMs: readonly number[] = [5_000, 30_000],
-    private readonly progressiveBatchSize = 8,
+    private readonly progressiveBatchSize = 3,
     private readonly maxConcurrentBatches = 2,
     private readonly refreshDelaysMs: readonly number[] = [2_500, 8_000],
   ) {}
