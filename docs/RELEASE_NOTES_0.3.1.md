@@ -25,8 +25,8 @@ Erweiterungsseite **Neu laden** anklicken und offene Sorare-Tabs aktualisieren.
 
 - Vorhandene L10-Werte erscheinen sofort, auch wenn die nächste Begegnung
   aktualisiert werden muss.
-- D1 dient als primärer Cache; vorhandene KV-Daten bleiben während des
-  Übergangs als Lesefallback erhalten.
+- Bereits geladene Statistiken bleiben auch bei vorübergehenden
+  Einschränkungen zuverlässig verfügbar.
 - Spielerform und MLS-AA-Rangliste werden gebündelt montags aktualisiert.
 
 ### Zuverlässigere dynamische Karten
