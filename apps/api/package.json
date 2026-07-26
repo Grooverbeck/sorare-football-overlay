@@ -19,6 +19,7 @@
     "dev": "tsx watch src/index.ts",
     "schema:pull": "node scripts/pull-schema.mjs",
     "start": "node dist/index.js",
+    "usage:sports-game-odds": "tsx --env-file-if-exists=.dev.vars scripts/check-sports-game-odds-usage.mjs",
     "test": "npm run test:node && npm run test:worker",
     "test:node": "vitest run",
     "test:worker": "vitest run --config vitest.cloudflare.config.ts",

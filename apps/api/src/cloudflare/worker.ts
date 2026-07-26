@@ -186,6 +186,9 @@ export default {
               remaining: usage.remaining,
               usagePercent:
                 Math.round((usage.used / usage.limit) * 1_000) / 10,
+              interval: usage.interval.unit,
+              intervalStartsAt: usage.interval.startsAt,
+              intervalEndsAt: usage.interval.endsAt,
             },
             'Bookmaker quota usage refreshed',
           );

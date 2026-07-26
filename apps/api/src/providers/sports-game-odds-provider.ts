@@ -33,6 +33,7 @@ import {
   providerProtection,
   protectionForUsage,
   quotaUsage,
+  type ProviderQuotaInterval,
   type ProviderQuotaUsage,
   type ProviderQuotaUsageStore,
 } from './odds-usage.js';
@@ -164,6 +165,19 @@ function finiteUsageNumber(
   return null;
 }
 
+function usageIntervalDate(
+  values: Readonly<Record<string, unknown>>,
+  keys: readonly string[],
+): string | null {
+  for (const key of keys) {
+    const raw = values[key];
+    if (typeof raw !== 'string') continue;
+    const timestamp = Date.parse(raw);
+    if (Number.isFinite(timestamp)) return new Date(timestamp).toISOString();
+  }
+  return null;
+}
+
 export function sportsGameOddsQuotaUsage(
   body: unknown,
   checkedAt: string,
@@ -181,12 +195,24 @@ export function sportsGameOddsQuotaUsage(
     'currentIntervalEntities',
   ]);
   if (limit === null || used === null) return null;
+  const interval: ProviderQuotaInterval = {
+    unit: 'month',
+    startsAt: usageIntervalDate(monthly, [
+      'current-interval-start-time',
+      'currentIntervalStartTime',
+    ]),
+    endsAt: usageIntervalDate(monthly, [
+      'current-interval-end-time',
+      'currentIntervalEndTime',
+    ]),
+  };
   return quotaUsage(
     'sports-game-odds',
     'objects',
     used,
     limit,
     checkedAt,
+    interval,
   );
 }
 
@@ -673,6 +699,7 @@ export class SportsGameOddsPlayerMarketOddsProvider
         current.used + objects,
         current.limit,
         new Date(this.now()).toISOString(),
+        current.interval,
       );
       if (updated) await this.options.usageStore.set(updated);
     } catch (error) {

@@ -71,25 +71,48 @@ describe('bookmaker quota protection', () => {
     });
   });
 
-  it('switches SportsGameOdds to cache-only at 70 percent', () => {
-    const providerUsage = quotaUsage(
+  it('keeps new SportsGameOdds fixtures enabled at 70 percent and switches to cache-only at 85 percent', () => {
+    const restrictedUsage = quotaUsage(
       'sports-game-odds',
       'objects',
       1_750,
       2_500,
       checkedAt,
     );
-    if (!providerUsage) throw new Error('Expected finite quota usage');
+    if (!restrictedUsage) throw new Error('Expected finite quota usage');
 
     expect(
       protectionForProviderUsage(
         'sports-game-odds',
-        providerUsage,
+        restrictedUsage,
+        now,
+      ),
+    ).toMatchObject({
+      level: 'essential-only',
+      ratio: 0.7,
+      allowExternalRequests: true,
+      allowRegionalFallback: false,
+      allowSnapshotSupplements: false,
+    });
+
+    const cacheOnlyUsage = quotaUsage(
+      'sports-game-odds',
+      'objects',
+      2_125,
+      2_500,
+      checkedAt,
+    );
+    if (!cacheOnlyUsage) throw new Error('Expected finite quota usage');
+
+    expect(
+      protectionForProviderUsage(
+        'sports-game-odds',
+        cacheOnlyUsage,
         now,
       ),
     ).toMatchObject({
       level: 'cache-only',
-      ratio: 0.7,
+      ratio: 0.85,
       allowExternalRequests: false,
       allowRegionalFallback: false,
       allowSnapshotSupplements: false,

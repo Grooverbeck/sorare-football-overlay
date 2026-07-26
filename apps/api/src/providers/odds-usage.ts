@@ -7,12 +7,28 @@ export const OddsProviderNameSchema = z.enum([
 ]);
 export type OddsProviderName = z.infer<typeof OddsProviderNameSchema>;
 
+export const ProviderQuotaIntervalSchema = z.object({
+  unit: z.enum(['minute', 'hour', 'day', 'month']),
+  startsAt: z.string().datetime().nullable(),
+  endsAt: z.string().datetime().nullable(),
+});
+export type ProviderQuotaInterval = z.infer<
+  typeof ProviderQuotaIntervalSchema
+>;
+
+const defaultMonthlyInterval = {
+  unit: 'month',
+  startsAt: null,
+  endsAt: null,
+} as const satisfies ProviderQuotaInterval;
+
 export const ProviderQuotaUsageSchema = z.object({
   provider: OddsProviderNameSchema,
   unit: z.enum(['requests', 'objects']),
   used: z.number().int().nonnegative(),
   limit: z.number().int().positive(),
   remaining: z.number().int().nonnegative(),
+  interval: ProviderQuotaIntervalSchema.default(defaultMonthlyInterval),
   checkedAt: z.string().datetime(),
 });
 export type ProviderQuotaUsage = z.infer<typeof ProviderQuotaUsageSchema>;
@@ -139,6 +155,15 @@ export function protectionForProviderUsage(
   ) {
     return protection;
   }
+  if (protection.ratio < oddsUsageThresholds.essentialOnly) {
+    return {
+      level: 'essential-only',
+      ratio: protection.ratio,
+      allowExternalRequests: true,
+      allowRegionalFallback: false,
+      allowSnapshotSupplements: false,
+    };
+  }
   return {
     level: 'cache-only',
     ratio: protection.ratio,
@@ -189,6 +214,7 @@ export function quotaUsage(
   used: number,
   limit: number,
   checkedAt: string,
+  interval: ProviderQuotaInterval = defaultMonthlyInterval,
 ): ProviderQuotaUsage | null {
   if (
     !Number.isFinite(used) ||
@@ -206,6 +232,7 @@ export function quotaUsage(
     used: normalizedUsed,
     limit: normalizedLimit,
     remaining: Math.max(0, normalizedLimit - normalizedUsed),
+    interval,
     checkedAt,
   });
 }

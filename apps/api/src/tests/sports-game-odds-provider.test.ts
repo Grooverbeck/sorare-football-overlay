@@ -129,6 +129,8 @@ describe('SportsGameOddsPlayerMarketOddsProvider', () => {
               'per-month': {
                 'max-entities': 2_500,
                 'current-entities': 914,
+                currentIntervalStartTime: '2026-07-01T00:00:00.000Z',
+                currentIntervalEndTime: '2026-08-01T00:00:00.000Z',
               },
             },
           },
@@ -141,6 +143,11 @@ describe('SportsGameOddsPlayerMarketOddsProvider', () => {
       used: 914,
       limit: 2_500,
       remaining: 1_586,
+      interval: {
+        unit: 'month',
+        startsAt: '2026-07-01T00:00:00.000Z',
+        endsAt: '2026-08-01T00:00:00.000Z',
+      },
       checkedAt: '2026-07-25T10:00:00.000Z',
     });
   });
@@ -237,13 +244,13 @@ describe('SportsGameOddsPlayerMarketOddsProvider', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('uses cached values only once SportsGameOdds reaches 70 percent', async () => {
+  it('uses cached values only once SportsGameOdds reaches 85 percent', async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const usageStore = new InMemoryProviderQuotaUsageStore();
     const usage = quotaUsage(
       'sports-game-odds',
       'objects',
-      1_750,
+      2_125,
       2_500,
       new Date(now).toISOString(),
     );

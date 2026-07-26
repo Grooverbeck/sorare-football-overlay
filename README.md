@@ -161,13 +161,25 @@ Kartenaufruf aktualisiert.
 Der tägliche Cron speichert außerdem die Kontingentnutzung beider
 Quotenanbieter. Ab 50 % wird eine Warnung protokolliert. The Odds API verzichtet
 ab 70 % auf den zusätzlichen Regionen-Fallback, ab 85 % auf reine
-Ergänzungsprüfungen und stoppt ab 90 % neue externe Abrufe. SportsGameOdds wird
-bereits ab 70 % vollständig auf „nur Cache“ gestellt, weil dort jedes
-zurückgelieferte Spielobjekt zählt. Die Zahl der empfangenen Spielobjekte wird
-zwischen den täglichen exakten Kontingentprüfungen lokal fortgeschrieben.
-Neue Karten desselben Spiels lösen außerdem erst am nächsten gemeinsamen
-Prüfzeitpunkt einen Ergänzungsabruf aus. Bereits gespeicherte Quoten bleiben in
-allen Schutzstufen lesbar.
+Ergänzungsprüfungen und stoppt ab 90 % neue externe Abrufe. SportsGameOdds lädt
+zwischen 70 und 85 % nur noch bisher unbekannte Begegnungen, aber keine
+Ergänzungen für bereits geprüfte Spiele. Ab 85 % arbeitet dieser Anbieter nur
+noch aus dem Cache, ab 90 % greift zusätzlich der allgemeine Notstopp. Die Zahl
+der empfangenen Spielobjekte wird zwischen den täglichen exakten
+Kontingentprüfungen lokal fortgeschrieben. Neue Karten desselben Spiels lösen
+außerdem erst am nächsten gemeinsamen Prüfzeitpunkt einen Ergänzungsabruf aus.
+Bereits gespeicherte Quoten bleiben in allen Schutzstufen lesbar.
+
+Der aktuelle SportsGameOdds-Verbrauch kann lokal abgefragt werden:
+
+```bash
+npm run usage:sports-game-odds
+```
+
+Die Ausgabe nennt das monatliche Intervall, den vom Anbieter gemeldeten
+Zeitraum beziehungsweise einen deutlichen Hinweis, falls kein exakter
+Reset-Zeitpunkt geliefert wird, sowie Verbrauch und Restkontingent. Der API-Key
+wird dabei nur aus `apps/api/.dev.vars` gelesen und nicht ausgegeben.
 
 ## Cloudflare-Worker-Deployment
 
