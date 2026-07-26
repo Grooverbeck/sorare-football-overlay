@@ -423,14 +423,23 @@ export class SorareDataSource implements PlayerStatsDataSource {
           position && !positionCached
             ? await this.nameResolutionCache?.get(name, undefined)
             : undefined;
+        const compatibleGeneric =
+          genericCached &&
+          (!position || genericCached.position === position)
+            ? genericCached
+            : undefined;
         const cached =
-          genericCached ??
-          (positionCached === null && genericCached === undefined
-            ? undefined
-            : positionCached);
+          positionCached === null
+            ? compatibleGeneric ?? null
+            : positionCached ?? compatibleGeneric;
         const key = resolutionKey(name, position);
         if (cached === null) {
-          this.unresolvedNamesUntil.set(key, Date.now() + this.unresolvedNameTtlMs);
+          if (genericCached === undefined) {
+            this.unresolvedNamesUntil.set(
+              key,
+              Date.now() + this.unresolvedNameTtlMs,
+            );
+          }
         } else if (cached) {
           this.resolvedNames.set(key, cached);
           this.unresolvedNamesUntil.delete(key);

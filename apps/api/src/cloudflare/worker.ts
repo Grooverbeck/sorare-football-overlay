@@ -3,11 +3,14 @@ import { loadConfig } from '../config.js';
 import { SorareGraphqlClient } from '../graphql/client.js';
 import { createStatsRuntime } from '../service-factory.js';
 import { MlsMarketPrewarmer } from '../services/mls-market-prewarmer.js';
+import { MlsAaBenchmarkRefresher } from '../services/mls-aa-benchmark.js';
 import {
   CloudflareMarketSnapshotStore,
+  CloudflareMlsAaBenchmarkStore,
   CloudflareNameResolutionCache,
   CloudflarePlayerStatsCache,
 } from './cache.js';
+import { D1JsonKeyValueStore } from './d1-cache.js';
 import { createWorkerLogger } from './logger.js';
 
 const configKeys = [
@@ -40,6 +43,8 @@ const configKeys = [
   'CORS_ORIGINS',
 ] as const;
 
+const WEEKLY_MLS_AA_CRON = '0 10 * * MON';
+
 function stringBindings(env: CloudflareBindings): Record<string, string | undefined> {
   const bindings = env as unknown as Readonly<Record<string, unknown>>;
   return Object.fromEntries(
@@ -60,23 +65,30 @@ function createWorkerServices(
   const fixtureTtlSeconds = Math.floor(config.fixtureCacheTtlMs / 1_000);
   const nameTtlSeconds = Math.floor(config.nameCacheTtlMs / 1_000);
   const nameMissTtlSeconds = Math.floor(config.nameMissCacheTtlMs / 1_000);
+  const cacheStore = new D1JsonKeyValueStore(
+    env.CACHE_DB,
+    env.STATS_CACHE,
+  );
+  const mlsAaBenchmarkStore = new CloudflareMlsAaBenchmarkStore(
+    cacheStore,
+  );
   const runtime = createStatsRuntime({
     config,
     logger,
     statsCache: new CloudflarePlayerStatsCache(
-      env.STATS_CACHE,
+      cacheStore,
       formTtlSeconds,
       fixtureTtlSeconds,
       context,
     ),
     nameResolutionCache: new CloudflareNameResolutionCache(
-      env.STATS_CACHE,
+      cacheStore,
       nameTtlSeconds,
       nameMissTtlSeconds,
       context,
     ),
     marketSnapshotStore: new CloudflareMarketSnapshotStore(
-      env.STATS_CACHE,
+      cacheStore,
       Math.floor(config.oddsMissCacheTtlMs / 1_000),
       context,
     ),
@@ -94,7 +106,7 @@ function createWorkerServices(
       );
     },
   });
-  return { config, logger, runtime };
+  return { config, logger, runtime, mlsAaBenchmarkStore };
 }
 
 export default {
@@ -103,11 +115,13 @@ export default {
     env: CloudflareBindings,
     context: ExecutionContext,
   ): Promise<Response> {
-    const { config, logger, runtime } = createWorkerServices(env, context);
+    const { config, logger, runtime, mlsAaBenchmarkStore } =
+      createWorkerServices(env, context);
     const app = createApp({
       statsService: runtime.statsService,
       logger,
       corsOrigins: config.corsOrigins,
+      mlsAaBenchmarkStore,
     });
 
     return app.fetch(request);
@@ -118,7 +132,8 @@ export default {
     env: CloudflareBindings,
     context: ExecutionContext,
   ): void {
-    const { config, logger, runtime } = createWorkerServices(env, context);
+    const { config, logger, runtime, mlsAaBenchmarkStore } =
+      createWorkerServices(env, context);
     const client = new SorareGraphqlClient({
       url: config.graphqlUrl,
       requestTimeoutMs: config.requestTimeoutMs,
@@ -128,6 +143,25 @@ export default {
       ...(config.authToken ? { authToken: config.authToken } : {}),
       ...(config.jwtAud ? { jwtAud: config.jwtAud } : {}),
     });
+    if (controller.cron === WEEKLY_MLS_AA_CRON) {
+      const refresher = new MlsAaBenchmarkRefresher({
+        client,
+        store: mlsAaBenchmarkStore,
+        logger,
+      });
+      context.waitUntil(
+        refresher.run().catch((error: unknown) => {
+          logger.error(
+            {
+              cron: controller.cron,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            'Weekly MLS AA benchmark refresh failed; keeping previous snapshot',
+          );
+        }),
+      );
+      return;
+    }
     const prewarmer = new MlsMarketPrewarmer({
       client,
       marketOddsProvider: runtime.marketOddsProvider,

@@ -26,6 +26,10 @@ export const PlayerStatsRequestSchema = z
       ]),
     positions: z.record(z.string(), FootballPositionSchema).optional(),
     includeHistoricalAssists: z.boolean().default(false),
+    // Follow-up reads may hydrate a missing/expired fixture synchronously.
+    // The initial request remains fast and can return cached L10 form values
+    // with `pendingRefreshes: ['fixture']`.
+    refreshFixtures: z.boolean().default(false),
   })
   .superRefine((request, context) => {
     const total = request.slugs.length + request.playerNames.length;
@@ -43,6 +47,24 @@ export type ValidatedPlayerStatsRequest = z.output<typeof PlayerStatsRequestSche
 export const MetricSchema = z.object({
   value: z.number().finite().nullable(),
   sampleSize: z.number().int().nonnegative(),
+});
+
+export const PerformanceToneSchema = z.enum([
+  'very-low',
+  'low',
+  'balanced',
+  'good',
+  'strong',
+  'elite',
+]);
+
+export const MlsAaContextSchema = z.object({
+  asOf: z.string().date(),
+  tone: PerformanceToneSchema.nullable(),
+  percentileBand: z
+    .enum(['P0–20', 'P20–40', 'P40–60', 'P60–80', 'P80–90', 'P90–100'])
+    .nullable(),
+  rank: z.union([z.literal(1), z.literal(2), z.literal(3)]).nullable(),
 });
 
 export const HistoricalAssistMetricsSchema = z.object({
@@ -92,6 +114,9 @@ export const PlayerStatsSchema = z.object({
   displayName: z.string(),
   position: FootballPositionSchema,
   aaL10: MetricSchema,
+  // Response-only league comparison. It is supplied from the weekly backend
+  // snapshot and deliberately kept out of the per-player form cache.
+  mlsAaContext: MlsAaContextSchema.optional(),
   cleanSheetL10: MetricSchema,
   goalL10: MetricSchema,
   // Optional so existing cached player-form entries remain readable. The
@@ -130,6 +155,7 @@ export const PlayerStatsSchema = z.object({
 });
 
 export type Metric = z.infer<typeof MetricSchema>;
+export type MlsAaContext = z.infer<typeof MlsAaContextSchema>;
 export type HistoricalAssistMetrics = z.infer<
   typeof HistoricalAssistMetricsSchema
 >;

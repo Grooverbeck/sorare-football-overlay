@@ -3,6 +3,38 @@
 Alle wichtigen Änderungen am Sorare Football Stats Overlay werden in dieser
 Datei dokumentiert.
 
+## 0.3.1 – 26. Juli 2026
+
+### Schnellere und robustere Daten
+
+- Bereits vorhandene L10-Werte werden sofort angezeigt, während eine
+  abgelaufene nächste Begegnung unabhängig im Hintergrund aktualisiert wird.
+- D1 ist der primäre persistente Cache; bestehende KV-Daten bleiben als
+  Lesefallback verfügbar, sodass ein erschöpftes KV-Schreiblimit keine
+  Statistiken mehr verschwinden lässt.
+- Spielerform und MLS-AA-Rangliste werden gebündelt montags aktualisiert.
+  Schlägt die neue Rangliste fehl, bleibt der letzte gültige Stand erhalten.
+
+### Dynamische Karten und Packs
+
+- Overlays folgen wiederverwendeten oder ausgetauschten Sorare-Karten korrekt
+  und übernehmen nicht mehr die Daten der vorherigen Karte.
+- Bei Pack- und Bonusanimationen erscheinen die Klammern erst, wenn die Karte
+  stabil steht; Loading-, No-Data- und Statistikzustände flackern dabei nicht
+  mehr mit.
+- Ergebnisdetails, reine Spieler-Infoseiten und andere Ansichten ohne echte
+  Kartenansicht erhalten keine frei schwebenden Overlays.
+
+### Positions- und Anzeigekorrekturen
+
+- Kartenpositionen werden aus der konkreten Karte beziehungsweise dem
+  Lineup-Slot bestimmt, ohne Positionsfilter aus benachbarten Pack-Inhalten zu
+  übernehmen.
+- AA-, Clean-Sheet-, Tor- und Assistklammern behalten über verschiedene
+  Positionen hinweg feste Kategorienhöhen.
+- Clean-Sheet-Werte für Goalkeeper und Defender werden unabhängig von den
+  Spielerquotenmärkten geladen.
+
 ## 0.3.0 – 25. Juli 2026
 
 ### Spielerquoten

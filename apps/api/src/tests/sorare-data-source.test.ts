@@ -190,12 +190,12 @@ describe('SorareDataSource player-name resolution', () => {
     ]);
   });
 
-  it('reuses a generic cached name after a stale position-specific miss', async () => {
+  it('reuses a compatible generic cached name after a stale position-specific miss', async () => {
     const cache: PlayerNameResolutionCache = {
       get: vi.fn(async (_name, position) =>
         position
           ? null
-          : { slug: 'bryan-josias-ramirez-leon', position: 'Midfielder' },
+          : { slug: 'bryan-josias-ramirez-leon', position: 'Forward' },
       ),
       set: vi.fn(),
     };
@@ -218,6 +218,72 @@ describe('SorareDataSource player-name resolution', () => {
       { slug: 'bryan-josias-ramirez-leon', position: 'Forward' },
     ]);
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it('does not reuse a generic player with the wrong position for an ambiguous card name', async () => {
+    const cache: PlayerNameResolutionCache = {
+      get: vi.fn(async (_name, position) =>
+        position
+          ? null
+          : {
+              slug: 'ederson-jose-dos-santos-lourenco-da-silva',
+              position: 'Midfielder',
+            },
+      ),
+      set: vi.fn(),
+    };
+    const request = vi.fn(
+      async (
+        _document: unknown,
+        variables: { query?: string; slugs?: string[] },
+      ) => {
+        if (variables.slugs) return { players: [] };
+        return {
+          searchPlayers: {
+            hits: [
+              {
+                player: {
+                  slug: 'ederson-jose-dos-santos-lourenco-da-silva',
+                  displayName: 'Éderson',
+                  position: 'Midfielder',
+                },
+              },
+              {
+                player: {
+                  slug: 'ederson-santana-de-moraes',
+                  displayName: 'Ederson',
+                  position: 'Goalkeeper',
+                },
+              },
+            ],
+          },
+          searchCards: { hits: [] },
+        };
+      },
+    );
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+      false,
+      86_400_000,
+      true,
+      cache,
+    );
+
+    await expect(
+      source.resolvePlayerNames(
+        ['Ederson'],
+        { Ederson: 'Goalkeeper' },
+      ),
+    ).resolves.toEqual([
+      { slug: 'ederson-santana-de-moraes', position: 'Goalkeeper' },
+    ]);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(cache.set).toHaveBeenCalledWith(
+      'Ederson',
+      'Goalkeeper',
+      { slug: 'ederson-santana-de-moraes', position: 'Goalkeeper' },
+    );
   });
 
   it('falls back to card search when player search misses a shortened display name', async () => {

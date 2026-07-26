@@ -7,7 +7,6 @@ import {
   hasAnyDisplayData,
   type MarketProbability,
   type Metric,
-  type PerformanceTone,
   type PlayerStats,
 } from '@sorare-overlay/shared';
 import type {
@@ -15,6 +14,7 @@ import type {
   MarketBracketSide,
   MarketValueFormat,
 } from './settings.js';
+import { isScoreDetailsDialogTarget } from './dom.js';
 
 const styles = `
   :host { all: initial; }
@@ -43,8 +43,12 @@ const styles = `
     backdrop-filter: none;
     pointer-events: none;
   }
+  :host([data-pack-reveal="true"][data-pack-settling="true"]) .panel {
+    opacity: 0;
+    visibility: hidden;
+  }
   .panel.bracket-only .market-bracket {
-    pointer-events: auto;
+    pointer-events: none;
   }
   .compact {
     display: grid;
@@ -98,7 +102,7 @@ const styles = `
     box-shadow: -2px 2px 5px rgba(0,0,0,.34);
     filter: drop-shadow(0 1px 1px rgba(0,0,0,.2));
     font-variant-numeric: tabular-nums;
-    pointer-events: auto;
+    pointer-events: none;
   }
   :host([data-market-value-format="decimal"]) .market-bracket {
     width: 54px;
@@ -130,9 +134,6 @@ const styles = `
     left: 0;
     clip-path: polygon(0 0, 100% 0, 0 100%);
   }
-  :host([data-pack-reveal="true"]) .market-bracket {
-    display: none;
-  }
   .market-cell {
     --market-ink: #0d1117;
     position: relative;
@@ -148,6 +149,7 @@ const styles = `
     box-shadow: inset 0 1px 0 rgba(255,255,255,.3);
     color: var(--market-ink);
     white-space: nowrap;
+    pointer-events: auto;
   }
   .market-cell:first-child,
   .market-cell.market-first { border-radius: 6px 0 0 0; }
@@ -175,6 +177,19 @@ const styles = `
   }
   .market-cell + .market-cell {
     border-top: 1px solid rgba(16,19,24,.25);
+  }
+  .market-cell.market-group-gap {
+    margin-bottom: 4px;
+  }
+  .market-slot-spacer {
+    display: block;
+    min-height: 17px;
+    box-sizing: border-box;
+    visibility: hidden;
+    pointer-events: none;
+  }
+  .market-slot-spacer.market-group-gap {
+    margin-bottom: 4px;
   }
   .market-cell[data-available="false"] {
     --market-tone: #667180;
@@ -217,6 +232,29 @@ const styles = `
   .market-cell[data-tone="good"] { --market-tone: #51cf66; }
   .market-cell[data-tone="strong"] { --market-tone: #4dabf7; }
   .market-cell[data-tone="elite"] { --market-tone: #cc8cff; }
+  .market-bracket[data-slot-layout="fixed"]::after {
+    display: none;
+  }
+  .market-bracket[data-slot-layout="fixed"] {
+    box-shadow: none;
+  }
+  .market-cell.market-fold-end::after {
+    position: absolute;
+    right: 0;
+    bottom: -3px;
+    width: 4px;
+    height: 4px;
+    background: var(--market-tone, #64748b);
+    clip-path: polygon(0 0, 100% 0, 100% 100%);
+    content: "";
+    pointer-events: none;
+  }
+  :host([data-market-bracket-side="left"])
+    .market-cell.market-fold-end::after {
+    right: auto;
+    left: 0;
+    clip-path: polygon(0 0, 100% 0, 0 100%);
+  }
   .aa-bracket-cell {
     border-radius: 6px 0 0 6px;
   }
@@ -471,7 +509,8 @@ const lineupOddsStyles = `
     box-shadow: 0 2px 5px rgba(0,0,0,.4);
     font: 800 9px/1 "Segoe UI", Inter, ui-sans-serif, system-ui, sans-serif;
     font-variant-numeric: tabular-nums;
-    pointer-events: none;
+    cursor: help;
+    pointer-events: auto;
     -webkit-font-smoothing: antialiased;
     text-rendering: geometricPrecision;
   }
@@ -514,7 +553,7 @@ const lineupOddsStyles = `
     position: absolute;
     z-index: 2147483647;
     left: 50%;
-    bottom: calc(100% + 5px);
+    bottom: calc(100% + var(--lineup-tooltip-clearance, 25px));
     box-sizing: border-box;
     width: max-content;
     min-width: 160px;
@@ -632,6 +671,25 @@ function lineupBuilderTeamRow(container: HTMLElement): HTMLElement | null {
   // captain selection and squad player picker, but those screens have
   // different routes. Detect the concrete two-team row near this card
   // instead of coupling the odds bar to `/compose-team`.
+  const fiveSlotLineup = container.closest<HTMLElement>('[class~="slots5"]');
+  if (fiveSlotLineup) {
+    const concreteSlot = Array.from(fiveSlotLineup.children).find((slot) =>
+      slot.contains(container),
+    );
+    if (!concreteSlot) return null;
+    const rows = new Map<HTMLElement, number>();
+    for (const teamNode of concreteSlot.querySelectorAll<HTMLElement>(
+      '[aria-label="Team"]',
+    )) {
+      const row = teamNode.parentElement;
+      if (row) rows.set(row, (rows.get(row) ?? 0) + 1);
+    }
+    const localRows = [...rows]
+      .filter(([, teamCount]) => teamCount === 2)
+      .map(([row]) => row);
+    return localRows.length === 1 ? localRows[0] ?? null : null;
+  }
+
   let scope = container.parentElement;
   for (let depth = 0; scope && depth < 6; depth += 1) {
     const teamNodes = Array.from(
@@ -645,8 +703,14 @@ function lineupBuilderTeamRow(container: HTMLElement): HTMLElement | null {
       siblings.push(teamNode);
       teamsByRow.set(row, siblings);
     }
-    const teamRow = [...teamsByRow].find(([, teams]) => teams.length === 2)?.[0];
-    if (teamRow) return teamRow;
+    const teamRows = [...teamsByRow]
+      .filter(([, teams]) => teams.length === 2)
+      .map(([row]) => row);
+    if (teamRows.length === 1) return teamRows[0] ?? null;
+    // Once a scope contains multiple fixtures, it is no longer the local
+    // card shell. Continuing with the first row would attach empty/recycled
+    // lineup slots to an unrelated player's fixture.
+    if (teamRows.length > 1) return null;
     scope = scope.parentElement;
   }
   return null;
@@ -655,18 +719,28 @@ function lineupBuilderTeamRow(container: HTMLElement): HTMLElement | null {
 const sorareCardImageAlt =
   /\s+-\s+(?:common|limited|rare|super rare|unique)$/i;
 
-function visibleCardImageRect(container: HTMLElement): DOMRect | null {
+interface VisibleCardImage {
+  image: HTMLImageElement;
+  rect: DOMRect;
+}
+
+function visibleCardImage(container: HTMLElement): VisibleCardImage | null {
   const candidates = Array.from(
     container.querySelectorAll<HTMLImageElement>('img[alt]'),
   )
     .filter((image) => sorareCardImageAlt.test(image.alt))
-    .map((image) => image.getBoundingClientRect())
-    .filter((rect) => rect.width >= 40 && rect.height >= 60)
+    .map((image) => ({ image, rect: image.getBoundingClientRect() }))
+    .filter(({ rect }) => rect.width >= 40 && rect.height >= 60)
     .sort(
       (left, right) =>
-        right.width * right.height - left.width * left.height,
+        right.rect.width * right.rect.height -
+        left.rect.width * left.rect.height,
     );
   return candidates[0] ?? null;
+}
+
+function visibleCardImageRect(container: HTMLElement): DOMRect | null {
+  return visibleCardImage(container)?.rect ?? null;
 }
 
 function cssPixels(value: number): string {
@@ -758,19 +832,6 @@ function historicalMarketNode(
   row.append(note, metric);
   section.append(header, row);
   return section;
-}
-
-function compactStatNode(label: string, value: string, modifier = ''): HTMLElement {
-  const stat = document.createElement('span');
-  stat.className = `compact-stat ${modifier}`.trim();
-  const labelNode = document.createElement('span');
-  labelNode.className = 'compact-label';
-  labelNode.textContent = label;
-  const valueNode = document.createElement('span');
-  valueNode.className = 'compact-value';
-  valueNode.textContent = value;
-  stat.append(labelNode, valueNode);
-  return stat;
 }
 
 const svgNamespace = 'http://www.w3.org/2000/svg';
@@ -950,6 +1011,21 @@ interface HistoricalMarketSelection {
   metric: Metric;
 }
 
+type MarketBracketSlot = 'aa' | 'clean-sheet' | 'goal' | 'assist';
+
+function marketBracketSlotSpacer(
+  slot: MarketBracketSlot,
+  withGroupGap = false,
+): HTMLElement {
+  const spacer = document.createElement('span');
+  spacer.className = `market-slot-spacer${
+    withGroupGap ? ' market-group-gap' : ''
+  }`;
+  spacer.dataset.bracketSlot = slot;
+  spacer.setAttribute('aria-hidden', 'true');
+  return spacer;
+}
+
 function selectedHistoricalMarket(
   stats: PlayerStats,
   market: HistoricalMarketKind,
@@ -978,6 +1054,8 @@ function selectedHistoricalMarket(
 function marketBracketNode(stats: PlayerStats): HTMLElement | null {
   const marketOdds = stats.nextGame?.marketOdds;
   const canShowMarkets = stats.position !== 'Goalkeeper';
+  const showsCleanSheet =
+    stats.position === 'Goalkeeper' || stats.position === 'Defender';
   const preview =
     canShowMarkets &&
     !marketOdds?.goal &&
@@ -1018,10 +1096,13 @@ function marketBracketNode(stats: PlayerStats): HTMLElement | null {
       : null);
   const bracket = document.createElement('div');
   bracket.className = 'market-bracket';
+  bracket.dataset.slotLayout = 'fixed';
   bracket.setAttribute(
     'aria-label',
     stats.position === 'Goalkeeper'
       ? 'Clean-Sheet-Quote'
+      : stats.position === 'Defender'
+        ? 'AA L10, Clean-Sheet-Quote sowie Marktquoten für Tor und Assist'
       : preview
       ? 'Designvorschau für Tor- und Assistquoten'
       : displayedGoal || displayedAssist
@@ -1029,62 +1110,79 @@ function marketBracketNode(stats: PlayerStats): HTMLElement | null {
         : 'AA L10',
   );
   if (preview) bracket.dataset.preview = 'true';
-  const hasGoalOrAssist = Boolean(displayedGoal || displayedAssist);
-  if (stats.position === 'Goalkeeper') {
-    bracket.append(
-      cleanSheetBracketCellNode(stats.nextGame?.cleanSheetProbability),
-    );
+  if (stats.position !== 'Goalkeeper') {
+    const aaCell = aaStatNode(stats, 'top');
+    aaCell.dataset.bracketSlot = 'aa';
+    bracket.append(aaCell);
   } else {
-    bracket.append(aaStatNode(stats, hasGoalOrAssist ? 'top' : 'single'));
+    bracket.append(marketBracketSlotSpacer('aa', true));
+  }
+  if (showsCleanSheet) {
+    const cleanSheetCell = cleanSheetBracketCellNode(
+      stats.nextGame?.cleanSheetProbability,
+    );
+    cleanSheetCell.dataset.bracketSlot = 'clean-sheet';
+    cleanSheetCell.classList.add('market-group-gap');
+    bracket.append(cleanSheetCell);
+  } else {
+    bracket.append(marketBracketSlotSpacer('clean-sheet', true));
   }
   if (displayedGoal) {
-    bracket.append(
-      compactMarketCell(
-        'goal',
-        stats.position,
-        displayedGoal,
-        preview,
-        historicalGoal
-          ? {
-              window: historicalGoal.window,
-              sampleSize: historicalGoal.metric.sampleSize,
-            }
-          : undefined,
-      ),
+    const goalCell = compactMarketCell(
+      'goal',
+      stats.position,
+      displayedGoal,
+      preview,
+      historicalGoal
+        ? {
+            window: historicalGoal.window,
+            sampleSize: historicalGoal.metric.sampleSize,
+          }
+        : undefined,
     );
+    goalCell.dataset.bracketSlot = 'goal';
+    bracket.append(goalCell);
+  } else {
+    bracket.append(marketBracketSlotSpacer('goal'));
   }
   if (displayedAssist) {
-    bracket.append(
-      compactMarketCell(
-        'assist',
-        stats.position,
-        displayedAssist,
-        preview,
-        historicalAssist
-          ? {
-              window: historicalAssist.window,
-              sampleSize: historicalAssist.metric.sampleSize,
-            }
-          : undefined,
-      ),
+    const assistCell = compactMarketCell(
+      'assist',
+      stats.position,
+      displayedAssist,
+      preview,
+      historicalAssist
+        ? {
+            window: historicalAssist.window,
+            sampleSize: historicalAssist.metric.sampleSize,
+          }
+        : undefined,
     );
+    assistCell.dataset.bracketSlot = 'assist';
+    bracket.append(assistCell);
+  } else {
+    bracket.append(marketBracketSlotSpacer('assist'));
   }
-  const marketCells = bracket.querySelectorAll<HTMLElement>('[data-market]');
-  marketCells.item(0)?.classList.add('market-first');
-  marketCells.item(marketCells.length - 1)?.classList.add('market-last');
+  const stackedCells = Array.from(
+    bracket.querySelectorAll<HTMLElement>(
+      '.market-cell:not(.aa-bracket-cell):not(.clean-sheet-bracket-cell)',
+    ),
+  );
+  stackedCells.at(0)?.classList.add('market-first');
+  stackedCells.at(-1)?.classList.add('market-last');
   if (historicalAssist) {
     bracket.dataset.historicalAssist = `L${historicalAssist.window}`;
   }
   if (historicalGoal) {
     bracket.dataset.historicalGoal = `L${historicalGoal.window}`;
   }
+  const visibleCells = Array.from(
+    bracket.querySelectorAll<HTMLElement>('.market-cell'),
+  );
+  visibleCells.at(-1)?.classList.add('market-fold-end');
   bracket.dataset.foldTone =
-    (bracket.lastElementChild as HTMLElement | null)?.dataset.tone ?? 'unavailable';
+    visibleCells.at(-1)?.dataset.tone ?? 'unavailable';
   return bracket;
-}
-
-function setPerformanceTone(stat: HTMLElement, tone: PerformanceTone | null): void {
-  stat.dataset.tone = tone ?? 'unavailable';
 }
 
 function aaStatNode(
@@ -1096,33 +1194,42 @@ function aaStatNode(
     placement === 'single' ? '' : ` aa-bracket-${placement}`
   }`;
   stat.dataset.available = String(stats.aaL10.value !== null);
-  const topPlayer = getMlsAaTopPlayer(
+  const fallbackTopPlayer = getMlsAaTopPlayer(
     stats.position,
     stats.slug,
   );
+  const topRank = stats.mlsAaContext
+    ? stats.mlsAaContext.rank
+    : (fallbackTopPlayer?.rank ?? null);
   const icon = document.createElement('span');
   icon.className = 'market-icon aa-market-icon';
-  icon.textContent = topPlayer ? `#${topPlayer.rank}` : 'AA';
+  icon.textContent = topRank ? `#${topRank}` : 'AA';
   icon.setAttribute('aria-hidden', 'true');
   const value = document.createElement('span');
   value.className = 'market-value';
   value.textContent = score(stats.aaL10);
   stat.append(icon, value);
-  if (topPlayer) {
-    stat.dataset.topRank = String(topPlayer.rank);
+  if (topRank) {
+    stat.dataset.topRank = String(topRank);
     stat.dataset.podiumFrame =
-      topPlayer.rank === 1
+      topRank === 1
         ? 'gold'
-        : topPlayer.rank === 2
+        : topRank === 2
           ? 'silver'
           : 'bronze';
   }
-  const band = getMlsAaPercentileBand(
+  const fallbackBand = getMlsAaPercentileBand(
     stats.position,
     stats.aaL10.value,
     stats.aaL10.sampleSize,
   );
-  if (!band) {
+  const tone = stats.mlsAaContext
+    ? stats.mlsAaContext.tone
+    : (fallbackBand?.tone ?? null);
+  const percentileBand = stats.mlsAaContext
+    ? stats.mlsAaContext.percentileBand
+    : (fallbackBand?.label ?? null);
+  if (!tone || !percentileBand) {
     stat.dataset.tone = 'unavailable';
     stat.setAttribute(
       'aria-label',
@@ -1130,13 +1237,13 @@ function aaStatNode(
     );
     return stat;
   }
-  stat.dataset.tone = band.tone;
-  stat.dataset.percentileBand = band.label;
+  stat.dataset.tone = tone;
+  stat.dataset.percentileBand = percentileBand;
   stat.setAttribute(
     'aria-label',
-    `AA L10 ${score(stats.aaL10)} im MLS-Vergleich für ${stats.position}: ${band.label}${
-      topPlayer ? `, Rang ${topPlayer.rank}` : ''
-    }`,
+    `AA L10 ${score(stats.aaL10)} im MLS-Vergleich für ${stats.position}: ${percentileBand}${
+      topRank ? `, Rang ${topRank}` : ''
+    }${stats.mlsAaContext ? `, Stand ${stats.mlsAaContext.asOf}` : ''}`,
   );
   return stat;
 }
@@ -1146,7 +1253,7 @@ function cleanSheetBracketCellNode(
 ): HTMLElement {
   const cell = document.createElement('span');
   cell.className =
-    'market-cell market-last clean-sheet-bracket-cell';
+    'market-cell market-first market-last clean-sheet-bracket-cell';
   const available = probability !== null && probability !== undefined;
   cell.dataset.available = String(available);
   cell.dataset.cleanSheet = 'true';
@@ -1176,31 +1283,6 @@ function cleanSheetBracketCellNode(
   );
   cell.append(icon, value);
   return cell;
-}
-
-function cleanSheetProbabilityNode(value: number | null | undefined): HTMLElement {
-  const rounded = value === null || value === undefined ? null : Math.round(value * 100);
-  const badge = compactStatNode(
-    'NEXT CS%',
-    rounded === null ? '—' : String(rounded),
-    'performance-stat clean-sheet-probability',
-  );
-  if (value === null || value === undefined) {
-    setPerformanceTone(badge, null);
-    return badge;
-  }
-
-  const bounded = Math.max(0, Math.min(1, value));
-  const band = getMlsCleanSheetPercentileBand(bounded);
-  setPerformanceTone(badge, band?.tone ?? null);
-  if (band) badge.dataset.percentileBand = band.label;
-  badge.setAttribute(
-    'aria-label',
-    `Clean-Sheet-Wahrscheinlichkeit nächstes Spiel: ${Math.round(bounded * 100)} Prozent${
-      band ? `, MLS-Vergleich ${band.label}` : ''
-    }`,
-  );
-  return badge;
 }
 
 function isContainerExposed(container: HTMLElement, rect: DOMRect): boolean {
@@ -1279,6 +1361,7 @@ function activeModalScope(): HTMLElement | null {
 
 const packRevealText =
   /\b(?:deine\s+karten|your\s+cards|neuverpflichtungen|new\s+signings|neue\s+(?:karte|edition|spielerin)|neuer\s+spieler|new\s+(?:card|edition|player|signing))\b/i;
+const packResultText = /\b(?:neuverpflichtungen|new\s+signings)\b/i;
 const packCardStatusText =
   /^(?:neue\s+karte|neue\s+edition|neue\s+spielerin|neuer\s+spieler|new\s+(?:card|edition|player|signing))$/i;
 const packDialogText = /\b(?:deine\s+karten|your\s+cards|neuverpflichtungen|new\s+signings)\b/i;
@@ -1288,6 +1371,9 @@ const packStatusClearancePx = 10;
 const packReservedStatusHeightPx = 24;
 const packDialogHeaderClearancePx = 6;
 const packOverlayMinimumHeightPx = 22;
+const packBracketStableFrames = 6;
+const packResultMinimumSettleFrames = 30;
+const packBracketMaximumSettleFrames = 240;
 
 function normalizedElementText(element: Element): string {
   // `textContent` concatenates adjacent elements without a separator. Sorare's
@@ -1301,6 +1387,24 @@ function normalizedElementText(element: Element): string {
     .trim();
 }
 
+function hasMatchingTextNode(element: Element, pattern: RegExp): boolean {
+  const walker = element.ownerDocument.createTreeWalker(element, 4);
+  let node = walker.nextNode();
+  while (node) {
+    const text = (node.textContent ?? '').replace(/\s+/g, ' ').trim();
+    if (text && pattern.test(text)) return true;
+    node = walker.nextNode();
+  }
+  return false;
+}
+
+function isPackResultScope(scope: Element): boolean {
+  return (
+    packResultText.test(normalizedElementText(scope)) ||
+    hasMatchingTextNode(scope, packResultText)
+  );
+}
+
 function packBonusGraphic(scope: Element): SVGElement | null {
   return (
     Array.from(scope.querySelectorAll<SVGElement>('svg[role="img"]')).find((graphic) =>
@@ -1311,7 +1415,10 @@ function packBonusGraphic(scope: Element): SVGElement | null {
 
 function packRevealScope(container: HTMLElement): HTMLElement | null {
   const dialog = container.closest<HTMLElement>('dialog, [role="dialog"], [aria-modal="true"]');
-  const insidePackDialog = dialog ? packDialogText.test(normalizedElementText(dialog)) : false;
+  const insidePackDialog = dialog
+    ? packDialogText.test(normalizedElementText(dialog)) ||
+      hasMatchingTextNode(dialog, packDialogText)
+    : false;
   let scope: HTMLElement | null = container;
   for (let depth = 0; scope && depth < 12; depth += 1) {
     if (
@@ -1323,7 +1430,11 @@ function packRevealScope(container: HTMLElement): HTMLElement | null {
     if (scope === document.body) break;
     scope = scope.parentElement;
   }
-  return null;
+  // The pack result grid is nested more deeply than the individual reveal.
+  // Its semantic "Neuverpflichtungen / New signings" heading lives on the
+  // dialog rather than in each card branch, so keep the dialog as a safe
+  // fallback instead of treating the result cards as ordinary page cards.
+  return insidePackDialog ? dialog : null;
 }
 
 function isVisiblePackAnchor(candidate: Element, scope: HTMLElement): boolean {
@@ -1362,6 +1473,24 @@ function packCardDecisionAnchor(scope: HTMLElement): Element | null {
       left.getBoundingClientRect().top - right.getBoundingClientRect().top,
   );
   return visible[0] ?? null;
+}
+
+function packOverlayStabilityRect(
+  container: HTMLElement,
+  panel: HTMLElement,
+  packScope: HTMLElement,
+): DOMRect {
+  if (
+    !panel.classList.contains('bracket-only') &&
+    !isPackResultScope(packScope)
+  ) {
+    const decisionAnchor = packCardDecisionAnchor(packScope);
+    if (decisionAnchor) return decisionAnchor.getBoundingClientRect();
+  }
+  return (
+    visibleCardImageRect(container) ??
+    container.getBoundingClientRect()
+  );
 }
 
 function packDialogHeader(scope: HTMLElement): HTMLElement | null {
@@ -1452,16 +1581,30 @@ interface OverlayPositionContext {
 interface PositionedOverlay {
   readonly host: HTMLElement;
   refreshPositionNow(context: OverlayPositionContext): void;
+  handleLayoutMotionStart?(event: Event): void;
 }
 
 const positionedOverlays = new Set<PositionedOverlay>();
 const pendingPositionedOverlays = new Set<PositionedOverlay>();
+const layoutMotionEvents = [
+  'animationstart',
+  'animationiteration',
+  'animationend',
+  'animationcancel',
+  'transitionrun',
+  'transitionstart',
+  'transitionend',
+  'transitioncancel',
+] as const;
+const overlayMountSelector =
+  '[data-sorare-overlay-root], [data-sorare-overlay-companion]';
 let positionFrame: number | undefined;
 let positionListenersAttached = false;
 let marketBracketSide: MarketBracketSide = 'right';
 let historicalAssistFallbackEnabled = false;
 let historicalAssistWindow: HistoricalAssistWindow = 15;
 let marketValueFormat: MarketValueFormat = 'percentage';
+const lineupOddsOwners = new WeakMap<HTMLElement, OverlayView>();
 
 function requestPositionFrame(callback: () => void): number {
   if (typeof window.requestAnimationFrame === 'function') {
@@ -1478,10 +1621,98 @@ function cancelPositionFrame(frame: number): void {
   }
 }
 
+function cardRectsMatch(left: DOMRect, right: DOMRect): boolean {
+  const tolerance = 0.25;
+  return (
+    Math.abs(left.top - right.top) <= tolerance &&
+    Math.abs(left.left - right.left) <= tolerance &&
+    Math.abs(left.width - right.width) <= tolerance &&
+    Math.abs(left.height - right.height) <= tolerance
+  );
+}
+
+function snapshotCardRect(rect: DOMRect): DOMRect {
+  return {
+    x: rect.x,
+    y: rect.y,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    left: rect.left,
+    width: rect.width,
+    height: rect.height,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
+function isPrimarySinglePackCard(
+  container: HTMLElement,
+  cardImage: VisibleCardImage,
+): boolean {
+  const dialog = container.closest<HTMLElement>(
+    'dialog, [role="dialog"], [aria-modal="true"]',
+  );
+  if (!dialog || isPackResultScope(dialog)) {
+    return true;
+  }
+
+  const candidates = Array.from(
+    dialog.querySelectorAll<HTMLImageElement>('img[alt]'),
+  )
+    .filter((image) => sorareCardImageAlt.test(image.alt))
+    .map((image) => ({ image, rect: image.getBoundingClientRect() }))
+    .filter(
+      ({ rect }) =>
+        rect.width >= 40 &&
+        rect.height >= 60 &&
+        rect.bottom > 0 &&
+        rect.top < window.innerHeight,
+    );
+  if (candidates.length <= 1) return true;
+
+  const viewportCenter = window.innerWidth / 2;
+  const primary = candidates.reduce((closest, candidate) => {
+    const closestDistance = Math.abs(
+      closest.rect.left + closest.rect.width / 2 - viewportCenter,
+    );
+    const candidateDistance = Math.abs(
+      candidate.rect.left + candidate.rect.width / 2 - viewportCenter,
+    );
+    return candidateDistance < closestDistance ? candidate : closest;
+  });
+  return primary.image === cardImage.image;
+}
+
+function schedulePositionsAfterLayoutMotion(event: Event): void {
+  if (
+    event.target instanceof Element &&
+    event.target.closest(overlayMountSelector)
+  ) {
+    return;
+  }
+  if (
+    event.type === 'animationstart' ||
+    event.type === 'transitionrun' ||
+    event.type === 'transitionstart'
+  ) {
+    for (const view of positionedOverlays) {
+      view.handleLayoutMotionStart?.(event);
+    }
+  }
+  scheduleAllOverlayPositions();
+}
+
 function detachPositionListeners(): void {
   if (!positionListenersAttached) return;
   window.removeEventListener('resize', scheduleAllOverlayPositions);
   window.removeEventListener('scroll', scheduleAllOverlayPositions, true);
+  for (const eventName of layoutMotionEvents) {
+    window.removeEventListener(
+      eventName,
+      schedulePositionsAfterLayoutMotion,
+      true,
+    );
+  }
   positionListenersAttached = false;
 }
 
@@ -1534,6 +1765,13 @@ function registerPositionedOverlay(view: PositionedOverlay): void {
   if (positionListenersAttached) return;
   window.addEventListener('resize', scheduleAllOverlayPositions);
   window.addEventListener('scroll', scheduleAllOverlayPositions, true);
+  for (const eventName of layoutMotionEvents) {
+    window.addEventListener(
+      eventName,
+      schedulePositionsAfterLayoutMotion,
+      true,
+    );
+  }
   positionListenersAttached = true;
 }
 
@@ -1574,6 +1812,11 @@ export class OverlayView {
   private readonly reposition: (context?: OverlayPositionContext) => void;
   private lineupTeamRow: HTMLElement | null = null;
   private lineupTeamHoverTargets: HTMLElement[] = [];
+  private packSettleFrame: number | undefined;
+  private packMotionProbeFrame: number | undefined;
+  private packSettleGeneration = 0;
+  private lastStablePackRect: DOMRect | null = null;
+  private packLayoutPhase: 'none' | 'reveal' | 'result' = 'none';
   private destroyed = false;
 
   constructor(
@@ -1600,6 +1843,15 @@ export class OverlayView {
         this.lineupOddsHost.hidden = true;
         this.bindLineupTeamRow(null);
         this.closePlayerMarketTooltip();
+        return;
+      }
+      if (isScoreDetailsDialogTarget(this.container)) {
+        this.host.style.display = 'none';
+        this.lineupOddsHost.hidden = true;
+        this.bindLineupTeamRow(null);
+        this.lineupOddsHost.remove();
+        this.closePlayerMarketTooltip();
+        this.closeLineupTooltip();
         return;
       }
       const rect = this.container.getBoundingClientRect();
@@ -1638,15 +1890,59 @@ export class OverlayView {
         this.lineupOddsHost.hidden = !isVisible;
         if (!isVisible) this.closeLineupTooltip();
         if (isVisible) {
+          this.lineupOddsHost.style.setProperty(
+            '--lineup-tooltip-clearance',
+            cssPixels(teamRowRect.height + 5),
+          );
           if (teamRow.nextElementSibling !== this.lineupOddsHost) {
             teamRow.insertAdjacentElement('afterend', this.lineupOddsHost);
           }
         }
       }
       const packScope = packRevealScope(this.container);
+      const wasPrimaryPackCard = this.host.dataset.packPrimary === 'true';
+      const nextPackLayoutPhase = !packScope
+        ? 'none'
+        : isPackResultScope(packScope)
+          ? 'result'
+          : 'reveal';
+      const packLayoutPhaseChanged =
+        nextPackLayoutPhase !== this.packLayoutPhase;
+      this.packLayoutPhase = nextPackLayoutPhase;
+      if (!packScope) this.lastStablePackRect = null;
       this.host.dataset.packReveal = String(Boolean(packScope));
-      if (packScope) this.closePlayerMarketTooltip();
-      const cardImageRect = visibleCardImageRect(this.container);
+      if (packScope) {
+        this.closePlayerMarketTooltip();
+        if (
+          packLayoutPhaseChanged &&
+          this.panel.childElementCount > 0 &&
+          this.host.dataset.packSettling !== 'true'
+        ) {
+          this.startPackBracketSettling();
+        }
+      }
+      const cardImage = visibleCardImage(this.container);
+      const cardImageRect = cardImage?.rect ?? null;
+      const isPrimaryPackCard =
+        !packScope ||
+        !cardImage ||
+        isPrimarySinglePackCard(this.container, cardImage);
+      this.host.dataset.packPrimary = String(isPrimaryPackCard);
+      if (
+        packScope &&
+        isPrimaryPackCard &&
+        !wasPrimaryPackCard &&
+        this.panel.childElementCount > 0 &&
+        this.host.dataset.packSettling !== 'true'
+      ) {
+        this.startPackBracketSettling();
+      }
+      if (!isPrimaryPackCard) {
+        this.host.style.display = 'none';
+        this.lineupOddsHost.hidden = true;
+        this.closePlayerMarketTooltip();
+        this.closeLineupTooltip();
+      }
       const compactLeft = cardImageRect?.left ?? rect.left + 4;
       const compactWidth = Math.max(
         40,
@@ -1657,7 +1953,21 @@ export class OverlayView {
         : 'container-inset';
       this.host.style.left = cssPixels(compactLeft);
       this.host.style.width = cssPixels(compactWidth);
-      if (packScope) {
+      if (
+        packScope &&
+        (this.panel.classList.contains('bracket-only') ||
+          isPackResultScope(packScope))
+      ) {
+        // Once the data has rendered, the overlay is no longer a status banner:
+        // its bracket belongs to the visible card. Anchoring it to Sorare's
+        // animated "new card/edition" label made the bracket drift upward as
+        // bonus/status animations changed height during a pack reveal.
+        const cardAnchorRect = cardImageRect ?? rect;
+        delete this.host.dataset.packHeaderClamped;
+        this.host.dataset.placement = 'pack-card-edge';
+        this.host.style.top = cssPixels(cardAnchorRect.top - 1);
+        this.host.style.bottom = '';
+      } else if (packScope) {
         const decisionAnchor = packCardDecisionAnchor(packScope);
         let desiredAnchorTop: number;
         if (decisionAnchor) {
@@ -1711,6 +2021,14 @@ export class OverlayView {
     lineupStyle.textContent = lineupOddsStyles;
     this.lineupOddsBar = document.createElement('div');
     this.lineupOddsBar.className = 'lineup-odds-bar';
+    this.lineupOddsBar.addEventListener(
+      'mouseenter',
+      this.openLineupTooltip,
+    );
+    this.lineupOddsBar.addEventListener(
+      'mouseleave',
+      this.closeLineupTooltip,
+    );
     this.lineupOddsTooltip = document.createElement('div');
     this.lineupOddsTooltip.className = 'lineup-odds-tooltip';
     this.lineupOddsTooltip.hidden = true;
@@ -1740,9 +2058,57 @@ export class OverlayView {
     if (!this.destroyed) this.reposition(context);
   }
 
+  handleLayoutMotionStart(event: Event): void {
+    if (
+      this.destroyed ||
+      !(event.target instanceof Element) ||
+      event.target.closest('[style*="--active"]') ||
+      this.host.dataset.packDataPending === 'true'
+    ) {
+      return;
+    }
+    const packScope = packRevealScope(this.container);
+    if (
+      !packScope ||
+      (!packScope.contains(event.target) &&
+        !event.target.contains(packScope)) ||
+      this.panel.childElementCount === 0
+    ) {
+      return;
+    }
+    if (
+      this.host.dataset.packSettling === 'true' ||
+      this.packMotionProbeFrame !== undefined
+    ) {
+      return;
+    }
+    this.packMotionProbeFrame = requestPositionFrame(() => {
+      this.packMotionProbeFrame = undefined;
+      if (this.destroyed) return;
+      const currentScope = packRevealScope(this.container);
+      if (!currentScope) return;
+      const currentRect = packOverlayStabilityRect(
+        this.container,
+        this.panel,
+        currentScope,
+      );
+      if (
+        !this.lastStablePackRect ||
+        !cardRectsMatch(this.lastStablePackRect, currentRect)
+      ) {
+        this.startPackBracketSettling();
+      }
+    });
+  }
+
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.stopPackBracketSettling();
+    if (this.packMotionProbeFrame !== undefined) {
+      cancelPositionFrame(this.packMotionProbeFrame);
+      this.packMotionProbeFrame = undefined;
+    }
     for (const cleanup of this.cleanupCallbacks) cleanup();
     this.cleanupCallbacks.length = 0;
     this.bindLineupTeamRow(null);
@@ -1770,6 +2136,12 @@ export class OverlayView {
 
   render(stats: PlayerStats): void {
     if (this.destroyed) return;
+    const hadRenderedBracket = Boolean(
+      this.panel.querySelector('.market-bracket'),
+    );
+    const wasPackDataPending =
+      this.host.dataset.packDataPending === 'true';
+    delete this.host.dataset.packDataPending;
     this.host.dataset.position = stats.position;
     if (!hasAnyDisplayData(stats)) {
       this.noData();
@@ -1778,17 +2150,8 @@ export class OverlayView {
     this.renderLineupOdds(stats.nextGame);
     this.renderPlayerMarketTooltip(stats);
     this.panel.replaceChildren();
-    const showsCleanSheetHeader = stats.position === 'Defender';
-    this.panel.classList.toggle('bracket-only', !showsCleanSheetHeader);
+    this.panel.classList.add('bracket-only');
     const marketBracket = marketBracketNode(stats);
-    if (showsCleanSheetHeader) {
-      const compact = document.createElement('div');
-      compact.className = 'compact compact-single';
-      compact.append(
-        cleanSheetProbabilityNode(stats.nextGame?.cleanSheetProbability),
-      );
-      this.panel.append(compact);
-    }
     if (marketBracket) {
       for (const marketCell of marketBracket.querySelectorAll('[data-market]')) {
         marketCell.addEventListener(
@@ -1803,6 +2166,92 @@ export class OverlayView {
       this.panel.append(marketBracket);
     }
     this.reposition();
+    const packScope = packRevealScope(this.container);
+    if (packScope && this.packSettleFrame === undefined) {
+      const currentRect = packOverlayStabilityRect(
+        this.container,
+        this.panel,
+        packScope,
+      );
+      const geometryAlreadyStable =
+        this.lastStablePackRect !== null &&
+        cardRectsMatch(this.lastStablePackRect, currentRect);
+      if (
+        wasPackDataPending ||
+        !hadRenderedBracket ||
+        !geometryAlreadyStable
+      ) {
+        this.startPackBracketSettling();
+      }
+    }
+  }
+
+  private stopPackBracketSettling(): void {
+    this.packSettleGeneration += 1;
+    if (this.packSettleFrame !== undefined) {
+      cancelPositionFrame(this.packSettleFrame);
+      this.packSettleFrame = undefined;
+    }
+    delete this.host.dataset.packSettling;
+  }
+
+  private startPackBracketSettling(): void {
+    this.stopPackBracketSettling();
+    const initialScope = packRevealScope(this.container);
+    if (!initialScope || this.panel.childElementCount === 0) return;
+
+    const generation = this.packSettleGeneration;
+    const minimumObservedFrames = isPackResultScope(initialScope)
+      ? packResultMinimumSettleFrames
+      : 0;
+    let previousRect: DOMRect | null = null;
+    let stableFrames = 0;
+    let observedFrames = 0;
+    this.host.dataset.packSettling = 'true';
+
+    const checkStability = (): void => {
+      this.packSettleFrame = undefined;
+      if (this.destroyed || generation !== this.packSettleGeneration) return;
+      if (!this.container.isConnected) {
+        this.stopPackBracketSettling();
+        return;
+      }
+
+      const packScope = packRevealScope(this.container);
+      if (!packScope || this.panel.childElementCount === 0) {
+        this.stopPackBracketSettling();
+        return;
+      }
+
+      const currentRect = packOverlayStabilityRect(
+        this.container,
+        this.panel,
+        packScope,
+      );
+      stableFrames =
+        previousRect && cardRectsMatch(previousRect, currentRect)
+          ? stableFrames + 1
+          : 0;
+      previousRect = currentRect;
+      observedFrames += 1;
+      this.reposition();
+
+      const stable =
+        stableFrames >= packBracketStableFrames &&
+        observedFrames >= minimumObservedFrames;
+      const safetyLimitReached =
+        observedFrames >= packBracketMaximumSettleFrames;
+      if (stable || safetyLimitReached) {
+        this.lastStablePackRect = snapshotCardRect(currentRect);
+        delete this.host.dataset.packSettling;
+        this.reposition();
+        return;
+      }
+
+      this.packSettleFrame = requestPositionFrame(checkStability);
+    };
+
+    this.packSettleFrame = requestPositionFrame(checkStability);
   }
 
   private renderLineupOdds(nextGame: PlayerStats['nextGame']): void {
@@ -2013,6 +2462,13 @@ export class OverlayView {
   };
 
   private bindLineupTeamRow(teamRow: HTMLElement | null): void {
+    if (
+      teamRow &&
+      lineupOddsOwners.has(teamRow) &&
+      lineupOddsOwners.get(teamRow) !== this
+    ) {
+      teamRow = null;
+    }
     const nextHoverTargets = teamRow
       ? Array.from(
           teamRow.querySelectorAll<HTMLElement>('[aria-label="Team"]'),
@@ -2031,7 +2487,15 @@ export class OverlayView {
       target.removeEventListener('mouseenter', this.openLineupTooltip);
       target.removeEventListener('mouseleave', this.closeLineupTooltip);
     }
+    const previousTeamRow = this.lineupTeamRow;
+    if (
+      previousTeamRow &&
+      lineupOddsOwners.get(previousTeamRow) === this
+    ) {
+      lineupOddsOwners.delete(previousTeamRow);
+    }
     this.lineupTeamRow = teamRow;
+    if (teamRow) lineupOddsOwners.set(teamRow, this);
     this.lineupTeamHoverTargets = nextHoverTargets;
     this.closeLineupTooltip();
     for (const target of this.lineupTeamHoverTargets) {
@@ -2042,11 +2506,24 @@ export class OverlayView {
 
   private state(message: string, modifier: string): void {
     if (this.destroyed) return;
+    this.stopPackBracketSettling();
     this.panel.classList.remove('bracket-only');
     this.panel.replaceChildren();
     const state = document.createElement('div');
     state.className = `state ${modifier}`.trim();
     state.textContent = message;
     this.panel.append(state);
+    this.reposition();
+    if (!packRevealScope(this.container)) {
+      delete this.host.dataset.packDataPending;
+      return;
+    }
+    if (modifier === 'pulse') {
+      this.host.dataset.packDataPending = 'true';
+      this.host.dataset.packSettling = 'true';
+      return;
+    }
+    delete this.host.dataset.packDataPending;
+    this.startPackBracketSettling();
   }
 }

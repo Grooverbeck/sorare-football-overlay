@@ -202,6 +202,61 @@ describe('StatsService cache writes', () => {
     });
   });
 
+  it('hydrates a missing fixture in the follow-up response without relying on the cache write', async () => {
+    const formCache = new TtlCache<PlayerFormStats>(60_000);
+    const fixtureCache = new TtlCache<PlayerFixtureStats>(60_000);
+    const cache = new SplitPlayerStatsCache(formCache, fixtureCache);
+    formCache.set('jude-bellingham:auto-v3:no-low', {
+      slug: 'jude-bellingham',
+      displayName: 'Jude Bellingham',
+      position: 'Midfielder',
+      aaL10: { value: 14.2, sampleSize: 10 },
+      cleanSheetL10: { value: 0.2, sampleSize: 10 },
+      goalL10: { value: 0.3, sampleSize: 10 },
+      excludedLowCoverage: 0,
+    });
+    const source = new MockDataSource();
+    vi.spyOn(source, 'fetchNextGames').mockResolvedValue([
+      {
+        slug: 'jude-bellingham',
+        nextGame: {
+          date: '2026-08-01T18:00:00.000Z',
+          homeTeamName: 'New Home',
+          awayTeamName: 'New Away',
+          playerTeamName: 'New Home',
+          opponentTeamName: 'New Away',
+          cleanSheetProbability: 0.32,
+          matchProbabilities: { win: 0.6, draw: 0.2, loss: 0.2 },
+        },
+      },
+    ]);
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      cache,
+      true,
+      new MockPlayerMarketOddsProvider(),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['jude-bellingham'],
+        refreshFixtures: true,
+      }),
+    );
+
+    expect(result.cacheHits).toBe(1);
+    expect(result.data[0]).toMatchObject({
+      aaL10: { value: 14.2, sampleSize: 10 },
+      nextGame: {
+        homeTeamName: 'New Home',
+        cleanSheetProbability: 0.32,
+        matchProbabilities: { win: 0.6, draw: 0.2, loss: 0.2 },
+      },
+    });
+    expect(result.data[0]?.pendingRefreshes).toBeUndefined();
+  });
+
   it('never sends goalkeepers to a market-odds provider', async () => {
     const source = new MockDataSource();
     const load = vi.fn(

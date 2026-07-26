@@ -86,7 +86,7 @@ Alle Werte werden aus `apps/api/.env` oder der Prozessumgebung gelesen.
 | `PORT` | `8787` | HTTP-Port |
 | `MOCK_MODE` | `true` | Mock- statt Sorare-Datenquelle |
 | `EXCLUDE_LOW_COVERAGE` | `true` | Low-Coverage-Spiele aus L10 ausschließen |
-| `PLAYER_FORM_CACHE_TTL_SECONDS` | `86400` | AA-, CS- und Goal-L10-Formwerte (24 Stunden) |
+| `PLAYER_FORM_CACHE_TTL_SECONDS` | `604800` | Maximale Gültigkeit der Formwerte; in Cloudflare KV auf Montag 10:00 UTC ausgerichtet |
 | `FIXTURE_CACHE_TTL_SECONDS` | `14400` | Nächstes Spiel und W/D/L-/CS-Wahrscheinlichkeiten (4 Stunden) |
 | `NAME_CACHE_TTL_SECONDS` | `2592000` | Erfolgreiche Spielername-zu-Slug-Zuordnungen (30 Tage) |
 | `NAME_MISS_CACHE_TTL_SECONDS` | `7200` | Nicht gefundene Spielernamen (2 Stunden) |
@@ -119,7 +119,18 @@ SORARE_API_KEY=server-side-secret
 
 Unauthentifizierte Abfragen sind ebenfalls möglich, unterliegen aber dem niedrigeren Sorare-Rate-Limit. Bei HTTP 429 respektiert der Client `Retry-After`; strukturierte Logs enthalten Request-ID, Status und Laufzeit, aber keine Secrets.
 
-Das Backend pollt Sorare nicht periodisch. Es fragt einen Spieler nur bei einem tatsächlichen Cache-Miss an. In Cloudflare KV werden Formwerte und Informationen zum nächsten Spiel getrennt gespeichert: L10-Werte bleiben 24 Stunden gültig, Spielwahrscheinlichkeiten vier Stunden, erfolgreiche Name-zu-Slug-Zuordnungen 30 Tage und ein „nicht gefunden“ zwei Stunden. Alte kombinierte `player-stats:v1`-Einträge werden beim ersten Zugriff in die neuen Schlüssel migriert und laufen danach automatisch aus. Die frühere Variable `CACHE_TTL_SECONDS` wird aus Kompatibilitätsgründen noch als Fallback für die Form-TTL akzeptiert.
+Das Backend pollt einzelne Spieler nicht periodisch. Es fragt einen Spieler nur
+bei einem tatsächlichen Cache-Miss an. In Cloudflare KV werden Formwerte und
+Informationen zum nächsten Spiel getrennt gespeichert: AA-, CS-, Goal- und
+Assist-Formwerte laufen gemeinsam am nächsten Montag um 10:00 UTC aus
+(höchstens nach sieben Tagen), Spielwahrscheinlichkeiten nach vier Stunden,
+erfolgreiche Name-zu-Slug-Zuordnungen nach 30 Tagen und ein „nicht gefunden“
+nach zwei Stunden. Dadurch bleibt die Form innerhalb einer Spielwoche stabil
+und wird erst nach dem Wochenwechsel beim nächsten tatsächlichen Kartenaufruf
+neu geladen. Alte kombinierte `player-stats:v1`-Einträge werden beim ersten
+Zugriff in die neuen Schlüssel migriert und laufen danach automatisch aus. Die
+frühere Variable `CACHE_TTL_SECONDS` wird aus Kompatibilitätsgründen noch als
+Fallback für die Form-TTL akzeptiert.
 
 SportsGameOdds wird primär für direkte Tor-, Assist- und
 Tor-oder-Assist-Märkte verwendet. The Odds API ergänzt nur weiterhin fehlende
@@ -142,7 +153,10 @@ Begegnung statt einer Prüfung alle sechs Stunden.
 
 Das API-Backend kann unverändert lokal unter Node.js oder als Cloudflare Worker laufen. Der Worker-Einstieg liegt in `apps/api/src/cloudflare/worker.ts`; `apps/api/wrangler.jsonc` enthält die versionierte Deployment-Konfiguration.
 
-Für Cloudflare wird `STATS_CACHE` als KV-Namespace gebunden. Darin liegen:
+Für Cloudflare wird `CACHE_DB` als persistenter D1-Cache gebunden. Der bisherige
+`STATS_CACHE`-KV-Namespace bleibt während der Übergangsphase als reiner
+Lesefallback aktiv, damit bereits vorhandene Wochenwerte weiterverwendet werden.
+Im Cache liegen:
 
 - berechnete Spielerstatistiken, getrennt nach Slug, Kartenposition und Low-Coverage-Einstellung;
 - erfolgreiche Namensauflösungen von Kartenbildern;
@@ -165,7 +179,7 @@ Copy-Item apps/api/.dev.vars.example apps/api/.dev.vars
 npm run dev:cloudflare
 ```
 
-Die Beispielkonfiguration aktiviert Mock-Daten. `apps/api/.dev.vars` ist ignoriert und darf lokale Secrets enthalten. `wrangler dev` stellt denselben Worker mit lokal emuliertem KV bereit.
+Die Beispielkonfiguration aktiviert Mock-Daten. `apps/api/.dev.vars` ist ignoriert und darf lokale Secrets enthalten. `wrangler dev` stellt denselben Worker mit lokal emuliertem D1 und KV-Lesefallback bereit.
 
 Die Worker-spezifischen Prüfungen laufen ohne Cloudflare-Konto:
 
@@ -185,7 +199,16 @@ npm run deploy:cloudflare:dry-run
 npm run cf:deploy --workspace=@sorare-overlay/api
 ```
 
-Beim ersten echten Deployment stellt Wrangler den in `wrangler.jsonc` deklarierten KV-Namespace automatisch bereit. Es ist kein Sorare-Schlüssel zwingend erforderlich; dann greift das Backend anonym zu und begrenzt die GraphQL-Batches entsprechend.
+Vor dem ersten Deployment werden die D1-Migrationen ausgeführt:
+
+```bash
+npx wrangler d1 migrations apply sorare-overlay-cache --remote --config apps/api/wrangler.jsonc
+```
+
+Wrangler bindet anschließend die in `wrangler.jsonc` deklarierte D1-Datenbank
+und den bestehenden KV-Lesefallback ein. Es ist kein Sorare-Schlüssel zwingend
+erforderlich; dann greift das Backend anonym zu und begrenzt die
+GraphQL-Batches entsprechend.
 
 Optionale Zugangsdaten werden ausschließlich als verschlüsselte Worker-Secrets gesetzt, niemals unter `vars`, in `.env`-Beispielen mit echtem Wert oder in der Extension:
 
@@ -204,8 +227,12 @@ Copy-Item apps/extension/.env.cloudflare.example apps/extension/.env
 npm run build --workspace=@sorare-overlay/extension
 ```
 
-Die automatische Vorwärmung wird mit dem Cron-Ausdruck `0 5 * * *` direkt
-beim Worker-Deployment aktiviert. Für eine einmalige manuelle Vorwärmung, etwa
+Die automatische Quoten-Vorwärmung wird mit dem Cron-Ausdruck `0 5 * * *`
+direkt beim Worker-Deployment aktiviert. Zusätzlich erzeugt
+`0 10 * * MON` jeden Montag um 10:00 UTC den MLS-AA-Vergleich einschließlich
+Perzentilgrenzen und Top 3 je Position neu. Schlägt dieser Lauf fehl, bleibt der
+letzte gültige Snapshot aktiv; die Spielerstatistiken werden dadurch nicht
+blockiert. Für eine einmalige manuelle Quoten-Vorwärmung, etwa
 unmittelbar nach einem Deployment, kann ohne lokalen Odds-API-Key der
 Produktiv-Worker aufgerufen werden:
 
@@ -395,21 +422,25 @@ Für `NEXT CS%` stammen die Grenzen aus den historischen Sorare-Clean-Sheet-Quot
 
 Der CS-Snapshot umfasst bis zum 23. Juli 2026 insgesamt 238 abgeschlossene Spiele beziehungsweise 470 Teamseiten mit historischer Quote. Die Quotenabdeckung beträgt 98,7 %. Die tatsächliche Clean-Sheet-Rate steigt über die sechs Farbbänder monoton von 8,8 % über 13,8 %, 19,8 %, 26,3 % und 30,7 % bis 42,3 %. Der Ligadurchschnitt lag bei 21,5 % tatsächlichen Clean Sheets; Sorare's mittlere implizite Prognose lag bei 26,2 %.
 
-Die versionierten Snapshots liegen in `packages/shared/src/mls-aa-benchmarks.ts`,
+Die statischen Fallback-Snapshots liegen in
+`packages/shared/src/mls-aa-benchmarks.ts`,
 `packages/shared/src/mls-clean-sheet-benchmarks.ts` und
 `packages/shared/src/market-probability-benchmarks.ts`. Grundlage für AA sind
 Spieler der Sorare-Competition `mlspa` mit mindestens fünf gültigen
 Club-Einsätzen. Das Analyseskript verwendet dieselbe Berechnung wie das Overlay:
 die neuesten zehn tatsächlich gespielten Partien der konkreten Kartenposition,
 ohne DNPs und Low-Coverage-Spiele. Bei weniger als fünf Einsätzen bleibt die
-AA-Anzeige neutral. Der AA-Snapshot vom 24. Juli 2026 umfasst 551 Spieler. Die
+AA-Anzeige neutral. Der gebündelte AA-Fallback vom 24. Juli 2026 umfasst 551
+Spieler. Im produktiven Backend wird derselbe Vergleich montags um 10:00 UTC
+neu berechnet und als einzelner KV-Snapshot gespeichert. Die
 drei höchsten AA-L10-Spieler jeder Position erhalten am AA-Feld zusätzlich
 einen Podiumsrahmen in Gold, Silber oder Bronze sowie die Kennzeichnung `#1`,
 `#2` oder `#3`. Die Podiumsmarkierung bleibt anhand von Position und
-Spieler-Slug bis zur nächsten bewussten Snapshot-Aktualisierung stabil; sie kann
-zwischen zwei Aktualisierungen daher vorübergehend veraltet sein.
+Spieler-Slug bis zum nächsten erfolgreichen Montagslauf stabil. Fällt die
+Aktualisierung aus, verschwinden bestehende Ränge daher nicht, sondern bleiben
+bewusst vorübergehend veraltet.
 
-Die Analyse wird nicht im normalen Backendbetrieb ausgeführt. Sie kann bei Bedarf – beispielsweise monatlich – anonym neu erzeugt werden:
+Die Analyse kann für Kontrolle und Entwicklung weiterhin manuell erzeugt werden:
 
 ```bash
 npm run benchmark:mls-aa

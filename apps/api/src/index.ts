@@ -11,6 +11,7 @@ import { InMemoryMarketSnapshotStore } from './providers/market-odds-provider.js
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { createStatsRuntime } from './service-factory.js';
+import { StaticMlsAaBenchmarkStore } from './services/mls-aa-benchmark.js';
 
 const config = loadConfig(process.env);
 const logger = pino({ level: config.logLevel });
@@ -36,7 +37,12 @@ const runtime = createStatsRuntime({
   },
 });
 const { statsService } = runtime;
-const app = createApp({ statsService, logger, corsOrigins: config.corsOrigins });
+const app = createApp({
+  statsService,
+  logger,
+  corsOrigins: config.corsOrigins,
+  mlsAaBenchmarkStore: new StaticMlsAaBenchmarkStore(),
+});
 
 serve({ fetch: app.fetch, port: config.port }, (info) => {
   logger.info(
