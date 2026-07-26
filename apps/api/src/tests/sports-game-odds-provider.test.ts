@@ -9,7 +9,10 @@ import {
   playerMarketOddsKey,
   type PlayerMarketOddsProvider,
 } from '../providers/market-odds-provider.js';
-import { InMemoryProviderQuotaUsageStore } from '../providers/odds-usage.js';
+import {
+  InMemoryProviderQuotaUsageStore,
+  quotaUsage,
+} from '../providers/odds-usage.js';
 import {
   SportsGameOddsPlayerMarketOddsProvider,
   SupplementingPlayerMarketOddsProvider,
@@ -234,7 +237,50 @@ describe('SportsGameOddsPlayerMarketOddsProvider', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it('uses cached values only once SportsGameOdds reaches 70 percent', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const usageStore = new InMemoryProviderQuotaUsageStore();
+    const usage = quotaUsage(
+      'sports-game-odds',
+      'objects',
+      1_750,
+      2_500,
+      new Date(now).toISOString(),
+    );
+    if (!usage) throw new Error('Expected finite SportsGameOdds usage');
+    usageStore.set(usage);
+    const stats = player();
+    const provider = new SportsGameOddsPlayerMarketOddsProvider({
+      apiKey: 'secret-test-key',
+      baseUrl: 'https://api.sportsgameodds.com/v2',
+      leagueId: 'MLS',
+      fetchWindowMs: 24 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store: new InMemoryMarketSnapshotStore(60_000, () => now),
+      usageStore,
+      logger,
+      fetchImpl,
+      now: () => now,
+    });
+
+    const result = await provider.load([stats]);
+
+    expect(result.get(playerMarketOddsKey(stats))).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('loads direct goal, assist and goals-or-assists markets with no-vig bookmaker probabilities', async () => {
+    const usageStore = new InMemoryProviderQuotaUsageStore();
+    const usage = quotaUsage(
+      'sports-game-odds',
+      'objects',
+      100,
+      2_500,
+      new Date(now).toISOString(),
+    );
+    if (!usage) throw new Error('Expected finite SportsGameOdds usage');
+    usageStore.set(usage);
     const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
       const headers = new Headers(init?.headers);
       expect(headers.get('x-api-key')).toBe('secret-test-key');
@@ -252,6 +298,7 @@ describe('SportsGameOddsPlayerMarketOddsProvider', () => {
       requestTimeoutMs: 1_000,
       maxRetries: 0,
       store: new InMemoryMarketSnapshotStore(60_000, () => now),
+      usageStore,
       logger,
       fetchImpl,
       now: () => now,
@@ -278,7 +325,12 @@ describe('SportsGameOddsPlayerMarketOddsProvider', () => {
     expect(odds?.decisive?.probability).toBeCloseTo(0.431, 3);
     const requestUrl = String(fetchImpl.mock.calls[0]?.[0]);
     expect(requestUrl).toContain('leagueID=MLS');
+    expect(requestUrl).toContain('limit=25');
     expect(requestUrl).not.toContain('apiKey');
+    expect(await usageStore.get('sports-game-odds')).toMatchObject({
+      used: 101,
+      remaining: 2_399,
+    });
   });
 
   it('routes an explicitly supported Champions League fixture to its league feed', async () => {
@@ -343,6 +395,39 @@ describe('SportsGameOddsPlayerMarketOddsProvider', () => {
     await provider.load([stats]);
     await provider.load([stats]);
 
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not requery a frozen fixture immediately for another missing player', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify(eventsEnvelope()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const store = new InMemoryMarketSnapshotStore(60_000, () => now);
+    const provider = new SportsGameOddsPlayerMarketOddsProvider({
+      apiKey: 'secret-test-key',
+      baseUrl: 'https://api.sportsgameodds.com/v2',
+      leagueId: 'MLS',
+      fetchWindowMs: 24 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store,
+      logger,
+      fetchImpl,
+      now: () => now,
+    });
+    const listed = player();
+    const missing = player({
+      slug: 'antoine-griezmann',
+      displayName: 'Antoine Griezmann',
+    });
+
+    await provider.load([listed]);
+    const result = await provider.load([missing]);
+
+    expect(result.get(playerMarketOddsKey(missing))).toBeNull();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });

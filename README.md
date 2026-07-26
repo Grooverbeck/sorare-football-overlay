@@ -159,12 +159,15 @@ Fixture-Cacheeinträge ohne Competition werden einmalig beim nächsten
 Kartenaufruf aktualisiert.
 
 Der tägliche Cron speichert außerdem die Kontingentnutzung beider
-Quotenanbieter. Ab 50 % wird eine Warnung protokolliert, ab 70 % entfällt der
-zusätzliche Regionen-Fallback, ab 85 % werden keine reinen Ergänzungsprüfungen
-mehr ausgeführt und ab 90 % werden neue externe Quotenabrufe gestoppt. Bereits
-gespeicherte Quoten bleiben in allen Stufen lesbar. Monitoring-Daten, die älter
-werden, behalten bis zur nächsten erfolgreichen täglichen Prüfung ihre letzte
-Schutzstufe.
+Quotenanbieter. Ab 50 % wird eine Warnung protokolliert. The Odds API verzichtet
+ab 70 % auf den zusätzlichen Regionen-Fallback, ab 85 % auf reine
+Ergänzungsprüfungen und stoppt ab 90 % neue externe Abrufe. SportsGameOdds wird
+bereits ab 70 % vollständig auf „nur Cache“ gestellt, weil dort jedes
+zurückgelieferte Spielobjekt zählt. Die Zahl der empfangenen Spielobjekte wird
+zwischen den täglichen exakten Kontingentprüfungen lokal fortgeschrieben.
+Neue Karten desselben Spiels lösen außerdem erst am nächsten gemeinsamen
+Prüfzeitpunkt einen Ergänzungsabruf aus. Bereits gespeicherte Quoten bleiben in
+allen Schutzstufen lesbar.
 
 ## Cloudflare-Worker-Deployment
 

@@ -640,12 +640,16 @@ export class SportsGameOddsPlayerMarketOddsProvider
       startsAfter: startsAfter.toISOString(),
       startsBefore: startsBefore.toISOString(),
       includeOpposingOdds: 'true',
-      limit: '100',
+      // The provider bills every returned event object. A narrow fixture
+      // window should stay well below this cap, which also limits worst-case
+      // quota drift between two usage checks.
+      limit: '25',
     });
     const parsed = SportsGameOddsEventsEnvelopeSchema.parse(response);
     if (!parsed.success) {
       throw new Error('SportsGameOdds reported an unsuccessful response');
     }
+    await this.recordConsumedObjects(parsed.data.length);
     this.options.logger.info(
       {
         leagueId: this.options.leagueId,
@@ -656,6 +660,30 @@ export class SportsGameOddsPlayerMarketOddsProvider
       'SportsGameOdds player-prop snapshot received',
     );
     return parsed.data;
+  }
+
+  private async recordConsumedObjects(objects: number): Promise<void> {
+    if (objects <= 0 || !this.options.usageStore) return;
+    try {
+      const current = await this.options.usageStore.get('sports-game-odds');
+      if (!current) return;
+      const updated = quotaUsage(
+        'sports-game-odds',
+        'objects',
+        current.used + objects,
+        current.limit,
+        new Date(this.now()).toISOString(),
+      );
+      if (updated) await this.options.usageStore.set(updated);
+    } catch (error) {
+      this.options.logger.warn(
+        {
+          objects,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'SportsGameOdds local usage increment could not be persisted',
+      );
+    }
   }
 
   private async requestJson(

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   oddsUsageThresholds,
+  protectionForProviderUsage,
   protectionForUsage,
   quotaUsage,
 } from '../providers/odds-usage.js';
@@ -67,6 +68,31 @@ describe('bookmaker quota protection', () => {
       level: 'stopped',
       ratio: 0.95,
       allowExternalRequests: false,
+    });
+  });
+
+  it('switches SportsGameOdds to cache-only at 70 percent', () => {
+    const providerUsage = quotaUsage(
+      'sports-game-odds',
+      'objects',
+      1_750,
+      2_500,
+      checkedAt,
+    );
+    if (!providerUsage) throw new Error('Expected finite quota usage');
+
+    expect(
+      protectionForProviderUsage(
+        'sports-game-odds',
+        providerUsage,
+        now,
+      ),
+    ).toMatchObject({
+      level: 'cache-only',
+      ratio: 0.7,
+      allowExternalRequests: false,
+      allowRegionalFallback: false,
+      allowSnapshotSupplements: false,
     });
   });
 });

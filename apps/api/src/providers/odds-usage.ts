@@ -49,6 +49,7 @@ export type OddsUsageProtectionLevel =
   | 'normal'
   | 'warning'
   | 'fallback-disabled'
+  | 'cache-only'
   | 'essential-only'
   | 'stopped';
 
@@ -124,6 +125,29 @@ export function protectionForUsage(
   };
 }
 
+export function protectionForProviderUsage(
+  provider: OddsProviderName,
+  usage: ProviderQuotaUsage | undefined,
+  now: number = Date.now(),
+): OddsUsageProtection {
+  const protection = protectionForUsage(usage, now);
+  if (
+    provider !== 'sports-game-odds' ||
+    protection.ratio === null ||
+    protection.ratio < oddsUsageThresholds.fallbackDisabled ||
+    protection.level === 'stopped'
+  ) {
+    return protection;
+  }
+  return {
+    level: 'cache-only',
+    ratio: protection.ratio,
+    allowExternalRequests: false,
+    allowRegionalFallback: false,
+    allowSnapshotSupplements: false,
+  };
+}
+
 export async function providerProtection(
   store: ProviderQuotaUsageStore | undefined,
   provider: OddsProviderName,
@@ -142,7 +166,7 @@ export async function providerProtection(
       'Bookmaker quota state unavailable; continuing with cached market safeguards',
     );
   }
-  const protection = protectionForUsage(usage, now);
+  const protection = protectionForProviderUsage(provider, usage, now);
   if (protection.level !== 'normal') {
     logger.warn(
       {

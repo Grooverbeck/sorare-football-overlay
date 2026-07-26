@@ -781,8 +781,6 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(json(eventResponse()))
-      .mockResolvedValueOnce(json(marketResponseForPlayers(['Timo Werner'])))
-      .mockResolvedValueOnce(json(eventResponse()))
       .mockResolvedValueOnce(
         json(marketResponseForPlayers(['Timo Werner', 'Antoine Griezmann'])),
       );
@@ -803,7 +801,7 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     const missing = await provider.load([griezmann]);
     expect(missing.get(playerMarketOddsKey(griezmann))).toBeNull();
     await provider.load([griezmann]);
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).not.toHaveBeenCalled();
 
     clock += 2 * 60 * 60 * 1_000;
     const supplemented = await provider.load([griezmann]);
@@ -836,13 +834,14 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
         ],
       },
     });
-    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it('backs off a missing player even when the refreshed market is completely unavailable', async () => {
+    let clock = now;
     const store = new InMemoryMarketSnapshotStore(
       30 * 60 * 1_000,
-      () => now,
+      () => clock,
     );
     const griezmann = player({
       slug: 'antoine-griezmann',
@@ -894,9 +893,12 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
       store,
       logger,
       fetchImpl,
-      now: () => now,
+      now: () => clock,
     });
 
+    await provider.load([griezmann]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    clock += 2 * 60 * 60 * 1_000;
     await provider.load([griezmann]);
     await provider.load([griezmann]);
 
@@ -908,9 +910,7 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
       missingPlayerChecks: {
         [playerMarketOddsKey(griezmann)]: {
           attemptCount: 1,
-          nextRetryAt: new Date(
-            Date.parse(kickoff) - 4 * 60 * 60 * 1_000,
-          ).toISOString(),
+          nextRetryAt: null,
         },
       },
     });

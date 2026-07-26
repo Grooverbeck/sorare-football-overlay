@@ -674,6 +674,15 @@ export function needsFrozenSnapshotSupplement(
   ) {
     return true;
   }
+  const kickoff = Date.parse(fixtureDate);
+  const lastFixtureCheck = Date.parse(
+    snapshot.supplementedAt ?? snapshot.capturedAt,
+  );
+  const finalRetryAt = kickoff - finalMarketRetryLeadMs;
+  const unseenPlayerRetryAt =
+    lastFixtureCheck < finalRetryAt
+      ? Math.min(lastFixtureCheck + firstMarketRetryDelayMs, finalRetryAt)
+      : null;
   return fixturePlayers.some(
     (player) => {
       if (playerProbability(snapshot, player, fixturePlayers) !== null) {
@@ -682,8 +691,11 @@ export function needsFrozenSnapshotSupplement(
       const check =
         snapshot.missingPlayerChecks?.[playerMarketOddsKey(player)];
       return (
-        !check ||
-        shouldRetryMarketFailure(check, Date.parse(fixtureDate), now)
+        check
+          ? shouldRetryMarketFailure(check, kickoff, now)
+          : unseenPlayerRetryAt !== null &&
+            now >= unseenPlayerRetryAt &&
+            now < kickoff
       );
     },
   );
@@ -760,8 +772,7 @@ export function recordFrozenSnapshotCheck(
   }
   return FrozenMarketSnapshotSchema.parse({
     ...existing,
-    supplementedAt:
-      existing.supplementedAt ?? new Date(checkedAt).toISOString(),
+    supplementedAt: new Date(checkedAt).toISOString(),
     missingPlayerChecks:
       Object.keys(missingPlayerChecks).length > 0
         ? missingPlayerChecks
