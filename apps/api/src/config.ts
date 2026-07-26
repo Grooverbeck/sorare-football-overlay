@@ -85,7 +85,7 @@ export interface AppConfig {
 
 export function loadConfig(env: Readonly<Record<string, string | undefined>>): AppConfig {
   const parsed = EnvSchema.parse(env);
-  const legacyCacheTtlSeconds = parsed.CACHE_TTL_SECONDS ?? 86_400;
+  const legacyCacheTtlSeconds = parsed.CACHE_TTL_SECONDS ?? 604_800;
   const playerFormCacheTtlMs =
     (parsed.PLAYER_FORM_CACHE_TTL_SECONDS ?? legacyCacheTtlSeconds) * 1_000;
   return {

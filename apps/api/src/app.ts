@@ -16,6 +16,10 @@ import {
   supportPage,
 } from './public-pages.js';
 import type { StatsService } from './services/stats-service.js';
+import {
+  mlsAaContextForPlayer,
+  type MlsAaBenchmarkStore,
+} from './services/mls-aa-benchmark.js';
 
 type AppEnv = {
   Variables: {
@@ -32,6 +36,7 @@ export interface CreateAppOptions {
   statsService: StatsService;
   logger: AppLogger;
   corsOrigins: readonly string[];
+  mlsAaBenchmarkStore?: MlsAaBenchmarkStore;
 }
 
 export function createApp(options: CreateAppOptions): Hono<AppEnv> {
@@ -90,8 +95,25 @@ export function createApp(options: CreateAppOptions): Hono<AppEnv> {
     }
 
     const result = await options.statsService.getPlayerStats(parsed.data);
+    let data = result.data;
+    if (options.mlsAaBenchmarkStore) {
+      try {
+        const benchmark = await options.mlsAaBenchmarkStore.get();
+        data = result.data.map((stats) => ({
+          ...stats,
+          mlsAaContext: mlsAaContextForPlayer(benchmark, stats),
+        }));
+      } catch (error) {
+        options.logger.warn(
+          {
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Weekly MLS AA benchmark unavailable; serving player stats without it',
+        );
+      }
+    }
     const response = PlayerStatsSuccessResponseSchema.parse({
-      data: result.data,
+      data,
       meta: {
         requested: parsed.data.slugs.length + parsed.data.playerNames.length,
         returned: result.data.length,

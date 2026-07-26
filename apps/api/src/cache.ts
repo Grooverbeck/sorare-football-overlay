@@ -7,7 +7,7 @@ interface CacheEntry<T> {
 
 export type PlayerFormStats = Omit<
   PlayerStats,
-  'nextGame' | 'pendingRefreshes'
+  'nextGame' | 'pendingRefreshes' | 'mlsAaContext'
 >;
 export type PlayerFixtureStats = PlayerStats['nextGame'];
 
@@ -28,7 +28,10 @@ export interface ReadonlyCache<T> {
 
 export interface SplitPlayerStatsCacheAccess extends Cache<PlayerStats> {
   getParts(key: string): Promise<PlayerStatsCacheParts>;
-  setFixture(key: string, value: PlayerFixtureStats): void | Promise<void>;
+  setFixture(
+    key: string,
+    value: PlayerFixtureStats,
+  ): PlayerFixtureStats | Promise<PlayerFixtureStats>;
 }
 
 export function supportsSplitPlayerStatsCache(
@@ -98,6 +101,7 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
         const {
           nextGame,
           pendingRefreshes: _pendingRefreshes,
+          mlsAaContext: _mlsAaContext,
           ...legacyForm
         } = legacy;
         return { form: legacyForm, fixture: nextGame };
@@ -119,32 +123,55 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
   }
 
   async set(key: string, value: PlayerStats): Promise<void> {
-    const { nextGame, pendingRefreshes: _pendingRefreshes, ...form } = value;
+    const {
+      nextGame,
+      pendingRefreshes: _pendingRefreshes,
+      mlsAaContext: _mlsAaContext,
+      ...form
+    } = value;
     await Promise.all([
       this.formCache.set(key, form),
       this.fixtureCache.set(key, nextGame),
     ]);
   }
 
-  setFixture(key: string, value: PlayerFixtureStats): void | Promise<void> {
-    return this.fixtureCache.set(key, value);
+  async setFixture(
+    key: string,
+    value: PlayerFixtureStats,
+  ): Promise<PlayerFixtureStats> {
+    if (this.fixtureCache.fillMissing) {
+      return this.fixtureCache.fillMissing(key, value);
+    }
+    await this.fixtureCache.set(key, value);
+    return value;
   }
 
   async fillMissing(key: string, value: PlayerStats): Promise<PlayerStats> {
-    const { nextGame, pendingRefreshes: _pendingRefreshes, ...form } = value;
+    const {
+      nextGame,
+      pendingRefreshes: _pendingRefreshes,
+      mlsAaContext: _mlsAaContext,
+      ...form
+    } = value;
     const [existingForm, existingFixture] = await Promise.all([
       this.formCache.get(key),
       this.fixtureCache.get(key),
     ]);
     const writes: Array<void | Promise<void>> = [];
+    let resolvedFixture = existingFixture;
     if (existingForm === undefined) writes.push(this.formCache.set(key, form));
     if (existingFixture === undefined) {
-      writes.push(this.fixtureCache.set(key, nextGame));
+      if (this.fixtureCache.fillMissing) {
+        resolvedFixture = await this.fixtureCache.fillMissing(key, nextGame);
+      } else {
+        writes.push(this.fixtureCache.set(key, nextGame));
+        resolvedFixture = nextGame;
+      }
     }
     await Promise.all(writes);
     return {
       ...(existingForm ?? form),
-      nextGame: existingFixture === undefined ? nextGame : existingFixture,
+      nextGame: resolvedFixture ?? null,
     };
   }
 }

@@ -11,6 +11,7 @@ import {
   supportsSplitPlayerStatsCache,
   type Cache,
   type PlayerFormStats,
+  type SplitPlayerStatsCacheAccess,
 } from '../cache.js';
 import {
   playerMarketOddsKey,
@@ -175,6 +176,26 @@ export class StatsService {
       }
     }
 
+    if (
+      request.refreshFixtures &&
+      splitCache &&
+      cachedFormsWithoutFixture.length > 0
+    ) {
+      const refreshedKeys = await this.hydrateFixturesForResponse(
+        cachedFormsWithoutFixture,
+        immediate,
+        splitCache,
+      );
+      if (refreshedKeys.size > 0) {
+        for (let index = cachedFormsWithoutFixture.length - 1; index >= 0; index -= 1) {
+          const entry = cachedFormsWithoutFixture[index];
+          if (entry && refreshedKeys.has(entry.key)) {
+            cachedFormsWithoutFixture.splice(index, 1);
+          }
+        }
+      }
+    }
+
     const fresh = playerRequests.filter((playerRequest) => {
       const key = cacheKey(playerRequest, this.excludeLowCoverage);
       return (
@@ -274,6 +295,41 @@ export class StatsService {
     return { data, cacheHits, source: this.dataSource.source };
   }
 
+  private async hydrateFixturesForResponse(
+    entries: readonly CachedFormOnly[],
+    immediate: Map<string, PlayerStats>,
+    splitCache: SplitPlayerStatsCacheAccess,
+  ): Promise<Set<string>> {
+    try {
+      const requests = [
+        ...new Map(
+          entries.map(({ request }) => [
+            `${request.slug}:${request.position ?? 'default'}`,
+            request,
+          ]),
+        ).values(),
+      ];
+      const fixtures = await this.dataSource.fetchNextGames(requests);
+      const fixtureBySlug = new Map(
+        fixtures.map(({ slug, nextGame }) => [slug, nextGame]),
+      );
+      const refreshedKeys = new Set<string>();
+      for (const { key, request, form } of entries) {
+        if (!fixtureBySlug.has(request.slug)) continue;
+        const nextGame = fixtureBySlug.get(request.slug) ?? null;
+        const resolvedNextGame = await splitCache.setFixture(key, nextGame);
+        immediate.set(key, { ...form, nextGame: resolvedNextGame });
+        refreshedKeys.add(key);
+      }
+      return refreshedKeys;
+    } catch {
+      // Keep the already available form values and the pending-refresh hint.
+      // The extension can retry without turning a fixture outage into a full
+      // player-statistics error.
+      return new Set();
+    }
+  }
+
   private async refreshFixtures(entries: CachedFormOnly[]): Promise<void> {
     const splitCache = supportsSplitPlayerStatsCache(this.cache)
       ? this.cache
@@ -296,8 +352,8 @@ export class StatsService {
       entries.map(async ({ key, request, form }) => {
         if (!fixtureBySlug.has(request.slug)) return;
         const nextGame = fixtureBySlug.get(request.slug) ?? null;
-        await splitCache.setFixture(key, nextGame);
-        refreshedPlayers.push({ ...form, nextGame });
+        const resolvedNextGame = await splitCache.setFixture(key, nextGame);
+        refreshedPlayers.push({ ...form, nextGame: resolvedNextGame });
       }),
     );
     const oddsEligible = refreshedPlayers.filter(
@@ -310,6 +366,9 @@ export class StatsService {
 
   private async loadBatch(requests: SourcePlayerRequest[]): Promise<Map<string, PlayerStats>> {
     const players = await this.dataSource.fetchPlayers(requests);
+    const splitCache = supportsSplitPlayerStatsCache(this.cache)
+      ? this.cache
+      : undefined;
     const requestByResultKey = new Map(
       requests.map((request) => [`${request.slug}:${request.position ?? 'default'}`, request]),
     );
@@ -327,7 +386,14 @@ export class StatsService {
       );
       const key = cacheKey(requested, this.excludeLowCoverage);
       let storedStats = stats;
-      if (requested.includeHistoricalAssists) {
+      if (requested.includeHistoricalAssists && splitCache) {
+        const resolvedNextGame = await splitCache.setFixture(
+          key,
+          stats.nextGame,
+        );
+        storedStats = { ...stats, nextGame: resolvedNextGame };
+        await this.cache.set(key, storedStats);
+      } else if (requested.includeHistoricalAssists) {
         await this.cache.set(key, stats);
       } else if (this.cache.fillMissing) {
         storedStats = await this.cache.fillMissing(key, stats);

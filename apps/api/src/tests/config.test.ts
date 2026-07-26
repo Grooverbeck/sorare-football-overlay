@@ -5,7 +5,7 @@ describe('loadConfig cache TTLs', () => {
   it('uses purpose-specific defaults', () => {
     const config = loadConfig({});
 
-    expect(config.playerFormCacheTtlMs).toBe(86_400_000);
+    expect(config.playerFormCacheTtlMs).toBe(604_800_000);
     expect(config.fixtureCacheTtlMs).toBe(14_400_000);
     expect(config.nameCacheTtlMs).toBe(2_592_000_000);
     expect(config.nameMissCacheTtlMs).toBe(7_200_000);

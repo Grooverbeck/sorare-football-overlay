@@ -81,6 +81,7 @@ export class StatsBatchCoordinator {
   private readonly refreshAttempts = new Map<string, number>();
   private readonly refreshTimers = new Map<string, number>();
   private readonly refreshViews = new Map<string, Set<OverlayView>>();
+  private readonly fixtureRefreshTargets = new Set<string>();
   private timer: number | undefined;
   private includeHistoricalAssists = false;
 
@@ -115,7 +116,11 @@ export class StatsBatchCoordinator {
     if (cached) {
       view.render(cached);
       if (cached.pendingRefreshes?.length) {
-        this.schedulePendingRefresh(target, [view]);
+        this.schedulePendingRefresh(
+          target,
+          [view],
+          cached.pendingRefreshes.includes('fixture'),
+        );
       } else {
         this.clearPendingRefresh(key);
       }
@@ -185,6 +190,9 @@ export class StatsBatchCoordinator {
       }),
     );
     const includeHistoricalAssists = this.includeHistoricalAssists;
+    const refreshFixtures = batch.some((target) =>
+      this.fixtureRefreshTargets.has(targetKey(target)),
+    );
 
     try {
       const response = await this.fetcher({
@@ -194,6 +202,7 @@ export class StatsBatchCoordinator {
         ...(includeHistoricalAssists
           ? { includeHistoricalAssists: true }
           : {}),
+        ...(refreshFixtures ? { refreshFixtures: true } : {}),
       });
       if (includeHistoricalAssists !== this.includeHistoricalAssists) {
         for (const target of batch) this.queueTarget(target, target.views);
@@ -210,6 +219,7 @@ export class StatsBatchCoordinator {
         this.cache.set(targetKey({ playerName: stats.displayName }), stats);
       }
       for (const target of batch) {
+        this.fixtureRefreshTargets.delete(targetKey(target));
         const stats =
           this.cache.get(targetKey(target)) ??
           response.data.find(
@@ -230,7 +240,11 @@ export class StatsBatchCoordinator {
         if (stats && hasAnyDisplayData(stats)) this.clearRetry(targetKey(target));
         else this.scheduleRetry(target);
         if (stats?.pendingRefreshes?.length) {
-          this.schedulePendingRefresh(target, target.views);
+          this.schedulePendingRefresh(
+            target,
+            target.views,
+            stats.pendingRefreshes.includes('fixture'),
+          );
         } else if (stats) {
           this.clearPendingRefresh(targetKey(target));
         }
@@ -251,8 +265,10 @@ export class StatsBatchCoordinator {
   private schedulePendingRefresh(
     target: Pick<PendingTarget, 'slug' | 'playerName' | 'position'>,
     views: Iterable<OverlayView>,
+    refreshFixture = false,
   ): void {
     const key = targetKey(target);
+    if (refreshFixture) this.fixtureRefreshTargets.add(key);
     const activeCandidates =
       this.refreshViews.get(key) ?? new Set<OverlayView>();
     for (const view of views) activeCandidates.add(view);
@@ -262,6 +278,7 @@ export class StatsBatchCoordinator {
     const delay = this.refreshDelaysMs[attempt];
     if (delay === undefined) {
       this.refreshViews.delete(key);
+      this.fixtureRefreshTargets.delete(key);
       return;
     }
 
@@ -274,6 +291,7 @@ export class StatsBatchCoordinator {
       this.refreshViews.delete(key);
       if (activeViews.length === 0) {
         this.refreshAttempts.delete(key);
+        this.fixtureRefreshTargets.delete(key);
         return;
       }
       this.removeCachedTarget(target);
@@ -302,6 +320,7 @@ export class StatsBatchCoordinator {
     this.refreshTimers.delete(key);
     this.refreshViews.delete(key);
     this.refreshAttempts.delete(key);
+    this.fixtureRefreshTargets.delete(key);
   }
 
   private scheduleRetry(target: PendingTarget): void {
@@ -455,18 +474,45 @@ export class SorareCardScanner {
       }
     }
     for (const target of targets) {
-      const key = targetKey(target);
-      const mounted = this.overlays.get(target.container);
-      if (mounted?.key === key) continue;
-      if (mounted) mounted.view.destroy();
-      const view = new OverlayView(
-        target.container,
-        { ...(target.slug ? { slug: target.slug } : {}), ...(target.playerName ? { playerName: target.playerName } : {}) },
-        target.position,
-      );
-      target.container.dataset.sorareOverlayKey = key;
-      this.overlays.set(target.container, { key, target, view });
-      this.coordinator.enqueue(target, view);
+      this.mountTarget(target);
+    }
+  }
+
+  private mountTarget(target: CardTarget): void {
+    const key = targetKey(target);
+    const mounted = this.overlays.get(target.container);
+    if (mounted?.key === key) return;
+    if (mounted) mounted.view.destroy();
+    const view = new OverlayView(
+      target.container,
+      {
+        ...(target.slug ? { slug: target.slug } : {}),
+        ...(target.playerName ? { playerName: target.playerName } : {}),
+      },
+      target.position,
+    );
+    target.container.dataset.sorareOverlayKey = key;
+    this.overlays.set(target.container, { key, target, view });
+    this.coordinator.enqueue(target, view);
+  }
+
+  private reconcileMountedOverlays(): void {
+    for (const [container, mounted] of [...this.overlays]) {
+      const currentTarget = container.isConnected
+        ? findCardTargets(container).find(
+            (candidate) => candidate.container === container,
+          )
+        : undefined;
+      if (!currentTarget) {
+        mounted.view.destroy();
+        delete container.dataset.sorareOverlayKey;
+        this.overlays.delete(container);
+        continue;
+      }
+      if (targetKey(currentTarget) === mounted.key) continue;
+      mounted.view.destroy();
+      this.overlays.delete(container);
+      this.mountTarget(currentTarget);
     }
   }
 
@@ -514,7 +560,11 @@ export class SorareCardScanner {
     const roots = [...this.pendingScanRoots];
     this.pendingScanRoots.clear();
     for (const root of roots) this.scan(root);
-    this.cleanupDisconnectedOverlays();
+    if (roots.length > 0) {
+      this.reconcileMountedOverlays();
+    } else {
+      this.cleanupDisconnectedOverlays();
+    }
     if (this.shouldRefreshPositions) {
       this.shouldRefreshPositions = false;
       for (const { view } of this.overlays.values()) view.refreshPosition();

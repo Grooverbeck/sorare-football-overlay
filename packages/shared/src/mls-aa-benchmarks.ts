@@ -34,6 +34,15 @@ export interface MlsAaPercentileBand {
   label: 'P0–20' | 'P20–40' | 'P40–60' | 'P60–80' | 'P80–90' | 'P90–100';
 }
 
+export interface MlsAaBenchmarkSnapshot {
+  competition: string;
+  competitionSlug: string;
+  asOf: string;
+  minimumAppearances: number;
+  populationSize: number;
+  positions: Record<FootballPosition, MlsAaPositionBenchmark>;
+}
+
 /**
  * Versioned snapshot generated from Sorare's `mlspa` competition.
  *
@@ -185,8 +194,22 @@ export function getMlsAaPercentileBand(
   value: number | null,
   sampleSize: number,
 ): MlsAaPercentileBand | null {
-  if (value === null || sampleSize < MLS_AA_BENCHMARKS.minimumAppearances) return null;
-  const benchmark = MLS_AA_BENCHMARKS.positions[position];
+  return getMlsAaPercentileBandFromSnapshot(
+    MLS_AA_BENCHMARKS,
+    position,
+    value,
+    sampleSize,
+  );
+}
+
+export function getMlsAaPercentileBandFromSnapshot(
+  snapshot: MlsAaBenchmarkSnapshot,
+  position: FootballPosition,
+  value: number | null,
+  sampleSize: number,
+): MlsAaPercentileBand | null {
+  if (value === null || sampleSize < snapshot.minimumAppearances) return null;
+  const benchmark = snapshot.positions[position];
   if (value < benchmark.p20) return { tone: 'very-low', label: 'P0–20' };
   if (value < benchmark.p40) return { tone: 'low', label: 'P20–40' };
   if (value < benchmark.p60) return { tone: 'balanced', label: 'P40–60' };
@@ -199,9 +222,17 @@ export function getMlsAaTopPlayer(
   position: FootballPosition,
   slug: string,
 ): MlsAaTopPlayer | null {
+  return getMlsAaTopPlayerFromSnapshot(MLS_AA_BENCHMARKS, position, slug);
+}
+
+export function getMlsAaTopPlayerFromSnapshot(
+  snapshot: MlsAaBenchmarkSnapshot,
+  position: FootballPosition,
+  slug: string,
+): MlsAaTopPlayer | null {
   const normalizedSlug = slug.trim().toLocaleLowerCase();
   return (
-    MLS_AA_BENCHMARKS.positions[position].topThree.find(
+    snapshot.positions[position].topThree.find(
       (candidate) => candidate.slug === normalizedSlug,
     ) ?? null
   );
