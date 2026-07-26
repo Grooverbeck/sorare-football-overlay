@@ -282,6 +282,7 @@ interface TheOddsApiOptions {
   apiKey: string;
   baseUrl: string;
   sportKey: string;
+  additionalSportKeys?: readonly string[];
   region: string;
   fallbackRegion?: string;
   fetchWindowMs: number;
@@ -290,6 +291,7 @@ interface TheOddsApiOptions {
   store: MarketSnapshotStore;
   logger: AppLogger;
   usageStore?: ProviderQuotaUsageStore;
+  refreshUsage?: boolean;
   supportedCompetitionSlugs?: readonly string[];
   fetchImpl?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
@@ -983,7 +985,21 @@ export class TheOddsApiPlayerMarketOddsProvider
     );
   }
 
+  private sportKeys(): string[] {
+    return [
+      ...new Set(
+        [
+          this.options.sportKey,
+          ...(this.options.additionalSportKeys ?? []),
+        ]
+          .map((sportKey) => sportKey.trim())
+          .filter(Boolean),
+      ),
+    ];
+  }
+
   async refreshUsage(): Promise<ProviderQuotaUsage[]> {
+    if (this.options.refreshUsage === false) return [];
     const response = await this.requestJson('/sports', {});
     const usage = theOddsApiQuotaUsage(
       response.headers,
@@ -1065,44 +1081,67 @@ export class TheOddsApiPlayerMarketOddsProvider
     }
 
     if (fixturesNeedingApi.length > 0) {
-      let events: OddsEvent[] = [];
-      let eventsLoaded = false;
-      try {
-        events = OddsEventsSchema.parse(
-          (
-            await this.requestJson(
-              `/sports/${encodeURIComponent(this.options.sportKey)}/events`,
-              {},
-            )
-          ).body,
-        );
-        eventsLoaded = true;
-      } catch (error) {
-        this.options.logger.warn(
-          { error: error instanceof Error ? error.message : String(error) },
-          'The Odds API event lookup failed; returning stats without market odds',
-        );
-      }
+      const sportKeys = this.sportKeys();
+      const eventCatalogs: Array<{
+        sportKey: string;
+        events: OddsEvent[];
+      }> = [];
+      await mapWithConcurrency(sportKeys, 2, async (sportKey) => {
+        try {
+          const events = OddsEventsSchema.parse(
+            (
+              await this.requestJson(
+                `/sports/${encodeURIComponent(sportKey)}/events`,
+                {},
+              )
+            ).body,
+          );
+          eventCatalogs.push({ sportKey, events });
+        } catch (error) {
+          this.options.logger.warn(
+            {
+              sportKey,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            'The Odds API event lookup failed for sport; keeping fixture eligible for retry',
+          );
+        }
+      });
 
-      if (eventsLoaded) {
+      if (eventCatalogs.length > 0) {
+        const allEventLookupsSucceeded =
+          eventCatalogs.length === sportKeys.length;
         await mapWithConcurrency(fixturesNeedingApi, 4, async (pending) => {
-          const event = findEvent(pending.fixture, events);
-          if (!event) {
-            const unavailableMarkets = pending.missingMarkets.filter(
-              (market) =>
-                snapshots.get(pending.fixture.key)?.get(market)?.status !==
-                'available',
+          const match = eventCatalogs
+            .map((catalog) => ({
+              sportKey: catalog.sportKey,
+              event: findEvent(pending.fixture, catalog.events),
+            }))
+            .find(
+              (
+                candidate,
+              ): candidate is { sportKey: string; event: OddsEvent } =>
+                candidate.event !== null,
             );
-            await this.storeMissing(pending.fixture, unavailableMarkets);
+          if (!match) {
+            if (allEventLookupsSucceeded) {
+              const unavailableMarkets = pending.missingMarkets.filter(
+                (market) =>
+                  snapshots.get(pending.fixture.key)?.get(market)?.status !==
+                  'available',
+              );
+              await this.storeMissing(pending.fixture, unavailableMarkets);
+            }
             return;
           }
           await this.fetchFixtureMarkets(
             pending.fixture,
-            event,
+            match.event,
             pending.missingMarkets,
             snapshots.get(pending.fixture.key) ??
               new Map<OddsMarketKey, MarketSnapshot>(),
             protection,
+            match.sportKey,
           );
         });
       }
@@ -1154,11 +1193,12 @@ export class TheOddsApiPlayerMarketOddsProvider
     markets: OddsMarketKey[],
     snapshots: Map<OddsMarketKey, MarketSnapshot>,
     protection: OddsUsageProtection,
+    sportKey: string,
   ): Promise<void> {
     try {
       const response = await this.requestJson(
         `/sports/${encodeURIComponent(
-          this.options.sportKey,
+          sportKey,
         )}/events/${encodeURIComponent(event.id)}/odds`,
         {
           regions: this.options.region,
@@ -1169,6 +1209,7 @@ export class TheOddsApiPlayerMarketOddsProvider
       this.options.logger.info(
         {
           fixture: fixture.key,
+          sportKey,
           markets,
           quota: responseQuota(response.headers),
         },
@@ -1214,6 +1255,7 @@ export class TheOddsApiPlayerMarketOddsProvider
         markets,
         snapshots,
         protection.allowRegionalFallback,
+        sportKey,
       );
     } catch (error) {
       if (
@@ -1232,6 +1274,7 @@ export class TheOddsApiPlayerMarketOddsProvider
             market,
             snapshots,
             protection.allowRegionalFallback,
+            sportKey,
           );
         });
         return;
@@ -1278,6 +1321,7 @@ export class TheOddsApiPlayerMarketOddsProvider
     markets: readonly OddsMarketKey[],
     snapshots: Map<OddsMarketKey, MarketSnapshot>,
     allowRegionalFallback: boolean,
+    sportKey: string,
   ): Promise<void> {
     if (!allowRegionalFallback) return;
     const fallbackRegion = this.options.fallbackRegion?.trim();
@@ -1291,7 +1335,7 @@ export class TheOddsApiPlayerMarketOddsProvider
     try {
       const response = await this.requestJson(
         `/sports/${encodeURIComponent(
-          this.options.sportKey,
+          sportKey,
         )}/events/${encodeURIComponent(event.id)}/odds`,
         {
           regions: fallbackRegion,
@@ -1302,6 +1346,7 @@ export class TheOddsApiPlayerMarketOddsProvider
       this.options.logger.info(
         {
           fixture: fixture.key,
+          sportKey,
           markets: fallbackMarkets,
           primaryRegion: this.options.region,
           fallbackRegion,
@@ -1328,6 +1373,7 @@ export class TheOddsApiPlayerMarketOddsProvider
             market,
             snapshots,
             fallbackRegion,
+            sportKey,
           );
         });
         return;
@@ -1350,11 +1396,12 @@ export class TheOddsApiPlayerMarketOddsProvider
     market: OddsMarketKey,
     snapshots: Map<OddsMarketKey, MarketSnapshot>,
     fallbackRegion: string,
+    sportKey: string,
   ): Promise<void> {
     try {
       const response = await this.requestJson(
         `/sports/${encodeURIComponent(
-          this.options.sportKey,
+          sportKey,
         )}/events/${encodeURIComponent(event.id)}/odds`,
         {
           regions: fallbackRegion,
@@ -1365,6 +1412,7 @@ export class TheOddsApiPlayerMarketOddsProvider
       this.options.logger.info(
         {
           fixture: fixture.key,
+          sportKey,
           markets: [market],
           primaryRegion: this.options.region,
           fallbackRegion,
@@ -1443,11 +1491,12 @@ export class TheOddsApiPlayerMarketOddsProvider
     market: OddsMarketKey,
     snapshots: Map<OddsMarketKey, MarketSnapshot>,
     allowRegionalFallback: boolean,
+    sportKey: string,
   ): Promise<void> {
     try {
       const response = await this.requestJson(
         `/sports/${encodeURIComponent(
-          this.options.sportKey,
+          sportKey,
         )}/events/${encodeURIComponent(event.id)}/odds`,
         {
           regions: this.options.region,
@@ -1458,6 +1507,7 @@ export class TheOddsApiPlayerMarketOddsProvider
       this.options.logger.info(
         {
           fixture: fixture.key,
+          sportKey,
           markets: [market],
           quota: responseQuota(response.headers),
         },
@@ -1485,6 +1535,7 @@ export class TheOddsApiPlayerMarketOddsProvider
           [market],
           snapshots,
           allowRegionalFallback,
+          sportKey,
         );
         return;
       }
@@ -1511,6 +1562,7 @@ export class TheOddsApiPlayerMarketOddsProvider
         [market],
         snapshots,
         allowRegionalFallback,
+        sportKey,
       );
     } catch (error) {
       if (error instanceof OddsApiHttpError && error.status === 422) {
@@ -1530,6 +1582,7 @@ export class TheOddsApiPlayerMarketOddsProvider
             [market],
             snapshots,
             allowRegionalFallback,
+            sportKey,
           );
           return;
         }
@@ -1547,12 +1600,14 @@ export class TheOddsApiPlayerMarketOddsProvider
           [market],
           snapshots,
           allowRegionalFallback,
+          sportKey,
         );
         return;
       }
       this.options.logger.warn(
         {
           fixture: fixture.key,
+          sportKey,
           markets: [market],
           error: error instanceof Error ? error.message : String(error),
         },

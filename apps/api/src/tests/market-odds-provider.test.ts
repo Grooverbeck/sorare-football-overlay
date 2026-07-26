@@ -219,6 +219,92 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it('routes a supported UEFA fixture across qualification and main competition feeds', async () => {
+    const uefaPlayer = player({
+      slug: 'muhammed-kerem-akturkoglu',
+      displayName: 'Kerem Aktürkoğlu',
+      nextGame: {
+        date: kickoff,
+        competitionSlug: 'uefa-champions-league',
+        homeTeamName: 'Górnik Zabrze',
+        awayTeamName: 'Fenerbahçe',
+        playerTeamName: 'Fenerbahçe',
+        opponentTeamName: 'Górnik Zabrze',
+        cleanSheetProbability: 0.43,
+        matchProbabilities: { win: 0.61, draw: 0.23, loss: 0.16 },
+      },
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (
+        url.includes(
+          '/sports/soccer_uefa_champs_league_qualification/events?',
+        )
+      ) {
+        return json([]);
+      }
+      if (url.includes('/sports/soccer_uefa_champs_league/events?')) {
+        return json([
+          {
+            id: 'fixture-uefa',
+            commence_time: kickoff,
+            home_team: 'Gornik Zabrze',
+            away_team: 'Fenerbahce',
+          },
+        ]);
+      }
+      if (
+        url.includes(
+          '/sports/soccer_uefa_champs_league/events/fixture-uefa/odds?',
+        )
+      ) {
+        return json({
+          ...marketResponse('Kerem Aktürkoğlu'),
+          id: 'fixture-uefa',
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    const provider = new TheOddsApiPlayerMarketOddsProvider({
+      apiKey: 'test-key',
+      baseUrl: 'https://api.the-odds-api.com/v4',
+      sportKey: 'soccer_uefa_champs_league_qualification',
+      additionalSportKeys: ['soccer_uefa_champs_league'],
+      region: 'eu',
+      fetchWindowMs: 12 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store: new InMemoryMarketSnapshotStore(60_000, () => now),
+      logger,
+      supportedCompetitionSlugs: ['uefa-champions-league'],
+      fetchImpl,
+      now: () => now,
+    });
+
+    const result = await provider.load([uefaPlayer]);
+
+    expect(
+      fetchImpl.mock.calls.map(([input]) => String(input)),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          '/sports/soccer_uefa_champs_league_qualification/events?',
+        ),
+        expect.stringContaining(
+          '/sports/soccer_uefa_champs_league/events?',
+        ),
+        expect.stringContaining(
+          '/sports/soccer_uefa_champs_league/events/fixture-uefa/odds?',
+        ),
+      ]),
+    );
+    expect(result.get(playerMarketOddsKey(uefaPlayer))).toMatchObject({
+      source: 'the-odds-api',
+      goal: { probability: expect.any(Number) },
+      assist: { probability: expect.any(Number) },
+    });
+  });
+
   it('persists exact usage returned by The Odds API response headers', async () => {
     const usageStore = new InMemoryProviderQuotaUsageStore();
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
@@ -259,6 +345,27 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     ]);
     expect(await usageStore.get('the-odds-api')).toEqual(refreshed[0]);
     expect(String(fetchImpl.mock.calls[0]?.[0])).toContain('/sports?apiKey=');
+  });
+
+  it('can disable duplicate usage refreshes for additional competition routes', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new TheOddsApiPlayerMarketOddsProvider({
+      apiKey: 'test-key',
+      baseUrl: 'https://api.the-odds-api.com/v4',
+      sportKey: 'soccer_uefa_europa_league',
+      region: 'eu',
+      fetchWindowMs: 12 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store: new InMemoryMarketSnapshotStore(60_000, () => now),
+      logger,
+      refreshUsage: false,
+      fetchImpl,
+      now: () => now,
+    });
+
+    await expect(provider.refreshUsage()).resolves.toEqual([]);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('disables the UK fallback once provider usage reaches 70 percent', async () => {

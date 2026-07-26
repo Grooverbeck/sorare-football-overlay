@@ -150,10 +150,13 @@ Spielbeginn werden keine weiteren Quotenabrufe ausgelöst. Bei dem produktiven
 Begegnung statt einer Prüfung alle sechs Stunden.
 
 Vor einem externen Abruf prüft das Backend zusätzlich die von Sorare gelieferte
-Competition. Die beiden aktuell konfigurierten Anbieter werden nur für
-MLS-Begegnungen verwendet; unbekannte oder eindeutig andere Wettbewerbe lösen
-keinen MLS-Feed-Aufruf aus. Alte Fixture-Cacheeinträge ohne Competition werden
-nur dann akzeptiert, wenn beide Teams sicher als MLS-Teams erkannt werden.
+Competition. SportsGameOdds unterstützt gezielt MLS, Champions League
+einschließlich Qualifikation und Europa League. The Odds API ergänzt diese
+Wettbewerbe sowie die Conference League. Für UEFA-Spiele bei The Odds API
+werden zuerst europäische und nur bei Bedarf britische Buchmacher abgefragt.
+Unbekannte oder andere Wettbewerbe lösen keinen externen Feed-Aufruf aus. Alte
+Fixture-Cacheeinträge ohne Competition werden einmalig beim nächsten
+Kartenaufruf aktualisiert.
 
 Der tägliche Cron speichert außerdem die Kontingentnutzung beider
 Quotenanbieter. Ab 50 % wird eine Warnung protokolliert, ab 70 % entfällt der

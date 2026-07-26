@@ -185,6 +185,26 @@ describe('SportsGameOddsPlayerMarketOddsProvider', () => {
     expect(String(fetchImpl.mock.calls[0]?.[0])).toContain('/account/usage');
   });
 
+  it('does not duplicate the account usage request for secondary league providers', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new SportsGameOddsPlayerMarketOddsProvider({
+      apiKey: 'secret-test-key',
+      baseUrl: 'https://api.sportsgameodds.com/v2',
+      leagueId: 'UEFA_CHAMPIONS_LEAGUE',
+      fetchWindowMs: 24 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store: new InMemoryMarketSnapshotStore(60_000, () => now),
+      logger,
+      refreshUsage: false,
+      fetchImpl,
+      now: () => now,
+    });
+
+    await expect(provider.refreshUsage()).resolves.toEqual([]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('does not request MLS objects for a different Sorare competition', async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const provider = new SportsGameOddsPlayerMarketOddsProvider({
@@ -259,6 +279,44 @@ describe('SportsGameOddsPlayerMarketOddsProvider', () => {
     const requestUrl = String(fetchImpl.mock.calls[0]?.[0]);
     expect(requestUrl).toContain('leagueID=MLS');
     expect(requestUrl).not.toContain('apiKey');
+  });
+
+  it('routes an explicitly supported Champions League fixture to its league feed', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify(eventsEnvelope()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const stats = player({
+      nextGame: {
+        ...player().nextGame!,
+        competitionSlug: 'uefa-champions-league',
+      },
+    });
+    const provider = new SportsGameOddsPlayerMarketOddsProvider({
+      apiKey: 'secret-test-key',
+      baseUrl: 'https://api.sportsgameodds.com/v2',
+      leagueId: 'UEFA_CHAMPIONS_LEAGUE',
+      fetchWindowMs: 24 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store: new InMemoryMarketSnapshotStore(60_000, () => now),
+      logger,
+      supportedCompetitionSlugs: ['uefa-champions-league'],
+      fetchImpl,
+      now: () => now,
+    });
+
+    const result = await provider.load([stats]);
+
+    expect(result.get(playerMarketOddsKey(stats))).toMatchObject({
+      source: 'sports-game-odds',
+      goal: { probability: expect.any(Number) },
+    });
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toContain(
+      'leagueID=UEFA_CHAMPIONS_LEAGUE',
+    );
   });
 
   it('freezes a successful event snapshot instead of spending another object', async () => {

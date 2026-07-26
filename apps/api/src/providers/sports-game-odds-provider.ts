@@ -140,6 +140,7 @@ interface SportsGameOddsOptions {
   store: MarketSnapshotStore;
   logger: AppLogger;
   usageStore?: ProviderQuotaUsageStore;
+  refreshUsage?: boolean;
   supportedCompetitionSlugs?: readonly string[];
   fetchImpl?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
@@ -436,6 +437,7 @@ export class SportsGameOddsPlayerMarketOddsProvider
   }
 
   async refreshUsage(): Promise<ProviderQuotaUsage[]> {
+    if (this.options.refreshUsage === false) return [];
     const body = await this.requestJson('/account/usage', {});
     const usage = sportsGameOddsQuotaUsage(
       body,
@@ -646,11 +648,12 @@ export class SportsGameOddsPlayerMarketOddsProvider
     }
     this.options.logger.info(
       {
+        leagueId: this.options.leagueId,
         events: parsed.data.length,
         fixtures: fixtures.length,
         truncated: Boolean(parsed.nextCursor),
       },
-      'SportsGameOdds MLS player-prop snapshot received',
+      'SportsGameOdds player-prop snapshot received',
     );
     return parsed.data;
   }

@@ -56,7 +56,9 @@ const PlayerFormStatsSchema = PlayerStatsSchema.omit({
   pendingRefreshes: true,
   mlsAaContext: true,
 });
-const PLAYER_FIXTURE_CACHE_POLICY_VERSION = 2;
+// v3 adds the Sorare competition slug used to route bookmaker requests only
+// to explicitly supported competitions. Older fixtures refresh lazily.
+const PLAYER_FIXTURE_CACHE_POLICY_VERSION = 3;
 const PlayerFixtureEnvelopeSchema = z.object({
   nextGame: PlayerStatsSchema.shape.nextGame,
   cachePolicyVersion: z

@@ -157,7 +157,7 @@ describe('Cloudflare Worker', () => {
       .bind(`player-fixture:v1:${key}`)
       .first<{ value: string; expires_at: number }>();
     expect(JSON.parse(migratedRow?.value ?? '{}')).toMatchObject({
-      cachePolicyVersion: 2,
+      cachePolicyVersion: 3,
       nextGame: { date: currentFixtureDate },
     });
     expect(migratedRow?.expires_at).toBe(
