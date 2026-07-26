@@ -9,9 +9,8 @@ Datei dokumentiert.
 
 - Bereits vorhandene L10-Werte werden sofort angezeigt, während eine
   abgelaufene nächste Begegnung unabhängig im Hintergrund aktualisiert wird.
-- D1 ist der primäre persistente Cache; bestehende KV-Daten bleiben als
-  Lesefallback verfügbar, sodass ein erschöpftes KV-Schreiblimit keine
-  Statistiken mehr verschwinden lässt.
+- Bereits geladene Statistiken bleiben auch bei vorübergehenden
+  Speichereinschränkungen verfügbar und verschwinden nicht plötzlich.
 - Spielerform und MLS-AA-Rangliste werden gebündelt montags aktualisiert.
   Schlägt die neue Rangliste fehl, bleibt der letzte gültige Stand erhalten.
 
