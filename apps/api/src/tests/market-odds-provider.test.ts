@@ -9,6 +9,10 @@ import {
   playerNameMatchScore,
   playerMarketOddsKey,
 } from '../providers/market-odds-provider.js';
+import {
+  InMemoryProviderQuotaUsageStore,
+  quotaUsage,
+} from '../providers/odds-usage.js';
 
 const now = Date.parse('2026-07-24T12:00:00.000Z');
 const kickoff = '2026-07-24T18:00:00.000Z';
@@ -184,6 +188,205 @@ function unavailableMarketResponse() {
 }
 
 describe('TheOddsApiPlayerMarketOddsProvider', () => {
+  it('does not call the MLS feed for an explicitly unsupported competition', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new TheOddsApiPlayerMarketOddsProvider({
+      apiKey: 'test-key',
+      baseUrl: 'https://api.the-odds-api.com/v4',
+      sportKey: 'soccer_usa_mls',
+      region: 'us',
+      fallbackRegion: 'uk',
+      fetchWindowMs: 12 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store: new InMemoryMarketSnapshotStore(60_000, () => now),
+      logger,
+      fetchImpl,
+      now: () => now,
+    });
+    const unsupported = player({
+      nextGame: {
+        ...player().nextGame!,
+        competitionSlug: 'k-league-1',
+        homeTeamName: 'FC Seoul',
+        awayTeamName: 'Ulsan HD',
+      },
+    });
+
+    const result = await provider.load([unsupported]);
+
+    expect(result.get(playerMarketOddsKey(unsupported))).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('persists exact usage returned by The Odds API response headers', async () => {
+    const usageStore = new InMemoryProviderQuotaUsageStore();
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      json([], {
+        headers: {
+          'content-type': 'application/json',
+          'x-requests-last': '0',
+          'x-requests-used': '211',
+          'x-requests-remaining': '289',
+        },
+      }),
+    );
+    const provider = new TheOddsApiPlayerMarketOddsProvider({
+      apiKey: 'test-key',
+      baseUrl: 'https://api.the-odds-api.com/v4',
+      sportKey: 'soccer_usa_mls',
+      region: 'us',
+      fetchWindowMs: 12 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store: new InMemoryMarketSnapshotStore(60_000, () => now),
+      usageStore,
+      logger,
+      fetchImpl,
+      now: () => now,
+    });
+
+    const refreshed = await provider.refreshUsage();
+
+    expect(refreshed).toEqual([
+      expect.objectContaining({
+        provider: 'the-odds-api',
+        unit: 'requests',
+        used: 211,
+        limit: 500,
+        remaining: 289,
+      }),
+    ]);
+    expect(await usageStore.get('the-odds-api')).toEqual(refreshed[0]);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toContain('/sports?apiKey=');
+  });
+
+  it('disables the UK fallback once provider usage reaches 70 percent', async () => {
+    const usageStore = new InMemoryProviderQuotaUsageStore();
+    const usage = quotaUsage(
+      'the-odds-api',
+      'requests',
+      70,
+      100,
+      new Date(now).toISOString(),
+    );
+    if (!usage) throw new Error('Expected quota usage');
+    usageStore.set(usage);
+    const griezmann = player({
+      slug: 'antoine-griezmann',
+      displayName: 'Antoine Griezmann',
+    });
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json(eventResponse()))
+      .mockResolvedValueOnce(json(marketResponse('Timo Werner')));
+    const provider = new TheOddsApiPlayerMarketOddsProvider({
+      apiKey: 'test-key',
+      baseUrl: 'https://api.the-odds-api.com/v4',
+      sportKey: 'soccer_usa_mls',
+      region: 'us',
+      fallbackRegion: 'uk',
+      fetchWindowMs: 12 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store: new InMemoryMarketSnapshotStore(60_000, () => now),
+      usageStore,
+      logger,
+      fetchImpl,
+      now: () => now,
+    });
+
+    await provider.load([griezmann]);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(
+      fetchImpl.mock.calls.some(([input]) =>
+        String(input).includes('regions=uk'),
+      ),
+    ).toBe(false);
+  });
+
+  it('stops new paid lookups at 90 percent while leaving cache reads available', async () => {
+    const usageStore = new InMemoryProviderQuotaUsageStore();
+    const usage = quotaUsage(
+      'the-odds-api',
+      'requests',
+      90,
+      100,
+      new Date(now).toISOString(),
+    );
+    if (!usage) throw new Error('Expected quota usage');
+    usageStore.set(usage);
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new TheOddsApiPlayerMarketOddsProvider({
+      apiKey: 'test-key',
+      baseUrl: 'https://api.the-odds-api.com/v4',
+      sportKey: 'soccer_usa_mls',
+      region: 'us',
+      fallbackRegion: 'uk',
+      fetchWindowMs: 12 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store: new InMemoryMarketSnapshotStore(60_000, () => now),
+      usageStore,
+      logger,
+      fetchImpl,
+      now: () => now,
+    });
+
+    const result = await provider.load([player()]);
+
+    expect(result.get(playerMarketOddsKey(player()))).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('keeps frozen values but skips missing-player supplement checks at 85 percent', async () => {
+    const usageStore = new InMemoryProviderQuotaUsageStore();
+    const snapshotStore = new InMemoryMarketSnapshotStore(
+      60_000,
+      () => now,
+    );
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json(eventResponse()))
+      .mockResolvedValueOnce(json(marketResponse('Timo Werner')));
+    const provider = new TheOddsApiPlayerMarketOddsProvider({
+      apiKey: 'test-key',
+      baseUrl: 'https://api.the-odds-api.com/v4',
+      sportKey: 'soccer_usa_mls',
+      region: 'us',
+      fallbackRegion: 'uk',
+      fetchWindowMs: 12 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store: snapshotStore,
+      usageStore,
+      logger,
+      fetchImpl,
+      now: () => now,
+    });
+    const werner = player();
+    await provider.load([werner]);
+    const usage = quotaUsage(
+      'the-odds-api',
+      'requests',
+      85,
+      100,
+      new Date(now).toISOString(),
+    );
+    if (!usage) throw new Error('Expected quota usage');
+    usageStore.set(usage);
+    const griezmann = player({
+      slug: 'antoine-griezmann',
+      displayName: 'Antoine Griezmann',
+    });
+
+    const result = await provider.load([griezmann]);
+
+    expect(result.get(playerMarketOddsKey(griezmann))).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it('normalizes Sorare short team names and bookmaker team names identically', () => {
     expect(normalizeTeamName('Montreal Impact')).toBe(
       normalizeTeamName('CF Montreal'),

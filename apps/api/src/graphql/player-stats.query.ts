@@ -18,6 +18,9 @@ export const PLAYER_STATS_BATCH_QUERY = gql`
           ... on Game {
             id
             date
+            competition {
+              slug
+            }
             homeTeam {
               id
               shortName
@@ -83,6 +86,9 @@ export const PLAYER_NEXT_GAMES_QUERY = gql`
           ... on Game {
             id
             date
+            competition {
+              slug
+            }
             homeTeam {
               id
               shortName

@@ -149,6 +149,20 @@ Spielbeginn werden keine weiteren Quotenabrufe ausgelöst. Bei dem produktiven
 24-Stunden-Abruffenster ergeben sich dadurch höchstens drei Marktprüfungen pro
 Begegnung statt einer Prüfung alle sechs Stunden.
 
+Vor einem externen Abruf prüft das Backend zusätzlich die von Sorare gelieferte
+Competition. Die beiden aktuell konfigurierten Anbieter werden nur für
+MLS-Begegnungen verwendet; unbekannte oder eindeutig andere Wettbewerbe lösen
+keinen MLS-Feed-Aufruf aus. Alte Fixture-Cacheeinträge ohne Competition werden
+nur dann akzeptiert, wenn beide Teams sicher als MLS-Teams erkannt werden.
+
+Der tägliche Cron speichert außerdem die Kontingentnutzung beider
+Quotenanbieter. Ab 50 % wird eine Warnung protokolliert, ab 70 % entfällt der
+zusätzliche Regionen-Fallback, ab 85 % werden keine reinen Ergänzungsprüfungen
+mehr ausgeführt und ab 90 % werden neue externe Quotenabrufe gestoppt. Bereits
+gespeicherte Quoten bleiben in allen Stufen lesbar. Monitoring-Daten, die älter
+werden, behalten bis zur nächsten erfolgreichen täglichen Prüfung ihre letzte
+Schutzstufe.
+
 ## Cloudflare-Worker-Deployment
 
 Das API-Backend kann unverändert lokal unter Node.js oder als Cloudflare Worker laufen. Der Worker-Einstieg liegt in `apps/api/src/cloudflare/worker.ts`; `apps/api/wrangler.jsonc` enthält die versionierte Deployment-Konfiguration.
@@ -163,6 +177,7 @@ Im Cache liegen:
 - vorübergehend auch nicht auflösbare Namen, damit anonyme Sorare-Anfragen nicht ständig wiederholt werden.
 - unveränderliche Tor-/Assist-Marktsnapshots pro Begegnung und kurzlebige
   Negativtreffer für noch nicht angebotene Märkte.
+- den zuletzt bestätigten Kontingentstand der externen Quotenanbieter.
 
 Die Einträge werden beim Lesen erneut mit Zod validiert. Ungültige oder veraltete Cache-Formate werden verworfen. Normale Statistik-Schreibvorgänge laufen über `ExecutionContext.waitUntil()`. Der erstmalige Marktquoten-Snapshot wird dagegen vor der Antwort bestätigt, damit parallele Aufrufe möglichst keinen zweiten kostenpflichtigen Abruf auslösen.
 

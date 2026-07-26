@@ -19,6 +19,7 @@ import {
   playerProbability,
   recordFrozenSnapshotCheck,
   shouldRetryMarketFailure,
+  supportsPlayerCompetition,
   supplementFrozenSnapshot,
   type FixtureGroup,
   type FrozenMarketSnapshot,
@@ -28,6 +29,13 @@ import {
   type PlayerMarketOddsLoadOptions,
   type PlayerMarketOddsProvider,
 } from './market-odds-provider.js';
+import {
+  providerProtection,
+  protectionForUsage,
+  quotaUsage,
+  type ProviderQuotaUsage,
+  type ProviderQuotaUsageStore,
+} from './odds-usage.js';
 
 const sportsGameOddsMarketKeys = [
   'player_goal_scorer_anytime',
@@ -108,6 +116,16 @@ const SportsGameOddsEventsEnvelopeSchema = z.object({
   nextCursor: z.string().min(1).nullable().optional(),
 });
 
+const SportsGameOddsUsageEnvelopeSchema = z.object({
+  success: z.literal(true),
+  data: z.object({
+    rateLimits: z.record(
+      z.string().min(1),
+      z.record(z.string().min(1), z.unknown()),
+    ),
+  }),
+});
+
 type SportsGameOddsEvent = z.infer<typeof SportsGameOddsEventSchema>;
 type SportsGameOddsMarket = z.infer<typeof SportsGameOddsMarketSchema>;
 type SportsGameOddsBookQuote = z.infer<typeof SportsGameOddsBookQuoteSchema>;
@@ -121,9 +139,54 @@ interface SportsGameOddsOptions {
   maxRetries: number;
   store: MarketSnapshotStore;
   logger: AppLogger;
+  usageStore?: ProviderQuotaUsageStore;
+  supportedCompetitionSlugs?: readonly string[];
   fetchImpl?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
   now?: () => number;
+}
+
+function finiteUsageNumber(
+  values: Readonly<Record<string, unknown>>,
+  keys: readonly string[],
+): number | null {
+  for (const key of keys) {
+    const raw = values[key];
+    const numeric =
+      typeof raw === 'number'
+        ? raw
+        : typeof raw === 'string' && raw.trim() !== ''
+          ? Number(raw)
+          : Number.NaN;
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return null;
+}
+
+export function sportsGameOddsQuotaUsage(
+  body: unknown,
+  checkedAt: string,
+): ProviderQuotaUsage | null {
+  const parsed = SportsGameOddsUsageEnvelopeSchema.safeParse(body);
+  if (!parsed.success) return null;
+  const monthly = parsed.data.data.rateLimits['per-month'];
+  if (!monthly) return null;
+  const limit = finiteUsageNumber(monthly, [
+    'max-entities',
+    'maxEntitiesPerInterval',
+  ]);
+  const used = finiteUsageNumber(monthly, [
+    'current-entities',
+    'currentIntervalEntities',
+  ]);
+  if (limit === null || used === null) return null;
+  return quotaUsage(
+    'sports-game-odds',
+    'objects',
+    used,
+    limit,
+    checkedAt,
+  );
 }
 
 class SportsGameOddsHttpError extends Error {
@@ -365,6 +428,30 @@ export class SportsGameOddsPlayerMarketOddsProvider
     this.now = options.now ?? Date.now;
   }
 
+  supports(player: PlayerStats): boolean {
+    return supportsPlayerCompetition(
+      player,
+      this.options.supportedCompetitionSlugs ?? ['mlspa'],
+    );
+  }
+
+  async refreshUsage(): Promise<ProviderQuotaUsage[]> {
+    const body = await this.requestJson('/account/usage', {});
+    const usage = sportsGameOddsQuotaUsage(
+      body,
+      new Date(this.now()).toISOString(),
+    );
+    if (!usage) {
+      this.options.logger.warn(
+        {},
+        'SportsGameOdds usage response did not contain a finite monthly object limit',
+      );
+      return [];
+    }
+    await this.options.usageStore?.set(usage);
+    return [usage];
+  }
+
   async load(
     players: readonly PlayerStats[],
     loadOptions?: PlayerMarketOddsLoadOptions,
@@ -372,8 +459,18 @@ export class SportsGameOddsPlayerMarketOddsProvider
     const output = new Map<string, PlayerMarketOdds | null>(
       players.map((player) => [playerMarketOddsKey(player), null]),
     );
-    const fixtures = groupFixtures(players);
+    const fixtures = groupFixtures(
+      players.filter((player) => this.supports(player)),
+    );
     if (fixtures.length === 0) return output;
+    const protection = loadOptions?.cacheOnly
+      ? protectionForUsage(undefined)
+      : await providerProtection(
+          this.options.usageStore,
+          'sports-game-odds',
+          this.options.logger,
+          this.now(),
+        );
 
     const snapshots = new Map<string, Map<OddsMarketKey, MarketSnapshot>>();
     const pending: Array<{
@@ -404,7 +501,8 @@ export class SportsGameOddsPlayerMarketOddsProvider
           !snapshot ||
           (snapshot.status === 'unavailable'
             ? shouldRetryMarketFailure(snapshot, kickoff, this.now())
-            : needsFrozenSnapshotSupplement(
+            : protection.allowSnapshotSupplements &&
+              needsFrozenSnapshotSupplement(
                 snapshot,
                 fixture.players,
                 fixture.date,
@@ -412,7 +510,11 @@ export class SportsGameOddsPlayerMarketOddsProvider
               ))
         );
       });
-      if (!loadOptions?.cacheOnly && markets.length > 0) {
+      if (
+        !loadOptions?.cacheOnly &&
+        protection.allowExternalRequests &&
+        markets.length > 0
+      ) {
         pending.push({ fixture, markets });
       }
     }
@@ -619,13 +721,26 @@ export class SupplementingPlayerMarketOddsProvider
     private readonly fallback: PlayerMarketOddsProvider,
   ) {}
 
+  supports(player: PlayerStats): boolean {
+    return (
+      (this.primary.supports?.(player) ?? true) ||
+      (this.fallback.supports?.(player) ?? true)
+    );
+  }
+
+  async refreshUsage(): Promise<ProviderQuotaUsage[]> {
+    const results = await Promise.all([
+      this.primary.refreshUsage?.() ?? Promise.resolve([]),
+      this.fallback.refreshUsage?.() ?? Promise.resolve([]),
+    ]);
+    return results.flat();
+  }
+
   async load(
     players: readonly PlayerStats[],
     loadOptions?: PlayerMarketOddsLoadOptions,
   ): Promise<Map<string, PlayerMarketOdds | null>> {
-    const eligiblePlayers = players.filter(
-      (player) => player.position !== 'Goalkeeper',
-    );
+    const eligiblePlayers = players.filter((player) => this.supports(player));
     const primaryValues = await this.primary.load(eligiblePlayers, loadOptions);
     const fallbackPlayers = eligiblePlayers.filter((player) => {
       const odds = primaryValues.get(playerMarketOddsKey(player));

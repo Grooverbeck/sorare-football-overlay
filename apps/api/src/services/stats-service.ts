@@ -15,6 +15,7 @@ import {
 } from '../cache.js';
 import {
   playerMarketOddsKey,
+  playerMarketOddsSupported,
   type PlayerMarketOddsProvider,
 } from '../providers/market-odds-provider.js';
 import type { GoalscorerProbabilityProvider } from '../providers/goalscorer-provider.js';
@@ -237,7 +238,7 @@ export class StatsService {
       )
     ).filter((stats): stats is PlayerStats => Boolean(stats));
     const oddsEligiblePlayers = cachedOrLoaded.filter(
-      (stats) => stats.position !== 'Goalkeeper' && stats.nextGame !== null,
+      (stats) => playerMarketOddsSupported(this.marketOddsProvider, stats),
     );
     const marketOdds = await this.marketOddsProvider
       .load(oddsEligiblePlayers, { cacheOnly: true })
@@ -248,14 +249,15 @@ export class StatsService {
         stats.pendingRefreshes ?? [],
       );
       const key = playerMarketOddsKey(stats);
+      const supportsMarketOdds = playerMarketOddsSupported(
+        this.marketOddsProvider,
+        stats,
+      );
       const odds =
-        stats.position === 'Goalkeeper'
-          ? null
-          : marketOdds.get(key) ?? null;
+        supportsMarketOdds ? marketOdds.get(key) ?? null : null;
       if (
         this.scheduleBackground &&
-        stats.position !== 'Goalkeeper' &&
-        stats.nextGame &&
+        supportsMarketOdds &&
         (!odds?.goal || !odds.assist)
       ) {
         pending.add('marketOdds');
@@ -357,7 +359,7 @@ export class StatsService {
       }),
     );
     const oddsEligible = refreshedPlayers.filter(
-      (stats) => stats.position !== 'Goalkeeper' && stats.nextGame !== null,
+      (stats) => playerMarketOddsSupported(this.marketOddsProvider, stats),
     );
     if (oddsEligible.length > 0) {
       await this.marketOddsProvider.load(oddsEligible);

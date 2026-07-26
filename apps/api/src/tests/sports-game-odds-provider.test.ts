@@ -9,9 +9,11 @@ import {
   playerMarketOddsKey,
   type PlayerMarketOddsProvider,
 } from '../providers/market-odds-provider.js';
+import { InMemoryProviderQuotaUsageStore } from '../providers/odds-usage.js';
 import {
   SportsGameOddsPlayerMarketOddsProvider,
   SupplementingPlayerMarketOddsProvider,
+  sportsGameOddsQuotaUsage,
 } from '../providers/sports-game-odds-provider.js';
 
 const logger: AppLogger = {
@@ -114,6 +116,104 @@ function eventsEnvelope() {
 }
 
 describe('SportsGameOddsPlayerMarketOddsProvider', () => {
+  it('parses the monthly object allowance from the documented usage response', () => {
+    expect(
+      sportsGameOddsQuotaUsage(
+        {
+          success: true,
+          data: {
+            rateLimits: {
+              'per-month': {
+                'max-entities': 2_500,
+                'current-entities': 914,
+              },
+            },
+          },
+        },
+        '2026-07-25T10:00:00.000Z',
+      ),
+    ).toEqual({
+      provider: 'sports-game-odds',
+      unit: 'objects',
+      used: 914,
+      limit: 2_500,
+      remaining: 1_586,
+      checkedAt: '2026-07-25T10:00:00.000Z',
+    });
+  });
+
+  it('refreshes and persists provider usage through the free account endpoint', async () => {
+    const usageStore = new InMemoryProviderQuotaUsageStore();
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          success: true,
+          data: {
+            rateLimits: {
+              'per-month': {
+                maxEntitiesPerInterval: 2_500,
+                currentIntervalEntities: 1_250,
+              },
+            },
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const provider = new SportsGameOddsPlayerMarketOddsProvider({
+      apiKey: 'secret-test-key',
+      baseUrl: 'https://api.sportsgameodds.com/v2',
+      leagueId: 'MLS',
+      fetchWindowMs: 24 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store: new InMemoryMarketSnapshotStore(60_000, () => now),
+      usageStore,
+      logger,
+      fetchImpl,
+      now: () => now,
+    });
+
+    const refreshed = await provider.refreshUsage();
+
+    expect(refreshed[0]).toMatchObject({
+      provider: 'sports-game-odds',
+      used: 1_250,
+      limit: 2_500,
+    });
+    expect(await usageStore.get('sports-game-odds')).toEqual(refreshed[0]);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toContain('/account/usage');
+  });
+
+  it('does not request MLS objects for a different Sorare competition', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new SportsGameOddsPlayerMarketOddsProvider({
+      apiKey: 'secret-test-key',
+      baseUrl: 'https://api.sportsgameodds.com/v2',
+      leagueId: 'MLS',
+      fetchWindowMs: 24 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store: new InMemoryMarketSnapshotStore(60_000, () => now),
+      logger,
+      fetchImpl,
+      now: () => now,
+    });
+    const unsupported = player({
+      nextGame: {
+        ...player().nextGame!,
+        competitionSlug: 'super-lig',
+        homeTeamName: 'Fenerbahce',
+        awayTeamName: 'Galatasaray',
+      },
+    });
+
+    const result = await provider.load([unsupported]);
+
+    expect(result.get(playerMarketOddsKey(unsupported))).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('loads direct goal, assist and goals-or-assists markets with no-vig bookmaker probabilities', async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
       const headers = new Headers(init?.headers);

@@ -18,6 +18,10 @@ import {
   SportsGameOddsPlayerMarketOddsProvider,
   SupplementingPlayerMarketOddsProvider,
 } from './providers/sports-game-odds-provider.js';
+import {
+  InMemoryProviderQuotaUsageStore,
+  type ProviderQuotaUsageStore,
+} from './providers/odds-usage.js';
 import type {
   PlayerNameResolutionCache,
   PlayerStatsDataSource,
@@ -33,6 +37,7 @@ export interface CreateStatsRuntimeOptions {
   statsCache: Cache<PlayerStats>;
   nameResolutionCache?: PlayerNameResolutionCache;
   marketSnapshotStore?: MarketSnapshotStore;
+  providerQuotaUsageStore?: ProviderQuotaUsageStore;
   scheduleBackground?: BackgroundTaskScheduler;
 }
 
@@ -51,6 +56,9 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
     dataSource = new MockDataSource();
     marketOddsProvider = new MockPlayerMarketOddsProvider();
   } else {
+    const providerQuotaUsageStore =
+      options.providerQuotaUsageStore ??
+      new InMemoryProviderQuotaUsageStore();
     const client = new SorareGraphqlClient({
       url: config.graphqlUrl,
       requestTimeoutMs: config.requestTimeoutMs,
@@ -84,6 +92,8 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
             options.marketSnapshotStore ??
             new InMemoryMarketSnapshotStore(config.oddsMissCacheTtlMs),
           logger,
+          usageStore: providerQuotaUsageStore,
+          supportedCompetitionSlugs: ['mlspa'],
         })
       : new UnavailablePlayerMarketOddsProvider();
     marketOddsProvider = config.sportsGameOddsApiKey
@@ -99,6 +109,8 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
               options.marketSnapshotStore ??
               new InMemoryMarketSnapshotStore(config.oddsMissCacheTtlMs),
             logger,
+            usageStore: providerQuotaUsageStore,
+            supportedCompetitionSlugs: ['mlspa'],
           }),
           theOddsProvider,
         )

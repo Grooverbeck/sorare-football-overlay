@@ -9,6 +9,7 @@ import {
   CloudflareMlsAaBenchmarkStore,
   CloudflareNameResolutionCache,
   CloudflarePlayerStatsCache,
+  CloudflareProviderQuotaUsageStore,
 } from './cache.js';
 import { D1JsonKeyValueStore } from './d1-cache.js';
 import { createWorkerLogger } from './logger.js';
@@ -92,6 +93,9 @@ function createWorkerServices(
       Math.floor(config.oddsMissCacheTtlMs / 1_000),
       context,
     ),
+    providerQuotaUsageStore: new CloudflareProviderQuotaUsageStore(
+      cacheStore,
+    ),
     scheduleBackground: (task) => {
       context.waitUntil(
         task.catch((error: unknown) => {
@@ -168,8 +172,37 @@ export default {
       logger,
       windowMs: config.oddsFetchWindowMs,
     });
-    context.waitUntil(
-      prewarmer.run().catch((error: unknown) => {
+    context.waitUntil((async () => {
+      try {
+        const usages =
+          (await runtime.marketOddsProvider.refreshUsage?.()) ?? [];
+        for (const usage of usages) {
+          logger.info(
+            {
+              provider: usage.provider,
+              unit: usage.unit,
+              used: usage.used,
+              limit: usage.limit,
+              remaining: usage.remaining,
+              usagePercent:
+                Math.round((usage.used / usage.limit) * 1_000) / 10,
+            },
+            'Bookmaker quota usage refreshed',
+          );
+        }
+      } catch (error) {
+        logger.warn(
+          {
+            cron: controller.cron,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Bookmaker quota usage refresh failed; keeping last known protection state',
+        );
+      }
+
+      try {
+        await prewarmer.run();
+      } catch (error) {
         logger.error(
           {
             cron: controller.cron,
@@ -177,7 +210,7 @@ export default {
           },
           'MLS market prewarm failed',
         );
-      }),
-    );
+      }
+    })());
   },
 } satisfies ExportedHandler<CloudflareBindings>;

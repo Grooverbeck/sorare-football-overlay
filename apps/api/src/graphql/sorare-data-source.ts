@@ -649,6 +649,9 @@ export class SorareDataSource implements PlayerStatsDataSource {
     const footballStats = stats?.__typename === 'FootballTeamGameStats' ? stats : null;
     return {
       date: game.date,
+      ...(game.competition?.slug
+        ? { competitionSlug: game.competition.slug }
+        : {}),
       homeTeamName: game.homeTeam?.shortName ?? null,
       awayTeamName: game.awayTeam?.shortName ?? null,
       playerTeamName: home

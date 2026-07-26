@@ -1,0 +1,187 @@
+import { z } from 'zod';
+import type { AppLogger } from '../logger.js';
+
+export const OddsProviderNameSchema = z.enum([
+  'the-odds-api',
+  'sports-game-odds',
+]);
+export type OddsProviderName = z.infer<typeof OddsProviderNameSchema>;
+
+export const ProviderQuotaUsageSchema = z.object({
+  provider: OddsProviderNameSchema,
+  unit: z.enum(['requests', 'objects']),
+  used: z.number().int().nonnegative(),
+  limit: z.number().int().positive(),
+  remaining: z.number().int().nonnegative(),
+  checkedAt: z.string().datetime(),
+});
+export type ProviderQuotaUsage = z.infer<typeof ProviderQuotaUsageSchema>;
+
+export interface ProviderQuotaUsageStore {
+  get(provider: OddsProviderName): Promise<ProviderQuotaUsage | undefined>;
+  set(usage: ProviderQuotaUsage): void | Promise<void>;
+}
+
+export class InMemoryProviderQuotaUsageStore
+  implements ProviderQuotaUsageStore
+{
+  private readonly entries = new Map<OddsProviderName, ProviderQuotaUsage>();
+
+  async get(
+    provider: OddsProviderName,
+  ): Promise<ProviderQuotaUsage | undefined> {
+    return this.entries.get(provider);
+  }
+
+  set(usage: ProviderQuotaUsage): void {
+    this.entries.set(usage.provider, ProviderQuotaUsageSchema.parse(usage));
+  }
+}
+
+export const oddsUsageThresholds = {
+  warning: 0.5,
+  fallbackDisabled: 0.7,
+  essentialOnly: 0.85,
+  stopped: 0.9,
+} as const;
+
+export type OddsUsageProtectionLevel =
+  | 'normal'
+  | 'warning'
+  | 'fallback-disabled'
+  | 'essential-only'
+  | 'stopped';
+
+export interface OddsUsageProtection {
+  level: OddsUsageProtectionLevel;
+  ratio: number | null;
+  allowExternalRequests: boolean;
+  allowRegionalFallback: boolean;
+  allowSnapshotSupplements: boolean;
+}
+
+export function quotaUsageRatio(usage: ProviderQuotaUsage): number {
+  return Math.min(1, usage.used / usage.limit);
+}
+
+export function protectionForUsage(
+  usage: ProviderQuotaUsage | undefined,
+  _now: number = Date.now(),
+): OddsUsageProtection {
+  if (!usage || !Number.isFinite(Date.parse(usage.checkedAt))) {
+    return {
+      level: 'normal',
+      ratio: null,
+      allowExternalRequests: true,
+      allowRegionalFallback: true,
+      allowSnapshotSupplements: true,
+    };
+  }
+
+  const ratio = quotaUsageRatio(usage);
+  if (ratio >= oddsUsageThresholds.stopped) {
+    return {
+      level: 'stopped',
+      ratio,
+      allowExternalRequests: false,
+      allowRegionalFallback: false,
+      allowSnapshotSupplements: false,
+    };
+  }
+  if (ratio >= oddsUsageThresholds.essentialOnly) {
+    return {
+      level: 'essential-only',
+      ratio,
+      allowExternalRequests: true,
+      allowRegionalFallback: false,
+      allowSnapshotSupplements: false,
+    };
+  }
+  if (ratio >= oddsUsageThresholds.fallbackDisabled) {
+    return {
+      level: 'fallback-disabled',
+      ratio,
+      allowExternalRequests: true,
+      allowRegionalFallback: false,
+      allowSnapshotSupplements: true,
+    };
+  }
+  if (ratio >= oddsUsageThresholds.warning) {
+    return {
+      level: 'warning',
+      ratio,
+      allowExternalRequests: true,
+      allowRegionalFallback: true,
+      allowSnapshotSupplements: true,
+    };
+  }
+  return {
+    level: 'normal',
+    ratio,
+    allowExternalRequests: true,
+    allowRegionalFallback: true,
+    allowSnapshotSupplements: true,
+  };
+}
+
+export async function providerProtection(
+  store: ProviderQuotaUsageStore | undefined,
+  provider: OddsProviderName,
+  logger: AppLogger,
+  now: number = Date.now(),
+): Promise<OddsUsageProtection> {
+  let usage: ProviderQuotaUsage | undefined;
+  try {
+    usage = store ? await store.get(provider) : undefined;
+  } catch (error) {
+    logger.warn(
+      {
+        provider,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      'Bookmaker quota state unavailable; continuing with cached market safeguards',
+    );
+  }
+  const protection = protectionForUsage(usage, now);
+  if (protection.level !== 'normal') {
+    logger.warn(
+      {
+        provider,
+        usagePercent:
+          protection.ratio === null
+            ? null
+            : Math.round(protection.ratio * 1_000) / 10,
+        protection: protection.level,
+      },
+      'Bookmaker quota protection active',
+    );
+  }
+  return protection;
+}
+
+export function quotaUsage(
+  provider: OddsProviderName,
+  unit: ProviderQuotaUsage['unit'],
+  used: number,
+  limit: number,
+  checkedAt: string,
+): ProviderQuotaUsage | null {
+  if (
+    !Number.isFinite(used) ||
+    !Number.isFinite(limit) ||
+    used < 0 ||
+    limit <= 0
+  ) {
+    return null;
+  }
+  const normalizedUsed = Math.max(0, Math.floor(used));
+  const normalizedLimit = Math.max(1, Math.floor(limit));
+  return ProviderQuotaUsageSchema.parse({
+    provider,
+    unit,
+    used: normalizedUsed,
+    limit: normalizedLimit,
+    remaining: Math.max(0, normalizedLimit - normalizedUsed),
+    checkedAt,
+  });
+}

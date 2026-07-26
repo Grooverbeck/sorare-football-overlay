@@ -128,6 +128,10 @@ export const PlayerStatsSchema = z.object({
   nextGame: z
     .object({
       date: z.string().datetime(),
+      // Optional while existing fixture cache entries migrate lazily.
+      // New responses use the stable Sorare competition slug to decide
+      // whether a bookmaker provider supports this fixture.
+      competitionSlug: z.string().trim().min(1).nullable().optional(),
       // Optional for backwards compatibility with fixture:v1 KV entries
       // written before team names were added to the response contract.
       homeTeamName: z.string().trim().min(1).nullable().optional(),

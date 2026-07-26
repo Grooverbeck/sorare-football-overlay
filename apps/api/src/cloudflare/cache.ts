@@ -26,6 +26,12 @@ import {
   type MarketSnapshotStore,
   type OddsMarketKey,
 } from '../providers/market-odds-provider.js';
+import {
+  ProviderQuotaUsageSchema,
+  type OddsProviderName,
+  type ProviderQuotaUsage,
+  type ProviderQuotaUsageStore,
+} from '../providers/odds-usage.js';
 import type {
   PlayerNameResolutionCache,
   SourcePlayerRequest,
@@ -372,6 +378,38 @@ export class CloudflareMarketSnapshotStore
 
   private key(fixtureKey: string, market: OddsMarketKey): string {
     return `market-odds:v1:${encodeURIComponent(fixtureKey)}:${market}`;
+  }
+}
+
+export class CloudflareProviderQuotaUsageStore
+  implements ProviderQuotaUsageStore
+{
+  constructor(private readonly namespace: JsonKeyValueStore) {}
+
+  async get(
+    provider: OddsProviderName,
+  ): Promise<ProviderQuotaUsage | undefined> {
+    const key = this.key(provider);
+    const raw = await this.namespace.get<unknown>(key, 'json');
+    if (raw === null) return undefined;
+    const parsed = ProviderQuotaUsageSchema.safeParse(raw);
+    if (!parsed.success) {
+      await this.namespace.delete(key);
+      return undefined;
+    }
+    return parsed.data;
+  }
+
+  async set(usage: ProviderQuotaUsage): Promise<void> {
+    const value = ProviderQuotaUsageSchema.parse(usage);
+    await this.namespace.put(
+      this.key(value.provider),
+      JSON.stringify(value),
+    );
+  }
+
+  private key(provider: OddsProviderName): string {
+    return `odds-provider-usage:v1:${provider}`;
   }
 }
 

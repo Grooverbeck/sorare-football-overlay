@@ -799,6 +799,7 @@ describe('SorareDataSource player-name resolution', () => {
           nextGame: {
             __typename: 'Game',
             date: '2026-08-01T18:00:00Z',
+            competition: { slug: 'mlspa' },
             homeTeam: { id: `club-${slug}`, shortName: 'Home' },
             awayTeam: { id: 'away-club', shortName: 'Away' },
             homeStats: {
@@ -834,6 +835,7 @@ describe('SorareDataSource player-name resolution', () => {
       slug: 'fixture-player-1',
       nextGame: {
         date: '2026-08-01T18:00:00Z',
+        competitionSlug: 'mlspa',
         homeTeamName: 'Home',
         awayTeamName: 'Away',
         playerTeamName: 'Home',

@@ -96,6 +96,7 @@ export class MockDataSource implements PlayerStatsDataSource {
         appearances,
         nextGame: {
           date: '2026-07-27T18:45:00.000Z',
+          competitionSlug: 'mlspa',
           homeTeamName: 'Mock United',
           awayTeamName: 'Demo City',
           playerTeamName: 'Mock United',

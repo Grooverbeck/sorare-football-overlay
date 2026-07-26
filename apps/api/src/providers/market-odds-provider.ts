@@ -8,6 +8,14 @@ import {
 } from '@sorare-overlay/shared';
 import { z } from 'zod';
 import type { AppLogger } from '../logger.js';
+import {
+  providerProtection,
+  protectionForUsage,
+  quotaUsage,
+  type OddsUsageProtection,
+  type ProviderQuotaUsage,
+  type ProviderQuotaUsageStore,
+} from './odds-usage.js';
 
 export const oddsMarketKeys = [
   'player_goal_scorer_anytime',
@@ -120,6 +128,8 @@ export interface PlayerMarketOddsProvider {
     players: readonly PlayerStats[],
     options?: PlayerMarketOddsLoadOptions,
   ): Promise<Map<string, PlayerMarketOdds | null>>;
+  supports?(player: PlayerStats): boolean;
+  refreshUsage?(): Promise<ProviderQuotaUsage[]>;
 }
 
 export interface PlayerMarketOddsLoadOptions {
@@ -134,9 +144,23 @@ export function playerMarketOddsKey(
   return `${player.slug}:${player.position}`;
 }
 
+export function playerMarketOddsSupported(
+  provider: PlayerMarketOddsProvider,
+  player: PlayerStats,
+): boolean {
+  return (
+    provider.supports?.(player) ??
+    (player.position !== 'Goalkeeper' && player.nextGame !== null)
+  );
+}
+
 export class UnavailablePlayerMarketOddsProvider
   implements PlayerMarketOddsProvider
 {
+  supports(): boolean {
+    return false;
+  }
+
   async load(
     players: readonly PlayerStats[],
     _options?: PlayerMarketOddsLoadOptions,
@@ -147,6 +171,10 @@ export class UnavailablePlayerMarketOddsProvider
 
 export class MockPlayerMarketOddsProvider implements PlayerMarketOddsProvider {
   constructor(private readonly now: () => number = Date.now) {}
+
+  supports(player: PlayerStats): boolean {
+    return player.position !== 'Goalkeeper' && player.nextGame !== null;
+  }
 
   async load(
     players: readonly PlayerStats[],
@@ -261,6 +289,8 @@ interface TheOddsApiOptions {
   maxRetries: number;
   store: MarketSnapshotStore;
   logger: AppLogger;
+  usageStore?: ProviderQuotaUsageStore;
+  supportedCompetitionSlugs?: readonly string[];
   fetchImpl?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
   now?: () => number;
@@ -354,6 +384,42 @@ export function normalizeTeamName(value: string): string {
     .filter((part) => !['fc', 'cf', 'sc'].includes(part))
     .join(' ');
   return teamAliases[withoutClubSuffix] ?? withoutClubSuffix;
+}
+
+const defaultSupportedCompetitionSlugs = ['mlspa'] as const;
+const knownMlsTeamNames = new Set(Object.values(teamAliases));
+
+export function supportsPlayerCompetition(
+  player: PlayerStats,
+  supportedCompetitionSlugs: readonly string[] =
+    defaultSupportedCompetitionSlugs,
+): boolean {
+  if (player.position === 'Goalkeeper' || !player.nextGame) return false;
+  const supported = new Set(
+    supportedCompetitionSlugs.map((slug) => slug.trim().toLocaleLowerCase()),
+  );
+  const competitionSlug = player.nextGame.competitionSlug;
+  if (competitionSlug !== undefined) {
+    return (
+      competitionSlug !== null &&
+      supported.has(competitionSlug.trim().toLocaleLowerCase())
+    );
+  }
+
+  // Existing fixture:v1 entries predate `competitionSlug`. During their lazy
+  // migration, accept only fixtures whose two normalized teams are both part
+  // of the known MLS provider universe. Unknown legacy fixtures fail closed.
+  return (
+    supported.has('mlspa') &&
+    Boolean(player.nextGame.homeTeamName) &&
+    Boolean(player.nextGame.awayTeamName) &&
+    knownMlsTeamNames.has(
+      normalizeTeamName(player.nextGame.homeTeamName ?? ''),
+    ) &&
+    knownMlsTeamNames.has(
+      normalizeTeamName(player.nextGame.awayTeamName ?? ''),
+    )
+  );
 }
 
 export function normalizePlayerName(value: string): string {
@@ -848,6 +914,25 @@ function responseQuota(headers: Headers): Record<string, string | null> {
   };
 }
 
+export function theOddsApiQuotaUsage(
+  headers: Headers,
+  checkedAt: string,
+): ProviderQuotaUsage | null {
+  const usedHeader = headers.get('x-requests-used');
+  const remainingHeader = headers.get('x-requests-remaining');
+  if (usedHeader === null || remainingHeader === null) return null;
+  const used = Number(usedHeader);
+  const remaining = Number(remainingHeader);
+  if (!Number.isFinite(used) || !Number.isFinite(remaining)) return null;
+  return quotaUsage(
+    'the-odds-api',
+    'requests',
+    used,
+    used + remaining,
+    checkedAt,
+  );
+}
+
 function retryDelayMs(value: string | null, attempt: number): number {
   if (value) {
     const seconds = Number(value);
@@ -890,6 +975,24 @@ export class TheOddsApiPlayerMarketOddsProvider
     this.now = options.now ?? Date.now;
   }
 
+  supports(player: PlayerStats): boolean {
+    return supportsPlayerCompetition(
+      player,
+      this.options.supportedCompetitionSlugs ??
+        defaultSupportedCompetitionSlugs,
+    );
+  }
+
+  async refreshUsage(): Promise<ProviderQuotaUsage[]> {
+    const response = await this.requestJson('/sports', {});
+    const usage = theOddsApiQuotaUsage(
+      response.headers,
+      new Date(this.now()).toISOString(),
+    );
+    if (!usage) return [];
+    return [usage];
+  }
+
   async load(
     players: readonly PlayerStats[],
     loadOptions?: PlayerMarketOddsLoadOptions,
@@ -897,8 +1000,18 @@ export class TheOddsApiPlayerMarketOddsProvider
     const output = new Map<string, PlayerMarketOdds | null>(
       players.map((player) => [playerMarketOddsKey(player), null]),
     );
-    const fixtures = groupFixtures(players);
+    const fixtures = groupFixtures(
+      players.filter((player) => this.supports(player)),
+    );
     if (fixtures.length === 0) return output;
+    const protection = loadOptions?.cacheOnly
+      ? protectionForUsage(undefined)
+      : await providerProtection(
+          this.options.usageStore,
+          'the-odds-api',
+          this.options.logger,
+          this.now(),
+        );
 
     const snapshots = new Map<string, Map<OddsMarketKey, MarketSnapshot>>();
     const fixturesNeedingApi: Array<{
@@ -932,7 +1045,8 @@ export class TheOddsApiPlayerMarketOddsProvider
             !snapshot ||
             (snapshot.status === 'unavailable'
               ? shouldRetryMarketFailure(snapshot, kickoff, this.now())
-              : needsFrozenSnapshotSupplement(
+              : protection.allowSnapshotSupplements &&
+                needsFrozenSnapshotSupplement(
                   snapshot,
                   fixture.players,
                   fixture.date,
@@ -941,7 +1055,11 @@ export class TheOddsApiPlayerMarketOddsProvider
           );
         },
       );
-      if (!loadOptions?.cacheOnly && missingMarkets.length > 0) {
+      if (
+        !loadOptions?.cacheOnly &&
+        protection.allowExternalRequests &&
+        missingMarkets.length > 0
+      ) {
         fixturesNeedingApi.push({ fixture, missingMarkets });
       }
     }
@@ -984,6 +1102,7 @@ export class TheOddsApiPlayerMarketOddsProvider
             pending.missingMarkets,
             snapshots.get(pending.fixture.key) ??
               new Map<OddsMarketKey, MarketSnapshot>(),
+            protection,
           );
         });
       }
@@ -1034,6 +1153,7 @@ export class TheOddsApiPlayerMarketOddsProvider
     event: OddsEvent,
     markets: OddsMarketKey[],
     snapshots: Map<OddsMarketKey, MarketSnapshot>,
+    protection: OddsUsageProtection,
   ): Promise<void> {
     try {
       const response = await this.requestJson(
@@ -1093,6 +1213,7 @@ export class TheOddsApiPlayerMarketOddsProvider
         event,
         markets,
         snapshots,
+        protection.allowRegionalFallback,
       );
     } catch (error) {
       if (
@@ -1110,6 +1231,7 @@ export class TheOddsApiPlayerMarketOddsProvider
             event,
             market,
             snapshots,
+            protection.allowRegionalFallback,
           );
         });
         return;
@@ -1155,7 +1277,9 @@ export class TheOddsApiPlayerMarketOddsProvider
     event: OddsEvent,
     markets: readonly OddsMarketKey[],
     snapshots: Map<OddsMarketKey, MarketSnapshot>,
+    allowRegionalFallback: boolean,
   ): Promise<void> {
+    if (!allowRegionalFallback) return;
     const fallbackRegion = this.options.fallbackRegion?.trim();
     const fallbackMarkets = this.marketsNeedingFallback(
       fixture,
@@ -1318,6 +1442,7 @@ export class TheOddsApiPlayerMarketOddsProvider
     event: OddsEvent,
     market: OddsMarketKey,
     snapshots: Map<OddsMarketKey, MarketSnapshot>,
+    allowRegionalFallback: boolean,
   ): Promise<void> {
     try {
       const response = await this.requestJson(
@@ -1359,6 +1484,7 @@ export class TheOddsApiPlayerMarketOddsProvider
           event,
           [market],
           snapshots,
+          allowRegionalFallback,
         );
         return;
       }
@@ -1384,6 +1510,7 @@ export class TheOddsApiPlayerMarketOddsProvider
         event,
         [market],
         snapshots,
+        allowRegionalFallback,
       );
     } catch (error) {
       if (error instanceof OddsApiHttpError && error.status === 422) {
@@ -1402,6 +1529,7 @@ export class TheOddsApiPlayerMarketOddsProvider
             event,
             [market],
             snapshots,
+            allowRegionalFallback,
           );
           return;
         }
@@ -1418,6 +1546,7 @@ export class TheOddsApiPlayerMarketOddsProvider
           event,
           [market],
           snapshots,
+          allowRegionalFallback,
         );
         return;
       }
@@ -1490,7 +1619,9 @@ export class TheOddsApiPlayerMarketOddsProvider
           await response.body?.cancel();
           throw new OddsApiHttpError(response.status);
         }
-        return { body: await response.json(), headers: response.headers };
+        const body = await response.json();
+        await this.rememberQuota(response.headers);
+        return { body, headers: response.headers };
       } catch (error) {
         if (
           attempt < this.options.maxRetries &&
@@ -1506,5 +1637,25 @@ export class TheOddsApiPlayerMarketOddsProvider
       }
     }
     throw new Error('The Odds API retry budget exhausted');
+  }
+
+  private async rememberQuota(headers: Headers): Promise<void> {
+    if (!this.options.usageStore) return;
+    const usage = theOddsApiQuotaUsage(
+      headers,
+      new Date(this.now()).toISOString(),
+    );
+    if (!usage) return;
+    try {
+      await this.options.usageStore.set(usage);
+    } catch (error) {
+      this.options.logger.warn(
+        {
+          provider: 'the-odds-api',
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Bookmaker quota usage could not be persisted',
+      );
+    }
   }
 }

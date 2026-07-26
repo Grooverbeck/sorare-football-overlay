@@ -161,6 +161,7 @@ function representativeStats(
     goalL10: { value: null, sampleSize: 0 },
     nextGame: {
       date: fixture.date,
+      competitionSlug: 'mlspa',
       homeTeamName: fixture.homeTeam.shortName,
       awayTeamName: fixture.awayTeam.shortName,
       playerTeamName: playerTeam.shortName,

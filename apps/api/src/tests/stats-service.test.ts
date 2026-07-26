@@ -41,6 +41,31 @@ class FillMissingCache implements Cache<PlayerStats> {
 }
 
 describe('StatsService cache writes', () => {
+  it('does not queue bookmaker refreshes for provider-unsupported fixtures', async () => {
+    const load = vi.fn<PlayerMarketOddsProvider['load']>(async () => new Map());
+    const marketOddsProvider: PlayerMarketOddsProvider = {
+      supports: () => false,
+      load,
+    };
+    const scheduleBackground = vi.fn();
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      marketOddsProvider,
+      scheduleBackground,
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({ slugs: ['jude-bellingham'] }),
+    );
+
+    expect(load).toHaveBeenCalledWith([], { cacheOnly: true });
+    expect(scheduleBackground).not.toHaveBeenCalled();
+    expect(result.data[0]?.pendingRefreshes ?? []).not.toContain('marketOdds');
+  });
+
   it('uses the cache result when filling a partial cache miss', async () => {
     const cache = new FillMissingCache();
     const service = new StatsService(
