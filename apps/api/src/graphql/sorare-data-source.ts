@@ -10,6 +10,7 @@ import type {
   Position,
 } from '../generated/sorare.js';
 import type {
+  PlayerNameResolutionOptions,
   PlayerNameResolutionCache,
   PlayerStatsDataSource,
   SourcePlayer,
@@ -203,14 +204,17 @@ export class SorareDataSource implements PlayerStatsDataSource {
   async resolvePlayerNames(
     names: readonly string[],
     expectedPositions?: Readonly<Record<string, FootballPosition>>,
+    options: PlayerNameResolutionOptions = {},
   ): Promise<SourcePlayerRequest[]> {
-    await this.hydrateCachedResolutions(names, expectedPositions);
+    if (!options.forceSearch) {
+      await this.hydrateCachedResolutions(names, expectedPositions);
+    }
     const missing = [
       ...new Map(
         names
           .filter((name) => {
             const position = expectedPositionForName(name, expectedPositions);
-            return !this.hasCachedResolution(name, position);
+            return options.forceSearch || !this.hasCachedResolution(name, position);
           })
           .map((name) => [normalizeName(name), name]),
       ).values(),
@@ -220,20 +224,30 @@ export class SorareDataSource implements PlayerStatsDataSource {
     // all such candidates in one cheap query before falling back to the much
     // slower full-text searches. A broken search for one unusual name must not
     // hold back every other player in the request.
-    try {
-      await this.resolveSlugCandidates(missing, expectedPositions);
-    } catch {
-      // Search fallbacks below can still resolve each name independently.
+    if (!options.forceSearch) {
+      try {
+        await this.resolveSlugCandidates(missing, expectedPositions);
+      } catch {
+        // Search fallbacks below can still resolve each name independently.
+      }
     }
-    const searchFallbacks = missing.filter((name) => {
-      const position = expectedPositionForName(name, expectedPositions);
-      return !this.resolvedNames.has(resolutionKey(name, position));
-    });
+    const searchFallbacks = options.forceSearch
+      ? missing
+      : missing.filter((name) => {
+          const position = expectedPositionForName(name, expectedPositions);
+          return !this.resolvedNames.has(resolutionKey(name, position));
+        });
     const completedSearches = new Set<string>();
     await Promise.all(
       searchFallbacks.map(async (name) => {
         const position = expectedPositionForName(name, expectedPositions);
         const key = resolutionKey(name, position);
+        if (options.forceSearch) {
+          // The cached/direct slug is precisely what is being revalidated.
+          // Do not let a failed or empty search silently reuse it.
+          this.resolvedNames.delete(key);
+          this.unresolvedNamesUntil.delete(key);
+        }
         try {
           await this.resolveName(name, position);
           completedSearches.add(key);
@@ -267,6 +281,10 @@ export class SorareDataSource implements PlayerStatsDataSource {
         {
           slug: resolved.slug,
           ...(expectedPosition ? { position: expectedPosition } : {}),
+          resolvedFromName: name,
+          ...(resolved.nameResolution
+            ? { nameResolution: resolved.nameResolution }
+            : {}),
         },
       ];
     });
@@ -297,7 +315,11 @@ export class SorareDataSource implements PlayerStatsDataSource {
         namesLikelyMatch(requestedName, player.displayName)
       ) {
         const key = resolutionKey(requestedName, expectedPosition);
-        const resolved = { slug: player.slug, position };
+        const resolved = {
+          slug: player.slug,
+          position,
+          nameResolution: 'direct' as const,
+        };
         this.resolvedNames.set(key, resolved);
         this.unresolvedNamesUntil.delete(key);
         await this.persistResolution(requestedName, expectedPosition, resolved);
@@ -392,7 +414,11 @@ export class SorareDataSource implements PlayerStatsDataSource {
     const position = exact ? fromSorarePosition[exact.position] : undefined;
     const key = resolutionKey(name, expectedPosition);
     if (exact && position) {
-      const resolved = { slug: exact.slug, position };
+      const resolved = {
+        slug: exact.slug,
+        position,
+        nameResolution: 'search' as const,
+      };
       this.resolvedNames.set(key, resolved);
       this.unresolvedNamesUntil.delete(key);
       await this.persistResolution(name, expectedPosition, resolved);

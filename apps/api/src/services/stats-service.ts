@@ -57,6 +57,15 @@ function hasRequestedHistoricalWindows(
   );
 }
 
+function hasNoUsablePlayerData(stats: PlayerStats): boolean {
+  return (
+    stats.nextGame === null &&
+    stats.aaL10.sampleSize === 0 &&
+    stats.cleanSheetL10.sampleSize === 0 &&
+    stats.goalL10.sampleSize === 0
+  );
+}
+
 type PendingRefresh = 'fixture' | 'marketOdds';
 
 interface CachedFormOnly {
@@ -224,7 +233,7 @@ export class StatsService {
       }
     }
 
-    const cachedOrLoaded = (
+    let cachedOrLoaded = (
       await Promise.all(
         playerRequests.map(async (playerRequest) => {
           const key = cacheKey(playerRequest, this.excludeLowCoverage);
@@ -237,6 +246,12 @@ export class StatsService {
         }),
       )
     ).filter((stats): stats is PlayerStats => Boolean(stats));
+    cachedOrLoaded = await this.recoverEmptyNameResolutions(
+      playerRequests,
+      cachedOrLoaded,
+      request.positions,
+      request.includeHistoricalAssists,
+    );
     const oddsEligiblePlayers = cachedOrLoaded.filter(
       (stats) => playerMarketOddsSupported(this.marketOddsProvider, stats),
     );
@@ -295,6 +310,81 @@ export class StatsService {
     }
 
     return { data, cacheHits, source: this.dataSource.source };
+  }
+
+  private async recoverEmptyNameResolutions(
+    playerRequests: readonly SourcePlayerRequest[],
+    loadedStats: readonly PlayerStats[],
+    positions: Readonly<Record<string, FootballPosition>> | undefined,
+    includeHistoricalAssists: boolean,
+  ): Promise<PlayerStats[]> {
+    const emptyNameMatches = playerRequests.flatMap((playerRequest) => {
+      if (
+        !playerRequest.resolvedFromName ||
+        playerRequest.nameResolution === 'search'
+      ) {
+        return [];
+      }
+      const stats = loadedStats.find(
+        (candidate) =>
+          candidate.slug === playerRequest.slug &&
+          (!playerRequest.position ||
+            candidate.position === playerRequest.position),
+      );
+      return stats && hasNoUsablePlayerData(stats)
+        ? [{ playerRequest, stats }]
+        : [];
+    });
+    if (emptyNameMatches.length === 0) return [...loadedStats];
+
+    const names = [
+      ...new Set(
+        emptyNameMatches.map(
+          ({ playerRequest }) => playerRequest.resolvedFromName!,
+        ),
+      ),
+    ];
+    const searched = await this.dataSource.resolvePlayerNames(
+      names,
+      positions,
+      { forceSearch: true },
+    );
+    const searchedByName = new Map(
+      searched.flatMap((resolved) =>
+        resolved.resolvedFromName
+          ? [[resolved.resolvedFromName, resolved] as const]
+          : [],
+      ),
+    );
+    const replacements = new Map<PlayerStats, SourcePlayerRequest>();
+    for (const { playerRequest, stats } of emptyNameMatches) {
+      const corrected = searchedByName.get(playerRequest.resolvedFromName!);
+      if (!corrected || corrected.slug === playerRequest.slug) continue;
+      replacements.set(stats, {
+        ...corrected,
+        ...(includeHistoricalAssists
+          ? { includeHistoricalAssists: true }
+          : {}),
+      });
+    }
+    if (replacements.size === 0) return [...loadedStats];
+
+    const correctedRequests = [
+      ...new Map(
+        [...replacements.values()].map((request) => [
+          `${request.slug}:${request.position ?? 'default'}`,
+          request,
+        ]),
+      ).values(),
+    ];
+    const corrected = await this.loadBatch(correctedRequests);
+    return loadedStats.map((stats) => {
+      const correctedRequest = replacements.get(stats);
+      return correctedRequest
+        ? corrected.get(cacheKey(correctedRequest, this.excludeLowCoverage)) ??
+            stats
+        : stats;
+    });
   }
 
   private async hydrateFixturesForResponse(

@@ -44,6 +44,7 @@ import {
 const SourcePlayerRequestSchema = z.object({
   slug: z.string().trim().min(1).max(160).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i),
   position: FootballPositionSchema.optional(),
+  nameResolution: z.enum(['direct', 'search']).optional(),
 });
 
 const NameResolutionEnvelopeSchema = z.discriminatedUnion('found', [
@@ -749,9 +750,15 @@ export class CloudflareNameResolutionCache
       return undefined;
     }
     if (!parsed.data.found) return null;
-    return parsed.data.value.position
-      ? { slug: parsed.data.value.slug, position: parsed.data.value.position }
-      : { slug: parsed.data.value.slug };
+    return {
+      slug: parsed.data.value.slug,
+      ...(parsed.data.value.position
+        ? { position: parsed.data.value.position }
+        : {}),
+      ...(parsed.data.value.nameResolution
+        ? { nameResolution: parsed.data.value.nameResolution }
+        : {}),
+    };
   }
 
   set(
@@ -770,6 +777,6 @@ export class CloudflareNameResolutionCache
   }
 
   private key(name: string, position: FootballPosition | undefined): string {
-    return `player-name:v2:${encodeURIComponent(normalizeName(name))}:${position ?? 'any'}`;
+    return `player-name:v3:${encodeURIComponent(normalizeName(name))}:${position ?? 'any'}`;
   }
 }

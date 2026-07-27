@@ -1,5 +1,6 @@
 import {
   PlayerStatsRequestSchema,
+  type FootballPosition,
   type PlayerMarketOdds,
   type PlayerStats,
 } from '@sorare-overlay/shared';
@@ -18,6 +19,11 @@ import {
   playerMarketOddsKey,
   type PlayerMarketOddsProvider,
 } from '../providers/market-odds-provider.js';
+import type {
+  PlayerNameResolutionOptions,
+  PlayerStatsDataSource,
+  SourcePlayerRequest,
+} from '../services/data-source.js';
 import { StatsService } from '../services/stats-service.js';
 
 class FillMissingCache implements Cache<PlayerStats> {
@@ -41,6 +47,84 @@ class FillMissingCache implements Cache<PlayerStats> {
 }
 
 describe('StatsService cache writes', () => {
+  it('re-resolves a name-derived slug when it points to a completely empty player', async () => {
+    const resolvePlayerNames = vi.fn(
+      async (
+        names: readonly string[],
+        positions?: Readonly<Record<string, FootballPosition>>,
+        options?: PlayerNameResolutionOptions,
+      ): Promise<SourcePlayerRequest[]> =>
+        names.map((name) => ({
+          slug: options?.forceSearch
+            ? 'david-ruiz-2004-02-08'
+            : 'david-ruiz',
+          ...(positions?.[name] ? { position: positions[name] } : {}),
+          resolvedFromName: name,
+          nameResolution: options?.forceSearch ? 'search' : 'direct',
+        })),
+    );
+    const source: PlayerStatsDataSource = {
+      source: 'sorare',
+      resolvePlayerNames,
+      fetchPlayers: vi.fn(async (requests) =>
+        requests.map((request) => ({
+          slug: request.slug,
+          displayName: 'David Ruíz',
+          position: request.position ?? 'Midfielder',
+          appearances:
+            request.slug === 'david-ruiz'
+              ? []
+              : [
+                  {
+                    date: '2026-07-25T23:30:00.000Z',
+                    allAroundScore: 4.76,
+                    goals: 0,
+                    assists: 0,
+                    minsPlayed: 20,
+                    cleanSheet60: 0,
+                    lowCoverage: false,
+                    position: 'Midfielder',
+                  },
+                ],
+          nextGame: null,
+        }))),
+      fetchNextGames: vi.fn(async () => []),
+    };
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      new MockPlayerMarketOddsProvider(),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        playerNames: ['David Ruiz'],
+        positions: { 'David Ruiz': 'Midfielder' },
+      }),
+    );
+
+    expect(resolvePlayerNames).toHaveBeenNthCalledWith(
+      1,
+      ['David Ruiz'],
+      { 'David Ruiz': 'Midfielder' },
+    );
+    expect(resolvePlayerNames).toHaveBeenNthCalledWith(
+      2,
+      ['David Ruiz'],
+      { 'David Ruiz': 'Midfielder' },
+      { forceSearch: true },
+    );
+    expect(result.data).toMatchObject([
+      {
+        slug: 'david-ruiz-2004-02-08',
+        position: 'Midfielder',
+        aaL10: { value: 4.76, sampleSize: 1 },
+      },
+    ]);
+  });
+
   it('does not queue bookmaker refreshes for provider-unsupported fixtures', async () => {
     const load = vi.fn<PlayerMarketOddsProvider['load']>(async () => new Map());
     const marketOddsProvider: PlayerMarketOddsProvider = {

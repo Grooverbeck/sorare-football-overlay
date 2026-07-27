@@ -59,6 +59,8 @@ export class MockDataSource implements PlayerStatsDataSource {
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-|-$/g, ''),
       ...(expectedPositions?.[name] ? { position: expectedPositions[name] } : {}),
+      resolvedFromName: name,
+      nameResolution: 'search',
     }));
   }
 
