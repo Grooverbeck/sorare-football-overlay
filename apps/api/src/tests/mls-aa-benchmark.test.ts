@@ -61,7 +61,22 @@ describe('weekly MLS AA benchmark', () => {
             return {
               __typename: 'Player',
               slug,
+              activeClub: { id: `club-${slug}` },
               playerGameScores: [
+                {
+                  __typename: 'PlayerGameScore',
+                  positionTyped: position,
+                  allAroundScore: 100,
+                  footballGame: {
+                    date: '2026-07-27T18:00:00.000Z',
+                    lowCoverage: false,
+                  },
+                  footballPlayerGameStats: {
+                    playedInGame: true,
+                    minsPlayed: 90,
+                    anyTeam: { id: `national-${slug}` },
+                  },
+                },
                 {
                   __typename: 'PlayerGameScore',
                   positionTyped: position,
@@ -73,6 +88,7 @@ describe('weekly MLS AA benchmark', () => {
                   footballPlayerGameStats: {
                     playedInGame: true,
                     minsPlayed: 90,
+                    anyTeam: { id: `club-${slug}` },
                   },
                 },
               ],

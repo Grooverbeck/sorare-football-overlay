@@ -16,6 +16,11 @@ import {
   clearNativeSorareLineupProbabilityDecorations,
   decorateNativeSorareLineupProbabilities,
 } from './sorare-native-ui.js';
+import {
+  logStatsDiagnostic,
+  statsDiagnosticRequestId,
+  summarizeStats,
+} from './stats-diagnostics.js';
 
 type StatsFetcher = (request: PlayerStatsRequest) => Promise<PlayerStatsSuccessResponse>;
 const extensionMountSelector =
@@ -28,12 +33,26 @@ const discoveryAttributes = new Set([
   'data-position',
   'data-card-position',
 ]);
+const viewportPriorityRootMargin = '500px 240px';
+const viewportPriorityVerticalMargin = 500;
+const viewportPriorityHorizontalMargin = 240;
+const viewportPriorityVisible = 2;
+const viewportPriorityNearby = 1;
 
 interface PendingTarget {
   slug?: string;
   playerName?: string;
   position?: FootballPosition;
   views: Set<OverlayView>;
+  priority: number;
+}
+
+interface MountedOverlay {
+  key: string;
+  target: CardTarget;
+  view: OverlayView;
+  viewportActive: boolean;
+  statsRequested: boolean;
 }
 
 function normalizeName(name: string): string {
@@ -73,6 +92,22 @@ function chunks<T>(values: readonly T[], size: number): T[][] {
   return output;
 }
 
+function viewportPriorityForRect(rect: DOMRectReadOnly): number {
+  if (rect.width <= 0 || rect.height <= 0) return 0;
+  const visible =
+    rect.bottom > 0 &&
+    rect.top < window.innerHeight &&
+    rect.right > 0 &&
+    rect.left < window.innerWidth;
+  if (visible) return viewportPriorityVisible;
+  const nearby =
+    rect.bottom > -viewportPriorityVerticalMargin &&
+    rect.top < window.innerHeight + viewportPriorityVerticalMargin &&
+    rect.right > -viewportPriorityHorizontalMargin &&
+    rect.left < window.innerWidth + viewportPriorityHorizontalMargin;
+  return nearby ? viewportPriorityNearby : 0;
+}
+
 export class StatsBatchCoordinator {
   private readonly pending = new Map<string, PendingTarget>();
   private readonly cache = new Map<string, PlayerStats>();
@@ -100,7 +135,7 @@ export class StatsBatchCoordinator {
     if (enabled) this.cache.clear();
   }
 
-  enqueue(target: CardTarget, view: OverlayView): void {
+  enqueue(target: CardTarget, view: OverlayView, priority = 0): void {
     const key = targetKey(target);
     this.clearRetry(key);
     const exact = this.cache.get(key);
@@ -114,12 +149,22 @@ export class StatsBatchCoordinator {
               namesLikelyMatch(target.playerName, stats.displayName))),
       );
     if (cached) {
+      logStatsDiagnostic('cache-hit-render', {
+        key,
+        target: {
+          slug: target.slug ?? null,
+          playerName: target.playerName ?? null,
+          position: target.position ?? null,
+        },
+        rendered: summarizeStats(cached),
+      });
       view.render(cached);
       if (cached.pendingRefreshes?.length) {
         this.schedulePendingRefresh(
           target,
           [view],
           cached.pendingRefreshes.includes('fixture'),
+          priority,
         );
       } else {
         this.clearPendingRefresh(key);
@@ -127,12 +172,13 @@ export class StatsBatchCoordinator {
       return;
     }
 
-    this.queueTarget(target, [view]);
+    this.queueTarget(target, [view], priority);
   }
 
   private queueTarget(
     target: Pick<PendingTarget, 'slug' | 'playerName' | 'position'>,
     views: Iterable<OverlayView>,
+    priority = 0,
   ): void {
     const key = targetKey(target);
     const pendingTarget = this.pending.get(key) ?? {
@@ -140,8 +186,10 @@ export class StatsBatchCoordinator {
       ...(target.playerName ? { playerName: target.playerName } : {}),
       ...(target.position ? { position: target.position } : {}),
       views: new Set<OverlayView>(),
+      priority,
     };
     for (const view of views) pendingTarget.views.add(view);
+    pendingTarget.priority = Math.max(pendingTarget.priority, priority);
     this.pending.set(key, pendingTarget);
     if (this.timer === undefined) {
       this.timer = window.setTimeout(() => void this.flush(), this.debounceMs);
@@ -151,7 +199,9 @@ export class StatsBatchCoordinator {
   async flush(): Promise<void> {
     if (this.timer !== undefined) window.clearTimeout(this.timer);
     this.timer = undefined;
-    const queued = [...this.pending.values()];
+    const queued = [...this.pending.values()].sort(
+      (left, right) => right.priority - left.priority,
+    );
     this.pending.clear();
     if (queued.length === 0) return;
 
@@ -204,10 +254,16 @@ export class StatsBatchCoordinator {
           : {}),
         ...(refreshFixtures ? { refreshFixtures: true } : {}),
       });
+      const diagnosticRequestId = statsDiagnosticRequestId(response);
       if (includeHistoricalAssists !== this.includeHistoricalAssists) {
-        for (const target of batch) this.queueTarget(target, target.views);
+        for (const target of batch) {
+          this.queueTarget(target, target.views, target.priority);
+        }
         return;
       }
+      const deferredPlayerNames = new Set(
+        (response.meta.deferredPlayerNames ?? []).map(normalizeName),
+      );
       for (const stats of response.data) {
         if (!hasAnyDisplayData(stats)) continue;
         this.cache.set(targetKey({ slug: stats.slug, position: stats.position }), stats);
@@ -228,11 +284,35 @@ export class StatsBatchCoordinator {
               (target.position === undefined || candidate.position === target.position) &&
               ((target.slug !== undefined && candidate.slug === target.slug) ||
                 (target.playerName !== undefined &&
-                  namesLikelyMatch(target.playerName, candidate.displayName))),
+                namesLikelyMatch(target.playerName, candidate.displayName))),
           );
+        logStatsDiagnostic('target-resolution', {
+          requestId: diagnosticRequestId ?? null,
+          target: {
+            slug: target.slug ?? null,
+            playerName: target.playerName ?? null,
+            position: target.position ?? null,
+          },
+          resolved: stats ? summarizeStats(stats) : null,
+          responsePlayers: response.data.map(summarizeStats),
+        });
         for (const view of target.views) {
           if (stats && hasAnyDisplayData(stats)) {
+            logStatsDiagnostic('render', {
+              requestId: diagnosticRequestId ?? null,
+              target: {
+                slug: target.slug ?? null,
+                playerName: target.playerName ?? null,
+                position: target.position ?? null,
+              },
+              rendered: summarizeStats(stats),
+            });
             view.render(stats);
+          } else if (
+            target.playerName &&
+            deferredPlayerNames.has(normalizeName(target.playerName))
+          ) {
+            view.loading();
           } else {
             view.noData();
           }
@@ -244,6 +324,7 @@ export class StatsBatchCoordinator {
             target,
             target.views,
             stats.pendingRefreshes.includes('fixture'),
+            target.priority,
           );
         } else if (stats) {
           this.clearPendingRefresh(targetKey(target));
@@ -266,6 +347,7 @@ export class StatsBatchCoordinator {
     target: Pick<PendingTarget, 'slug' | 'playerName' | 'position'>,
     views: Iterable<OverlayView>,
     refreshFixture = false,
+    priority = 0,
   ): void {
     const key = targetKey(target);
     if (refreshFixture) this.fixtureRefreshTargets.add(key);
@@ -295,7 +377,7 @@ export class StatsBatchCoordinator {
         return;
       }
       this.removeCachedTarget(target);
-      this.queueTarget(target, activeViews);
+      this.queueTarget(target, activeViews, priority);
     }, delay);
     this.refreshTimers.set(key, timer);
   }
@@ -339,7 +421,7 @@ export class StatsBatchCoordinator {
         this.retryAttempts.delete(key);
         return;
       }
-      this.queueTarget(target, activeViews);
+      this.queueTarget(target, activeViews, target.priority);
     }, delay);
     this.retryTimers.set(key, timer);
   }
@@ -354,10 +436,8 @@ export class StatsBatchCoordinator {
 
 export class SorareCardScanner {
   private observer: MutationObserver | undefined;
-  private readonly overlays = new Map<
-    HTMLElement,
-    { key: string; target: CardTarget; view: OverlayView }
-  >();
+  private visibilityObserver: IntersectionObserver | undefined;
+  private readonly overlays = new Map<HTMLElement, MountedOverlay>();
   private readonly pendingScanRoots = new Set<Element>();
   private mutationFrame: number | undefined;
   private shouldRefreshPositions = false;
@@ -375,14 +455,16 @@ export class SorareCardScanner {
   }
 
   refreshAllOverlays(): void {
-    for (const { target, view } of this.overlays.values()) {
-      this.coordinator.enqueue(target, view);
+    for (const mounted of this.overlays.values()) {
+      mounted.statsRequested = false;
+      if (mounted.viewportActive) this.requestStats(mounted);
     }
   }
 
   start(): void {
     if (this.observer) return;
     const root = document.body ?? document.documentElement;
+    this.startVisibilityObserver();
     this.scan(root);
     this.observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
@@ -447,6 +529,8 @@ export class SorareCardScanner {
   stop(): void {
     this.observer?.disconnect();
     this.observer = undefined;
+    this.visibilityObserver?.disconnect();
+    this.visibilityObserver = undefined;
     if (this.mutationFrame !== undefined) {
       if (typeof window.cancelAnimationFrame === 'function') {
         window.cancelAnimationFrame(this.mutationFrame);
@@ -482,7 +566,10 @@ export class SorareCardScanner {
     const key = targetKey(target);
     const mounted = this.overlays.get(target.container);
     if (mounted?.key === key) return;
-    if (mounted) mounted.view.destroy();
+    if (mounted) {
+      this.visibilityObserver?.unobserve(target.container);
+      mounted.view.destroy();
+    }
     const view = new OverlayView(
       target.container,
       {
@@ -492,8 +579,24 @@ export class SorareCardScanner {
       target.position,
     );
     target.container.dataset.sorareOverlayKey = key;
-    this.overlays.set(target.container, { key, target, view });
-    this.coordinator.enqueue(target, view);
+    const priority = this.visibilityObserver
+      ? viewportPriorityForRect(target.container.getBoundingClientRect())
+      : viewportPriorityNearby;
+    const mountedOverlay: MountedOverlay = {
+      key,
+      target,
+      view,
+      viewportActive: priority > 0,
+      statsRequested: false,
+    };
+    this.overlays.set(target.container, mountedOverlay);
+    if (this.visibilityObserver) {
+      this.visibilityObserver.observe(target.container);
+      view.setViewportPriorityActive(mountedOverlay.viewportActive);
+    }
+    if (mountedOverlay.viewportActive) {
+      this.requestStats(mountedOverlay, priority);
+    }
   }
 
   private reconcileMountedOverlays(): void {
@@ -504,12 +607,14 @@ export class SorareCardScanner {
           )
         : undefined;
       if (!currentTarget) {
+        this.visibilityObserver?.unobserve(container);
         mounted.view.destroy();
         delete container.dataset.sorareOverlayKey;
         this.overlays.delete(container);
         continue;
       }
       if (targetKey(currentTarget) === mounted.key) continue;
+      this.visibilityObserver?.unobserve(container);
       mounted.view.destroy();
       this.overlays.delete(container);
       this.mountTarget(currentTarget);
@@ -519,6 +624,7 @@ export class SorareCardScanner {
   private cleanupDisconnectedOverlays(): void {
     for (const [container, { view }] of this.overlays) {
       if (container.isConnected) continue;
+      this.visibilityObserver?.unobserve(container);
       view.destroy();
       this.overlays.delete(container);
     }
@@ -567,7 +673,53 @@ export class SorareCardScanner {
     }
     if (this.shouldRefreshPositions) {
       this.shouldRefreshPositions = false;
-      for (const { view } of this.overlays.values()) view.refreshPosition();
+      for (const { view, viewportActive } of this.overlays.values()) {
+        if (viewportActive) view.refreshPosition();
+      }
     }
+  }
+
+  private startVisibilityObserver(): void {
+    if (
+      this.visibilityObserver ||
+      typeof IntersectionObserver === 'undefined'
+    ) {
+      return;
+    }
+    this.visibilityObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!(entry.target instanceof HTMLElement)) continue;
+          const mounted = this.overlays.get(entry.target);
+          if (!mounted) continue;
+          const priority = entry.isIntersecting
+            ? Math.max(
+                viewportPriorityNearby,
+                viewportPriorityForRect(entry.boundingClientRect),
+              )
+            : 0;
+          const viewportActive = priority > 0;
+          if (mounted.viewportActive !== viewportActive) {
+            mounted.viewportActive = viewportActive;
+            mounted.view.setViewportPriorityActive(viewportActive);
+          }
+          if (viewportActive) this.requestStats(mounted, priority);
+        }
+      },
+      {
+        root: null,
+        rootMargin: viewportPriorityRootMargin,
+        threshold: 0,
+      },
+    );
+  }
+
+  private requestStats(
+    mounted: MountedOverlay,
+    priority = viewportPriorityNearby,
+  ): void {
+    if (mounted.statsRequested) return;
+    mounted.statsRequested = true;
+    this.coordinator.enqueue(mounted.target, mounted.view, priority);
   }
 }

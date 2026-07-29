@@ -113,13 +113,18 @@ const MLS_PLAYER_SCORES_QUERY = parse(`
       __typename
       ... on Player {
         slug
+        activeClub { id }
         playerGameScores(last: 15, lowCoverage: true, position: $position) {
           __typename
           positionTyped
           ... on PlayerGameScore {
             allAroundScore
             footballGame { date lowCoverage }
-            footballPlayerGameStats { playedInGame minsPlayed }
+            footballPlayerGameStats {
+              playedInGame
+              minsPlayed
+              anyTeam { id }
+            }
           }
         }
       }
@@ -154,6 +159,7 @@ interface MlsPlayerScore {
   footballPlayerGameStats?: {
     playedInGame: boolean;
     minsPlayed: number | null;
+    anyTeam?: { id: string } | null;
   };
 }
 
@@ -161,6 +167,7 @@ interface MlsScoresResponse {
   players: Array<{
     __typename: string;
     slug?: string;
+    activeClub?: { id: string } | null;
     playerGameScores?: MlsPlayerScore[];
   }>;
 }
@@ -258,6 +265,7 @@ export class MlsAaBenchmarkRefresher {
           if (player.__typename !== 'Player' || !player.slug) continue;
           const seed = seeds.get(player.slug);
           if (!seed) continue;
+          const activeClubId = player.activeClub?.id;
           const validScores = (player.playerGameScores ?? [])
             .filter(
               (score) =>
@@ -266,7 +274,9 @@ export class MlsAaBenchmarkRefresher {
                 score.allAroundScore !== undefined &&
                 score.footballPlayerGameStats?.playedInGame === true &&
                 (score.footballPlayerGameStats.minsPlayed ?? 0) > 0 &&
-                score.footballGame?.lowCoverage === false,
+                score.footballGame?.lowCoverage === false &&
+                (!activeClubId ||
+                  score.footballPlayerGameStats.anyTeam?.id === activeClubId),
             )
             .sort(
               (left, right) =>

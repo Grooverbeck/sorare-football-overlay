@@ -1,6 +1,6 @@
 {
   "name": "sorare-football-overlay",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "Production-oriented Sorare football browser overlay monorepo",
   "type": "module",
@@ -27,6 +27,7 @@
     "deploy:cloudflare:dry-run": "npm run cf:dry-run --workspace=@sorare-overlay/api",
     "package:chrome-web-store": "npm run package:store --workspace=@sorare-overlay/extension",
     "schema:pull": "npm run schema:pull --workspace=@sorare-overlay/api",
+    "usage:sports-game-odds": "npm run build --workspace=@sorare-overlay/shared && npm run usage:sports-game-odds --workspace=@sorare-overlay/api",
     "test": "npm run build --workspace=@sorare-overlay/shared && npm run test --workspace=@sorare-overlay/shared && npm run test --workspace=@sorare-overlay/api && npm run test --workspace=@sorare-overlay/extension",
     "test:watch": "npm run test:watch --workspaces --if-present",
     "typecheck": "npm run build --workspace=@sorare-overlay/shared && npm run typecheck --workspace=@sorare-overlay/api && npm run typecheck --workspace=@sorare-overlay/extension",

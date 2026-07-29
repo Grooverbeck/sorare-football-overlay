@@ -18,6 +18,10 @@ import {
   SportsGameOddsPlayerMarketOddsProvider,
   SupplementingPlayerMarketOddsProvider,
 } from './providers/sports-game-odds-provider.js';
+import {
+  InMemoryProviderQuotaUsageStore,
+  type ProviderQuotaUsageStore,
+} from './providers/odds-usage.js';
 import type {
   PlayerNameResolutionCache,
   PlayerStatsDataSource,
@@ -33,12 +37,14 @@ export interface CreateStatsRuntimeOptions {
   statsCache: Cache<PlayerStats>;
   nameResolutionCache?: PlayerNameResolutionCache;
   marketSnapshotStore?: MarketSnapshotStore;
+  providerQuotaUsageStore?: ProviderQuotaUsageStore;
   scheduleBackground?: BackgroundTaskScheduler;
 }
 
 export interface StatsRuntime {
   statsService: StatsService;
   marketOddsProvider: PlayerMarketOddsProvider;
+  dataSource: PlayerStatsDataSource;
   source: 'sorare' | 'mock';
 }
 
@@ -51,6 +57,9 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
     dataSource = new MockDataSource();
     marketOddsProvider = new MockPlayerMarketOddsProvider();
   } else {
+    const providerQuotaUsageStore =
+      options.providerQuotaUsageStore ??
+      new InMemoryProviderQuotaUsageStore();
     const client = new SorareGraphqlClient({
       url: config.graphqlUrl,
       requestTimeoutMs: config.requestTimeoutMs,
@@ -68,38 +77,123 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
       config.excludeLowCoverage,
       options.nameResolutionCache,
     );
+    const marketSnapshotStore =
+      options.marketSnapshotStore ??
+      new InMemoryMarketSnapshotStore(config.oddsMissCacheTtlMs);
+    const createTheOddsProvider = (
+      sportKey: string,
+      supportedCompetitionSlugs: readonly string[],
+      providerOptions: {
+        additionalSportKeys?: readonly string[];
+        region?: string;
+        fallbackRegion?: string;
+        refreshUsage?: boolean;
+      } = {},
+    ) =>
+      new TheOddsApiPlayerMarketOddsProvider({
+        apiKey: config.oddsApiKey!,
+        baseUrl: config.oddsApiBaseUrl,
+        sportKey,
+        ...(providerOptions.additionalSportKeys
+          ? { additionalSportKeys: providerOptions.additionalSportKeys }
+          : {}),
+        region: providerOptions.region ?? config.oddsApiRegion,
+        ...((providerOptions.fallbackRegion ??
+        config.oddsApiFallbackRegion)
+          ? {
+              fallbackRegion:
+                providerOptions.fallbackRegion ??
+                config.oddsApiFallbackRegion!,
+            }
+          : {}),
+        fetchWindowMs: config.oddsFetchWindowMs,
+        requestTimeoutMs: config.requestTimeoutMs,
+        maxRetries: config.maxRetries,
+        store: marketSnapshotStore,
+        logger,
+        usageStore: providerQuotaUsageStore,
+        refreshUsage: providerOptions.refreshUsage ?? true,
+        supportedCompetitionSlugs,
+      });
     const theOddsProvider = config.oddsApiKey
-      ? new TheOddsApiPlayerMarketOddsProvider({
-          apiKey: config.oddsApiKey,
-          baseUrl: config.oddsApiBaseUrl,
-          sportKey: config.oddsApiSportKey,
-          region: config.oddsApiRegion,
-          ...(config.oddsApiFallbackRegion
-            ? { fallbackRegion: config.oddsApiFallbackRegion }
-            : {}),
-          fetchWindowMs: config.oddsFetchWindowMs,
-          requestTimeoutMs: config.requestTimeoutMs,
-          maxRetries: config.maxRetries,
-          store:
-            options.marketSnapshotStore ??
-            new InMemoryMarketSnapshotStore(config.oddsMissCacheTtlMs),
-          logger,
-        })
+      ? new SupplementingPlayerMarketOddsProvider(
+          createTheOddsProvider(config.oddsApiSportKey, ['mlspa']),
+          new SupplementingPlayerMarketOddsProvider(
+            createTheOddsProvider(
+              'soccer_uefa_champs_league_qualification',
+              ['uefa-champions-league'],
+              {
+                additionalSportKeys: ['soccer_uefa_champs_league'],
+                region: 'eu',
+                fallbackRegion: 'uk',
+                refreshUsage: false,
+              },
+            ),
+            new SupplementingPlayerMarketOddsProvider(
+              createTheOddsProvider(
+                'soccer_uefa_europa_league',
+                ['uefa-europa-league'],
+                {
+                  region: 'eu',
+                  fallbackRegion: 'uk',
+                  refreshUsage: false,
+                },
+              ),
+              createTheOddsProvider(
+                'soccer_uefa_europa_conference_league',
+                ['uefa-europa-conference-league'],
+                {
+                  region: 'eu',
+                  fallbackRegion: 'uk',
+                  refreshUsage: false,
+                },
+              ),
+            ),
+          ),
+        )
+      : new UnavailablePlayerMarketOddsProvider();
+    const createSportsGameOddsProvider = (
+      leagueId: string,
+      supportedCompetitionSlugs: readonly string[],
+      refreshUsage: boolean,
+    ) =>
+      new SportsGameOddsPlayerMarketOddsProvider({
+        apiKey: config.sportsGameOddsApiKey!,
+        baseUrl: config.sportsGameOddsBaseUrl,
+        leagueId,
+        fetchWindowMs: config.oddsFetchWindowMs,
+        requestTimeoutMs: config.requestTimeoutMs,
+        maxRetries: config.maxRetries,
+        store: marketSnapshotStore,
+        logger,
+        usageStore: providerQuotaUsageStore,
+        refreshUsage,
+        supportedCompetitionSlugs,
+      });
+    const sportsGameOddsProvider = config.sportsGameOddsApiKey
+      ? new SupplementingPlayerMarketOddsProvider(
+          createSportsGameOddsProvider(
+            config.sportsGameOddsLeagueId,
+            ['mlspa'],
+            true,
+          ),
+          new SupplementingPlayerMarketOddsProvider(
+            createSportsGameOddsProvider(
+              'UEFA_CHAMPIONS_LEAGUE',
+              ['uefa-champions-league'],
+              false,
+            ),
+            createSportsGameOddsProvider(
+              'UEFA_EUROPA_LEAGUE',
+              ['uefa-europa-league'],
+              false,
+            ),
+          ),
+        )
       : new UnavailablePlayerMarketOddsProvider();
     marketOddsProvider = config.sportsGameOddsApiKey
       ? new SupplementingPlayerMarketOddsProvider(
-          new SportsGameOddsPlayerMarketOddsProvider({
-            apiKey: config.sportsGameOddsApiKey,
-            baseUrl: config.sportsGameOddsBaseUrl,
-            leagueId: config.sportsGameOddsLeagueId,
-            fetchWindowMs: config.oddsFetchWindowMs,
-            requestTimeoutMs: config.requestTimeoutMs,
-            maxRetries: config.maxRetries,
-            store:
-              options.marketSnapshotStore ??
-              new InMemoryMarketSnapshotStore(config.oddsMissCacheTtlMs),
-            logger,
-          }),
+          sportsGameOddsProvider,
           theOddsProvider,
         )
       : theOddsProvider;
@@ -115,6 +209,7 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
       options.scheduleBackground,
     ),
     marketOddsProvider,
+    dataSource,
     source: dataSource.source,
   };
 }

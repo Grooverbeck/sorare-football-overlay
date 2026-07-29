@@ -119,6 +119,9 @@ export function createApp(options: CreateAppOptions): Hono<AppEnv> {
         returned: result.data.length,
         cacheHits: result.cacheHits,
         source: result.source,
+        ...(result.deferredPlayerNames.length > 0
+          ? { deferredPlayerNames: result.deferredPlayerNames }
+          : {}),
       },
     });
     return context.json(response);

@@ -109,6 +109,7 @@ function inferActivePositionSelection(
   container: HTMLElement,
 ): FootballPosition | undefined {
   const body = container.ownerDocument.body;
+  const maxPositionScopeDepth = 5;
   if (container.closest('[role="dialog"]')) return undefined;
   let packScope: HTMLElement | null = container;
   for (let depth = 0; packScope && packScope !== body && depth < 8; depth += 1) {
@@ -119,7 +120,11 @@ function inferActivePositionSelection(
   }
 
   let scope = container.parentElement;
-  while (scope && scope !== body) {
+  for (
+    let depth = 0;
+    scope && scope !== body && depth < maxPositionScopeDepth;
+    depth += 1
+  ) {
     const positions = new Set<FootballPosition>();
     for (const button of scope.querySelectorAll<HTMLButtonElement>('button')) {
       const isActive =

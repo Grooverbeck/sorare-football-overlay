@@ -81,6 +81,31 @@ describe('calculatePlayerMetrics', () => {
     expect(result.goalL10).toEqual({ value: null, sampleSize: 0 });
   });
 
+  it('uses only appearances for the current club for AA', () => {
+    const mixedTeamAppearances: PlayerAppearance[] = Array.from(
+      { length: 12 },
+      (_, index) => ({
+        date: new Date(Date.UTC(2026, 6, 24 - index)).toISOString(),
+        allAroundScore: index < 2 ? 50 : 10,
+        goals: 0,
+        minsPlayed: 90,
+        cleanSheet60: 0,
+        lowCoverage: false,
+        position: 'Midfielder',
+        currentClubGame: index >= 2,
+      }),
+    );
+
+    const result = calculatePlayerMetrics(
+      mixedTeamAppearances,
+      'Midfielder',
+      { excludeLowCoverage: true },
+    );
+
+    expect(result.aaL10).toEqual({ value: 10, sampleSize: 10 });
+    expect(result.goalL10).toEqual({ value: 0, sampleSize: 10 });
+  });
+
   it('calculates historical assist rates for selectable valid-appearance windows', () => {
     const history: PlayerAppearance[] = Array.from(
       { length: 42 },

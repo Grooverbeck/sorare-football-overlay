@@ -9,6 +9,7 @@ import {
   CloudflareMlsAaBenchmarkStore,
   CloudflareNameResolutionCache,
   CloudflarePlayerStatsCache,
+  CloudflareProviderQuotaUsageStore,
 } from './cache.js';
 import { D1JsonKeyValueStore } from './d1-cache.js';
 import { createWorkerLogger } from './logger.js';
@@ -44,6 +45,7 @@ const configKeys = [
 ] as const;
 
 const WEEKLY_MLS_AA_CRON = '0 10 * * MON';
+const DAILY_MARKET_PREWARM_CRON = '0 5 * * *';
 
 function stringBindings(env: CloudflareBindings): Record<string, string | undefined> {
   const bindings = env as unknown as Readonly<Record<string, unknown>>;
@@ -91,6 +93,9 @@ function createWorkerServices(
       cacheStore,
       Math.floor(config.oddsMissCacheTtlMs / 1_000),
       context,
+    ),
+    providerQuotaUsageStore: new CloudflareProviderQuotaUsageStore(
+      cacheStore,
     ),
     scheduleBackground: (task) => {
       context.waitUntil(
@@ -162,14 +167,53 @@ export default {
       );
       return;
     }
+    if (controller.cron !== DAILY_MARKET_PREWARM_CRON) {
+      logger.warn(
+        { cron: controller.cron },
+        'Ignoring unknown scheduled trigger',
+      );
+      return;
+    }
     const prewarmer = new MlsMarketPrewarmer({
       client,
       marketOddsProvider: runtime.marketOddsProvider,
       logger,
       windowMs: config.oddsFetchWindowMs,
     });
-    context.waitUntil(
-      prewarmer.run().catch((error: unknown) => {
+    context.waitUntil((async () => {
+      try {
+        const usages =
+          (await runtime.marketOddsProvider.refreshUsage?.()) ?? [];
+        for (const usage of usages) {
+          logger.info(
+            {
+              provider: usage.provider,
+              unit: usage.unit,
+              used: usage.used,
+              limit: usage.limit,
+              remaining: usage.remaining,
+              usagePercent:
+                Math.round((usage.used / usage.limit) * 1_000) / 10,
+              interval: usage.interval.unit,
+              intervalStartsAt: usage.interval.startsAt,
+              intervalEndsAt: usage.interval.endsAt,
+            },
+            'Bookmaker quota usage refreshed',
+          );
+        }
+      } catch (error) {
+        logger.warn(
+          {
+            cron: controller.cron,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Bookmaker quota usage refresh failed; keeping last known protection state',
+        );
+      }
+
+      try {
+        await prewarmer.run();
+      } catch (error) {
         logger.error(
           {
             cron: controller.cron,
@@ -177,7 +221,7 @@ export default {
           },
           'MLS market prewarm failed',
         );
-      }),
-    );
+      }
+    })());
   },
 } satisfies ExportedHandler<CloudflareBindings>;

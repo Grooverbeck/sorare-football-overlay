@@ -128,6 +128,10 @@ export const PlayerStatsSchema = z.object({
   nextGame: z
     .object({
       date: z.string().datetime(),
+      // Optional while existing fixture cache entries migrate lazily.
+      // New responses use the stable Sorare competition slug to decide
+      // whether a bookmaker provider supports this fixture.
+      competitionSlug: z.string().trim().min(1).nullable().optional(),
       // Optional for backwards compatibility with fixture:v1 KV entries
       // written before team names were added to the response contract.
       homeTeamName: z.string().trim().min(1).nullable().optional(),
@@ -172,6 +176,9 @@ export const PlayerStatsSuccessResponseSchema = z.object({
     returned: z.number().int().nonnegative(),
     cacheHits: z.number().int().nonnegative(),
     source: z.enum(['sorare', 'mock']),
+    // Cold gallery names may be resolved and warmed after the response. The
+    // extension keeps only these cards in loading state and retries them.
+    deferredPlayerNames: z.array(z.string().trim().min(2).max(120)).optional(),
   }),
 });
 

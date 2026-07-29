@@ -3,6 +3,41 @@
 Alle wichtigen Änderungen am Sorare Football Stats Overlay werden in dieser
 Datei dokumentiert.
 
+## 0.3.2 – 29. Juli 2026
+
+### Verlässlichere Spieler- und Kartenwerte
+
+- AA L10 berücksichtigt nur Einsätze für den aktuellen Verein. Frühere Vereine
+  und Nationalteamspiele verfälschen den Wert nicht mehr.
+- Bei weniger als zehn gültigen Vereinseinsätzen zeigt die AA-Klammer einen
+  verständlichen Hinweis. Die positionsbezogene Farbbewertung funktioniert
+  bereits ab dem ersten gültigen Einsatz.
+- Goalkeeper werden auch auf ungewöhnlichen Sorare-Seiten zuverlässiger als
+  Torhüter erkannt und erhalten keine AA-Klammer.
+- Karten mit mehrdeutigen Namen sowie dynamisch ausgetauschte Karten werden
+  robuster dem richtigen Spieler und der richtigen Position zugeordnet.
+
+### Aktuellere und konsistentere Begegnungsdaten
+
+- Spieler desselben Teams verwenden dieselbe nächste Begegnung und dieselben
+  Match- und Clean-Sheet-Wahrscheinlichkeiten.
+- Neue Begegnungswerte erscheinen erst am Folgetag eines beendeten Spiels,
+  statt schon während oder unmittelbar nach der laufenden Partie.
+- Fehlende Match- und Clean-Sheet-Werte werden bei tatsächlich angesehenen
+  Karten gezielt nachgeladen, ohne vorhandene Formwerte zu blockieren.
+- Tor- und Assistmärkte decken zusätzliche Wettbewerbe ab und schützen die
+  verfügbaren Anbieterlimits durch abgestufte Cache- und Reserve-Regeln.
+
+### Schnellere und ruhigere Oberfläche
+
+- Sichtbare Karten werden zuerst und große Kartenlisten schrittweise geladen.
+- Bereits vorhandene Statistiken erscheinen sofort; langsame Quotenabfragen
+  halten L10-Werte nicht mehr auf.
+- Pack-, Bonus- und Kartenwechselanimationen zeigen die Klammern erst an einer
+  stabilen Position und vermeiden nachlaufende oder flackernde Overlays.
+- Matchbalken, Team-Tooltips und positionsabhängige Klammern werden in
+  Lineups, Galerien und Pack-Ansichten konsistenter dargestellt.
+
 ## 0.3.1 – 26. Juli 2026
 
 ### Schnellere und robustere Daten

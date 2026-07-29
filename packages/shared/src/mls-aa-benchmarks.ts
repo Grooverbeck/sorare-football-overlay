@@ -208,7 +208,7 @@ export function getMlsAaPercentileBandFromSnapshot(
   value: number | null,
   sampleSize: number,
 ): MlsAaPercentileBand | null {
-  if (value === null || sampleSize < snapshot.minimumAppearances) return null;
+  if (value === null || sampleSize < 1) return null;
   const benchmark = snapshot.positions[position];
   if (value < benchmark.p20) return { tone: 'very-low', label: 'P0–20' };
   if (value < benchmark.p40) return { tone: 'low', label: 'P20–40' };

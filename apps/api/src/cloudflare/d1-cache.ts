@@ -69,10 +69,46 @@ export class D1JsonKeyValueStore implements JsonKeyValueStore {
       .run();
   }
 
+  /**
+   * Atomically keeps the fixture with the earlier kickoff. This is used by
+   * the team fixture cache so concurrent Worker isolates cannot overwrite a
+   * held match with the following fixture.
+   */
+  async putEarlierFixture(
+    key: string,
+    value: string,
+    options: CacheWriteOptions = {},
+  ): Promise<void> {
+    const now = this.nowSeconds();
+    const expiresAt =
+      options.expiration ??
+      (options.expirationTtl === undefined
+        ? null
+        : now + options.expirationTtl);
+
+    await this.database
+      .prepare(
+        `INSERT INTO cache_entries (cache_key, value, expires_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(cache_key) DO UPDATE SET
+           value = excluded.value,
+           expires_at = excluded.expires_at,
+           updated_at = excluded.updated_at
+         WHERE cache_entries.expires_at IS NOT NULL
+               AND cache_entries.expires_at <= ?4
+            OR json_extract(cache_entries.value, '$.nextGame.date') IS NULL
+            OR json_extract(excluded.value, '$.nextGame.date')
+               < json_extract(cache_entries.value, '$.nextGame.date')`,
+      )
+      .bind(key, value, expiresAt, now)
+      .run();
+  }
+
   async delete(key: string): Promise<void> {
     await this.database
       .prepare('DELETE FROM cache_entries WHERE cache_key = ?1')
       .bind(key)
       .run();
   }
+
 }

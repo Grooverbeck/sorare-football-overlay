@@ -59,6 +59,8 @@ export class MockDataSource implements PlayerStatsDataSource {
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-|-$/g, ''),
       ...(expectedPositions?.[name] ? { position: expectedPositions[name] } : {}),
+      resolvedFromName: name,
+      nameResolution: 'search',
     }));
   }
 
@@ -96,6 +98,7 @@ export class MockDataSource implements PlayerStatsDataSource {
         appearances,
         nextGame: {
           date: '2026-07-27T18:45:00.000Z',
+          competitionSlug: 'mlspa',
           homeTeamName: 'Mock United',
           awayTeamName: 'Demo City',
           playerTeamName: 'Mock United',

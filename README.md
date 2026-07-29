@@ -149,6 +149,38 @@ Spielbeginn werden keine weiteren Quotenabrufe ausgelöst. Bei dem produktiven
 24-Stunden-Abruffenster ergeben sich dadurch höchstens drei Marktprüfungen pro
 Begegnung statt einer Prüfung alle sechs Stunden.
 
+Vor einem externen Abruf prüft das Backend zusätzlich die von Sorare gelieferte
+Competition. SportsGameOdds unterstützt gezielt MLS, Champions League
+einschließlich Qualifikation und Europa League. The Odds API ergänzt diese
+Wettbewerbe sowie die Conference League. Für UEFA-Spiele bei The Odds API
+werden zuerst europäische und nur bei Bedarf britische Buchmacher abgefragt.
+Unbekannte oder andere Wettbewerbe lösen keinen externen Feed-Aufruf aus. Alte
+Fixture-Cacheeinträge ohne Competition werden einmalig beim nächsten
+Kartenaufruf aktualisiert.
+
+Der tägliche Cron speichert außerdem die Kontingentnutzung beider
+Quotenanbieter. Ab 50 % wird eine Warnung protokolliert. The Odds API verzichtet
+ab 70 % auf den zusätzlichen Regionen-Fallback, ab 85 % auf reine
+Ergänzungsprüfungen und stoppt ab 90 % neue externe Abrufe. SportsGameOdds lädt
+zwischen 70 und 85 % nur noch bisher unbekannte Begegnungen, aber keine
+Ergänzungen für bereits geprüfte Spiele. Ab 85 % arbeitet dieser Anbieter nur
+noch aus dem Cache, ab 90 % greift zusätzlich der allgemeine Notstopp. Die Zahl
+der empfangenen Spielobjekte wird zwischen den täglichen exakten
+Kontingentprüfungen lokal fortgeschrieben. Neue Karten desselben Spiels lösen
+außerdem erst am nächsten gemeinsamen Prüfzeitpunkt einen Ergänzungsabruf aus.
+Bereits gespeicherte Quoten bleiben in allen Schutzstufen lesbar.
+
+Der aktuelle SportsGameOdds-Verbrauch kann lokal abgefragt werden:
+
+```bash
+npm run usage:sports-game-odds
+```
+
+Die Ausgabe nennt das monatliche Intervall, den vom Anbieter gemeldeten
+Zeitraum beziehungsweise einen deutlichen Hinweis, falls kein exakter
+Reset-Zeitpunkt geliefert wird, sowie Verbrauch und Restkontingent. Der API-Key
+wird dabei nur aus `apps/api/.dev.vars` gelesen und nicht ausgegeben.
+
 ## Cloudflare-Worker-Deployment
 
 Das API-Backend kann unverändert lokal unter Node.js oder als Cloudflare Worker laufen. Der Worker-Einstieg liegt in `apps/api/src/cloudflare/worker.ts`; `apps/api/wrangler.jsonc` enthält die versionierte Deployment-Konfiguration.
@@ -163,6 +195,7 @@ Im Cache liegen:
 - vorübergehend auch nicht auflösbare Namen, damit anonyme Sorare-Anfragen nicht ständig wiederholt werden.
 - unveränderliche Tor-/Assist-Marktsnapshots pro Begegnung und kurzlebige
   Negativtreffer für noch nicht angebotene Märkte.
+- den zuletzt bestätigten Kontingentstand der externen Quotenanbieter.
 
 Die Einträge werden beim Lesen erneut mit Zod validiert. Ungültige oder veraltete Cache-Formate werden verworfen. Normale Statistik-Schreibvorgänge laufen über `ExecutionContext.waitUntil()`. Der erstmalige Marktquoten-Snapshot wird dagegen vor der Antwort bestätigt, damit parallele Aufrufe möglichst keinen zweiten kostenpflichtigen Abruf auslösen.
 

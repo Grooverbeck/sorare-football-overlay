@@ -10,6 +10,7 @@ import type {
   Position,
 } from '../generated/sorare.js';
 import type {
+  PlayerNameResolutionOptions,
   PlayerNameResolutionCache,
   PlayerStatsDataSource,
   SourcePlayer,
@@ -70,6 +71,14 @@ function normalizeName(value: string): string {
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .trim()
+    .toLocaleLowerCase();
+}
+
+function normalizeExactDisplayName(value: string): string {
+  return value
+    .normalize('NFKC')
+    .trim()
+    .replace(/\s+/g, ' ')
     .toLocaleLowerCase();
 }
 
@@ -203,14 +212,20 @@ export class SorareDataSource implements PlayerStatsDataSource {
   async resolvePlayerNames(
     names: readonly string[],
     expectedPositions?: Readonly<Record<string, FootballPosition>>,
+    options: PlayerNameResolutionOptions = {},
   ): Promise<SourcePlayerRequest[]> {
-    await this.hydrateCachedResolutions(names, expectedPositions);
+    if (!options.forceSearch) {
+      await this.hydrateCachedResolutions(names, expectedPositions);
+    }
+    if (options.cacheOnly) {
+      return this.resolvedRequestsForNames(names, expectedPositions);
+    }
     const missing = [
       ...new Map(
         names
           .filter((name) => {
             const position = expectedPositionForName(name, expectedPositions);
-            return !this.hasCachedResolution(name, position);
+            return options.forceSearch || !this.hasCachedResolution(name, position);
           })
           .map((name) => [normalizeName(name), name]),
       ).values(),
@@ -220,20 +235,30 @@ export class SorareDataSource implements PlayerStatsDataSource {
     // all such candidates in one cheap query before falling back to the much
     // slower full-text searches. A broken search for one unusual name must not
     // hold back every other player in the request.
-    try {
-      await this.resolveSlugCandidates(missing, expectedPositions);
-    } catch {
-      // Search fallbacks below can still resolve each name independently.
+    if (!options.forceSearch) {
+      try {
+        await this.resolveSlugCandidates(missing, expectedPositions);
+      } catch {
+        // Search fallbacks below can still resolve each name independently.
+      }
     }
-    const searchFallbacks = missing.filter((name) => {
-      const position = expectedPositionForName(name, expectedPositions);
-      return !this.resolvedNames.has(resolutionKey(name, position));
-    });
+    const searchFallbacks = options.forceSearch
+      ? missing
+      : missing.filter((name) => {
+          const position = expectedPositionForName(name, expectedPositions);
+          return !this.resolvedNames.has(resolutionKey(name, position));
+        });
     const completedSearches = new Set<string>();
     await Promise.all(
       searchFallbacks.map(async (name) => {
         const position = expectedPositionForName(name, expectedPositions);
         const key = resolutionKey(name, position);
+        if (options.forceSearch) {
+          // The cached/direct slug is precisely what is being revalidated.
+          // Do not let a failed or empty search silently reuse it.
+          this.resolvedNames.delete(key);
+          this.unresolvedNamesUntil.delete(key);
+        }
         try {
           await this.resolveName(name, position);
           completedSearches.add(key);
@@ -256,6 +281,13 @@ export class SorareDataSource implements PlayerStatsDataSource {
         }
       }),
     );
+    return this.resolvedRequestsForNames(names, expectedPositions);
+  }
+
+  private resolvedRequestsForNames(
+    names: readonly string[],
+    expectedPositions?: Readonly<Record<string, FootballPosition>>,
+  ): SourcePlayerRequest[] {
     return names.flatMap((name) => {
       const expectedPosition = expectedPositionForName(name, expectedPositions);
       const resolved = this.resolvedNames.get(resolutionKey(name, expectedPosition));
@@ -267,6 +299,10 @@ export class SorareDataSource implements PlayerStatsDataSource {
         {
           slug: resolved.slug,
           ...(expectedPosition ? { position: expectedPosition } : {}),
+          resolvedFromName: name,
+          ...(resolved.nameResolution
+            ? { nameResolution: resolved.nameResolution }
+            : {}),
         },
       ];
     });
@@ -297,7 +333,11 @@ export class SorareDataSource implements PlayerStatsDataSource {
         namesLikelyMatch(requestedName, player.displayName)
       ) {
         const key = resolutionKey(requestedName, expectedPosition);
-        const resolved = { slug: player.slug, position };
+        const resolved = {
+          slug: player.slug,
+          position,
+          nameResolution: 'direct' as const,
+        };
         this.resolvedNames.set(key, resolved);
         this.unresolvedNamesUntil.delete(key);
         await this.persistResolution(requestedName, expectedPosition, resolved);
@@ -376,23 +416,63 @@ export class SorareDataSource implements PlayerStatsDataSource {
           ? [player]
           : [];
       }) ?? [];
-    const candidates = [
-      ...data.searchPlayers.hits.map(({ player }) => player),
-      ...cardPlayers,
-    ];
-    const nameMatches = candidates.filter(
+    const playerMatches = data.searchPlayers.hits
+      .map(({ player }) => player)
+      .filter(
+        (player) =>
+          namesLikelyMatch(name, player.displayName) &&
+          fromSorarePosition[player.position] !== undefined,
+      );
+    const cardMatches = cardPlayers.filter(
       (player) =>
         namesLikelyMatch(name, player.displayName) &&
         fromSorarePosition[player.position] !== undefined,
     );
+    const candidates = [...playerMatches, ...cardMatches];
+    const expectedPositionMatch = expectedPosition
+      ? candidates.find(
+          (player) => fromSorarePosition[player.position] === expectedPosition,
+        )
+      : undefined;
+    const exactCardMatches = cardMatches.filter(
+      (player) =>
+        normalizeExactDisplayName(player.displayName) ===
+        normalizeExactDisplayName(name),
+    );
+    const cardEvidence = exactCardMatches.length > 0
+      ? exactCardMatches
+      : cardMatches;
+    const cardCounts = new Map<string, number>();
+    for (const player of cardEvidence) {
+      cardCounts.set(player.slug, (cardCounts.get(player.slug) ?? 0) + 1);
+    }
+    const strongestCardMatch = cardEvidence.reduce<
+      (typeof cardEvidence)[number] | undefined
+    >((best, player) => {
+      if (!best) return player;
+      return (cardCounts.get(player.slug) ?? 0) >
+        (cardCounts.get(best.slug) ?? 0)
+        ? player
+        : best;
+    }, undefined);
+    const exactPlayerMatch = playerMatches.find(
+      (player) =>
+        normalizeExactDisplayName(player.displayName) ===
+        normalizeExactDisplayName(name),
+    );
     const exact =
-      nameMatches.find(
-        (player) => fromSorarePosition[player.position] === expectedPosition,
-      ) ?? nameMatches[0];
+      expectedPositionMatch ??
+      strongestCardMatch ??
+      exactPlayerMatch ??
+      playerMatches[0];
     const position = exact ? fromSorarePosition[exact.position] : undefined;
     const key = resolutionKey(name, expectedPosition);
     if (exact && position) {
-      const resolved = { slug: exact.slug, position };
+      const resolved = {
+        slug: exact.slug,
+        position,
+        nameResolution: 'search' as const,
+      };
       this.resolvedNames.set(key, resolved);
       this.unresolvedNamesUntil.delete(key);
       await this.persistResolution(name, expectedPosition, resolved);
@@ -490,6 +570,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
           currentCardPosition(player.cardPositions, player.anyPositions) ??
           fromSorarePosition[player.position];
         if (!position) return [];
+        const activeClubId = player.activeClub?.id;
 
         const appearances = player.playerGameScores.flatMap((score): PlayerAppearance[] => {
           if (!score || score.__typename !== 'PlayerGameScore') return [];
@@ -506,6 +587,12 @@ export class SorareDataSource implements PlayerStatsDataSource {
               cleanSheet60: score.footballPlayerGameStats.cleanSheet60 ?? null,
               lowCoverage: score.footballGame.lowCoverage,
               position: scorePosition,
+              ...(activeClubId && score.footballPlayerGameStats.anyTeam?.id
+                ? {
+                    currentClubGame:
+                      score.footballPlayerGameStats.anyTeam.id === activeClubId,
+                  }
+                : {}),
             },
           ];
         });
@@ -516,6 +603,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
               slug: player.slug,
               displayName: player.displayName,
               position,
+              ...(activeClubId ? { activeClubId } : {}),
               appearances: this.selectAppearanceWindow(appearances),
               nextGame: this.nextGame(player),
             },
@@ -531,6 +619,8 @@ export class SorareDataSource implements PlayerStatsDataSource {
           const appearances = await this.fetchAppearanceHistory(
             player.slug,
             player.position,
+            player.activeClubId,
+            true,
           );
           return {
             ...player,
@@ -550,7 +640,11 @@ export class SorareDataSource implements PlayerStatsDataSource {
         ) {
           return player;
         }
-        const appearances = await this.fetchAppearanceHistory(player.slug, player.position);
+        const appearances = await this.fetchAppearanceHistory(
+          player.slug,
+          player.position,
+          player.activeClubId,
+        );
         return {
           ...player,
           appearances: this.selectAppearanceWindow(appearances),
@@ -566,6 +660,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
     return appearances.filter(
       (appearance) =>
         appearance.position === position &&
+        appearance.currentClubGame !== false &&
         (appearance.minsPlayed ?? 0) > 0 &&
         (!this.excludeLowCoverage || !appearance.lowCoverage),
     ).length;
@@ -580,10 +675,18 @@ export class SorareDataSource implements PlayerStatsDataSource {
     const played = appearances
       .filter((appearance) => (appearance.minsPlayed ?? 0) > 0)
       .sort((left, right) => Date.parse(right.date) - Date.parse(left.date));
+    const hasCurrentClubMarkers = played.some(
+      (appearance) => appearance.currentClubGame !== undefined,
+    );
 
     for (const appearance of played) {
       selected.push(appearance);
-      if (!this.excludeLowCoverage || !appearance.lowCoverage) valid += 1;
+      if (
+        (!hasCurrentClubMarkers || appearance.currentClubGame === true) &&
+        (!this.excludeLowCoverage || !appearance.lowCoverage)
+      ) {
+        valid += 1;
+      }
       if (valid >= limit) break;
     }
     return selected;
@@ -592,41 +695,81 @@ export class SorareDataSource implements PlayerStatsDataSource {
   private async fetchAppearanceHistory(
     slug: string,
     position: FootballPosition,
+    activeClubId?: string,
+    fullHistory = false,
   ): Promise<PlayerAppearance[]> {
-    const variables: PlayerAppearanceHistoryQueryVariables = {
-      slug,
-      position: toSorarePosition[position],
-    };
-    const data = await this.client.request<
-      PlayerAppearanceHistoryQuery,
-      PlayerAppearanceHistoryQueryVariables
-    >(PLAYER_APPEARANCE_HISTORY_QUERY, variables);
-    if (data.anyPlayer.__typename !== 'Player') return [];
+    const appearances: PlayerAppearance[] = [];
+    let after: string | null = null;
+    let fetchedGames = 0;
+    const maximumGames = 40;
+    const pageSize = 20;
 
-    return data.anyPlayer.pastGames.nodes.flatMap((game): PlayerAppearance[] => {
-      const score = game.playerGameScore;
+    while (fetchedGames < maximumGames) {
+      const variables: PlayerAppearanceHistoryQueryVariables = {
+        slug,
+        position: toSorarePosition[position],
+        first: Math.min(pageSize, maximumGames - fetchedGames),
+        after,
+      };
+      const data = await this.client.request<
+        PlayerAppearanceHistoryQuery,
+        PlayerAppearanceHistoryQueryVariables
+      >(PLAYER_APPEARANCE_HISTORY_QUERY, variables);
+      if (data.anyPlayer.__typename !== 'Player') return appearances;
+
+      const connection = data.anyPlayer.pastGames;
+      fetchedGames += connection.nodes.length;
+      appearances.push(
+        ...connection.nodes.flatMap((game): PlayerAppearance[] => {
+          const score = game.playerGameScore;
+          if (
+            !score ||
+            score.__typename !== 'PlayerGameScore' ||
+            !score.footballPlayerGameStats.playedInGame
+          ) {
+            return [];
+          }
+          const scorePosition = fromSorarePosition[score.positionTyped];
+          if (!scorePosition) return [];
+          return [
+            {
+              date: game.date,
+              allAroundScore: score.allAroundScore,
+              goals: score.footballPlayerGameStats.goals ?? null,
+              assists: score.footballPlayerGameStats.goalAssist ?? null,
+              minsPlayed: score.footballPlayerGameStats.minsPlayed ?? null,
+              cleanSheet60:
+                score.footballPlayerGameStats.cleanSheet60 ?? null,
+              lowCoverage: game.lowCoverage,
+              position: scorePosition,
+              ...(activeClubId && score.footballPlayerGameStats.anyTeam?.id
+                ? {
+                    currentClubGame:
+                      score.footballPlayerGameStats.anyTeam.id === activeClubId,
+                  }
+                : {}),
+            },
+          ];
+        }),
+      );
+
       if (
-        !score ||
-        score.__typename !== 'PlayerGameScore' ||
-        !score.footballPlayerGameStats.playedInGame
+        !fullHistory &&
+        this.validAppearanceCount(appearances, position) >= 10
       ) {
-        return [];
+        break;
       }
-      const scorePosition = fromSorarePosition[score.positionTyped];
-      if (!scorePosition) return [];
-      return [
-        {
-          date: game.date,
-          allAroundScore: score.allAroundScore,
-          goals: score.footballPlayerGameStats.goals ?? null,
-          assists: score.footballPlayerGameStats.goalAssist ?? null,
-          minsPlayed: score.footballPlayerGameStats.minsPlayed ?? null,
-          cleanSheet60: score.footballPlayerGameStats.cleanSheet60 ?? null,
-          lowCoverage: game.lowCoverage,
-          position: scorePosition,
-        },
-      ];
-    });
+      const pageInfo = connection.pageInfo;
+      if (
+        pageInfo?.hasNextPage !== true ||
+        !pageInfo.endCursor ||
+        connection.nodes.length === 0
+      ) {
+        break;
+      }
+      after = pageInfo.endCursor;
+    }
+    return appearances;
   }
 
   private nextGame(
@@ -649,6 +792,9 @@ export class SorareDataSource implements PlayerStatsDataSource {
     const footballStats = stats?.__typename === 'FootballTeamGameStats' ? stats : null;
     return {
       date: game.date,
+      ...(game.competition?.slug
+        ? { competitionSlug: game.competition.slug }
+        : {}),
       homeTeamName: game.homeTeam?.shortName ?? null,
       awayTeamName: game.awayTeam?.shortName ?? null,
       playerTeamName: home

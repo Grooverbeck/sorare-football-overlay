@@ -8,6 +8,40 @@ import type {
 } from '../services/data-source.js';
 
 describe('SorareDataSource player-name resolution', () => {
+  it('returns persistent name mappings without contacting Sorare in cache-only mode', async () => {
+    const cache: PlayerNameResolutionCache = {
+      get: vi.fn(async (name) =>
+        name === 'Cached Player'
+          ? { slug: 'cached-player', position: 'Midfielder' }
+          : undefined,
+      ),
+      set: vi.fn(),
+    };
+    const request = vi.fn();
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+      false,
+      86_400_000,
+      true,
+      cache,
+    );
+
+    await expect(
+      source.resolvePlayerNames(
+        ['Cached Player', 'Cold Player'],
+        undefined,
+        { cacheOnly: true },
+      ),
+    ).resolves.toEqual([
+      {
+        slug: 'cached-player',
+        resolvedFromName: 'Cached Player',
+      },
+    ]);
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it('resolves direct slug candidates before using individual Sorare searches and caches them', async () => {
     const players = {
       'Tim Ream': { slug: 'tim-ream', displayName: 'Tim Ream', position: 'Defender' },
@@ -31,8 +65,16 @@ describe('SorareDataSource player-name resolution', () => {
     const source = new SorareDataSource(client, 25);
 
     await expect(source.resolvePlayerNames(['Tim Ream', 'Sam Surridge'])).resolves.toEqual([
-      { slug: 'tim-ream' },
-      { slug: 'sam-surridge' },
+      {
+        slug: 'tim-ream',
+        resolvedFromName: 'Tim Ream',
+        nameResolution: 'direct',
+      },
+      {
+        slug: 'sam-surridge',
+        resolvedFromName: 'Sam Surridge',
+        nameResolution: 'search',
+      },
     ]);
     expect(request).toHaveBeenCalledTimes(2);
     expect(request.mock.calls.map(([, variables]) => variables)).toEqual([
@@ -67,7 +109,13 @@ describe('SorareDataSource player-name resolution', () => {
 
     await expect(
       source.resolvePlayerNames(['Nicolás Fernández-Mercau']),
-    ).resolves.toEqual([{ slug: 'nicolas-fernandez-mercau' }]);
+    ).resolves.toEqual([
+      {
+        slug: 'nicolas-fernandez-mercau',
+        resolvedFromName: 'Nicolás Fernández-Mercau',
+        nameResolution: 'direct',
+      },
+    ]);
     expect(request).toHaveBeenCalledOnce();
     expect(request.mock.calls[0]?.[1]).toEqual({
       slugs: ['nicolas-fernandez-mercau'],
@@ -99,7 +147,13 @@ describe('SorareDataSource player-name resolution', () => {
 
     await expect(
       source.resolvePlayerNames(['Tim Ream', 'Slow Player']),
-    ).resolves.toEqual([{ slug: 'tim-ream' }]);
+    ).resolves.toEqual([
+      {
+        slug: 'tim-ream',
+        resolvedFromName: 'Tim Ream',
+        nameResolution: 'direct',
+      },
+    ]);
     expect(request).toHaveBeenCalledTimes(2);
   });
 
@@ -151,8 +205,18 @@ describe('SorareDataSource player-name resolution', () => {
     await expect(
       source.resolvePlayerNames(['Diego Luna', 'Joaquin Pereyra'], positions),
     ).resolves.toEqual([
-      { slug: 'diego-luna-2003-09-07', position: 'Midfielder' },
-      { slug: 'joaquin-nicolas-pereyra', position: 'Midfielder' },
+      {
+        slug: 'diego-luna-2003-09-07',
+        position: 'Midfielder',
+        resolvedFromName: 'Diego Luna',
+        nameResolution: 'search',
+      },
+      {
+        slug: 'joaquin-nicolas-pereyra',
+        position: 'Midfielder',
+        resolvedFromName: 'Joaquin Pereyra',
+        nameResolution: 'search',
+      },
     ]);
     expect(request).toHaveBeenCalledTimes(3);
 
@@ -186,7 +250,12 @@ describe('SorareDataSource player-name resolution', () => {
         { 'Ivan Angulo': 'Forward' },
       ),
     ).resolves.toEqual([
-      { slug: 'ivan-dario-angulo-cortes', position: 'Forward' },
+      {
+        slug: 'ivan-dario-angulo-cortes',
+        position: 'Forward',
+        resolvedFromName: 'Ivan Angulo',
+        nameResolution: 'search',
+      },
     ]);
   });
 
@@ -215,7 +284,11 @@ describe('SorareDataSource player-name resolution', () => {
         { 'Bryan Ramirez': 'Forward' },
       ),
     ).resolves.toEqual([
-      { slug: 'bryan-josias-ramirez-leon', position: 'Forward' },
+      {
+        slug: 'bryan-josias-ramirez-leon',
+        position: 'Forward',
+        resolvedFromName: 'Bryan Ramirez',
+      },
     ]);
     expect(request).not.toHaveBeenCalled();
   });
@@ -276,14 +349,104 @@ describe('SorareDataSource player-name resolution', () => {
         { Ederson: 'Goalkeeper' },
       ),
     ).resolves.toEqual([
-      { slug: 'ederson-santana-de-moraes', position: 'Goalkeeper' },
+      {
+        slug: 'ederson-santana-de-moraes',
+        position: 'Goalkeeper',
+        resolvedFromName: 'Ederson',
+        nameResolution: 'search',
+      },
     ]);
     expect(request).toHaveBeenCalledTimes(2);
     expect(cache.set).toHaveBeenCalledWith(
       'Ederson',
       'Goalkeeper',
-      { slug: 'ederson-santana-de-moraes', position: 'Goalkeeper' },
+      {
+        slug: 'ederson-santana-de-moraes',
+        position: 'Goalkeeper',
+        nameResolution: 'search',
+      },
     );
+  });
+
+  it('prefers exact card-search evidence when an image-only name is ambiguous', async () => {
+    const request = vi.fn(
+      async (
+        _document: unknown,
+        variables: { query?: string; slugs?: string[] },
+      ) => {
+        if (variables.slugs) return { players: [] };
+        return {
+          searchPlayers: {
+            hits: [
+              {
+                player: {
+                  slug: 'ederson-jose-dos-santos-lourenco-da-silva',
+                  displayName: 'Éderson',
+                  position: 'Midfielder',
+                },
+              },
+              {
+                player: {
+                  slug: 'ederson-santana-de-moraes',
+                  displayName: 'Ederson',
+                  position: 'Goalkeeper',
+                },
+              },
+            ],
+          },
+          searchCards: {
+            hits: [
+              {
+                card: {
+                  __typename: 'Card',
+                  anyPlayer: {
+                    __typename: 'Player',
+                    slug: 'ederson-santana-de-moraes',
+                    displayName: 'Ederson',
+                    position: 'Goalkeeper',
+                  },
+                },
+              },
+              {
+                card: {
+                  __typename: 'Card',
+                  anyPlayer: {
+                    __typename: 'Player',
+                    slug: 'ederson-jose-dos-santos-lourenco-da-silva',
+                    displayName: 'Éderson',
+                    position: 'Midfielder',
+                  },
+                },
+              },
+              {
+                card: {
+                  __typename: 'Card',
+                  anyPlayer: {
+                    __typename: 'Player',
+                    slug: 'ederson-santana-de-moraes',
+                    displayName: 'Ederson',
+                    position: 'Goalkeeper',
+                  },
+                },
+              },
+            ],
+          },
+        };
+      },
+    );
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    await expect(source.resolvePlayerNames(['Ederson'])).resolves.toEqual([
+      {
+        slug: 'ederson-santana-de-moraes',
+        resolvedFromName: 'Ederson',
+        nameResolution: 'search',
+      },
+    ]);
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it('falls back to card search when player search misses a shortened display name', async () => {
@@ -324,7 +487,12 @@ describe('SorareDataSource player-name resolution', () => {
         { 'Lucas Hoyos': 'Goalkeeper' },
       ),
     ).resolves.toEqual([
-      { slug: 'lucas-adrian-hoyos', position: 'Goalkeeper' },
+      {
+        slug: 'lucas-adrian-hoyos',
+        position: 'Goalkeeper',
+        resolvedFromName: 'Lucas Hoyos',
+        nameResolution: 'search',
+      },
     ]);
     expect(request).toHaveBeenCalledTimes(2);
   });
@@ -394,7 +562,12 @@ describe('SorareDataSource player-name resolution', () => {
     );
 
     await expect(first.resolvePlayerNames(['Diego Luna'], positions)).resolves.toEqual([
-      { slug: 'diego-luna-2003-09-07', position: 'Midfielder' },
+      {
+        slug: 'diego-luna-2003-09-07',
+        position: 'Midfielder',
+        resolvedFromName: 'Diego Luna',
+        nameResolution: 'search',
+      },
     ]);
     expect(firstRequest).toHaveBeenCalledTimes(2);
 
@@ -408,9 +581,83 @@ describe('SorareDataSource player-name resolution', () => {
       cache,
     );
     await expect(second.resolvePlayerNames(['Diego Luna'], positions)).resolves.toEqual([
-      { slug: 'diego-luna-2003-09-07', position: 'Midfielder' },
+      {
+        slug: 'diego-luna-2003-09-07',
+        position: 'Midfielder',
+        resolvedFromName: 'Diego Luna',
+        nameResolution: 'search',
+      },
     ]);
     expect(secondRequest).not.toHaveBeenCalled();
+  });
+
+  it('force-searches and replaces a stale direct-slug name resolution', async () => {
+    const cache: PlayerNameResolutionCache = {
+      get: vi.fn(async () => ({
+        slug: 'david-ruiz',
+        position: 'Midfielder',
+      })),
+      set: vi.fn(),
+    };
+    const request = vi.fn(
+      async (_document: unknown, variables: { query?: string; slugs?: string[] }) => {
+        if (variables.slugs) {
+          throw new Error('Forced resolution must skip direct slug candidates');
+        }
+        return {
+          searchPlayers: {
+            hits: [
+              {
+                player: {
+                  slug: 'david-ruiz-2004-02-08',
+                  displayName: 'David Ruíz',
+                  position: 'Midfielder',
+                },
+              },
+            ],
+          },
+          searchCards: { hits: [] },
+        };
+      },
+    );
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+      false,
+      86_400_000,
+      true,
+      cache,
+    );
+    const positions = { 'David Ruiz': 'Midfielder' } as const;
+
+    await expect(
+      source.resolvePlayerNames(
+        ['David Ruiz'],
+        positions,
+        { forceSearch: true },
+      ),
+    ).resolves.toEqual([
+      {
+        slug: 'david-ruiz-2004-02-08',
+        position: 'Midfielder',
+        resolvedFromName: 'David Ruiz',
+        nameResolution: 'search',
+      },
+    ]);
+    expect(request).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledWith(
+      expect.anything(),
+      { query: 'David Ruiz' },
+    );
+    expect(cache.set).toHaveBeenCalledWith(
+      'David Ruiz',
+      'Midfielder',
+      {
+        slug: 'david-ruiz-2004-02-08',
+        position: 'Midfielder',
+        nameResolution: 'search',
+      },
+    );
   });
 
   it('converts Sorare clean-sheet decimal odds to implied probability', async () => {
@@ -554,6 +801,61 @@ describe('SorareDataSource player-name resolution', () => {
     expect(player?.position).toBe('Midfielder');
     expect(player?.appearances[0]?.position).toBe('Midfielder');
     expect(player?.appearances[0]?.allAroundScore).toBe(15.13);
+  });
+
+  it('marks appearances from the active club so AA excludes other teams', async () => {
+    const request = vi.fn(async () => ({
+      players: [
+        {
+          __typename: 'Player',
+          slug: 'ederson',
+          displayName: 'Ederson',
+          position: 'Goalkeeper',
+          cardPositions: ['Goalkeeper'],
+          anyPositions: ['Goalkeeper'],
+          activeClub: { id: 'fenerbahce' },
+          nextGame: null,
+          playerGameScores: Array.from({ length: 12 }, (_, index) => ({
+            __typename: 'PlayerGameScore',
+            positionTyped: 'Goalkeeper',
+            allAroundScore: index < 2 ? 50 : 10,
+            footballGame: {
+              id: `game-${index}`,
+              date: new Date(Date.UTC(2026, 6, 24 - index)).toISOString(),
+              lowCoverage: false,
+            },
+            footballPlayerGameStats: {
+              anyTeam: { id: index < 2 ? 'brazil' : 'fenerbahce' },
+              goals: 0,
+              minsPlayed: 90,
+              cleanSheet60: 0,
+              playedInGame: true,
+            },
+          })),
+        },
+      ],
+    }));
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    const [player] = await source.fetchPlayers([
+      { slug: 'ederson', position: 'Goalkeeper' },
+    ]);
+    const metrics = calculatePlayerMetrics(
+      player?.appearances ?? [],
+      'Goalkeeper',
+      { excludeLowCoverage: true },
+    );
+
+    expect(player?.appearances).toHaveLength(12);
+    expect(
+      player?.appearances.filter(
+        (appearance) => appearance.currentClubGame === false,
+      ),
+    ).toHaveLength(2);
+    expect(metrics.aaL10).toEqual({ value: 10, sampleSize: 10 });
   });
 
   it('reloads scores for the primary card position when the default score window differs', async () => {
@@ -746,13 +1048,23 @@ describe('SorareDataSource player-name resolution', () => {
       },
     }));
     const request = vi.fn(
-      async (_document: unknown, variables: { slug?: string }) =>
+      async (
+        _document: unknown,
+        variables: { slug?: string; after?: string | null },
+      ) =>
         variables.slug
           ? {
               anyPlayer: {
                 __typename: 'Player',
                 slug: 'assist-history-player',
-                pastGames: { nodes: historyNodes },
+                pastGames: {
+                  nodes: variables.after
+                    ? historyNodes.slice(20, 40)
+                    : historyNodes.slice(0, 20),
+                  pageInfo: variables.after
+                    ? { hasNextPage: false, endCursor: null }
+                    : { hasNextPage: true, endCursor: 'history-page-2' },
+                },
               },
             }
           : {
@@ -782,7 +1094,7 @@ describe('SorareDataSource player-name resolution', () => {
       },
     ]);
 
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenCalledTimes(3);
     expect(player?.appearances).toHaveLength(40);
     expect(
       player?.appearances.filter((appearance) => appearance.assists === 1),
@@ -799,6 +1111,7 @@ describe('SorareDataSource player-name resolution', () => {
           nextGame: {
             __typename: 'Game',
             date: '2026-08-01T18:00:00Z',
+            competition: { slug: 'mlspa' },
             homeTeam: { id: `club-${slug}`, shortName: 'Home' },
             awayTeam: { id: 'away-club', shortName: 'Away' },
             homeStats: {
@@ -834,6 +1147,7 @@ describe('SorareDataSource player-name resolution', () => {
       slug: 'fixture-player-1',
       nextGame: {
         date: '2026-08-01T18:00:00Z',
+        competitionSlug: 'mlspa',
         homeTeamName: 'Home',
         awayTeamName: 'Away',
         playerTeamName: 'Home',

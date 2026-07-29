@@ -26,9 +26,43 @@ export interface ReadonlyCache<T> {
   get(key: string): T | undefined | Promise<T | undefined>;
 }
 
+const playerPositions = new Set([
+  'auto-v3',
+  'Goalkeeper',
+  'Defender',
+  'Midfielder',
+  'Forward',
+]);
+
+/**
+ * Form values depend on the concrete card position, but a player's next
+ * fixture does not. Reuse the existing automatic-position key as the
+ * canonical fixture identity so old cache entries migrate without a bulk
+ * rewrite.
+ */
+export function playerFixtureCacheKey(key: string): string {
+  const [slug, position, coverage, ...remainder] = key.split(':');
+  if (
+    remainder.length > 0 ||
+    !slug ||
+    !position ||
+    !coverage ||
+    !playerPositions.has(position) ||
+    !['no-low', 'all'].includes(coverage)
+  ) {
+    return key;
+  }
+  return `${slug}:auto-v3:${coverage}`;
+}
+
 export interface SplitPlayerStatsCacheAccess extends Cache<PlayerStats> {
   getParts(key: string): Promise<PlayerStatsCacheParts>;
+  claimFixtureRefresh(value: PlayerFixtureStats): boolean | Promise<boolean>;
   setFixture(
+    key: string,
+    value: PlayerFixtureStats,
+  ): PlayerFixtureStats | Promise<PlayerFixtureStats>;
+  refreshFixture(
     key: string,
     value: PlayerFixtureStats,
   ): PlayerFixtureStats | Promise<PlayerFixtureStats>;
@@ -40,7 +74,9 @@ export function supportsSplitPlayerStatsCache(
   const candidate = cache as Partial<SplitPlayerStatsCacheAccess>;
   return (
     typeof candidate.getParts === 'function' &&
-    typeof candidate.setFixture === 'function'
+    typeof candidate.claimFixtureRefresh === 'function' &&
+    typeof candidate.setFixture === 'function' &&
+    typeof candidate.refreshFixture === 'function'
   );
 }
 
@@ -88,7 +124,7 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
   async getParts(key: string): Promise<PlayerStatsCacheParts> {
     const [form, fixture] = await Promise.all([
       this.formCache.get(key),
-      this.fixtureCache.get(key),
+      this.getFixture(key),
     ]);
 
     // Only consult the old combined cache before either new cache part exists.
@@ -122,6 +158,17 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
     return { ...parts.form, nextGame: parts.fixture };
   }
 
+  async claimFixtureRefresh(value: PlayerFixtureStats): Promise<boolean> {
+    const refreshable = this.fixtureCache as Cache<PlayerFixtureStats> & {
+      claimRefresh?: (
+        fixture: PlayerFixtureStats,
+      ) => boolean | Promise<boolean>;
+    };
+    return refreshable.claimRefresh
+      ? refreshable.claimRefresh(value)
+      : false;
+  }
+
   async set(key: string, value: PlayerStats): Promise<void> {
     const {
       nextGame,
@@ -131,7 +178,7 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
     } = value;
     await Promise.all([
       this.formCache.set(key, form),
-      this.fixtureCache.set(key, nextGame),
+      this.fixtureCache.set(playerFixtureCacheKey(key), nextGame),
     ]);
   }
 
@@ -139,10 +186,31 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
     key: string,
     value: PlayerFixtureStats,
   ): Promise<PlayerFixtureStats> {
+    const existing = await this.getFixture(key);
+    if (existing !== undefined) return existing;
+    const fixtureKey = playerFixtureCacheKey(key);
     if (this.fixtureCache.fillMissing) {
-      return this.fixtureCache.fillMissing(key, value);
+      return this.fixtureCache.fillMissing(fixtureKey, value);
     }
-    await this.fixtureCache.set(key, value);
+    await this.fixtureCache.set(fixtureKey, value);
+    return value;
+  }
+
+  async refreshFixture(
+    key: string,
+    value: PlayerFixtureStats,
+  ): Promise<PlayerFixtureStats> {
+    const fixtureKey = playerFixtureCacheKey(key);
+    const refreshable = this.fixtureCache as Cache<PlayerFixtureStats> & {
+      refresh?: (
+        cacheKey: string,
+        fixture: PlayerFixtureStats,
+      ) => PlayerFixtureStats | Promise<PlayerFixtureStats>;
+    };
+    if (refreshable.refresh) {
+      return refreshable.refresh(fixtureKey, value);
+    }
+    await this.fixtureCache.set(fixtureKey, value);
     return value;
   }
 
@@ -155,16 +223,20 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
     } = value;
     const [existingForm, existingFixture] = await Promise.all([
       this.formCache.get(key),
-      this.fixtureCache.get(key),
+      this.getFixture(key),
     ]);
     const writes: Array<void | Promise<void>> = [];
     let resolvedFixture = existingFixture;
     if (existingForm === undefined) writes.push(this.formCache.set(key, form));
     if (existingFixture === undefined) {
+      const fixtureKey = playerFixtureCacheKey(key);
       if (this.fixtureCache.fillMissing) {
-        resolvedFixture = await this.fixtureCache.fillMissing(key, nextGame);
+        resolvedFixture = await this.fixtureCache.fillMissing(
+          fixtureKey,
+          nextGame,
+        );
       } else {
-        writes.push(this.fixtureCache.set(key, nextGame));
+        writes.push(this.fixtureCache.set(fixtureKey, nextGame));
         resolvedFixture = nextGame;
       }
     }
@@ -173,5 +245,23 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
       ...(existingForm ?? form),
       nextGame: resolvedFixture ?? null,
     };
+  }
+
+  private async getFixture(
+    key: string,
+  ): Promise<PlayerFixtureStats | undefined> {
+    const fixtureKey = playerFixtureCacheKey(key);
+    const fixture = await this.fixtureCache.get(fixtureKey);
+    if (fixture !== undefined || fixtureKey === key) return fixture;
+
+    // One-time lazy migration for fixture entries written by older versions
+    // under a concrete position key.
+    const legacyFixture = await this.fixtureCache.get(key);
+    if (legacyFixture === undefined) return undefined;
+    if (this.fixtureCache.fillMissing) {
+      return this.fixtureCache.fillMissing(fixtureKey, legacyFixture);
+    }
+    await this.fixtureCache.set(fixtureKey, legacyFixture);
+    return legacyFixture;
   }
 }

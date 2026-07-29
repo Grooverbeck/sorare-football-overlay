@@ -193,6 +193,37 @@ describe('Sorare card DOM discovery', () => {
     ]);
   });
 
+  it('does not inherit a distant position filter from an unrelated app area', () => {
+    document.body.innerHTML = `
+      <main data-testid="app-shell">
+        <nav aria-label="Unrelated position filter">
+          <button type="button" class="highlighted"><span>MF</span></button>
+        </nav>
+        <div data-testid="content">
+          <div>
+            <div>
+              <div data-testid="player-pool">
+                <div data-testid="card-cell">
+                  <button type="button">
+                    <img
+                      alt="Ederson - common"
+                      src="https://assets.sorare.com/image-resize/cardsamplepicture/ederson/picture/card.png"
+                    >
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    `;
+
+    expect(findCardTargets(document)).toMatchObject([
+      { playerName: 'Ederson' },
+    ]);
+    expect(findCardTargets(document)[0]?.position).toBeUndefined();
+  });
+
   it('uses the concrete five-slot lineup order before the active picker position', () => {
     document.body.innerHTML = `
       <section data-testid="lineup-builder">
@@ -860,6 +891,77 @@ describe('Sorare card DOM discovery', () => {
     expect(host?.shadowRoot?.textContent).not.toContain('Keine L10-Daten');
   });
 
+  it('keeps only deferred name cards loading and retries them without blocking returned players', async () => {
+    const cards = ['Cached Player', 'Cold Player'].map((playerName) => {
+      const container = document.createElement('article');
+      document.body.append(container);
+      return {
+        playerName,
+        container,
+        view: new OverlayView(container, { playerName }, 'Midfielder'),
+      };
+    });
+    const statsFor = (
+      slug: string,
+      displayName: string,
+    ): PlayerStatsSuccessResponse['data'][number] => ({
+      slug,
+      displayName,
+      position: 'Midfielder',
+      aaL10: { value: 12, sampleSize: 10 },
+      cleanSheetL10: { value: 0.2, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      nextGame: null,
+      excludedLowCoverage: 0,
+    });
+    const fetcher = vi.fn(
+      async (): Promise<PlayerStatsSuccessResponse> =>
+        fetcher.mock.calls.length === 1
+          ? {
+              data: [statsFor('cached-player', 'Cached Player')],
+              meta: {
+                requested: 2,
+                returned: 1,
+                cacheHits: 1,
+                source: 'sorare',
+                deferredPlayerNames: ['Cold Player'],
+              },
+            }
+          : {
+              data: [statsFor('cold-player', 'Cold Player')],
+              meta: {
+                requested: 1,
+                returned: 1,
+                cacheHits: 1,
+                source: 'sorare',
+              },
+            },
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 0, [5]);
+    for (const { playerName, container, view } of cards) {
+      coordinator.enqueue(
+        { playerName, position: 'Midfielder', container },
+        view,
+      );
+    }
+
+    await coordinator.flush();
+
+    expect(cards[0]?.view.host.shadowRoot?.textContent).not.toContain(
+      'Lade L10',
+    );
+    expect(cards[1]?.view.host.shadowRoot?.textContent).toContain('Lade L10');
+    expect(cards[1]?.view.host.shadowRoot?.textContent).not.toContain(
+      'Keine L10-Daten',
+    );
+
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    expect(cards[1]?.view.host.shadowRoot?.textContent).not.toContain(
+      'Lade L10',
+    );
+    cards.forEach(({ view }) => view.destroy());
+  });
+
   it('loads large card lists progressively in small request groups', async () => {
     const fetcher = vi.fn(
       async (
@@ -918,6 +1020,180 @@ describe('Sorare card DOM discovery', () => {
       ),
     ).toBe(true);
     for (const view of views) view.destroy();
+  });
+
+  it('loads visible cards before nearby cards regardless of discovery order', async () => {
+    const fetcher = vi.fn(
+      async (
+        request: PlayerStatsRequest,
+      ): Promise<PlayerStatsSuccessResponse> => ({
+        data: request.slugs.map((slug) => ({
+          slug,
+          displayName: slug,
+          position: 'Midfielder',
+          aaL10: { value: 10, sampleSize: 10 },
+          cleanSheetL10: { value: 0.2, sampleSize: 10 },
+          goalL10: { value: 0.1, sampleSize: 10 },
+          nextGame: null,
+          excludedLowCoverage: 0,
+        })),
+        meta: {
+          requested: request.slugs.length,
+          returned: request.slugs.length,
+          cacheHits: 0,
+          source: 'sorare',
+        },
+      }),
+    );
+    const coordinator = new StatsBatchCoordinator(
+      fetcher,
+      60_000,
+      [5_000],
+      1,
+      1,
+    );
+    const cards = ['nearby-one', 'nearby-two', 'visible-card'].map((slug) => {
+      const card = document.createElement('article');
+      document.body.append(card);
+      const view = new OverlayView(card, { slug }, 'Midfielder');
+      coordinator.enqueue(
+        { slug, position: 'Midfielder', container: card },
+        view,
+        slug === 'visible-card' ? 2 : 1,
+      );
+      return view;
+    });
+
+    await coordinator.flush();
+
+    expect(fetcher.mock.calls.map(([request]) => request.slugs[0])).toEqual([
+      'visible-card',
+      'nearby-one',
+      'nearby-two',
+    ]);
+    cards.forEach((view) => view.destroy());
+  });
+
+  it('defers far-offscreen cards until they enter the viewport preload area', async () => {
+    let intersectionCallback: IntersectionObserverCallback | undefined;
+    const observe = vi.fn();
+    const unobserve = vi.fn();
+    const disconnect = vi.fn();
+    class TestIntersectionObserver {
+      readonly root = null;
+      readonly rootMargin = '';
+      readonly thresholds: readonly number[] = [];
+
+      constructor(callback: IntersectionObserverCallback) {
+        intersectionCallback = callback;
+      }
+
+      observe = observe;
+      unobserve = unobserve;
+      disconnect = disconnect;
+      takeRecords(): IntersectionObserverEntry[] {
+        return [];
+      }
+    }
+    vi.stubGlobal('IntersectionObserver', TestIntersectionObserver);
+    document.body.innerHTML = `
+      <article data-testid="football-card" data-position="Midfielder">
+        <a href="/football/players/visible-player">Visible player</a>
+      </article>
+      <article data-testid="football-card" data-position="Midfielder">
+        <a href="/football/players/far-player">Far player</a>
+      </article>
+    `;
+    const [visibleCard, farCard] = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-testid="football-card"]'),
+    );
+    if (!visibleCard || !farCard) throw new Error('Expected viewport test cards');
+    vi.spyOn(visibleCard, 'getBoundingClientRect').mockReturnValue({
+      x: 20,
+      y: 100,
+      top: 100,
+      right: 140,
+      bottom: 294,
+      left: 20,
+      width: 120,
+      height: 194,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(farCard, 'getBoundingClientRect').mockReturnValue({
+      x: 20,
+      y: 4_000,
+      top: 4_000,
+      right: 140,
+      bottom: 4_194,
+      left: 20,
+      width: 120,
+      height: 194,
+      toJSON: () => ({}),
+    });
+    const fetcher = vi.fn(
+      async (
+        request: PlayerStatsRequest,
+      ): Promise<PlayerStatsSuccessResponse> => ({
+        data: request.slugs.map((slug) => ({
+          slug,
+          displayName: slug,
+          position: 'Midfielder',
+          aaL10: { value: 10, sampleSize: 10 },
+          cleanSheetL10: { value: 0.2, sampleSize: 10 },
+          goalL10: { value: 0.1, sampleSize: 10 },
+          nextGame: null,
+          excludedLowCoverage: 0,
+        })),
+        meta: {
+          requested: request.slugs.length,
+          returned: request.slugs.length,
+          cacheHits: 0,
+          source: 'sorare',
+        },
+      }),
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const scanner = new SorareCardScanner(coordinator);
+
+    scanner.start();
+    await coordinator.flush();
+
+    expect(observe).toHaveBeenCalledTimes(2);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0]?.[0].slugs).toEqual(['visible-player']);
+    const farHost = document.querySelector<HTMLElement>(
+      '[data-sorare-overlay-root][data-player-slug="far-player"]',
+    );
+    expect(farHost?.style.display).toBe('none');
+
+    intersectionCallback?.(
+      [
+        {
+          target: farCard,
+          isIntersecting: true,
+          boundingClientRect: {
+            x: 20,
+            y: 900,
+            top: 900,
+            right: 140,
+            bottom: 1_094,
+            left: 20,
+            width: 120,
+            height: 194,
+            toJSON: () => ({}),
+          },
+        } as IntersectionObserverEntry,
+      ],
+      {} as IntersectionObserver,
+    );
+    await coordinator.flush();
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[1]?.[0].slugs).toEqual(['far-player']);
+    scanner.stop();
+    expect(unobserve).not.toHaveBeenCalled();
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
   });
 
   it('uses anonymous-safe groups of three by default', async () => {
@@ -2168,9 +2444,30 @@ describe('Sorare card DOM discovery', () => {
     expect(compactAa?.querySelector('.aa-market-icon')?.textContent).toBe('AA');
     expect(compactAa?.querySelector('.market-value')?.textContent).toBe('14.2');
     expect(compactAa?.dataset.tone).toBe('strong');
+    expect(compactAa?.dataset.clubSampleSize).toBe('9');
+    const aaWarning =
+      compactAa?.querySelector<HTMLElement>('.aa-sample-warning');
+    expect(aaWarning?.childNodes[0]?.textContent).toBe('!');
+    expect(aaWarning?.tabIndex).toBe(0);
+    expect(aaWarning?.getAttribute('role')).toBe('note');
+    expect(aaWarning?.getAttribute('aria-label')).toContain(
+      'AA 14.2 · Datenbasis: 9/10 gültige Spiele beim aktuellen Verein',
+    );
+    expect(
+      aaWarning?.querySelector('.aa-sample-warning-title')?.textContent,
+    ).toBe('Begrenzte AA-Datenbasis');
+    expect(
+      aaWarning?.querySelector('.aa-sample-warning-detail')?.textContent,
+    ).toContain('Andere Vereine/Nationalteam ausgeschlossen');
+    expect(compactAa?.title).toBe('');
+    expect(compactAa?.getAttribute('aria-label')).toContain(
+      'nur 9 Vereinsspiele des aktuellen Clubs',
+    );
     expect(compactAa?.dataset.percentileBand).toBe('P80–90');
     expect(compactAa?.querySelector('.performance-scale')).toBeNull();
-    expect(marketBracket?.textContent).toBe('AA14.2CS47%18%11%');
+    expect(marketBracket?.textContent).toBe(
+      'AA14.2!Begrenzte AA-DatenbasisAA 14.2 · Datenbasis: 9/10 gültige Spiele beim aktuellen Verein. Andere Vereine/Nationalteam ausgeschlossen.CS47%18%11%',
+    );
     expect(marketBracket?.firstElementChild).toBe(compactAa);
     expect(compactAa?.classList.contains('aa-bracket-top')).toBe(true);
     const cleanSheetBracket =
@@ -2643,6 +2940,69 @@ describe('Sorare card DOM discovery', () => {
     expect(rectSpies.map((spy) => spy.mock.calls.length)).toEqual([1, 1]);
 
     views.forEach((view) => view.destroy());
+    vi.unstubAllGlobals();
+  });
+
+  it('skips viewport-inactive overlays during global scroll positioning', () => {
+    const frameCallbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      frameCallbacks.push(callback);
+      return frameCallbacks.length;
+    });
+    vi.stubGlobal('requestAnimationFrame', requestAnimationFrame);
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    document.body.innerHTML = `
+      <article data-testid="visible-card"></article>
+      <article data-testid="offscreen-card"></article>
+    `;
+    const visibleCard = document.querySelector<HTMLElement>(
+      '[data-testid="visible-card"]',
+    );
+    const offscreenCard = document.querySelector<HTMLElement>(
+      '[data-testid="offscreen-card"]',
+    );
+    if (!visibleCard || !offscreenCard) {
+      throw new Error('Expected viewport positioning cards');
+    }
+    const visibleRect = vi.spyOn(visibleCard, 'getBoundingClientRect').mockReturnValue({
+      x: 20,
+      y: 100,
+      top: 100,
+      right: 140,
+      bottom: 294,
+      left: 20,
+      width: 120,
+      height: 194,
+      toJSON: () => ({}),
+    });
+    const offscreenRect = vi
+      .spyOn(offscreenCard, 'getBoundingClientRect')
+      .mockReturnValue({
+        x: 20,
+        y: 4_000,
+        top: 4_000,
+        right: 140,
+        bottom: 4_194,
+        left: 20,
+        width: 120,
+        height: 194,
+        toJSON: () => ({}),
+      });
+    const visibleView = new OverlayView(visibleCard, { playerName: 'Visible Player' });
+    const offscreenView = new OverlayView(offscreenCard, {
+      playerName: 'Offscreen Player',
+    });
+    offscreenView.setViewportPriorityActive(false);
+    visibleRect.mockClear();
+    offscreenRect.mockClear();
+
+    window.dispatchEvent(new Event('scroll'));
+    frameCallbacks.shift()?.(performance.now());
+
+    expect(visibleRect).toHaveBeenCalledTimes(1);
+    expect(offscreenRect).not.toHaveBeenCalled();
+    visibleView.destroy();
+    offscreenView.destroy();
     vi.unstubAllGlobals();
   });
 

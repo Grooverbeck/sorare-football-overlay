@@ -20,8 +20,11 @@ describe('MLS AA benchmarks', () => {
     });
   });
 
-  it('does not rank sparse or missing AA samples', () => {
-    expect(getMlsAaPercentileBand('Midfielder', 12, 4)).toBeNull();
+  it('colors sparse AA samples but leaves missing values unranked', () => {
+    expect(getMlsAaPercentileBand('Midfielder', 12, 4)).toEqual({
+      tone: 'good',
+      label: 'P60–80',
+    });
     expect(getMlsAaPercentileBand('Midfielder', null, 10)).toBeNull();
     expect(MLS_AA_BENCHMARKS.populationSize).toBe(551);
   });
