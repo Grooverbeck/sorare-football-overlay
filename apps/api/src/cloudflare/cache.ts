@@ -27,6 +27,11 @@ import {
   type OddsMarketKey,
 } from '../providers/market-odds-provider.js';
 import {
+  MatchOddsSnapshotSchema,
+  type MatchOddsSnapshot,
+  type MatchOddsSnapshotStore,
+} from '../providers/match-odds-provider.js';
+import {
   ProviderQuotaUsageSchema,
   type OddsProviderName,
   type ProviderQuotaUsage,
@@ -448,6 +453,42 @@ export class CloudflareMarketSnapshotStore
 
   private key(fixtureKey: string, market: OddsMarketKey): string {
     return `market-odds:v1:${encodeURIComponent(fixtureKey)}:${market}`;
+  }
+}
+
+export class CloudflareMatchOddsSnapshotStore
+  implements MatchOddsSnapshotStore
+{
+  constructor(private readonly namespace: JsonKeyValueStore) {}
+
+  async get(fixtureKey: string): Promise<MatchOddsSnapshot | undefined> {
+    const key = this.key(fixtureKey);
+    const raw = await this.namespace.get<unknown>(key, 'json');
+    if (raw === null) return undefined;
+    const parsed = MatchOddsSnapshotSchema.safeParse(raw);
+    if (!parsed.success) {
+      await this.namespace.delete(key);
+      return undefined;
+    }
+    if (Date.parse(parsed.data.expiresAt) <= Date.now()) {
+      await this.namespace.delete(key);
+      return undefined;
+    }
+    return parsed.data;
+  }
+
+  async set(
+    fixtureKey: string,
+    snapshot: MatchOddsSnapshot,
+  ): Promise<void> {
+    const parsed = MatchOddsSnapshotSchema.parse(snapshot);
+    await this.namespace.put(this.key(fixtureKey), JSON.stringify(parsed), {
+      expiration: Math.floor(Date.parse(parsed.expiresAt) / 1_000),
+    });
+  }
+
+  private key(fixtureKey: string): string {
+    return `match-odds:v1:${encodeURIComponent(fixtureKey)}`;
   }
 }
 

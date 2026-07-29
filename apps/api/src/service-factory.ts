@@ -22,6 +22,13 @@ import {
   InMemoryProviderQuotaUsageStore,
   type ProviderQuotaUsageStore,
 } from './providers/odds-usage.js';
+import {
+  InMemoryMatchOddsSnapshotStore,
+  TheOddsApiFixtureMatchOddsProvider,
+  UnavailableFixtureMatchOddsProvider,
+  type FixtureMatchOddsProvider,
+  type MatchOddsSnapshotStore,
+} from './providers/match-odds-provider.js';
 import type {
   PlayerNameResolutionCache,
   PlayerStatsDataSource,
@@ -37,6 +44,7 @@ export interface CreateStatsRuntimeOptions {
   statsCache: Cache<PlayerStats>;
   nameResolutionCache?: PlayerNameResolutionCache;
   marketSnapshotStore?: MarketSnapshotStore;
+  matchOddsSnapshotStore?: MatchOddsSnapshotStore;
   providerQuotaUsageStore?: ProviderQuotaUsageStore;
   scheduleBackground?: BackgroundTaskScheduler;
 }
@@ -52,10 +60,12 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
   const { config, logger } = options;
   let dataSource: PlayerStatsDataSource;
   let marketOddsProvider: PlayerMarketOddsProvider;
+  let fixtureMatchOddsProvider: FixtureMatchOddsProvider;
 
   if (config.mockMode) {
     dataSource = new MockDataSource();
     marketOddsProvider = new MockPlayerMarketOddsProvider();
+    fixtureMatchOddsProvider = new UnavailableFixtureMatchOddsProvider();
   } else {
     const providerQuotaUsageStore =
       options.providerQuotaUsageStore ??
@@ -197,6 +207,52 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
           theOddsProvider,
         )
       : theOddsProvider;
+    fixtureMatchOddsProvider = config.oddsApiKey
+      ? new TheOddsApiFixtureMatchOddsProvider({
+          apiKey: config.oddsApiKey,
+          baseUrl: config.oddsApiBaseUrl,
+          routes: [
+            {
+              sportKeys: [config.oddsApiSportKey],
+              competitionSlugs: ['mlspa'],
+              region: config.oddsApiRegion,
+              ...(config.oddsApiFallbackRegion
+                ? { fallbackRegion: config.oddsApiFallbackRegion }
+                : {}),
+            },
+            {
+              sportKeys: [
+                'soccer_uefa_champs_league_qualification',
+                'soccer_uefa_champs_league',
+              ],
+              competitionSlugs: ['uefa-champions-league'],
+              region: 'eu',
+              fallbackRegion: 'uk',
+            },
+            {
+              sportKeys: ['soccer_uefa_europa_league'],
+              competitionSlugs: ['uefa-europa-league'],
+              region: 'eu',
+              fallbackRegion: 'uk',
+            },
+            {
+              sportKeys: ['soccer_uefa_europa_conference_league'],
+              competitionSlugs: ['uefa-europa-conference-league'],
+              region: 'eu',
+              fallbackRegion: 'uk',
+            },
+          ],
+          fallbackWindowMs: config.matchOddsFallbackWindowMs,
+          missTtlMs: config.oddsMissCacheTtlMs,
+          requestTimeoutMs: config.requestTimeoutMs,
+          maxRetries: config.maxRetries,
+          store:
+            options.matchOddsSnapshotStore ??
+            new InMemoryMatchOddsSnapshotStore(),
+          logger,
+          usageStore: providerQuotaUsageStore,
+        })
+      : new UnavailableFixtureMatchOddsProvider();
   }
 
   return {
@@ -207,6 +263,8 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
       config.excludeLowCoverage,
       marketOddsProvider,
       options.scheduleBackground,
+      3_000,
+      fixtureMatchOddsProvider,
     ),
     marketOddsProvider,
     dataSource,

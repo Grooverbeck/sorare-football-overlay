@@ -103,6 +103,7 @@ Alle Werte werden aus `apps/api/.env` oder der Prozessumgebung gelesen.
 | `ODDS_API_REGION` | `us` | Primäre Buchmacherregion |
 | `ODDS_API_FALLBACK_REGION` | leer | Optionale zweite Region, die nur für weiterhin fehlende Spieler-Märkte abgefragt wird; Produktion nutzt `uk` |
 | `ODDS_FETCH_WINDOW_HOURS` | `24` | Marktquoten frühestens so viele Stunden vor Anpfiff abrufen |
+| `MATCH_ODDS_FALLBACK_WINDOW_HOURS` | `72` | Externe H/D/A-Quoten nur innerhalb dieses Zeitfensters ergänzen, wenn Sorare noch Werte fehlen |
 | `ODDS_MISS_CACHE_TTL_SECONDS` | `21600` | Legacy-Fallback für alte negative Quoten-Cacheeinträge; neue Einträge nutzen 12h/24h plus eine letzte Prüfung vier Stunden vor Anpfiff |
 | `SPORTS_GAME_ODDS_API_KEY` | leer | Serverseitiger Schlüssel für direkte Tor-, Assist- und Tor-oder-Assist-Märkte |
 | `SPORTS_GAME_ODDS_BASE_URL` | `https://api.sportsgameodds.com/v2` | Basis-URL von SportsGameOdds |
@@ -157,6 +158,13 @@ werden zuerst europäische und nur bei Bedarf britische Buchmacher abgefragt.
 Unbekannte oder andere Wettbewerbe lösen keinen externen Feed-Aufruf aus. Alte
 Fixture-Cacheeinträge ohne Competition werden einmalig beim nächsten
 Kartenaufruf aktualisiert.
+
+H/D/A-Wahrscheinlichkeiten stammen weiterhin vorrangig von Sorare. Erst ab
+72 Stunden vor Anpfiff darf The Odds API noch fehlende H-, D- oder A-Werte
+ergänzen. Der Abruf läuft nach der eigentlichen Statistikantwort gebündelt pro
+Wettbewerb. Der bereinigte Buchmacher-Median wird anschließend bis nach dem
+Spiel gespeichert. Bereits vorhandene Sorare-Werte werden dabei nie durch den
+externen Fallback ersetzt.
 
 Der tägliche Cron speichert außerdem die Kontingentnutzung beider
 Quotenanbieter. Ab 50 % wird eine Warnung protokolliert. The Odds API verzichtet

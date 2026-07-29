@@ -19,6 +19,10 @@ import {
   type PlayerMarketOddsProvider,
 } from '../providers/market-odds-provider.js';
 import type { GoalscorerProbabilityProvider } from '../providers/goalscorer-provider.js';
+import {
+  UnavailableFixtureMatchOddsProvider,
+  type FixtureMatchOddsProvider,
+} from '../providers/match-odds-provider.js';
 import type {
   PlayerStatsDataSource,
   SourcePlayer,
@@ -67,6 +71,30 @@ function hasNoUsablePlayerData(stats: PlayerStats): boolean {
     stats.aaL10.sampleSize === 0 &&
     stats.cleanSheetL10.sampleSize === 0 &&
     stats.goalL10.sampleSize === 0
+  );
+}
+
+function mergeMatchProbabilities(
+  primary: NonNullable<PlayerStats['nextGame']>['matchProbabilities'],
+  fallback: NonNullable<PlayerStats['nextGame']>['matchProbabilities'],
+): NonNullable<PlayerStats['nextGame']>['matchProbabilities'] {
+  if (primary === null) return fallback;
+  if (fallback === null) return primary;
+  return {
+    win: primary.win ?? fallback.win,
+    draw: primary.draw ?? fallback.draw,
+    loss: primary.loss ?? fallback.loss,
+  };
+}
+
+function needsMatchProbabilitiesFallback(stats: PlayerStats): boolean {
+  if (!stats.nextGame) return false;
+  const probabilities = stats.nextGame.matchProbabilities;
+  return (
+    (probabilities === null ||
+      probabilities.win === null ||
+      probabilities.draw === null ||
+      probabilities.loss === null)
   );
 }
 
@@ -172,6 +200,8 @@ export class StatsService {
     private readonly marketOddsProvider: PlayerMarketOddsProvider,
     private readonly scheduleBackground?: BackgroundTaskScheduler,
     private readonly nameResolutionBudgetMs = 3_000,
+    private readonly fixtureMatchOddsProvider: FixtureMatchOddsProvider =
+      new UnavailableFixtureMatchOddsProvider(),
   ) {}
 
   async getPlayerStats(request: ValidatedPlayerStatsRequest): Promise<StatsServiceResult> {
@@ -356,6 +386,9 @@ export class StatsService {
       request.includeHistoricalAssists,
     );
     cachedOrLoaded = harmonizePlayerTeamFixtures(cachedOrLoaded);
+    const fixtureMatchOdds = await this.fixtureMatchOddsProvider
+      .load(cachedOrLoaded, { cacheOnly: true })
+      .catch(() => new Map());
     const oddsEligiblePlayers = cachedOrLoaded.filter(
       (stats) => playerMarketOddsSupported(this.marketOddsProvider, stats),
     );
@@ -363,6 +396,7 @@ export class StatsService {
       .load(oddsEligiblePlayers, { cacheOnly: true })
       .catch(() => new Map());
     const marketRefreshPlayers: PlayerStats[] = [];
+    const matchOddsRefreshPlayers: PlayerStats[] = [];
     const data = cachedOrLoaded.map((stats): PlayerStats => {
       const pending = new Set<PendingRefresh>(
         stats.pendingRefreshes ?? [],
@@ -374,6 +408,19 @@ export class StatsService {
       );
       const odds =
         supportsMarketOdds ? marketOdds.get(key) ?? null : null;
+      const fallbackMatchProbabilities =
+        fixtureMatchOdds.get(key) ?? null;
+      const nextGame = stats.nextGame
+        ? {
+            ...stats.nextGame,
+            matchProbabilities: mergeMatchProbabilities(
+              stats.nextGame.matchProbabilities,
+              fallbackMatchProbabilities,
+            ),
+            marketOdds: odds,
+          }
+        : null;
+      const statsWithFallback = { ...stats, nextGame };
       if (
         this.scheduleBackground &&
         supportsMarketOdds &&
@@ -382,14 +429,17 @@ export class StatsService {
         pending.add('marketOdds');
         marketRefreshPlayers.push(stats);
       }
+      if (
+        this.scheduleBackground &&
+        this.fixtureMatchOddsProvider.supports(statsWithFallback) &&
+        needsMatchProbabilitiesFallback(statsWithFallback)
+      ) {
+        pending.add('fixture');
+        matchOddsRefreshPlayers.push(statsWithFallback);
+      }
       return {
         ...stats,
-        nextGame: stats.nextGame
-          ? {
-              ...stats.nextGame,
-              marketOdds: odds,
-            }
-          : null,
+        nextGame,
         ...(pending.size > 0
           ? { pendingRefreshes: [...pending] }
           : { pendingRefreshes: undefined }),
@@ -405,6 +455,13 @@ export class StatsService {
         tasks.push(
           this.marketOddsProvider
             .load(marketRefreshPlayers)
+            .then(() => undefined),
+        );
+      }
+      if (matchOddsRefreshPlayers.length > 0) {
+        tasks.push(
+          this.fixtureMatchOddsProvider
+            .load(matchOddsRefreshPlayers)
             .then(() => undefined),
         );
       }

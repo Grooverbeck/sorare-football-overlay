@@ -396,7 +396,18 @@ export function supportsPlayerCompetition(
   supportedCompetitionSlugs: readonly string[] =
     defaultSupportedCompetitionSlugs,
 ): boolean {
-  if (player.position === 'Goalkeeper' || !player.nextGame) return false;
+  return (
+    player.position !== 'Goalkeeper' &&
+    supportsFixtureCompetition(player, supportedCompetitionSlugs)
+  );
+}
+
+export function supportsFixtureCompetition(
+  player: PlayerStats,
+  supportedCompetitionSlugs: readonly string[] =
+    defaultSupportedCompetitionSlugs,
+): boolean {
+  if (!player.nextGame) return false;
   const supported = new Set(
     supportedCompetitionSlugs.map((slug) => slug.trim().toLocaleLowerCase()),
   );
@@ -448,10 +459,18 @@ export function marketFixtureKey(
   ].join('|');
 }
 
-export function groupFixtures(players: readonly PlayerStats[]): FixtureGroup[] {
+export function groupFixtures(
+  players: readonly PlayerStats[],
+  options: { includeGoalkeepers?: boolean } = {},
+): FixtureGroup[] {
   const groups = new Map<string, FixtureGroup>();
   for (const player of players) {
-    if (player.position === 'Goalkeeper' || !player.nextGame) continue;
+    if (
+      (!options.includeGoalkeepers && player.position === 'Goalkeeper') ||
+      !player.nextGame
+    ) {
+      continue;
+    }
     const fixtureTeams = new Set(
       [player.nextGame.homeTeamName, player.nextGame.awayTeamName]
         .filter((team): team is string => Boolean(team))

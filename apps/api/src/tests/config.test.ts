@@ -10,6 +10,7 @@ describe('loadConfig cache TTLs', () => {
     expect(config.nameCacheTtlMs).toBe(2_592_000_000);
     expect(config.nameMissCacheTtlMs).toBe(7_200_000);
     expect(config.oddsFetchWindowMs).toBe(86_400_000);
+    expect(config.matchOddsFallbackWindowMs).toBe(259_200_000);
     expect(config.oddsMissCacheTtlMs).toBe(21_600_000);
     expect(config.oddsApiFallbackRegion).toBeUndefined();
     expect(config.sportsGameOddsBaseUrl).toBe(
@@ -33,6 +34,7 @@ describe('loadConfig cache TTLs', () => {
       NAME_CACHE_TTL_SECONDS: '1209600',
       NAME_MISS_CACHE_TTL_SECONDS: '3600',
       ODDS_FETCH_WINDOW_HOURS: '6',
+      MATCH_ODDS_FALLBACK_WINDOW_HOURS: '48',
       ODDS_MISS_CACHE_TTL_SECONDS: '900',
       ODDS_API_FALLBACK_REGION: 'uk',
       THE_ODDS_API_KEY: 'server-only-test-key',
@@ -45,6 +47,7 @@ describe('loadConfig cache TTLs', () => {
       nameCacheTtlMs: 1_209_600_000,
       nameMissCacheTtlMs: 3_600_000,
       oddsFetchWindowMs: 21_600_000,
+      matchOddsFallbackWindowMs: 172_800_000,
       oddsMissCacheTtlMs: 900_000,
       oddsApiFallbackRegion: 'uk',
       oddsApiKey: 'server-only-test-key',

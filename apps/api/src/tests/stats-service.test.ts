@@ -1,6 +1,7 @@
 import {
   PlayerStatsRequestSchema,
   type FootballPosition,
+  type MatchProbabilities,
   type PlayerMarketOdds,
   type PlayerStats,
 } from '@sorare-overlay/shared';
@@ -19,6 +20,7 @@ import {
   playerMarketOddsKey,
   type PlayerMarketOddsProvider,
 } from '../providers/market-odds-provider.js';
+import type { FixtureMatchOddsProvider } from '../providers/match-odds-provider.js';
 import type {
   PlayerNameResolutionOptions,
   PlayerStatsDataSource,
@@ -700,5 +702,66 @@ describe('StatsService cache writes', () => {
 
     releaseOdds?.(new Map());
     await Promise.all(backgroundTasks);
+  });
+
+  it('fills only missing H-D-A values and keeps Sorare probabilities authoritative', async () => {
+    const mock = new MockDataSource();
+    const source: PlayerStatsDataSource = {
+      source: 'sorare',
+      resolvePlayerNames: mock.resolvePlayerNames.bind(mock),
+      fetchNextGames: mock.fetchNextGames.bind(mock),
+      fetchPlayers: async (requests) =>
+        (await mock.fetchPlayers(requests)).map((player) => ({
+          ...player,
+          nextGame: player.nextGame
+            ? {
+                ...player.nextGame,
+                matchProbabilities: {
+                  win: null,
+                  draw: 0.24,
+                  loss: null,
+                },
+              }
+            : null,
+        })),
+    };
+    const fallback: MatchProbabilities = {
+      win: 0.51,
+      draw: 0.22,
+      loss: 0.27,
+    };
+    const fixtureProvider: FixtureMatchOddsProvider = {
+      supports: () => true,
+      load: async (players) =>
+        new Map(
+          players.map((player) => [
+            playerMarketOddsKey(player),
+            fallback,
+          ]),
+        ),
+    };
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      new MockPlayerMarketOddsProvider(),
+      undefined,
+      3_000,
+      fixtureProvider,
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['jude-bellingham'],
+        positions: { 'jude-bellingham': 'Midfielder' },
+      }),
+    );
+
+    expect(result.data[0]?.nextGame?.matchProbabilities).toEqual({
+      win: 0.51,
+      draw: 0.24,
+      loss: 0.27,
+    });
   });
 });
