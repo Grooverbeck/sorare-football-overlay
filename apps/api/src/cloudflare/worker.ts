@@ -45,6 +45,7 @@ const configKeys = [
 ] as const;
 
 const WEEKLY_MLS_AA_CRON = '0 10 * * MON';
+const DAILY_MARKET_PREWARM_CRON = '0 5 * * *';
 
 function stringBindings(env: CloudflareBindings): Record<string, string | undefined> {
   const bindings = env as unknown as Readonly<Record<string, unknown>>;
@@ -163,6 +164,13 @@ export default {
             'Weekly MLS AA benchmark refresh failed; keeping previous snapshot',
           );
         }),
+      );
+      return;
+    }
+    if (controller.cron !== DAILY_MARKET_PREWARM_CRON) {
+      logger.warn(
+        { cron: controller.cron },
+        'Ignoring unknown scheduled trigger',
       );
       return;
     }

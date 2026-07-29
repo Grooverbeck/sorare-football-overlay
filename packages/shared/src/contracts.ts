@@ -176,6 +176,9 @@ export const PlayerStatsSuccessResponseSchema = z.object({
     returned: z.number().int().nonnegative(),
     cacheHits: z.number().int().nonnegative(),
     source: z.enum(['sorare', 'mock']),
+    // Cold gallery names may be resolved and warmed after the response. The
+    // extension keeps only these cards in loading state and retries them.
+    deferredPlayerNames: z.array(z.string().trim().min(2).max(120)).optional(),
   }),
 });
 

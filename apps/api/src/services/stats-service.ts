@@ -24,11 +24,15 @@ import type {
   SourcePlayer,
   SourcePlayerRequest,
 } from './data-source.js';
+import {
+  playerTeamFixtureIdentity,
+} from './fixture-identity.js';
 
 export interface StatsServiceResult {
   data: PlayerStats[];
   cacheHits: number;
   source: 'sorare' | 'mock';
+  deferredPlayerNames: string[];
 }
 
 function cacheKey(request: SourcePlayerRequest, excludeLowCoverage: boolean): string {
@@ -66,15 +70,96 @@ function hasNoUsablePlayerData(stats: PlayerStats): boolean {
   );
 }
 
+function harmonizePlayerTeamFixtures(
+  players: readonly PlayerStats[],
+): PlayerStats[] {
+  const fixtureByTeam = new Map<
+    string,
+    NonNullable<PlayerStats['nextGame']>
+  >();
+  for (const player of players) {
+    const fixture = player.nextGame;
+    const teamName = fixture?.playerTeamName;
+    if (!fixture || !teamName) continue;
+    const teamKey = playerTeamFixtureIdentity(fixture);
+    if (!teamKey) continue;
+    const existing = fixtureByTeam.get(teamKey);
+    const kickoff = Date.parse(fixture.date);
+    const existingKickoff = existing ? Date.parse(existing.date) : Number.NaN;
+    if (
+      !existing ||
+      (Number.isFinite(kickoff) &&
+        (!Number.isFinite(existingKickoff) || kickoff < existingKickoff))
+    ) {
+      fixtureByTeam.set(teamKey, fixture);
+    }
+  }
+
+  return players.map((player) => {
+    const fixture = player.nextGame;
+    const teamName = fixture?.playerTeamName;
+    if (!fixture || !teamName) return player;
+    const teamKey = playerTeamFixtureIdentity(fixture);
+    const shared = teamKey ? fixtureByTeam.get(teamKey) : undefined;
+    if (!shared || shared === fixture) return player;
+    const { marketOdds: _sharedMarketOdds, ...sharedFixture } = shared;
+    return {
+      ...player,
+      nextGame: {
+        ...sharedFixture,
+        // Preserve only the player-specific prop snapshot. CS and H-D-A come
+        // from the selected shared team fixture.
+        ...(fixture.marketOdds !== undefined
+          ? { marketOdds: fixture.marketOdds }
+          : {}),
+      },
+    };
+  });
+}
+
 type PendingRefresh = 'fixture' | 'marketOdds';
 
-interface CachedFormOnly {
+interface FixtureRefreshEntry {
   key: string;
   request: SourcePlayerRequest;
   form: PlayerFormStats;
+  existingFixture?: PlayerStats['nextGame'];
 }
 
 export type BackgroundTaskScheduler = (task: Promise<void>) => void;
+
+type TimedResult<T> =
+  | { status: 'fulfilled'; value: T }
+  | { status: 'rejected' }
+  | { status: 'timed-out' };
+
+function settleWithin<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<TimedResult<T>> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({ status: 'timed-out' });
+    }, timeoutMs);
+    void promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolve({ status: 'fulfilled', value });
+      },
+      () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolve({ status: 'rejected' });
+      },
+    );
+  });
+}
 
 export class StatsService {
   private readonly inFlight = new Map<string, Promise<PlayerStats | undefined>>();
@@ -86,6 +171,7 @@ export class StatsService {
     private readonly excludeLowCoverage: boolean,
     private readonly marketOddsProvider: PlayerMarketOddsProvider,
     private readonly scheduleBackground?: BackgroundTaskScheduler,
+    private readonly nameResolutionBudgetMs = 3_000,
   ) {}
 
   async getPlayerStats(request: ValidatedPlayerStatsRequest): Promise<StatsServiceResult> {
@@ -99,12 +185,12 @@ export class StatsService {
           : {}),
       };
     });
-    const resolvedRequests = (
-      await this.dataSource.resolvePlayerNames(
-        request.playerNames,
-        request.positions,
-      )
-    ).map(
+    const nameResolution = await this.resolveNamesForResponse(
+      request.playerNames,
+      request.positions,
+      request.includeHistoricalAssists,
+    );
+    const resolvedRequests = nameResolution.resolved.map(
       (resolved): SourcePlayerRequest => ({
         ...resolved,
         ...(request.includeHistoricalAssists
@@ -121,7 +207,7 @@ export class StatsService {
       ).values(),
     ];
     const immediate = new Map<string, PlayerStats>();
-    const cachedFormsWithoutFixture: CachedFormOnly[] = [];
+    const fixtureRefreshEntries: FixtureRefreshEntry[] = [];
     let cacheHits = 0;
     const splitCache = supportsSplitPlayerStatsCache(this.cache)
       ? this.cache
@@ -149,7 +235,24 @@ export class StatsService {
         }
         cacheHits += 1;
         if (parts.fixture !== undefined) {
-          immediate.set(key, { ...parts.form, nextGame: parts.fixture });
+          const fixtureRefreshDue =
+            parts.fixture !== null &&
+            (await splitCache.claimFixtureRefresh(parts.fixture));
+          immediate.set(key, {
+            ...parts.form,
+            nextGame: parts.fixture,
+            ...(fixtureRefreshDue
+              ? { pendingRefreshes: ['fixture'] as PendingRefresh[] }
+              : {}),
+          });
+          if (fixtureRefreshDue) {
+            fixtureRefreshEntries.push({
+              key,
+              request: playerRequest,
+              form: parts.form,
+              existingFixture: parts.fixture,
+            });
+          }
         } else {
           immediate.set(key, {
             ...parts.form,
@@ -158,7 +261,7 @@ export class StatsService {
               ? { pendingRefreshes: ['fixture'] as PendingRefresh[] }
               : {}),
           });
-          cachedFormsWithoutFixture.push({
+          fixtureRefreshEntries.push({
             key,
             request: playerRequest,
             form: parts.form,
@@ -189,18 +292,18 @@ export class StatsService {
     if (
       request.refreshFixtures &&
       splitCache &&
-      cachedFormsWithoutFixture.length > 0
+      fixtureRefreshEntries.length > 0
     ) {
       const refreshedKeys = await this.hydrateFixturesForResponse(
-        cachedFormsWithoutFixture,
+        fixtureRefreshEntries,
         immediate,
         splitCache,
       );
       if (refreshedKeys.size > 0) {
-        for (let index = cachedFormsWithoutFixture.length - 1; index >= 0; index -= 1) {
-          const entry = cachedFormsWithoutFixture[index];
+        for (let index = fixtureRefreshEntries.length - 1; index >= 0; index -= 1) {
+          const entry = fixtureRefreshEntries[index];
           if (entry && refreshedKeys.has(entry.key)) {
-            cachedFormsWithoutFixture.splice(index, 1);
+            fixtureRefreshEntries.splice(index, 1);
           }
         }
       }
@@ -252,6 +355,7 @@ export class StatsService {
       request.positions,
       request.includeHistoricalAssists,
     );
+    cachedOrLoaded = harmonizePlayerTeamFixtures(cachedOrLoaded);
     const oddsEligiblePlayers = cachedOrLoaded.filter(
       (stats) => playerMarketOddsSupported(this.marketOddsProvider, stats),
     );
@@ -294,8 +398,8 @@ export class StatsService {
 
     if (this.scheduleBackground) {
       const tasks: Promise<void>[] = [];
-      if (cachedFormsWithoutFixture.length > 0) {
-        tasks.push(this.refreshFixtures(cachedFormsWithoutFixture));
+      if (fixtureRefreshEntries.length > 0) {
+        tasks.push(this.refreshFixtures(fixtureRefreshEntries));
       }
       if (marketRefreshPlayers.length > 0) {
         tasks.push(
@@ -309,7 +413,91 @@ export class StatsService {
       }
     }
 
-    return { data, cacheHits, source: this.dataSource.source };
+    return {
+      data,
+      cacheHits,
+      source: this.dataSource.source,
+      deferredPlayerNames: nameResolution.deferred,
+    };
+  }
+
+  private async resolveNamesForResponse(
+    names: readonly string[],
+    positions: Readonly<Record<string, FootballPosition>> | undefined,
+    includeHistoricalAssists: boolean,
+  ): Promise<{
+    resolved: SourcePlayerRequest[];
+    deferred: string[];
+  }> {
+    if (names.length === 0) return { resolved: [], deferred: [] };
+    if (!this.scheduleBackground) {
+      return {
+        resolved: await this.dataSource.resolvePlayerNames(names, positions),
+        deferred: [],
+      };
+    }
+
+    const cached = await this.dataSource.resolvePlayerNames(
+      names,
+      positions,
+      { cacheOnly: true },
+    );
+    const cachedNames = new Set(
+      cached.flatMap((request) =>
+        request.resolvedFromName
+          ? [request.resolvedFromName.toLocaleLowerCase()]
+          : [],
+      ),
+    );
+    const missing = names.filter(
+      (name) => !cachedNames.has(name.toLocaleLowerCase()),
+    );
+    if (missing.length === 0) return { resolved: cached, deferred: [] };
+
+    const pending = this.dataSource.resolvePlayerNames(missing, positions);
+    const result = await settleWithin(pending, this.nameResolutionBudgetMs);
+    if (result.status === 'fulfilled') {
+      return {
+        resolved: [...cached, ...result.value],
+        deferred: [],
+      };
+    }
+
+    if (result.status === 'timed-out') {
+      this.scheduleBackground(
+        pending.then((resolved) =>
+          this.warmResolvedPlayers(resolved, includeHistoricalAssists),
+        ),
+      );
+    }
+    return { resolved: cached, deferred: [...missing] };
+  }
+
+  private async warmResolvedPlayers(
+    resolved: readonly SourcePlayerRequest[],
+    includeHistoricalAssists: boolean,
+  ): Promise<void> {
+    const requests = [
+      ...new Map(
+        resolved.map((request) => {
+          const warmed = {
+            ...request,
+            ...(includeHistoricalAssists
+              ? { includeHistoricalAssists: true }
+              : {}),
+          };
+          return [
+            `${warmed.slug}:${warmed.position ?? 'default'}`,
+            warmed,
+          ] as const;
+        }),
+      ).values(),
+    ];
+    // A cold or invalid player must not prevent the other newly resolved
+    // gallery cards from reaching the cache.
+    await Promise.allSettled(
+      requests.map((request) => this.loadBatch([request])),
+    );
   }
 
   private async recoverEmptyNameResolutions(
@@ -388,7 +576,7 @@ export class StatsService {
   }
 
   private async hydrateFixturesForResponse(
-    entries: readonly CachedFormOnly[],
+    entries: readonly FixtureRefreshEntry[],
     immediate: Map<string, PlayerStats>,
     splitCache: SplitPlayerStatsCacheAccess,
   ): Promise<Set<string>> {
@@ -406,10 +594,13 @@ export class StatsService {
         fixtures.map(({ slug, nextGame }) => [slug, nextGame]),
       );
       const refreshedKeys = new Set<string>();
-      for (const { key, request, form } of entries) {
+      for (const { key, request, form, existingFixture } of entries) {
         if (!fixtureBySlug.has(request.slug)) continue;
         const nextGame = fixtureBySlug.get(request.slug) ?? null;
-        const resolvedNextGame = await splitCache.setFixture(key, nextGame);
+        const resolvedNextGame =
+          existingFixture === undefined
+            ? await splitCache.setFixture(key, nextGame)
+            : await splitCache.refreshFixture(key, nextGame);
         immediate.set(key, { ...form, nextGame: resolvedNextGame });
         refreshedKeys.add(key);
       }
@@ -422,7 +613,7 @@ export class StatsService {
     }
   }
 
-  private async refreshFixtures(entries: CachedFormOnly[]): Promise<void> {
+  private async refreshFixtures(entries: FixtureRefreshEntry[]): Promise<void> {
     const splitCache = supportsSplitPlayerStatsCache(this.cache)
       ? this.cache
       : undefined;
@@ -441,10 +632,13 @@ export class StatsService {
     );
     const refreshedPlayers: PlayerStats[] = [];
     await Promise.all(
-      entries.map(async ({ key, request, form }) => {
+      entries.map(async ({ key, request, form, existingFixture }) => {
         if (!fixtureBySlug.has(request.slug)) return;
         const nextGame = fixtureBySlug.get(request.slug) ?? null;
-        const resolvedNextGame = await splitCache.setFixture(key, nextGame);
+        const resolvedNextGame =
+          existingFixture === undefined
+            ? await splitCache.setFixture(key, nextGame)
+            : await splitCache.refreshFixture(key, nextGame);
         refreshedPlayers.push({ ...form, nextGame: resolvedNextGame });
       }),
     );

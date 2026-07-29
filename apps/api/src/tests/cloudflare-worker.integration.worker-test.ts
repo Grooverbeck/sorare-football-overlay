@@ -11,6 +11,7 @@ import {
   CloudflareMarketSnapshotStore,
   CloudflareNameResolutionCache,
   CloudflarePlayerStatsCache,
+  fixtureOddsRefreshIntervalMs,
   fixtureTeamOddsExpiration,
   fixtureTeamOddsKey,
   nextMondayFormExpiration,
@@ -68,6 +69,7 @@ describe('Cloudflare Worker', () => {
     expect(row?.expires_at).toBeGreaterThan(
       Math.floor(Date.now() / 1_000) + 3_590,
     );
+
   });
 
   it('aligns weekly form expiry to Monday at 10:00 UTC', () => {
@@ -101,6 +103,64 @@ describe('Cloudflare Worker', () => {
     expect(playerFixtureExpiration(null, 14_400, nowMs)).toBe(
       Date.parse('2026-07-25T16:00:00.000Z') / 1_000,
     );
+    expect(
+      playerFixtureExpiration(
+        '2026-07-25T18:00:00.000Z',
+        14_400,
+        Date.parse('2026-07-26T07:30:00.000Z'),
+      ),
+    ).toBe(Date.parse('2026-07-26T08:00:00.000Z') / 1_000);
+    expect(fixtureOddsRefreshIntervalMs(20 * 60 * 60 * 1_000)).toBe(
+      2 * 60 * 60 * 1_000,
+    );
+    expect(fixtureOddsRefreshIntervalMs(48 * 60 * 60 * 1_000)).toBe(
+      6 * 60 * 60 * 1_000,
+    );
+    expect(fixtureOddsRefreshIntervalMs(96 * 60 * 60 * 1_000)).toBe(
+      12 * 60 * 60 * 1_000,
+    );
+  });
+
+  it('rechecks missing Sorare team odds only after a viewed fixture becomes due', async () => {
+    let nowMs = Date.parse('2026-07-25T12:00:00.000Z');
+    const fixture = {
+      date: '2026-07-26T00:30:00.000Z',
+      homeTeamName: 'Demand Home FC',
+      awayTeamName: 'Demand Away FC',
+      playerTeamName: 'Demand Home FC',
+      opponentTeamName: 'Demand Away FC',
+      cleanSheetProbability: null,
+      matchProbabilities: { win: null, draw: null, loss: null },
+    };
+    const playerKey = 'demand-odds-player:Defender:no-low';
+    const store = new D1JsonKeyValueStore(
+      env.CACHE_DB,
+      env.STATS_CACHE,
+      () => Math.floor(nowMs / 1_000),
+    );
+    const context = createExecutionContext();
+    const cache = new CloudflarePlayerStatsCache(
+      store,
+      604_800,
+      14_400,
+      context,
+      () => nowMs,
+    );
+
+    await cache.setFixture(playerKey, fixture);
+    await waitOnExecutionContext(context);
+    await expect(cache.claimFixtureRefresh(fixture)).resolves.toBe(false);
+
+    nowMs += 2 * 60 * 60 * 1_000 + 1_000;
+    await expect(cache.claimFixtureRefresh(fixture)).resolves.toBe(true);
+    await expect(cache.claimFixtureRefresh(fixture)).resolves.toBe(false);
+
+    await cache.refreshFixture(playerKey, fixture);
+    nowMs += 16 * 60 * 1_000;
+    await expect(cache.claimFixtureRefresh(fixture)).resolves.toBe(false);
+
+    nowMs = Date.parse(fixture.date) + 1_000;
+    await expect(cache.claimFixtureRefresh(fixture)).resolves.toBe(false);
   });
 
   it('migrates and preserves an active fixture instead of accepting Sorare nextGame', async () => {
@@ -110,7 +170,11 @@ describe('Cloudflare Worker', () => {
       nowMs + 7 * 24 * 60 * 60 * 1_000,
     ).toISOString();
     const key = `fixture-rollover-probe-${nowMs}:Defender:no-low`;
-    const store = new D1JsonKeyValueStore(env.CACHE_DB, env.STATS_CACHE);
+    const store = new D1JsonKeyValueStore(
+      env.CACHE_DB,
+      env.STATS_CACHE,
+      () => Math.floor(nowMs / 1_000),
+    );
     const currentFixture = {
       date: currentFixtureDate,
       homeTeamName: 'Current Home FC',
@@ -165,6 +229,60 @@ describe('Cloudflare Worker', () => {
     );
   });
 
+  it('does not revive a completed fixture after the morning rollover', async () => {
+    const afterRolloverMs = Date.parse('2026-07-29T09:00:00.000Z');
+    const key = 'expired-rollover-player:Defender:no-low';
+    const canonicalKey =
+      'player-fixture:v1:expired-rollover-player:auto-v3:no-low';
+    const store = new D1JsonKeyValueStore(
+      env.CACHE_DB,
+      env.STATS_CACHE,
+      () => Math.floor(afterRolloverMs / 1_000),
+    );
+    await Promise.all([
+      store.delete(canonicalKey),
+      env.STATS_CACHE.delete(canonicalKey),
+    ]);
+    await store.put(
+      canonicalKey,
+      JSON.stringify({
+        cachePolicyVersion: 3,
+        nextGame: {
+          date: '2026-07-28T18:45:00.000Z',
+          homeTeamName: 'Old Home',
+          awayTeamName: 'Old Away',
+          playerTeamName: 'Old Home',
+          opponentTeamName: 'Old Away',
+          cleanSheetProbability: 0.19,
+          matchProbabilities: { win: 0.26, draw: 0.22, loss: 0.52 },
+        },
+      }),
+      { expiration: Date.parse('2026-07-30T08:00:00.000Z') / 1_000 },
+    );
+    const context = createExecutionContext();
+    const cache = new CloudflarePlayerStatsCache(
+      store,
+      604_800,
+      14_400,
+      context,
+      () => afterRolloverMs,
+    );
+    const nextFixture = {
+      date: '2026-08-01T15:00:00.000Z',
+      homeTeamName: 'New Home',
+      awayTeamName: 'New Away',
+      playerTeamName: 'New Home',
+      opponentTeamName: 'New Away',
+      cleanSheetProbability: 0.35,
+      matchProbabilities: { win: 0.49, draw: 0.26, loss: 0.25 },
+    };
+
+    await expect(cache.setFixture(key, nextFixture)).resolves.toMatchObject({
+      date: nextFixture.date,
+      cleanSheetProbability: 0.35,
+    });
+  });
+
   it('keeps fixture-level team odds available across player positions and empty refreshes', async () => {
     const nowMs = Date.parse('2026-07-25T12:00:00.000Z');
     const fixture = {
@@ -185,7 +303,11 @@ describe('Cloudflare Worker', () => {
         loss: 0.284596922792802,
       },
     };
-    const store = new D1JsonKeyValueStore(env.CACHE_DB, env.STATS_CACHE);
+    const store = new D1JsonKeyValueStore(
+      env.CACHE_DB,
+      env.STATS_CACHE,
+      () => Math.floor(nowMs / 1_000),
+    );
     const sharedKey = fixtureTeamOddsKey(fixture);
     if (!sharedKey) throw new Error('Expected a fixture team odds key');
     const autoKey = 'fixture-odds-migration:auto-v3:no-low';
@@ -198,6 +320,11 @@ describe('Cloudflare Worker', () => {
       store.delete(`player-fixture:v1:${defenderKey}`),
       store.delete(`player-fixture:v1:${teammateKey}`),
       store.delete(`player-fixture:v1:${awayKey}`),
+      env.STATS_CACHE.delete(sharedKey),
+      env.STATS_CACHE.delete(`player-fixture:v1:${autoKey}`),
+      env.STATS_CACHE.delete(`player-fixture:v1:${defenderKey}`),
+      env.STATS_CACHE.delete(`player-fixture:v1:${teammateKey}`),
+      env.STATS_CACHE.delete(`player-fixture:v1:${awayKey}`),
     ]);
     // Simulate the old per-player backfill without passing through the new
     // cache, so this exercises the lazy auto-v3 migration path.
@@ -317,10 +444,124 @@ describe('Cloudflare Worker', () => {
     const playerFixtureRow = await env.CACHE_DB.prepare(
       'SELECT expires_at FROM cache_entries WHERE cache_key = ?1',
     )
-      .bind(`player-fixture:v1:${defenderKey}`)
+      .bind(`player-fixture:v1:${autoKey}`)
       .first<{ expires_at: number }>();
     expect(playerFixtureRow?.expires_at).toBe(
       playerFixtureExpiration(fixture.date, 14_400, nowMs),
+    );
+  });
+
+  it('keeps one held fixture across different cached players on the same team', async () => {
+    const nowMs = Date.parse('2026-07-28T22:30:00.000Z');
+    const store = new D1JsonKeyValueStore(
+      env.CACHE_DB,
+      env.STATS_CACHE,
+      () => Math.floor(nowMs / 1_000),
+    );
+    const teamKey = 'player-team-fixture:v1:shared%20team';
+    const heldKey = 'held-team-player:Defender:no-low';
+    const coldKey = 'cold-team-player:Defender:no-low';
+    const storedKeys = [
+      teamKey,
+      `player-form:v2:${heldKey}`,
+      `player-form:v2:${coldKey}`,
+      'player-fixture:v1:held-team-player:auto-v3:no-low',
+      'player-fixture:v1:cold-team-player:auto-v3:no-low',
+    ];
+    await Promise.all(
+      storedKeys.flatMap((key) => [
+        store.delete(key),
+        env.STATS_CACHE.delete(key),
+      ]),
+    );
+    const coldContext = createExecutionContext();
+    const heldContext = createExecutionContext();
+    const coldCache = new CloudflarePlayerStatsCache(
+      store,
+      604_800,
+      14_400,
+      coldContext,
+      () => nowMs,
+    );
+    const heldCache = new CloudflarePlayerStatsCache(
+      store,
+      604_800,
+      14_400,
+      heldContext,
+      () => nowMs,
+    );
+    const form = {
+      displayName: 'Team Fixture Player',
+      position: 'Defender' as const,
+      aaL10: { value: 12, sampleSize: 10 },
+      cleanSheetL10: { value: 0.3, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      excludedLowCoverage: 0,
+    };
+    const heldFixture = {
+      date: '2026-07-28T18:45:00.000Z',
+      homeTeamName: 'Previous Opponent',
+      awayTeamName: 'Shared Team',
+      playerTeamName: 'Shared Team',
+      opponentTeamName: 'Previous Opponent',
+      cleanSheetProbability: 0.19,
+      matchProbabilities: { win: 0.26, draw: 0.22, loss: 0.52 },
+      marketOdds: {
+        source: 'mock' as const,
+        capturedAt: '2026-07-28T12:00:00.000Z',
+        goal: { probability: 0.2, bookmakerCount: 1 },
+        assist: null,
+      },
+    };
+    const nextFixture = {
+      date: '2026-08-01T15:00:00.000Z',
+      homeTeamName: 'Next Opponent',
+      awayTeamName: 'Shared Team',
+      playerTeamName: 'Shared Team',
+      opponentTeamName: 'Next Opponent',
+      cleanSheetProbability: 0.35,
+      matchProbabilities: { win: 0.49, draw: 0.26, loss: 0.25 },
+    };
+
+    await Promise.all([
+      coldCache.fillMissing(coldKey, {
+        ...form,
+        slug: 'cold-team-player',
+        nextGame: nextFixture,
+      }),
+      heldCache.fillMissing(heldKey, {
+        ...form,
+        slug: 'held-team-player',
+        nextGame: heldFixture,
+      }),
+    ]);
+    await Promise.all([
+      waitOnExecutionContext(coldContext),
+      waitOnExecutionContext(heldContext),
+    ]);
+
+    const readContext = createExecutionContext();
+    const readCache = new CloudflarePlayerStatsCache(
+      store,
+      604_800,
+      14_400,
+      readContext,
+      () => nowMs,
+    );
+    await expect(readCache.get(coldKey)).resolves.toMatchObject({
+      nextGame: {
+        date: '2026-07-28T18:45:00.000Z',
+        playerTeamName: 'Shared Team',
+        cleanSheetProbability: 0.19,
+      },
+    });
+    const teamRow = await env.CACHE_DB.prepare(
+      'SELECT value FROM cache_entries WHERE cache_key = ?1',
+    )
+      .bind(teamKey)
+      .first<{ value: string }>();
+    expect(JSON.parse(teamRow?.value ?? '{}').nextGame).not.toHaveProperty(
+      'marketOdds',
     );
   });
 
@@ -454,10 +695,10 @@ describe('Cloudflare Worker', () => {
     await waitOnExecutionContext(nameContext);
 
     const [formKeys, fixtureKeys, positiveNameKeys, negativeNameKeys] = await Promise.all([
-      env.STATS_CACHE.list({ prefix: 'player-form:v1:ttl-probe:' }),
+      env.STATS_CACHE.list({ prefix: 'player-form:v2:ttl-probe:' }),
       env.STATS_CACHE.list({ prefix: 'player-fixture:v1:ttl-probe:' }),
-      env.STATS_CACHE.list({ prefix: 'player-name:v3:ttl%20positive%20probe:' }),
-      env.STATS_CACHE.list({ prefix: 'player-name:v3:ttl%20negative%20probe:' }),
+      env.STATS_CACHE.list({ prefix: 'player-name:v4:ttl%20positive%20probe:' }),
+      env.STATS_CACHE.list({ prefix: 'player-name:v4:ttl%20negative%20probe:' }),
     ]);
 
     expect(formKeys.keys).toHaveLength(1);
@@ -478,6 +719,9 @@ describe('Cloudflare Worker', () => {
 
   it('lazily refreshes a viewed v1 fixture that predates player-relative team names', async () => {
     const cacheKey = 'team-name-migration-probe:Midfielder:no-low';
+    const fixtureDate = new Date(
+      Date.now() + 24 * 60 * 60 * 1_000,
+    ).toISOString();
     const legacyContext = createExecutionContext();
     const legacyCache = new CloudflarePlayerStatsCache(
       env.STATS_CACHE,
@@ -493,7 +737,7 @@ describe('Cloudflare Worker', () => {
       cleanSheetL10: { value: 0.2, sampleSize: 10 },
       goalL10: { value: 0.3, sampleSize: 10 },
       nextGame: {
-        date: '2026-07-25T18:00:00.000Z',
+        date: fixtureDate,
         homeTeamName: 'Away FC',
         awayTeamName: 'Home FC',
         cleanSheetProbability: 0.4,
@@ -544,7 +788,8 @@ describe('Cloudflare Worker', () => {
       },
     });
     const fixtureKeys = await env.STATS_CACHE.list({
-      prefix: `player-fixture:v1:${cacheKey}`,
+      prefix:
+        'player-fixture:v1:team-name-migration-probe:auto-v3:no-low',
     });
     expect(fixtureKeys.keys).toHaveLength(1);
   });

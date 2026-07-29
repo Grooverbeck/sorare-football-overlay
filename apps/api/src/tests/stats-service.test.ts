@@ -47,6 +47,81 @@ class FillMissingCache implements Cache<PlayerStats> {
 }
 
 describe('StatsService cache writes', () => {
+  it('returns cached-name players while a cold name is resolved and warmed in the background', async () => {
+    let finishColdResolution:
+      | ((requests: SourcePlayerRequest[]) => void)
+      | undefined;
+    const coldResolution = new Promise<SourcePlayerRequest[]>((resolve) => {
+      finishColdResolution = resolve;
+    });
+    const mock = new MockDataSource();
+    const resolvePlayerNames = vi.fn(
+      async (
+        _names: readonly string[],
+        _positions?: Readonly<Record<string, FootballPosition>>,
+        options?: PlayerNameResolutionOptions,
+      ): Promise<SourcePlayerRequest[]> => {
+        if (options?.cacheOnly) {
+          return [
+            {
+              slug: 'cached-player',
+              position: 'Midfielder',
+              resolvedFromName: 'Cached Player',
+            },
+          ];
+        }
+        return coldResolution;
+      },
+    );
+    const fetchPlayers = vi.fn(mock.fetchPlayers.bind(mock));
+    const source: PlayerStatsDataSource = {
+      source: 'sorare',
+      resolvePlayerNames,
+      fetchPlayers,
+      fetchNextGames: mock.fetchNextGames.bind(mock),
+    };
+    const backgroundTasks: Promise<void>[] = [];
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      new MockPlayerMarketOddsProvider(),
+      (task) => backgroundTasks.push(task),
+      1,
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        playerNames: ['Cached Player', 'Cold Player'],
+        positions: {
+          'Cached Player': 'Midfielder',
+          'Cold Player': 'Forward',
+        },
+      }),
+    );
+
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0]?.slug).toBe('cached-player');
+    expect(result.deferredPlayerNames).toEqual(['Cold Player']);
+    expect(fetchPlayers).toHaveBeenCalledWith([
+      expect.objectContaining({ slug: 'cached-player' }),
+    ]);
+
+    finishColdResolution?.([
+      {
+        slug: 'cold-player',
+        position: 'Forward',
+        resolvedFromName: 'Cold Player',
+      },
+    ]);
+    await Promise.all(backgroundTasks);
+
+    expect(fetchPlayers).toHaveBeenCalledWith([
+      expect.objectContaining({ slug: 'cold-player', position: 'Forward' }),
+    ]);
+  });
+
   it('re-resolves a name-derived slug when it points to a completely empty player', async () => {
     const resolvePlayerNames = vi.fn(
       async (
@@ -311,6 +386,104 @@ describe('StatsService cache writes', () => {
     });
   });
 
+  it('refreshes due missing CS and H-D-A values only after that cached card is requested', async () => {
+    const existingFixture: NonNullable<PlayerFixtureStats> = {
+      date: '2026-08-01T18:00:00.000Z',
+      homeTeamName: 'Demand Home',
+      awayTeamName: 'Demand Away',
+      playerTeamName: 'Demand Home',
+      opponentTeamName: 'Demand Away',
+      cleanSheetProbability: null,
+      matchProbabilities: { win: null, draw: null, loss: null },
+    };
+    let cachedFixture: PlayerFixtureStats = existingFixture;
+    const claimRefresh = vi.fn(async () => true);
+    const refresh = vi.fn(
+      async (_key: string, value: PlayerFixtureStats) => {
+        cachedFixture =
+          value === null
+            ? existingFixture
+            : {
+                ...existingFixture,
+                cleanSheetProbability: value.cleanSheetProbability,
+                matchProbabilities: value.matchProbabilities,
+              };
+        return cachedFixture;
+      },
+    );
+    const fixtureCache: Cache<PlayerFixtureStats> & {
+      claimRefresh: typeof claimRefresh;
+      refresh: typeof refresh;
+    } = {
+      get: () => cachedFixture,
+      set: (_key, value) => {
+        cachedFixture = value;
+      },
+      fillMissing: (_key, value) => cachedFixture ?? value,
+      claimRefresh,
+      refresh,
+    };
+    const formCache = new TtlCache<PlayerFormStats>(60_000);
+    const cache = new SplitPlayerStatsCache(formCache, fixtureCache);
+    formCache.set('demand-player:Defender:no-low', {
+      slug: 'demand-player',
+      displayName: 'Demand Player',
+      position: 'Defender',
+      aaL10: { value: 12, sampleSize: 10 },
+      cleanSheetL10: { value: 0.3, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      excludedLowCoverage: 0,
+    });
+    const source = new MockDataSource();
+    const fetchPlayers = vi.spyOn(source, 'fetchPlayers');
+    const fetchNextGames = vi.spyOn(source, 'fetchNextGames').mockResolvedValue([
+      {
+        slug: 'demand-player',
+        nextGame: {
+          ...existingFixture,
+          cleanSheetProbability: 0.38,
+          matchProbabilities: { win: 0.51, draw: 0.27, loss: 0.22 },
+        },
+      },
+    ]);
+    const backgroundTasks: Promise<void>[] = [];
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      cache,
+      true,
+      new MockPlayerMarketOddsProvider(),
+      (task) => backgroundTasks.push(task),
+    );
+
+    expect(fetchNextGames).not.toHaveBeenCalled();
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['demand-player'],
+        positions: { 'demand-player': 'Defender' },
+      }),
+    );
+
+    expect(fetchPlayers).not.toHaveBeenCalled();
+    expect(result.data[0]).toMatchObject({
+      nextGame: {
+        cleanSheetProbability: null,
+        matchProbabilities: { win: null, draw: null, loss: null },
+      },
+      pendingRefreshes: ['fixture'],
+    });
+    expect(fetchNextGames).toHaveBeenCalledTimes(1);
+
+    await Promise.all(backgroundTasks);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await expect(cache.get('demand-player:Defender:no-low')).resolves.toMatchObject({
+      nextGame: {
+        cleanSheetProbability: 0.38,
+        matchProbabilities: { win: 0.51, draw: 0.27, loss: 0.22 },
+      },
+    });
+  });
+
   it('hydrates a missing fixture in the follow-up response without relying on the cache write', async () => {
     const formCache = new TtlCache<PlayerFormStats>(60_000);
     const fixtureCache = new TtlCache<PlayerFixtureStats>(60_000);
@@ -364,6 +537,78 @@ describe('StatsService cache writes', () => {
       },
     });
     expect(result.data[0]?.pendingRefreshes).toBeUndefined();
+  });
+
+  it('returns one held fixture for cached players on the same current team', async () => {
+    const cache = new SplitPlayerStatsCache(
+      new TtlCache<PlayerFormStats>(60_000),
+      new TtlCache<PlayerFixtureStats>(60_000),
+    );
+    const heldFixture: NonNullable<PlayerFixtureStats> = {
+      date: '2026-07-28T18:45:00.000Z',
+      homeTeamName: 'Previous Opponent',
+      awayTeamName: 'Shared Team',
+      playerTeamName: 'Shared Team',
+      opponentTeamName: 'Previous Opponent',
+      cleanSheetProbability: 0.19,
+      matchProbabilities: { win: 0.26, draw: 0.22, loss: 0.52 },
+    };
+    const nextFixture: NonNullable<PlayerFixtureStats> = {
+      date: '2026-08-01T15:00:00.000Z',
+      homeTeamName: 'Next Opponent',
+      awayTeamName: 'Shared Team',
+      playerTeamName: 'Shared Team',
+      opponentTeamName: 'Next Opponent',
+      cleanSheetProbability: 0.35,
+      matchProbabilities: { win: 0.49, draw: 0.26, loss: 0.25 },
+    };
+    const playerStats = (
+      slug: string,
+      nextGame: NonNullable<PlayerFixtureStats>,
+    ): PlayerStats => ({
+      slug,
+      displayName: slug,
+      position: 'Defender',
+      aaL10: { value: 12, sampleSize: 10 },
+      cleanSheetL10: { value: 0.3, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      nextGame,
+      excludedLowCoverage: 0,
+    });
+    await cache.set(
+      'held-teammate:Defender:no-low',
+      playerStats('held-teammate', heldFixture),
+    );
+    await cache.set(
+      'cold-teammate:Defender:no-low',
+      playerStats('cold-teammate', nextFixture),
+    );
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      cache,
+      true,
+      new MockPlayerMarketOddsProvider(),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['cold-teammate', 'held-teammate'],
+        positions: {
+          'cold-teammate': 'Defender',
+          'held-teammate': 'Defender',
+        },
+      }),
+    );
+
+    expect(result.data).toHaveLength(2);
+    for (const player of result.data) {
+      expect(player.nextGame).toMatchObject({
+        date: '2026-07-28T18:45:00.000Z',
+        playerTeamName: 'Shared Team',
+        cleanSheetProbability: 0.19,
+      });
+    }
   });
 
   it('never sends goalkeepers to a market-odds provider', async () => {

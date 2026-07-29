@@ -150,4 +150,80 @@ describe('SplitPlayerStatsCache', () => {
     await expect(cache.get('player')).resolves.toBeUndefined();
     expect(legacyCache.get('player')).toEqual(stats);
   });
+
+  it('shares one held fixture across card positions while keeping form values separate', async () => {
+    const formCache = new TtlCache<PlayerFormStats>(24_000);
+    const fixtureCache = new TtlCache<PlayerFixtureStats>(24_000);
+    const cache = new SplitPlayerStatsCache(formCache, fixtureCache);
+    const heldFixture: NonNullable<PlayerFixtureStats> = {
+      ...stats.nextGame!,
+      date: '2026-07-28T18:45:00.000Z',
+      cleanSheetProbability: 0.19,
+    };
+    const nextFixture: NonNullable<PlayerFixtureStats> = {
+      ...stats.nextGame!,
+      date: '2026-08-01T15:00:00.000Z',
+      cleanSheetProbability: 0.35,
+    };
+
+    await cache.set('same-player:auto-v3:no-low', {
+      ...stats,
+      slug: 'same-player',
+      aaL10: { value: 9, sampleSize: 10 },
+      nextGame: heldFixture,
+    });
+    const defender = await cache.fillMissing('same-player:Defender:no-low', {
+      ...stats,
+      slug: 'same-player',
+      position: 'Defender',
+      aaL10: { value: 17, sampleSize: 10 },
+      nextGame: nextFixture,
+    });
+
+    expect(defender).toMatchObject({
+      position: 'Defender',
+      aaL10: { value: 17, sampleSize: 10 },
+      nextGame: {
+        date: '2026-07-28T18:45:00.000Z',
+        cleanSheetProbability: 0.19,
+      },
+    });
+    await expect(
+      cache.get('same-player:auto-v3:no-low'),
+    ).resolves.toMatchObject({
+      aaL10: { value: 9, sampleSize: 10 },
+      nextGame: { cleanSheetProbability: 0.19 },
+    });
+    expect(fixtureCache.get('same-player:Defender:no-low')).toBeUndefined();
+    expect(
+      fixtureCache.get('same-player:auto-v3:no-low'),
+    ).toEqual(heldFixture);
+  });
+
+  it('lazily migrates an old position-specific fixture to the canonical player key', async () => {
+    const formCache = new TtlCache<PlayerFormStats>(24_000);
+    const fixtureCache = new TtlCache<PlayerFixtureStats>(24_000);
+    const cache = new SplitPlayerStatsCache(formCache, fixtureCache);
+    const key = 'legacy-player:Defender:no-low';
+    const legacyFixture: NonNullable<PlayerFixtureStats> = {
+      ...stats.nextGame!,
+      cleanSheetProbability: 0.27,
+    };
+    const { nextGame: _nextGame, ...form } = {
+      ...stats,
+      slug: 'legacy-player',
+      position: 'Defender' as const,
+    };
+    formCache.set(key, form);
+    fixtureCache.set(key, legacyFixture);
+
+    await expect(cache.get(key)).resolves.toMatchObject({
+      slug: 'legacy-player',
+      position: 'Defender',
+      nextGame: { cleanSheetProbability: 0.27 },
+    });
+    expect(
+      fixtureCache.get('legacy-player:auto-v3:no-low'),
+    ).toEqual(legacyFixture);
+  });
 });

@@ -14,6 +14,10 @@ export interface SourcePlayerRequest {
 
 export interface PlayerNameResolutionOptions {
   forceSearch?: boolean;
+  // Only consult the persistent/in-memory name mapping. This lets request
+  // handlers return known players immediately while cold resolutions continue
+  // through ExecutionContext.waitUntil().
+  cacheOnly?: boolean;
 }
 
 export interface PlayerNameResolutionCache {
@@ -42,6 +46,7 @@ export interface SourcePlayer {
   slug: string;
   displayName: string;
   position: FootballPosition;
+  activeClubId?: string;
   appearances: PlayerAppearance[];
   nextGame: SourceNextGame | null;
 }

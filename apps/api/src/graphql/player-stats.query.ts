@@ -55,11 +55,13 @@ export const PLAYER_STATS_BATCH_QUERY = gql`
           ... on PlayerGameScore {
             allAroundScore
             footballGame {
-              id
               date
               lowCoverage
             }
             footballPlayerGameStats {
+              anyTeam {
+                id
+              }
               goals
               minsPlayed
               cleanSheet60
@@ -123,11 +125,20 @@ export const PLAYER_NEXT_GAMES_QUERY = gql`
 `;
 
 export const PLAYER_APPEARANCE_HISTORY_QUERY = gql`
-  query PlayerAppearanceHistory($slug: String!, $position: Position) {
+  query PlayerAppearanceHistory(
+    $slug: String!
+    $position: Position
+    $first: Int!
+    $after: String
+  ) {
     anyPlayer(slug: $slug) {
       __typename
       ... on Player {
-        pastGames(first: 40) {
+        pastGames(first: $first, after: $after) {
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
           nodes {
             date
             lowCoverage
@@ -137,6 +148,9 @@ export const PLAYER_APPEARANCE_HISTORY_QUERY = gql`
               ... on PlayerGameScore {
                 allAroundScore
                 footballPlayerGameStats {
+                  anyTeam {
+                    id
+                  }
                   goals
                   goalAssist
                   minsPlayed

@@ -44,6 +44,7 @@ export interface CreateStatsRuntimeOptions {
 export interface StatsRuntime {
   statsService: StatsService;
   marketOddsProvider: PlayerMarketOddsProvider;
+  dataSource: PlayerStatsDataSource;
   source: 'sorare' | 'mock';
 }
 
@@ -208,6 +209,7 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
       options.scheduleBackground,
     ),
     marketOddsProvider,
+    dataSource,
     source: dataSource.source,
   };
 }

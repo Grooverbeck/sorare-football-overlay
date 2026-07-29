@@ -37,6 +37,10 @@ import type {
   SourcePlayerRequest,
 } from '../services/data-source.js';
 import {
+  playerTeamFixtureIdentity,
+  sameFixtureIdentity,
+} from '../services/fixture-identity.js';
+import {
   MlsAaBenchmarkSnapshotSchema,
   type MlsAaBenchmarkStore,
 } from '../services/mls-aa-benchmark.js';
@@ -77,6 +81,11 @@ type FixtureTeamSide = 'home' | 'away';
 export interface JsonKeyValueStore {
   get<T = unknown>(key: string, type: 'json'): Promise<T | null>;
   put(
+    key: string,
+    value: string,
+    options?: { expiration?: number; expirationTtl?: number },
+  ): Promise<void>;
+  putEarlierFixture?(
     key: string,
     value: string,
     options?: { expiration?: number; expirationTtl?: number },
@@ -125,6 +134,10 @@ const MONDAY_UTC = 1;
 const WEEKLY_FORM_REFRESH_HOUR_UTC = 10;
 const FIXTURE_ROLLOVER_HOUR_UTC = 8;
 const FIXTURE_MINIMUM_POST_KICKOFF_SECONDS = 6 * 60 * 60;
+const HOUR_MS = 60 * 60 * 1_000;
+const FIXTURE_ODDS_REFRESH_LEASE_SECONDS = 15 * 60;
+const FIXTURE_ODDS_CHECK_PREFIX = 'sorare-fixture-odds-check:v1:';
+const PLAYER_TEAM_FIXTURE_PREFIX = 'player-team-fixture:v1:';
 
 export function nextMondayFormExpiration(
   nowMs: number,
@@ -165,9 +178,28 @@ export function playerFixtureExpiration(
   const minimumExpiration = Math.floor(nowMs / 1_000) + minimumTtlSeconds;
   if (fixtureDate === null) return minimumExpiration;
   const fixtureExpiration = fixtureRolloverExpiration(fixtureDate);
-  return fixtureExpiration === null
-    ? minimumExpiration
-    : Math.max(minimumExpiration, fixtureExpiration);
+  if (fixtureExpiration === null) return minimumExpiration;
+
+  const kickoffMs = Date.parse(fixtureDate);
+  const nowSeconds = Math.floor(nowMs / 1_000);
+  // Once a match has started, do not let a new minimum TTL extend the held
+  // fixture beyond the configured morning rollover.
+  if (
+    Number.isFinite(kickoffMs) &&
+    kickoffMs <= nowMs &&
+    fixtureExpiration > nowSeconds
+  ) {
+    return fixtureExpiration;
+  }
+  return Math.max(minimumExpiration, fixtureExpiration);
+}
+
+export function fixtureOddsRefreshIntervalMs(
+  millisecondsUntilKickoff: number,
+): number {
+  if (millisecondsUntilKickoff <= 24 * HOUR_MS) return 2 * HOUR_MS;
+  if (millisecondsUntilKickoff <= 72 * HOUR_MS) return 6 * HOUR_MS;
+  return 12 * HOUR_MS;
 }
 
 function fixtureRolloverExpiration(fixtureDate: string): number | null {
@@ -296,6 +328,32 @@ function samePlayerFixture(
   return leftTeams[0] === rightTeams[0] && leftTeams[1] === rightTeams[1];
 }
 
+function playerTeamFixtureKey(
+  fixture: NonNullable<PlayerFixtureStats>,
+): string | null {
+  const team = playerTeamFixtureIdentity(fixture);
+  return team
+    ? `${PLAYER_TEAM_FIXTURE_PREFIX}${encodeURIComponent(team)}`
+    : null;
+}
+
+function teamFixtureEnvelope(
+  fixture: NonNullable<PlayerFixtureStats>,
+): z.infer<typeof PlayerFixtureEnvelopeSchema> {
+  const { marketOdds: _marketOdds, ...identity } = fixture;
+  return PlayerFixtureEnvelopeSchema.parse({
+    nextGame: {
+      ...identity,
+      // CS and H-D-A live in the fixture/team-side odds cache. Keeping them
+      // out of this shared identity row also prevents concurrent teammate
+      // writes from leaking stale values into one another.
+      cleanSheetProbability: null,
+      matchProbabilities: null,
+    },
+    cachePolicyVersion: PLAYER_FIXTURE_CACHE_POLICY_VERSION,
+  });
+}
+
 export function fixtureTeamOddsKey(
   fixture: NonNullable<PlayerFixtureStats>,
 ): string | null {
@@ -303,6 +361,15 @@ export function fixtureTeamOddsKey(
   const side = fixtureTeamSide(fixture);
   if (!fixtureKey || !side) return null;
   return `fixture-team-odds:v1:${encodeURIComponent(fixtureKey)}:${side}`;
+}
+
+function fixtureOddsCheckKey(
+  fixture: NonNullable<PlayerFixtureStats>,
+): string | null {
+  const teamOddsKey = fixtureTeamOddsKey(fixture);
+  return teamOddsKey
+    ? `${FIXTURE_ODDS_CHECK_PREFIX}${encodeURIComponent(teamOddsKey)}`
+    : null;
 }
 
 function withFixtureTeamOdds(
@@ -430,7 +497,7 @@ class CloudflarePlayerFormCache
   }
 
   async get(key: string): Promise<PlayerFormStats | undefined> {
-    const cacheKey = `player-form:v1:${key}`;
+    const cacheKey = `player-form:v2:${key}`;
     const raw = await this.namespace.get<unknown>(cacheKey, 'json');
     if (raw === null) return undefined;
     const parsed = PlayerFormStatsSchema.safeParse(raw);
@@ -443,7 +510,7 @@ class CloudflarePlayerFormCache
 
   set(key: string, value: PlayerFormStats): void {
     this.persistUntil(
-      `player-form:v1:${key}`,
+      `player-form:v2:${key}`,
       PlayerFormStatsSchema.parse(value),
       nextMondayFormExpiration(this.now(), this.ttlSeconds),
     );
@@ -454,6 +521,11 @@ class CloudflarePlayerFixtureCache
   extends CloudflareKvCache
   implements Cache<PlayerFixtureStats>
 {
+  private readonly teamFixtureResolutions = new Map<
+    string,
+    Promise<NonNullable<PlayerFixtureStats>>
+  >();
+
   constructor(
     namespace: JsonKeyValueStore,
     private readonly ttlSeconds: number,
@@ -466,12 +538,12 @@ class CloudflarePlayerFixtureCache
   async get(key: string): Promise<PlayerFixtureStats | undefined> {
     const fixture = await this.readPlayerFixture(key);
     if (fixture === undefined || fixture === null) return fixture;
-    return this.resolveFixtureTeamOdds(key, fixture);
+    return this.resolvePlayerTeamFixture(key, fixture);
   }
 
   async set(key: string, value: PlayerFixtureStats): Promise<void> {
     const resolved =
-      value === null ? null : await this.resolveFixtureTeamOdds(key, value);
+      value === null ? null : await this.resolvePlayerTeamFixture(key, value);
     this.persistUntil(
       `player-fixture:v1:${key}`,
       PlayerFixtureEnvelopeSchema.parse({
@@ -484,6 +556,7 @@ class CloudflarePlayerFixtureCache
         this.now(),
       ),
     );
+    if (resolved) await this.rememberFixtureRefreshAttempt(resolved);
   }
 
   async fillMissing(
@@ -493,7 +566,7 @@ class CloudflarePlayerFixtureCache
     const existing = await this.get(key);
     if (existing !== undefined) return existing;
     const resolved =
-      value === null ? null : await this.resolveFixtureTeamOdds(key, value);
+      value === null ? null : await this.resolvePlayerTeamFixture(key, value);
     this.persistUntil(
       `player-fixture:v1:${key}`,
       PlayerFixtureEnvelopeSchema.parse({
@@ -506,7 +579,71 @@ class CloudflarePlayerFixtureCache
         this.now(),
       ),
     );
+    if (resolved) await this.rememberFixtureRefreshAttempt(resolved);
     return resolved;
+  }
+
+  async claimRefresh(value: PlayerFixtureStats): Promise<boolean> {
+    if (
+      value === null ||
+      !needsFixtureTeamOddsFallback(fixtureTeamOddsFrom(value))
+    ) {
+      return false;
+    }
+    const kickoffMs = Date.parse(value.date);
+    if (!Number.isFinite(kickoffMs) || kickoffMs <= this.now()) return false;
+    const key = fixtureOddsCheckKey(value);
+    if (!key) return false;
+    const existing = await this.namespace.get<unknown>(key, 'json');
+    if (existing !== null) return false;
+    await this.namespace.put(
+      key,
+      JSON.stringify({ checkedAt: new Date(this.now()).toISOString() }),
+      { expirationTtl: FIXTURE_ODDS_REFRESH_LEASE_SECONDS },
+    );
+    return true;
+  }
+
+  async refresh(
+    key: string,
+    value: PlayerFixtureStats,
+  ): Promise<PlayerFixtureStats> {
+    const existing = await this.get(key);
+    if (existing === undefined) {
+      await this.set(key, value);
+      return value;
+    }
+    if (
+      existing === null ||
+      value === null ||
+      !samePlayerFixture(existing, value)
+    ) {
+      if (existing) await this.rememberFixtureRefreshAttempt(existing);
+      return existing;
+    }
+
+    const mergedOdds = mergeFixtureTeamOdds(
+      fixtureTeamOddsFrom(value),
+      fixtureTeamOddsFrom(existing),
+    );
+    const refreshed = withFixtureTeamOdds(existing, mergedOdds);
+    if (hasFixtureTeamOdds(mergedOdds)) {
+      await this.rememberFixtureTeamOdds(existing, mergedOdds);
+    }
+    this.persistUntil(
+      `player-fixture:v1:${key}`,
+      PlayerFixtureEnvelopeSchema.parse({
+        nextGame: refreshed,
+        cachePolicyVersion: PLAYER_FIXTURE_CACHE_POLICY_VERSION,
+      }),
+      playerFixtureExpiration(
+        refreshed.date,
+        this.ttlSeconds,
+        this.now(),
+      ),
+    );
+    await this.rememberFixtureRefreshAttempt(refreshed);
+    return refreshed;
   }
 
   private async readPlayerFixture(
@@ -521,6 +658,19 @@ class CloudflarePlayerFixtureCache
       return undefined;
     }
     const fixture = parsed.data.nextGame;
+    const rolloverExpiration = fixture
+      ? fixtureRolloverExpiration(fixture.date)
+      : null;
+    if (
+      fixture &&
+      rolloverExpiration !== null &&
+      rolloverExpiration <= Math.floor(this.now() / 1_000)
+    ) {
+      // Old rows written with a previous minimum-TTL policy must not revive
+      // the completed match after the configured morning rollover.
+      this.removeInvalid(cacheKey);
+      return undefined;
+    }
     if (
       fixture &&
       (!Object.hasOwn(fixture, 'homeTeamName') ||
@@ -551,15 +701,126 @@ class CloudflarePlayerFixtureCache
     return fixture;
   }
 
+  private async resolvePlayerTeamFixture(
+    playerCacheKey: string,
+    fixture: NonNullable<PlayerFixtureStats>,
+  ): Promise<NonNullable<PlayerFixtureStats>> {
+    const teamKey = playerTeamFixtureKey(fixture);
+    if (!teamKey) {
+      return this.resolveFixtureTeamOdds(playerCacheKey, fixture);
+    }
+    const previous = this.teamFixtureResolutions.get(teamKey);
+    const resolution = (async () => {
+      if (previous) await previous.catch(() => undefined);
+      return this.resolvePlayerTeamFixtureUnlocked(
+        playerCacheKey,
+        fixture,
+        teamKey,
+      );
+    })();
+    this.teamFixtureResolutions.set(teamKey, resolution);
+    try {
+      return await resolution;
+    } finally {
+      if (this.teamFixtureResolutions.get(teamKey) === resolution) {
+        this.teamFixtureResolutions.delete(teamKey);
+      }
+    }
+  }
+
+  private async resolvePlayerTeamFixtureUnlocked(
+    playerCacheKey: string,
+    fixture: NonNullable<PlayerFixtureStats>,
+    teamKey: string,
+  ): Promise<NonNullable<PlayerFixtureStats>> {
+    const candidate = await this.resolveFixtureTeamOdds(
+      playerCacheKey,
+      fixture,
+    );
+    const incomingEnvelope = teamFixtureEnvelope(candidate);
+    const incomingFixture = incomingEnvelope.nextGame;
+    if (!incomingFixture) return candidate;
+    const expiration = playerFixtureExpiration(
+      incomingFixture.date,
+      this.ttlSeconds,
+      this.now(),
+    );
+
+    if (this.namespace.putEarlierFixture) {
+      await this.namespace.putEarlierFixture(
+        teamKey,
+        JSON.stringify(incomingEnvelope),
+        { expiration },
+      );
+    } else {
+      const existing = await this.readPlayerTeamFixture(teamKey);
+      const selected = existing
+        ? this.selectPlayerTeamFixture(existing, incomingFixture)
+        : incomingFixture;
+      if (!existing || !sameFixtureIdentity(existing, selected)) {
+        await this.namespace.put(
+          teamKey,
+          JSON.stringify(teamFixtureEnvelope(selected)),
+          { expiration },
+        );
+      }
+    }
+
+    const selected =
+      (await this.readPlayerTeamFixture(teamKey)) ?? incomingFixture;
+    if (sameFixtureIdentity(selected, candidate)) {
+      const { marketOdds: _marketOdds, ...playerFixture } = candidate;
+      return playerFixture;
+    }
+    return this.resolveFixtureTeamOdds(playerCacheKey, selected);
+  }
+
+  private async readPlayerTeamFixture(
+    teamKey: string,
+  ): Promise<NonNullable<PlayerFixtureStats> | undefined> {
+    const raw = await this.namespace.get<unknown>(teamKey, 'json');
+    if (raw === null) return undefined;
+    const parsed = PlayerFixtureEnvelopeSchema.safeParse(raw);
+    const fixture = parsed.success ? parsed.data.nextGame : undefined;
+    if (!fixture) {
+      this.removeInvalid(teamKey);
+      return undefined;
+    }
+    const rolloverExpiration = fixtureRolloverExpiration(fixture.date);
+    if (
+      rolloverExpiration !== null &&
+      rolloverExpiration <= Math.floor(this.now() / 1_000)
+    ) {
+      this.removeInvalid(teamKey);
+      return undefined;
+    }
+    return fixture;
+  }
+
+  private selectPlayerTeamFixture(
+    existing: NonNullable<PlayerFixtureStats>,
+    incoming: NonNullable<PlayerFixtureStats>,
+  ): NonNullable<PlayerFixtureStats> {
+    if (sameFixtureIdentity(existing, incoming)) return existing;
+
+    const existingKickoff = Date.parse(existing.date);
+    const incomingKickoff = Date.parse(incoming.date);
+    if (!Number.isFinite(existingKickoff)) return incoming;
+    if (!Number.isFinite(incomingKickoff)) return existing;
+    return incomingKickoff < existingKickoff ? incoming : existing;
+  }
+
   private async resolveFixtureTeamOdds(
     playerCacheKey: string,
     fixture: NonNullable<PlayerFixtureStats>,
   ): Promise<NonNullable<PlayerFixtureStats>> {
     const shared = await this.readFixtureTeamOdds(fixture);
-    let resolvedOdds = mergeFixtureTeamOdds(
-      fixtureTeamOddsFrom(fixture),
-      shared,
-    );
+    const direct = fixtureTeamOddsFrom(fixture);
+    // Once captured for a fixture/team side, shared values are authoritative.
+    // A later player cache may fill gaps but must not replace existing values.
+    let resolvedOdds = shared
+      ? mergeFixtureTeamOdds(shared, direct)
+      : direct;
 
     if (needsFixtureTeamOddsFallback(resolvedOdds)) {
       const legacyKey = legacyAutomaticPositionKey(playerCacheKey);
@@ -625,6 +886,27 @@ class CloudflarePlayerFixtureCache
       ),
     );
   }
+
+  private async rememberFixtureRefreshAttempt(
+    fixture: NonNullable<PlayerFixtureStats>,
+  ): Promise<void> {
+    if (!needsFixtureTeamOddsFallback(fixtureTeamOddsFrom(fixture))) return;
+    const kickoffMs = Date.parse(fixture.date);
+    const nowMs = this.now();
+    if (!Number.isFinite(kickoffMs) || kickoffMs <= nowMs) return;
+    const key = fixtureOddsCheckKey(fixture);
+    if (!key) return;
+    await this.namespace.put(
+      key,
+      JSON.stringify({ checkedAt: new Date(nowMs).toISOString() }),
+      {
+        expirationTtl: Math.max(
+          60,
+          Math.ceil(fixtureOddsRefreshIntervalMs(kickoffMs - nowMs) / 1_000),
+        ),
+      },
+    );
+  }
 }
 
 class CloudflareLegacyPlayerStatsCache
@@ -676,6 +958,12 @@ export class CloudflarePlayerStatsCache
     return this.splitCache.getParts(key);
   }
 
+  claimFixtureRefresh(
+    value: PlayerFixtureStats,
+  ): boolean | Promise<boolean> {
+    return this.splitCache.claimFixtureRefresh(value);
+  }
+
   set(key: string, value: PlayerStats): Promise<void> {
     return this.splitCache.set(key, value);
   }
@@ -689,6 +977,13 @@ export class CloudflarePlayerStatsCache
     value: PlayerFixtureStats,
   ): PlayerFixtureStats | Promise<PlayerFixtureStats> {
     return this.splitCache.setFixture(key, value);
+  }
+
+  refreshFixture(
+    key: string,
+    value: PlayerFixtureStats,
+  ): PlayerFixtureStats | Promise<PlayerFixtureStats> {
+    return this.splitCache.refreshFixture(key, value);
   }
 }
 
@@ -777,6 +1072,6 @@ export class CloudflareNameResolutionCache
   }
 
   private key(name: string, position: FootballPosition | undefined): string {
-    return `player-name:v3:${encodeURIComponent(normalizeName(name))}:${position ?? 'any'}`;
+    return `player-name:v4:${encodeURIComponent(normalizeName(name))}:${position ?? 'any'}`;
   }
 }

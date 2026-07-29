@@ -264,6 +264,105 @@ const styles = `
   .aa-bracket-cell.aa-bracket-bottom {
     margin-top: 4px;
   }
+  .aa-sample-warning {
+    position: absolute;
+    z-index: 5;
+    top: -5px;
+    right: -3px;
+    display: inline-flex;
+    width: 12px;
+    height: 12px;
+    box-sizing: border-box;
+    border: 1px solid rgba(255,255,255,.92);
+    border-radius: 50%;
+    align-items: center;
+    justify-content: center;
+    background: #151922;
+    box-shadow:
+      0 1px 3px rgba(0,0,0,.8),
+      0 0 0 1px rgba(13,17,23,.7);
+    color: #ffe066;
+    cursor: help;
+    font-family: "Segoe UI Variable Text", "Segoe UI", Inter, ui-sans-serif, system-ui, sans-serif;
+    font-size: 0;
+    font-weight: 900;
+    line-height: 1;
+    pointer-events: auto;
+    transform: translate(2px, -2px);
+  }
+  .aa-sample-warning::before,
+  .aa-sample-warning::after {
+    position: absolute;
+    left: 50%;
+    display: block;
+    width: 2px;
+    border-radius: 999px;
+    background: currentColor;
+    content: "";
+    pointer-events: none;
+    transform: translateX(-50%);
+  }
+  .aa-sample-warning::before {
+    top: 2px;
+    height: 4px;
+  }
+  .aa-sample-warning::after {
+    bottom: 2px;
+    height: 2px;
+  }
+  :host([data-market-bracket-side="left"]) .aa-sample-warning {
+    right: auto;
+    left: -3px;
+    transform: translate(-2px, -2px);
+  }
+  .aa-sample-warning:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 1px;
+  }
+  .aa-sample-warning-tooltip {
+    position: absolute;
+    z-index: 8;
+    right: -1px;
+    bottom: calc(100% + 5px);
+    display: grid;
+    width: max-content;
+    max-width: min(230px, calc(100vw - 12px));
+    box-sizing: border-box;
+    gap: 2px;
+    padding: 6px 7px;
+    border: 1px solid rgba(255, 224, 102, .62);
+    border-radius: 6px;
+    background: rgba(12, 15, 22, .98);
+    box-shadow: 0 5px 15px rgba(0,0,0,.52);
+    color: #f5f7fb;
+    font: 600 9px/1.25 "Segoe UI Variable Text", "Segoe UI", Inter, ui-sans-serif, system-ui, sans-serif;
+    font-variant-numeric: tabular-nums;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(2px);
+    transition: opacity 90ms ease, transform 90ms ease, visibility 90ms ease;
+    visibility: hidden;
+    white-space: normal;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: geometricPrecision;
+  }
+  :host([data-market-bracket-side="left"]) .aa-sample-warning-tooltip {
+    right: auto;
+    left: -1px;
+  }
+  .aa-sample-warning:hover .aa-sample-warning-tooltip,
+  .aa-sample-warning:focus-visible .aa-sample-warning-tooltip {
+    opacity: 1;
+    transform: translateY(0);
+    visibility: visible;
+  }
+  .aa-sample-warning-title {
+    color: #ffe066;
+    font-size: 8px;
+    font-weight: 800;
+    letter-spacing: .02em;
+    text-transform: uppercase;
+  }
   .aa-bracket-cell[data-podium-frame] {
     z-index: 3;
     border: 1px solid var(--podium-border);
@@ -1209,6 +1308,35 @@ function aaStatNode(
   value.className = 'market-value';
   value.textContent = score(stats.aaL10);
   stat.append(icon, value);
+  const limitedClubSample = stats.aaL10.sampleSize < 10;
+  if (limitedClubSample) {
+    const sampleWarningReason =
+      `AA ${score(stats.aaL10)} · Datenbasis: ${stats.aaL10.sampleSize}/10 gültige ` +
+      `Spiele beim aktuellen Verein. Andere Vereine/Nationalteam ausgeschlossen.`;
+    stat.dataset.limitedSample = 'true';
+    stat.dataset.clubSampleSize = String(stats.aaL10.sampleSize);
+    const warning = document.createElement('span');
+    warning.className = 'aa-sample-warning';
+    warning.textContent = '!';
+    warning.tabIndex = 0;
+    warning.setAttribute('role', 'note');
+    warning.setAttribute(
+      'aria-label',
+      `Warnung: Begrenzte AA-Datenbasis. ${sampleWarningReason}`,
+    );
+    const warningTooltip = document.createElement('span');
+    warningTooltip.className = 'aa-sample-warning-tooltip';
+    warningTooltip.setAttribute('aria-hidden', 'true');
+    const warningTitle = document.createElement('span');
+    warningTitle.className = 'aa-sample-warning-title';
+    warningTitle.textContent = 'Begrenzte AA-Datenbasis';
+    const warningDetail = document.createElement('span');
+    warningDetail.className = 'aa-sample-warning-detail';
+    warningDetail.textContent = sampleWarningReason;
+    warningTooltip.append(warningTitle, warningDetail);
+    warning.append(warningTooltip);
+    stat.append(warning);
+  }
   if (topRank) {
     stat.dataset.topRank = String(topRank);
     stat.dataset.podiumFrame =
@@ -1233,7 +1361,11 @@ function aaStatNode(
     stat.dataset.tone = 'unavailable';
     stat.setAttribute(
       'aria-label',
-      `AA L10 ${score(stats.aaL10)}: keine belastbare MLS-Perzentileinstufung`,
+      `AA L10 ${score(stats.aaL10)}: keine belastbare MLS-Perzentileinstufung${
+        limitedClubSample
+          ? `; Warnung: nur ${stats.aaL10.sampleSize} Vereinsspiele des aktuellen Clubs`
+          : ''
+      }`,
     );
     return stat;
   }
@@ -1243,7 +1375,11 @@ function aaStatNode(
     'aria-label',
     `AA L10 ${score(stats.aaL10)} im MLS-Vergleich für ${stats.position}: ${percentileBand}${
       topRank ? `, Rang ${topRank}` : ''
-    }${stats.mlsAaContext ? `, Stand ${stats.mlsAaContext.asOf}` : ''}`,
+    }${stats.mlsAaContext ? `, Stand ${stats.mlsAaContext.asOf}` : ''}${
+      limitedClubSample
+        ? `; Warnung: nur ${stats.aaL10.sampleSize} Vereinsspiele des aktuellen Clubs`
+        : ''
+    }`,
   );
   return stat;
 }
@@ -1580,6 +1716,7 @@ interface OverlayPositionContext {
 
 interface PositionedOverlay {
   readonly host: HTMLElement;
+  isViewportPriorityActive(): boolean;
   refreshPositionNow(context: OverlayPositionContext): void;
   handleLayoutMotionStart?(event: Event): void;
 }
@@ -1696,7 +1833,9 @@ function schedulePositionsAfterLayoutMotion(event: Event): void {
     event.type === 'transitionstart'
   ) {
     for (const view of positionedOverlays) {
-      view.handleLayoutMotionStart?.(event);
+      if (view.isViewportPriorityActive()) {
+        view.handleLayoutMotionStart?.(event);
+      }
     }
   }
   scheduleAllOverlayPositions();
@@ -1737,7 +1876,12 @@ function flushOverlayPositions(): void {
       unregisterPositionedOverlay(view);
       continue;
     }
-    if (positionedOverlays.has(view)) view.refreshPositionNow(context);
+    if (
+      positionedOverlays.has(view) &&
+      view.isViewportPriorityActive()
+    ) {
+      view.refreshPositionNow(context);
+    }
   }
 }
 
@@ -1747,13 +1891,20 @@ function ensurePositionFrame(): void {
 }
 
 function scheduleOverlayPosition(view: PositionedOverlay): void {
-  if (!positionedOverlays.has(view)) return;
+  if (
+    !positionedOverlays.has(view) ||
+    !view.isViewportPriorityActive()
+  ) {
+    return;
+  }
   pendingPositionedOverlays.add(view);
   ensurePositionFrame();
 }
 
 function scheduleAllOverlayPositions(): void {
-  for (const view of positionedOverlays) pendingPositionedOverlays.add(view);
+  for (const view of positionedOverlays) {
+    if (view.isViewportPriorityActive()) pendingPositionedOverlays.add(view);
+  }
   ensurePositionFrame();
 }
 
@@ -1817,6 +1968,7 @@ export class OverlayView {
   private packSettleGeneration = 0;
   private lastStablePackRect: DOMRect | null = null;
   private packLayoutPhase: 'none' | 'reveal' | 'result' = 'none';
+  private viewportPriorityActive = true;
   private destroyed = false;
 
   constructor(
@@ -2054,8 +2206,29 @@ export class OverlayView {
     if (!this.destroyed) scheduleOverlayPosition(this);
   }
 
+  isViewportPriorityActive(): boolean {
+    return this.viewportPriorityActive;
+  }
+
+  setViewportPriorityActive(active: boolean): void {
+    if (this.destroyed || this.viewportPriorityActive === active) return;
+    this.viewportPriorityActive = active;
+    if (active) {
+      scheduleOverlayPosition(this);
+      return;
+    }
+    pendingPositionedOverlays.delete(this);
+    this.host.style.display = 'none';
+    this.lineupOddsHost.hidden = true;
+    this.bindLineupTeamRow(null);
+    this.closePlayerMarketTooltip();
+    this.closeLineupTooltip();
+  }
+
   refreshPositionNow(context: OverlayPositionContext): void {
-    if (!this.destroyed) this.reposition(context);
+    if (!this.destroyed && this.viewportPriorityActive) {
+      this.reposition(context);
+    }
   }
 
   handleLayoutMotionStart(event: Event): void {

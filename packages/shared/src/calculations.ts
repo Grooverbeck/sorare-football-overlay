@@ -14,6 +14,11 @@ export interface PlayerAppearance {
   cleanSheet60: number | null;
   lowCoverage: boolean;
   position: FootballPosition;
+  /**
+   * Whether the appearance was for the player's current active club.
+   * Undefined keeps mock and legacy data backwards compatible.
+   */
+  currentClubGame?: boolean;
 }
 
 export interface CalculationOptions {
@@ -65,14 +70,24 @@ export function calculatePlayerMetrics(
     ? forPosition.filter((appearance) => appearance.lowCoverage).length
     : 0;
 
-  const validAppearances = validAppearancesForPosition(
+  const allValidAppearances = validAppearancesForPosition(
     appearances,
     position,
     options.excludeLowCoverage,
-  )
-    .slice(0, limit);
+  );
+  const validAppearances = allValidAppearances.slice(0, limit);
+  const hasCurrentClubMarkers = allValidAppearances.some(
+    (appearance) => appearance.currentClubGame !== undefined,
+  );
+  const currentClubAppearances = (
+    hasCurrentClubMarkers
+      ? allValidAppearances.filter(
+          (appearance) => appearance.currentClubGame === true,
+        )
+      : allValidAppearances
+  ).slice(0, limit);
 
-  const allAroundScores = validAppearances.flatMap((appearance) =>
+  const allAroundScores = currentClubAppearances.flatMap((appearance) =>
     appearance.allAroundScore === null ? [] : [appearance.allAroundScore],
   );
   const cleanSheetEligible = validAppearances.filter(
