@@ -97,11 +97,11 @@ Alle Werte werden aus `apps/api/.env` oder der Prozessumgebung gelesen.
 | `SORARE_API_KEY` | leer | Optionaler Sorare-API-Key, Header `APIKEY` |
 | `SORARE_AUTH_TOKEN` | leer | Optionales serverseitiges Bearer-Token |
 | `SORARE_JWT_AUD` | leer | Optionaler `JWT-AUD`-Header |
-| `THE_ODDS_API_KEY` | leer | Serverseitiger Schlüssel für echte Tor-/Assist-Märkte |
+| `THE_ODDS_API_KEY` | leer | Serverseitiger Schlüssel für Tor-/Assist-Märkte und den H/D/A-Fallback |
 | `ODDS_API_BASE_URL` | `https://api.the-odds-api.com/v4` | Basis-URL von The Odds API |
 | `ODDS_API_SPORT_KEY` | `soccer_usa_mls` | Liga bei The Odds API |
 | `ODDS_API_REGION` | `us` | Primäre Buchmacherregion |
-| `ODDS_API_FALLBACK_REGION` | leer | Optionale zweite Region, die nur für weiterhin fehlende Spieler-Märkte abgefragt wird; Produktion nutzt `uk` |
+| `ODDS_API_FALLBACK_REGION` | leer | Optionale zweite Region für weiterhin fehlende Spieler- oder H/D/A-Märkte; Produktion nutzt `uk` |
 | `ODDS_FETCH_WINDOW_HOURS` | `24` | Marktquoten frühestens so viele Stunden vor Anpfiff abrufen |
 | `MATCH_ODDS_FALLBACK_WINDOW_HOURS` | `72` | Externe H/D/A-Quoten nur innerhalb dieses Zeitfensters ergänzen, wenn Sorare noch Werte fehlen |
 | `ODDS_MISS_CACHE_TTL_SECONDS` | `21600` | Legacy-Fallback für alte negative Quoten-Cacheeinträge; neue Einträge nutzen 12h/24h plus eine letzte Prüfung vier Stunden vor Anpfiff |
