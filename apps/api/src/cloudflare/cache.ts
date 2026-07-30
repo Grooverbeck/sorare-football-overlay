@@ -527,6 +527,19 @@ export class CloudflareProviderQuotaUsageStore
     );
   }
 
+  async claimRefreshLease(
+    provider: OddsProviderName,
+    lease: string,
+    ttlSeconds: number,
+  ): Promise<boolean> {
+    if (!this.namespace.putIfAbsent) return true;
+    return this.namespace.putIfAbsent(
+      `odds-provider-refresh-lease:v1:${provider}:${encodeURIComponent(lease)}`,
+      JSON.stringify({ claimedAt: new Date().toISOString() }),
+      { expirationTtl: Math.max(1, ttlSeconds) },
+    );
+  }
+
   private key(provider: OddsProviderName): string {
     return `odds-provider-usage:v1:${provider}`;
   }

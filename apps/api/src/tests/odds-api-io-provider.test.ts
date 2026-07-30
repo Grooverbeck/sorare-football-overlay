@@ -52,13 +52,14 @@ function json(body: unknown, init: ResponseInit = {}): Response {
 
 function createProvider(
   fetchImpl: typeof fetch,
-  usageStore = new InMemoryProviderQuotaUsageStore(),
+  usageStore = new InMemoryProviderQuotaUsageStore(() => now),
   routes: readonly OddsApiIoPlayerRoute[] = [
     {
       competitionSlugs: ['austrian-bundesliga'],
       leagueSlugs: ['austria-bundesliga'],
     },
   ],
+  maxRetries = 0,
 ) {
   return {
     provider: new OddsApiIoPlayerMarketOddsProvider({
@@ -70,7 +71,7 @@ function createProvider(
       dailyRequestLimit: 500,
       hourlyRequestLimit: 100,
       requestTimeoutMs: 1_000,
-      maxRetries: 0,
+      maxRetries,
       store: new InMemoryMarketSnapshotStore(60_000, () => now),
       logger,
       usageStore,
@@ -344,5 +345,63 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
 
     expect(result.get(playerMarketOddsKey(player()))).toBeNull();
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not retry a 429 and blocks requests until the provider reset', async () => {
+    const resetAt = '2026-07-30T12:47:00.000Z';
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      new Response(null, {
+        status: 429,
+        headers: {
+          'retry-after': '60',
+          'x-ratelimit-limit': '100',
+          'x-ratelimit-remaining': '0',
+          'x-ratelimit-reset': resetAt,
+        },
+      }),
+    );
+    const usageStore = new InMemoryProviderQuotaUsageStore(() => now);
+    const { provider } = createProvider(
+      fetchImpl,
+      usageStore,
+      undefined,
+      3,
+    );
+
+    const first = await provider.load([player()]);
+    const second = await provider.load([player()]);
+
+    expect(first.get(playerMarketOddsKey(player()))).toBeNull();
+    expect(second.get(playerMarketOddsKey(player()))).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await expect(
+      usageStore.get('odds-api-io-hourly'),
+    ).resolves.toMatchObject({
+      used: 100,
+      limit: 100,
+      remaining: 0,
+      interval: {
+        unit: 'hour',
+        endsAt: resetAt,
+      },
+    });
+  });
+
+  it('deduplicates refreshes across provider instances after an error', async () => {
+    const usageStore = new InMemoryProviderQuotaUsageStore(() => now);
+    const firstFetch = vi.fn<typeof fetch>(async () =>
+      new Response(null, { status: 500 }),
+    );
+    const secondFetch = vi.fn<typeof fetch>(async () =>
+      json([]),
+    );
+    const first = createProvider(firstFetch, usageStore).provider;
+    const second = createProvider(secondFetch, usageStore).provider;
+
+    await first.load([player()]);
+    await second.load([player()]);
+
+    expect(firstFetch).toHaveBeenCalledTimes(1);
+    expect(secondFetch).not.toHaveBeenCalled();
   });
 });

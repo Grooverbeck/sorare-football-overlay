@@ -89,6 +89,10 @@ class OddsApiIoHttpError extends Error {
   }
 }
 
+const ODDS_API_IO_REFRESH_LEASE_SECONDS = 5 * 60;
+const ODDS_API_IO_REFRESH_LEASE = 'player-props';
+const HOUR_MS = 60 * 60 * 1_000;
+
 const defaultSleep = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
@@ -100,6 +104,43 @@ function retryDelayMs(value: string | null, attempt: number): number {
     if (!Number.isNaN(at)) return Math.max(0, at - Date.now());
   }
   return Math.min(8_000, 500 * 2 ** attempt);
+}
+
+function nonnegativeIntegerHeader(
+  headers: Headers,
+  name: string,
+): number | null {
+  const value = headers.get(name);
+  if (value === null || value.trim() === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0
+    ? Math.floor(parsed)
+    : null;
+}
+
+function resetTimeFromHeaders(headers: Headers, now: number): number | null {
+  const rateLimitReset = headers.get('x-ratelimit-reset');
+  if (rateLimitReset) {
+    const parsedDate = Date.parse(rateLimitReset);
+    if (Number.isFinite(parsedDate) && parsedDate > now) return parsedDate;
+    const numeric = Number(rateLimitReset);
+    if (Number.isFinite(numeric)) {
+      const milliseconds = numeric > 10_000_000_000
+        ? numeric
+        : numeric * 1_000;
+      if (milliseconds > now) return milliseconds;
+    }
+  }
+  const retryAfter = headers.get('retry-after');
+  if (!retryAfter) return null;
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return now + seconds * 1_000;
+  }
+  const parsedDate = Date.parse(retryAfter);
+  return Number.isFinite(parsedDate) && parsedDate > now
+    ? parsedDate
+    : null;
 }
 
 function fixtureStoreKey(fixtureKey: string): string {
@@ -369,7 +410,24 @@ export class OddsApiIoPlayerMarketOddsProvider
     }
 
     if (pending.length > 0) {
-      await this.refreshFixtures(pending, snapshots);
+      const claimed =
+        !this.options.usageStore?.claimRefreshLease ||
+        (await this.options.usageStore.claimRefreshLease(
+          'odds-api-io',
+          ODDS_API_IO_REFRESH_LEASE,
+          ODDS_API_IO_REFRESH_LEASE_SECONDS,
+        ));
+      if (claimed) {
+        await this.refreshFixtures(pending, snapshots);
+      } else {
+        this.options.logger.debug(
+          {
+            provider: 'odds-api-io',
+            fixtures: pending.length,
+          },
+          'Odds-API.io refresh skipped because another Worker owns the lease',
+        );
+      }
     }
 
     for (const fixture of fixtures) {
@@ -455,6 +513,9 @@ export class OddsApiIoPlayerMarketOddsProvider
           },
           'Odds-API.io lookup failed; retaining existing market snapshots',
         );
+        if (error instanceof OddsApiIoHttpError && error.status === 429) {
+          return;
+        }
       }
     }
   }
@@ -585,9 +646,13 @@ export class OddsApiIoPlayerMarketOddsProvider
           headers: { accept: 'application/json' },
           signal: controller.signal,
         });
-        await this.recordRequest();
+        await this.recordRequest(response.headers, response.status === 429);
+        if (response.status === 429) {
+          await response.body?.cancel();
+          throw new OddsApiIoHttpError(response.status);
+        }
         const retryable =
-          response.status === 429 || [502, 503, 504].includes(response.status);
+          [502, 503, 504].includes(response.status);
         if (retryable && attempt < this.options.maxRetries) {
           const waitMs = retryDelayMs(
             response.headers.get('retry-after'),
@@ -619,55 +684,89 @@ export class OddsApiIoPlayerMarketOddsProvider
     throw new Error('Odds-API.io retry budget exhausted');
   }
 
-  private async recordRequest(): Promise<void> {
+  private async recordRequest(
+    headers: Headers,
+    rateLimited: boolean,
+  ): Promise<void> {
     if (!this.options.usageStore) return;
     try {
       const now = this.now();
       const checkedAt = new Date(now).toISOString();
       const dayStart = new Date(now);
       dayStart.setUTCHours(0, 0, 0, 0);
-      const hourStart = new Date(now);
-      hourStart.setUTCMinutes(0, 0, 0);
-      const windows = [
+      const currentDaily = currentUsage(
+        await this.options.usageStore.get('odds-api-io'),
+        'odds-api-io',
+        now,
+      );
+      const dailyUsage = quotaUsage(
+        'odds-api-io',
+        'requests',
+        (currentDaily?.used ?? 0) + 1,
+        this.options.dailyRequestLimit,
+        checkedAt,
         {
-          provider: 'odds-api-io' as const,
-          limit: this.options.dailyRequestLimit,
-          interval: {
-            unit: 'day' as const,
-            startsAt: dayStart.toISOString(),
-            endsAt: new Date(
-              dayStart.getTime() + 24 * 60 * 60 * 1_000,
-            ).toISOString(),
-          },
+          unit: 'day',
+          startsAt: dayStart.toISOString(),
+          endsAt: new Date(
+            dayStart.getTime() + 24 * HOUR_MS,
+          ).toISOString(),
         },
+      );
+      if (dailyUsage) await this.options.usageStore.set(dailyUsage);
+
+      const currentHourly = currentUsage(
+        await this.options.usageStore.get('odds-api-io-hourly'),
+        'odds-api-io-hourly',
+        now,
+      );
+      const reportedLimit = nonnegativeIntegerHeader(
+        headers,
+        'x-ratelimit-limit',
+      );
+      const reportedRemaining = nonnegativeIntegerHeader(
+        headers,
+        'x-ratelimit-remaining',
+      );
+      const limit =
+        reportedLimit && reportedLimit > 0
+          ? reportedLimit
+          : currentHourly?.limit ?? this.options.hourlyRequestLimit;
+      const resetAt =
+        resetTimeFromHeaders(headers, now) ??
+        (currentHourly?.interval.endsAt
+          ? Date.parse(currentHourly.interval.endsAt)
+          : Number.NaN);
+      const endsAt =
+        Number.isFinite(resetAt) && resetAt > now
+          ? resetAt
+          : now + HOUR_MS;
+      const reportedUsed =
+        reportedRemaining === null
+          ? null
+          : Math.max(0, limit - Math.min(limit, reportedRemaining));
+      const sameWindow =
+        currentHourly?.interval.endsAt ===
+        new Date(endsAt).toISOString();
+      const used = rateLimited
+        ? limit
+        : Math.max(
+            sameWindow ? currentHourly?.used ?? 0 : 0,
+            reportedUsed ?? (currentHourly?.used ?? 0) + 1,
+          );
+      const hourlyUsage = quotaUsage(
+        'odds-api-io-hourly',
+        'requests',
+        used,
+        limit,
+        checkedAt,
         {
-          provider: 'odds-api-io-hourly' as const,
-          limit: this.options.hourlyRequestLimit,
-          interval: {
-            unit: 'hour' as const,
-            startsAt: hourStart.toISOString(),
-            endsAt: new Date(
-              hourStart.getTime() + 60 * 60 * 1_000,
-            ).toISOString(),
-          },
+          unit: 'hour',
+          startsAt: new Date(endsAt - HOUR_MS).toISOString(),
+          endsAt: new Date(endsAt).toISOString(),
         },
-      ];
-      for (const window of windows) {
-        const current = currentUsage(
-          await this.options.usageStore.get(window.provider),
-          window.provider,
-          now,
-        );
-        const usage = quotaUsage(
-          window.provider,
-          'requests',
-          (current?.used ?? 0) + 1,
-          window.limit,
-          checkedAt,
-          window.interval,
-        );
-        if (usage) await this.options.usageStore.set(usage);
-      }
+      );
+      if (hourlyUsage) await this.options.usageStore.set(hourlyUsage);
     } catch (error) {
       this.options.logger.warn(
         {

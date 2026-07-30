@@ -38,12 +38,20 @@ export type ProviderQuotaUsage = z.infer<typeof ProviderQuotaUsageSchema>;
 export interface ProviderQuotaUsageStore {
   get(provider: OddsProviderName): Promise<ProviderQuotaUsage | undefined>;
   set(usage: ProviderQuotaUsage): void | Promise<void>;
+  claimRefreshLease?(
+    provider: OddsProviderName,
+    lease: string,
+    ttlSeconds: number,
+  ): Promise<boolean>;
 }
 
 export class InMemoryProviderQuotaUsageStore
   implements ProviderQuotaUsageStore
 {
   private readonly entries = new Map<OddsProviderName, ProviderQuotaUsage>();
+  private readonly refreshLeases = new Map<string, number>();
+
+  constructor(private readonly now: () => number = Date.now) {}
 
   async get(
     provider: OddsProviderName,
@@ -53,6 +61,22 @@ export class InMemoryProviderQuotaUsageStore
 
   set(usage: ProviderQuotaUsage): void {
     this.entries.set(usage.provider, ProviderQuotaUsageSchema.parse(usage));
+  }
+
+  async claimRefreshLease(
+    provider: OddsProviderName,
+    lease: string,
+    ttlSeconds: number,
+  ): Promise<boolean> {
+    const key = `${provider}:${lease}`;
+    const now = this.now();
+    const expiresAt = this.refreshLeases.get(key);
+    if (expiresAt !== undefined && expiresAt > now) return false;
+    this.refreshLeases.set(
+      key,
+      now + Math.max(1, ttlSeconds) * 1_000,
+    );
+    return true;
   }
 }
 
