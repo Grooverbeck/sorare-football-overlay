@@ -42,7 +42,7 @@ const MissingPlayerCheckSchema = z.union([
   MarketRetryStateSchema,
 ]);
 
-const FrozenMarketSnapshotSchema = z.object({
+export const FrozenMarketSnapshotSchema = z.object({
   status: z.literal('available'),
   market: OddsMarketKeySchema,
   eventId: z.string().min(1),
@@ -313,7 +313,7 @@ class OddsApiHttpError extends Error {
 const defaultSleep = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
-const teamAliases: Readonly<Record<string, string>> = {
+const mlsTeamAliases: Readonly<Record<string, string>> = {
   atlanta: 'atlanta united',
   'atlanta united': 'atlanta united',
   austin: 'austin',
@@ -369,6 +369,60 @@ const teamAliases: Readonly<Record<string, string>> = {
   'vancouver whitecaps': 'vancouver whitecaps',
 };
 
+const contenderTeamAliases: Readonly<Record<string, string>> = {
+  // Austrian Bundesliga: Sorare generally uses club short names while the
+  // bookmaker feed often includes sponsors or common prefixes.
+  salzburg: 'salzburg',
+  'rb salzburg': 'salzburg',
+  wattens: 'wsg tirol',
+  'wsg tirol': 'wsg tirol',
+  lask: 'lask',
+  'lask linz': 'lask',
+  'grazer ak': 'grazer ak',
+  'grazer ak 1902': 'grazer ak',
+  'sturm graz': 'sturm graz',
+  'sk sturm graz': 'sturm graz',
+  'austria lustenau': 'austria lustenau',
+  ried: 'ried',
+  'sv ried': 'ried',
+  wac: 'wolfsberger ac',
+  'wolfsberger ac': 'wolfsberger ac',
+  'austria wien': 'austria wien',
+  'fk austria wien': 'austria wien',
+  'rapid wien': 'rapid wien',
+  'sk rapid': 'rapid wien',
+  altach: 'altach',
+  'scr altach': 'altach',
+  hartberg: 'hartberg',
+  'tsv hartberg': 'hartberg',
+
+  // 2. Bundesliga: normalize the current Sorare short names and The Odds API
+  // display names to one stable fixture identity.
+  bochum: 'bochum',
+  'vfl bochum': 'bochum',
+  'hertha bsc': 'hertha',
+  'hertha berlin': 'hertha',
+  heidenheim: 'heidenheim',
+  '1 heidenheim': 'heidenheim',
+  osnabruck: 'osnabruck',
+  'vfl osnabruck': 'osnabruck',
+  'darmstadt 98': 'darmstadt 98',
+  'sv darmstadt 98': 'darmstadt 98',
+  magdeburg: 'magdeburg',
+  '1 magdeburg': 'magdeburg',
+  wolfsburg: 'wolfsburg',
+  'vfl wolfsburg': 'wolfsburg',
+  kaiserslautern: 'kaiserslautern',
+  '1 kaiserslautern': 'kaiserslautern',
+  nurnberg: 'nurnberg',
+  '1 nurnberg': 'nurnberg',
+};
+
+const teamAliases: Readonly<Record<string, string>> = {
+  ...mlsTeamAliases,
+  ...contenderTeamAliases,
+};
+
 function normalizeWords(value: string): string {
   return value
     .normalize('NFKD')
@@ -389,7 +443,7 @@ export function normalizeTeamName(value: string): string {
 }
 
 const defaultSupportedCompetitionSlugs = ['mlspa'] as const;
-const knownMlsTeamNames = new Set(Object.values(teamAliases));
+const knownMlsTeamNames = new Set(Object.values(mlsTeamAliases));
 
 export function supportsPlayerCompetition(
   player: PlayerStats,
@@ -801,6 +855,7 @@ export function recordFrozenSnapshotCheck(
 
 const firstMarketRetryDelayMs = 12 * 60 * 60 * 1_000;
 const laterMarketRetryDelayMs = 24 * 60 * 60 * 1_000;
+const earlyMarketRetryLeadMs = 24 * 60 * 60 * 1_000;
 const finalMarketRetryLeadMs = 4 * 60 * 60 * 1_000;
 const missingMarketRetentionMs = 24 * 60 * 60 * 1_000;
 
@@ -828,11 +883,14 @@ function nextMarketRetryState(
   const finalRetryAt = kickoff - finalMarketRetryLeadMs;
   let nextRetryAt: number | null = null;
   if (checkedAt < finalRetryAt) {
-    const delay =
+    const retryAt =
       attemptCount === 1
-        ? firstMarketRetryDelayMs
-        : laterMarketRetryDelayMs;
-    nextRetryAt = Math.min(checkedAt + delay, finalRetryAt);
+        ? Math.max(
+            checkedAt + firstMarketRetryDelayMs,
+            kickoff - earlyMarketRetryLeadMs,
+          )
+        : checkedAt + laterMarketRetryDelayMs;
+    nextRetryAt = Math.min(retryAt, finalRetryAt);
     if (nextRetryAt <= checkedAt) nextRetryAt = null;
   }
   return MarketRetryStateSchema.parse({

@@ -3,6 +3,32 @@
 Alle wichtigen Änderungen am Sorare Football Stats Overlay werden in dieser
 Datei dokumentiert.
 
+## 0.3.3 – 30. Juli 2026
+
+### Mehr verfügbare Quoten
+
+- Wenn Sorare kurz vor dem Anpfiff noch keine H/D/A-Werte liefert, kann das
+  Backend die fehlenden Matchquoten aus einer externen Quelle ergänzen.
+- Eine zusätzliche Quotenquelle ergänzt fehlende Torquoten, wenn die bisherigen
+  Anbieter keinen passenden Markt liefern oder ihr Abrufbudget geschont werden
+  muss.
+- Die zusätzliche Abdeckung umfasst MLS, österreichische Bundesliga,
+  2. Bundesliga, HNL, Ligue 2 sowie Champions-, Europa- und Conference-League.
+- Bereits gefundene Quoten bleiben gespeichert und sichtbar. Schutzregeln
+  verhindern unnötige Wiederholungsabfragen bei den Quotenanbietern.
+
+### Schnellere und robustere Kartenlisten
+
+- Sichtbare Karten und wichtige Folgeabfragen werden bevorzugt, während
+  Hintergrundkarten erst später geladen werden.
+- Vorhandene Form- und Begegnungswerte bleiben bei einem vorübergehenden
+  Netzwerkfehler sichtbar und werden automatisch erneut ergänzt.
+- Große Spielerlisten werden effizienter gebündelt. Zu komplexe Anfragen werden
+  automatisch in kleinere Teile zerlegt, statt die gesamte Liste fehlschlagen
+  zu lassen.
+- Ein kurzer, verständlicher Hinweis ersetzt lange technische Fehlermeldungen
+  oberhalb der Karte.
+
 ## 0.3.2 – 29. Juli 2026
 
 ### Verlässlichere Spieler- und Kartenwerte

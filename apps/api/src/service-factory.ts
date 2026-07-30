@@ -22,6 +22,7 @@ import {
   InMemoryProviderQuotaUsageStore,
   type ProviderQuotaUsageStore,
 } from './providers/odds-usage.js';
+import { OddsApiIoPlayerMarketOddsProvider } from './providers/odds-api-io-provider.js';
 import {
   InMemoryMatchOddsSnapshotStore,
   TheOddsApiFixtureMatchOddsProvider,
@@ -29,11 +30,16 @@ import {
   type FixtureMatchOddsProvider,
   type MatchOddsSnapshotStore,
 } from './providers/match-odds-provider.js';
+import {
+  CONTENDER_THE_ODDS_API_ROUTES,
+  ODDS_API_IO_PLAYER_ROUTES,
+} from './providers/competition-odds-routes.js';
 import type {
   PlayerNameResolutionCache,
   PlayerStatsDataSource,
 } from './services/data-source.js';
 import {
+  DEFAULT_NAME_RESOLUTION_BUDGET_MS,
   StatsService,
   type BackgroundTaskScheduler,
 } from './services/stats-service.js';
@@ -54,6 +60,18 @@ export interface StatsRuntime {
   marketOddsProvider: PlayerMarketOddsProvider;
   dataSource: PlayerStatsDataSource;
   source: 'sorare' | 'mock';
+}
+
+function supplementPlayerMarketOddsProviders(
+  providers: readonly PlayerMarketOddsProvider[],
+): PlayerMarketOddsProvider {
+  const [first, ...rest] = providers;
+  if (!first) return new UnavailablePlayerMarketOddsProvider();
+  return rest.reduce<PlayerMarketOddsProvider>(
+    (primary, fallback) =>
+      new SupplementingPlayerMarketOddsProvider(primary, fallback),
+    first,
+  );
 }
 
 export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRuntime {
@@ -126,41 +144,53 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
         supportedCompetitionSlugs,
       });
     const theOddsProvider = config.oddsApiKey
-      ? new SupplementingPlayerMarketOddsProvider(
+      ? supplementPlayerMarketOddsProviders([
           createTheOddsProvider(config.oddsApiSportKey, ['mlspa']),
-          new SupplementingPlayerMarketOddsProvider(
+          createTheOddsProvider(
+            'soccer_uefa_champs_league_qualification',
+            ['uefa-champions-league'],
+            {
+              additionalSportKeys: ['soccer_uefa_champs_league'],
+              region: 'eu',
+              fallbackRegion: 'uk',
+              refreshUsage: false,
+            },
+          ),
+          createTheOddsProvider(
+            'soccer_uefa_europa_league',
+            ['uefa-europa-league'],
+            {
+              region: 'eu',
+              fallbackRegion: 'uk',
+              refreshUsage: false,
+            },
+          ),
+          createTheOddsProvider(
+            'soccer_uefa_europa_conference_league',
+            ['uefa-europa-conference-league'],
+            {
+              region: 'eu',
+              fallbackRegion: 'uk',
+              refreshUsage: false,
+            },
+          ),
+          ...CONTENDER_THE_ODDS_API_ROUTES.map((route) =>
             createTheOddsProvider(
-              'soccer_uefa_champs_league_qualification',
-              ['uefa-champions-league'],
+              route.sportKeys[0],
+              route.competitionSlugs,
               {
-                additionalSportKeys: ['soccer_uefa_champs_league'],
-                region: 'eu',
-                fallbackRegion: 'uk',
+                ...(route.sportKeys.length > 1
+                  ? { additionalSportKeys: route.sportKeys.slice(1) }
+                  : {}),
+                region: route.region,
+                ...(route.fallbackRegion
+                  ? { fallbackRegion: route.fallbackRegion }
+                  : {}),
                 refreshUsage: false,
               },
             ),
-            new SupplementingPlayerMarketOddsProvider(
-              createTheOddsProvider(
-                'soccer_uefa_europa_league',
-                ['uefa-europa-league'],
-                {
-                  region: 'eu',
-                  fallbackRegion: 'uk',
-                  refreshUsage: false,
-                },
-              ),
-              createTheOddsProvider(
-                'soccer_uefa_europa_conference_league',
-                ['uefa-europa-conference-league'],
-                {
-                  region: 'eu',
-                  fallbackRegion: 'uk',
-                  refreshUsage: false,
-                },
-              ),
-            ),
           ),
-        )
+        ])
       : new UnavailablePlayerMarketOddsProvider();
     const createSportsGameOddsProvider = (
       leagueId: string,
@@ -201,12 +231,41 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
           ),
         )
       : new UnavailablePlayerMarketOddsProvider();
-    marketOddsProvider = config.sportsGameOddsApiKey
+    const configuredMarketOddsProvider = config.sportsGameOddsApiKey
       ? new SupplementingPlayerMarketOddsProvider(
           sportsGameOddsProvider,
           theOddsProvider,
         )
       : theOddsProvider;
+    marketOddsProvider = config.oddsApiIoKey
+      ? new SupplementingPlayerMarketOddsProvider(
+          configuredMarketOddsProvider,
+          new OddsApiIoPlayerMarketOddsProvider({
+            apiKey: config.oddsApiIoKey,
+            baseUrl: config.oddsApiIoBaseUrl,
+            bookmakers: config.oddsApiIoBookmakers,
+            routes: ODDS_API_IO_PLAYER_ROUTES.map((route) =>
+              route.competitionSlugs.some(
+                (slug) => slug === 'austrian-bundesliga',
+              )
+                ? {
+                    ...route,
+                    leagueSlugs: [config.oddsApiIoLeague],
+                  }
+                : route,
+            ),
+            fetchWindowMs: config.oddsFetchWindowMs,
+            dailyRequestLimit: config.oddsApiIoDailyRequestLimit,
+            hourlyRequestLimit: config.oddsApiIoHourlyRequestLimit,
+            requestTimeoutMs: config.requestTimeoutMs,
+            maxRetries: config.maxRetries,
+            store: marketSnapshotStore,
+            logger,
+            usageStore: providerQuotaUsageStore,
+          }),
+          ['goal'],
+        )
+      : configuredMarketOddsProvider;
     fixtureMatchOddsProvider = config.oddsApiKey
       ? new TheOddsApiFixtureMatchOddsProvider({
           apiKey: config.oddsApiKey,
@@ -241,6 +300,7 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
               region: 'eu',
               fallbackRegion: 'uk',
             },
+            ...CONTENDER_THE_ODDS_API_ROUTES,
           ],
           fallbackWindowMs: config.matchOddsFallbackWindowMs,
           missTtlMs: config.oddsMissCacheTtlMs,
@@ -263,7 +323,7 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
       config.excludeLowCoverage,
       marketOddsProvider,
       options.scheduleBackground,
-      3_000,
+      DEFAULT_NAME_RESOLUTION_BUDGET_MS,
       fixtureMatchOddsProvider,
     ),
     marketOddsProvider,

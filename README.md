@@ -94,7 +94,7 @@ Alle Werte werden aus `apps/api/.env` oder der Prozessumgebung gelesen.
 | `SORARE_REQUEST_TIMEOUT_MS` | `10000` | Timeout einer Sorare-Anfrage |
 | `SORARE_MAX_RETRIES` | `3` | Retry-Budget für 429 und temporäre 5xx-Fehler |
 | `SORARE_GRAPHQL_URL` | `https://api.sorare.com/graphql` | Offizielle Football-GraphQL-API |
-| `SORARE_API_KEY` | leer | Optionaler Sorare-API-Key, Header `APIKEY` |
+| `SORARE_API_KEY` | leer | Serverseitiger Sorare-API-Key, Header `APIKEY`; für das Cloudflare-Deployment erforderlich |
 | `SORARE_AUTH_TOKEN` | leer | Optionales serverseitiges Bearer-Token |
 | `SORARE_JWT_AUD` | leer | Optionaler `JWT-AUD`-Header |
 | `THE_ODDS_API_KEY` | leer | Serverseitiger Schlüssel für Tor-/Assist-Märkte und den H/D/A-Fallback |
@@ -102,12 +102,18 @@ Alle Werte werden aus `apps/api/.env` oder der Prozessumgebung gelesen.
 | `ODDS_API_SPORT_KEY` | `soccer_usa_mls` | Liga bei The Odds API |
 | `ODDS_API_REGION` | `us` | Primäre Buchmacherregion |
 | `ODDS_API_FALLBACK_REGION` | leer | Optionale zweite Region für weiterhin fehlende Spieler- oder H/D/A-Märkte; Produktion nutzt `uk` |
-| `ODDS_FETCH_WINDOW_HOURS` | `24` | Marktquoten frühestens so viele Stunden vor Anpfiff abrufen |
+| `ODDS_FETCH_WINDOW_HOURS` | `72` | Tor-/Assistquoten frühestens so viele Stunden vor Anpfiff abrufen |
 | `MATCH_ODDS_FALLBACK_WINDOW_HOURS` | `72` | Externe H/D/A-Quoten nur innerhalb dieses Zeitfensters ergänzen, wenn Sorare noch Werte fehlen |
 | `ODDS_MISS_CACHE_TTL_SECONDS` | `21600` | Legacy-Fallback für alte negative Quoten-Cacheeinträge; neue Einträge nutzen 12h/24h plus eine letzte Prüfung vier Stunden vor Anpfiff |
 | `SPORTS_GAME_ODDS_API_KEY` | leer | Serverseitiger Schlüssel für direkte Tor-, Assist- und Tor-oder-Assist-Märkte |
 | `SPORTS_GAME_ODDS_BASE_URL` | `https://api.sportsgameodds.com/v2` | Basis-URL von SportsGameOdds |
 | `SPORTS_GAME_ODDS_LEAGUE_ID` | `MLS` | Liga bei SportsGameOdds |
+| `ODDS_API_IO_KEY` | leer | Serverseitiger Schlüssel für den zusätzlichen Torquoten-Fallback |
+| `ODDS_API_IO_BASE_URL` | `https://api.odds-api.io/v3` | Basis-URL von Odds-API.io |
+| `ODDS_API_IO_LEAGUE` | `austria-bundesliga` | Überschreibbarer Odds-API.io-Slug für die österreichische Bundesliga |
+| `ODDS_API_IO_BOOKMAKERS` | `Bet365,Unibet` | Gemeinsam und gebündelt abgefragte Buchmacher |
+| `ODDS_API_IO_DAILY_REQUEST_LIMIT` | `500` | Lokales Tagesbudget zum Schutz des Free-Tarifs |
+| `ODDS_API_IO_HOURLY_REQUEST_LIMIT` | `100` | Lokales Stundenbudget zum Schutz des Free-Tarifs |
 | `CORS_ORIGINS` | `http://localhost:5173` | Zusätzliche, kommagetrennte Web-Origins |
 | `LOG_LEVEL` | `info` | Pino-Log-Level |
 
@@ -118,7 +124,24 @@ MOCK_MODE=false
 SORARE_API_KEY=server-side-secret
 ```
 
-Unauthentifizierte Abfragen sind ebenfalls möglich, unterliegen aber dem niedrigeren Sorare-Rate-Limit. Bei HTTP 429 respektiert der Client `Retry-After`; strukturierte Logs enthalten Request-ID, Status und Laufzeit, aber keine Secrets.
+Unauthentifizierte Abfragen bleiben für lokale Diagnose und Tests möglich,
+unterliegen aber dem niedrigeren Sorare-Rate-Limit. Das produktive
+Cloudflare-Deployment verlangt den API-Key, damit es nicht unbemerkt auf den
+anonymen Zugriff zurückfällt. Bei HTTP 429 respektiert der Client
+`Retry-After`; strukturierte Logs enthalten Request-ID, Status und Laufzeit,
+aber keine Secrets.
+
+Den möglichen Geschwindigkeitsgewinn größerer API-Key-Batches kann ein
+reproduzierbarer Benchmark mit derselben Spielerliste messen:
+
+```bash
+npm run benchmark:sorare-batching -- --dry-run
+npm run benchmark:sorare-batching
+```
+
+Ohne lokal gesetzten `SORARE_API_KEY` wird nur die anonyme Baseline ausgeführt.
+Messmethodik, Sicherheitsgrenzen und Konfigurationsmöglichkeiten stehen in
+[`docs/SORARE_BATCHING_BENCHMARK.md`](docs/SORARE_BATCHING_BENCHMARK.md).
 
 Das Backend pollt einzelne Spieler nicht periodisch. Es fragt einen Spieler nur
 bei einem tatsächlichen Cache-Miss an. In Cloudflare KV werden Formwerte und
@@ -135,10 +158,14 @@ Fallback für die Form-TTL akzeptiert.
 
 SportsGameOdds wird primär für direkte Tor-, Assist- und
 Tor-oder-Assist-Märkte verwendet. The Odds API ergänzt nur weiterhin fehlende
-Tor- oder Assistwerte. Beide Anbieter werden nicht bei jedem Kartenaufruf
+Tor- oder Assistwerte. Odds-API.io ergänzt als letzte Rückfallebene eine noch
+fehlende Torquote. Assist-Lücken allein lösen dort keinen Abruf aus, weil
+dieser Feed dafür aktuell keine Assist-Märkte liefert. Die Spielerquoten
+mehrerer Begegnungen desselben Wettbewerbs werden in möglichst wenigen
+Sammelabfragen geladen. Die Anbieter werden nicht bei jedem Kartenaufruf
 abgefragt. Innerhalb des konfigurierten Zeitfensters lädt das Backend die
 angebotenen Märkte einmalig. Ein täglich um 05:00 UTC laufender Cloudflare-Cron
-wärmt MLS-Begegnungen vor, die in den nächsten 24 Stunden beginnen. Erfolgreich
+wärmt MLS-Begegnungen vor, die in den nächsten 72 Stunden beginnen. Erfolgreich
 erfasste Spielerwerte bleiben als unveränderlicher Begegnungs-Snapshot ohne
 Ablaufdatum gespeichert. Ein Ergänzungslauf kann später gelistete Spieler und
 Buchmacherdetails hinzufügen, verändert aber keine bereits eingefrorene
@@ -147,17 +174,22 @@ gelistete Spieler verwenden einen spielbezogenen Retry-Zustand: nach dem ersten
 Fehlschlag frühestens nach zwölf Stunden, danach nach 24 Stunden und höchstens
 noch einmal vier Stunden vor Anpfiff. Nach der letzten Prüfung und nach
 Spielbeginn werden keine weiteren Quotenabrufe ausgelöst. Bei dem produktiven
-24-Stunden-Abruffenster ergeben sich dadurch höchstens drei Marktprüfungen pro
+72-Stunden-Abruffenster ergeben sich dadurch höchstens drei Marktprüfungen pro
 Begegnung statt einer Prüfung alle sechs Stunden.
 
 Vor einem externen Abruf prüft das Backend zusätzlich die von Sorare gelieferte
 Competition. SportsGameOdds unterstützt gezielt MLS, Champions League
 einschließlich Qualifikation und Europa League. The Odds API ergänzt diese
-Wettbewerbe sowie die Conference League. Für UEFA-Spiele bei The Odds API
-werden zuerst europäische und nur bei Bedarf britische Buchmacher abgefragt.
-Unbekannte oder andere Wettbewerbe lösen keinen externen Feed-Aufruf aus. Alte
-Fixture-Cacheeinträge ohne Competition werden einmalig beim nächsten
-Kartenaufruf aktualisiert.
+Wettbewerbe sowie die Conference League. Aus dem Sorare-27-Contender-Pool sind
+über The Odds API außerdem die österreichische Bundesliga und die
+2. Bundesliga freigeschaltet. Odds-API.io ist als Goal-only-Fallback für MLS,
+die drei UEFA-Wettbewerbe und alle vier Contender-Wettbewerbe einschließlich
+kroatischer HNL und Ligue 2 freigeschaltet. Externe H/D/A-Fallbacks bleiben
+für HNL und Ligue 2 weiterhin deaktiviert. Für europäische Spiele bei
+The Odds API werden zuerst europäische und nur bei Bedarf britische Buchmacher
+abgefragt. Unbekannte oder andere Wettbewerbe lösen keinen externen
+Feed-Aufruf aus. Alte Fixture-Cacheeinträge ohne Competition werden einmalig
+beim nächsten Kartenaufruf aktualisiert.
 
 H/D/A-Wahrscheinlichkeiten stammen weiterhin vorrangig von Sorare. Erst ab
 72 Stunden vor Anpfiff darf The Odds API noch fehlende H-, D- oder A-Werte
@@ -177,6 +209,11 @@ der empfangenen Spielobjekte wird zwischen den täglichen exakten
 Kontingentprüfungen lokal fortgeschrieben. Neue Karten desselben Spiels lösen
 außerdem erst am nächsten gemeinsamen Prüfzeitpunkt einen Ergänzungsabruf aus.
 Bereits gespeicherte Quoten bleiben in allen Schutzstufen lesbar.
+
+Für Odds-API.io führt das Backend zusätzlich lokale Stunden- und Tageszähler.
+Ab 85 % des jeweils engeren Fensters werden keine Ergänzungsprüfungen
+bestehender Snapshots mehr durchgeführt; ab 90 % erfolgen bis zum nächsten
+Stunden- beziehungsweise UTC-Tagesfenster ausschließlich Cache-Lesezugriffe.
 
 Der aktuelle SportsGameOdds-Verbrauch kann lokal abgefragt werden:
 
@@ -247,11 +284,13 @@ npx wrangler d1 migrations apply sorare-overlay-cache --remote --config apps/api
 ```
 
 Wrangler bindet anschließend die in `wrangler.jsonc` deklarierte D1-Datenbank
-und den bestehenden KV-Lesefallback ein. Es ist kein Sorare-Schlüssel zwingend
-erforderlich; dann greift das Backend anonym zu und begrenzt die
-GraphQL-Batches entsprechend.
+und den bestehenden KV-Lesefallback ein. Der Sorare-Schlüssel ist dort als
+erforderliches Secret deklariert; fehlt er, bricht Wrangler das Deployment ab,
+statt das Backend unbemerkt anonym zu betreiben.
 
-Optionale Zugangsdaten werden ausschließlich als verschlüsselte Worker-Secrets gesetzt, niemals unter `vars`, in `.env`-Beispielen mit echtem Wert oder in der Extension:
+Zugangsdaten werden ausschließlich als verschlüsselte Worker-Secrets gesetzt,
+niemals unter `vars`, in `.env`-Beispielen mit echtem Wert oder in der
+Extension:
 
 ```bash
 npx wrangler secret put SORARE_API_KEY --config apps/api/wrangler.jsonc
@@ -430,11 +469,12 @@ weiterhin nur gelb („mittel“) ist. Die historische Skala ist separat
 versioniert und kann später anhand einer vollständigen MLS-Saisonverteilung
 neu kalibriert werden.
 
-Das Backend lädt die Märkte erst in den letzten 24 Stunden vor Anpfiff und
+Das Backend lädt die Märkte erst in den letzten 72 Stunden vor Anpfiff und
 friert jeden erfolgreich gelieferten Markt anschließend dauerhaft in
 Cloudflare KV ein. SportsGameOdds wird als primäre Quelle abgefragt; The Odds
-API ergänzt nur weiterhin fehlende Tor- und Assistwerte. Beide API-Secrets
-bleiben ausschließlich im Worker.
+API ergänzt weiterhin fehlende Tor- und Assistwerte. Odds-API.io ergänzt als
+letzte Quelle noch fehlende Torquoten. Alle API-Secrets bleiben ausschließlich
+im Worker.
 
 ### MLS-Perzentile für AA und Next CS
 

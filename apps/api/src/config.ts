@@ -41,7 +41,7 @@ const EnvSchema = z.object({
   ODDS_API_SPORT_KEY: z.string().trim().min(1).default('soccer_usa_mls'),
   ODDS_API_REGION: z.string().trim().min(1).default('us'),
   ODDS_API_FALLBACK_REGION: optionalString,
-  ODDS_FETCH_WINDOW_HOURS: z.coerce.number().int().min(1).max(168).default(24),
+  ODDS_FETCH_WINDOW_HOURS: z.coerce.number().int().min(1).max(168).default(72),
   MATCH_ODDS_FALLBACK_WINDOW_HOURS: z.coerce
     .number()
     .int()
@@ -55,6 +55,29 @@ const EnvSchema = z.object({
     .url()
     .default('https://api.sportsgameodds.com/v2'),
   SPORTS_GAME_ODDS_LEAGUE_ID: z.string().trim().min(1).default('MLS'),
+  ODDS_API_IO_KEY: optionalString,
+  ODDS_API_IO_BASE_URL: z
+    .string()
+    .url()
+    .default('https://api.odds-api.io/v3'),
+  ODDS_API_IO_LEAGUE: z.string().trim().min(1).default('austria-bundesliga'),
+  ODDS_API_IO_BOOKMAKERS: z
+    .string()
+    .trim()
+    .min(1)
+    .default('Bet365,Unibet'),
+  ODDS_API_IO_DAILY_REQUEST_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(1_000_000)
+    .default(500),
+  ODDS_API_IO_HOURLY_REQUEST_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(1_000_000)
+    .default(100),
   CORS_ORIGINS: z.string().default('http://localhost:5173'),
 });
 
@@ -87,6 +110,12 @@ export interface AppConfig {
   sportsGameOddsApiKey?: string;
   sportsGameOddsBaseUrl: string;
   sportsGameOddsLeagueId: string;
+  oddsApiIoKey?: string;
+  oddsApiIoBaseUrl: string;
+  oddsApiIoLeague: string;
+  oddsApiIoBookmakers: string[];
+  oddsApiIoDailyRequestLimit: number;
+  oddsApiIoHourlyRequestLimit: number;
   corsOrigins: string[];
 }
 
@@ -131,6 +160,16 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): A
       : {}),
     sportsGameOddsBaseUrl: parsed.SPORTS_GAME_ODDS_BASE_URL,
     sportsGameOddsLeagueId: parsed.SPORTS_GAME_ODDS_LEAGUE_ID,
+    ...(parsed.ODDS_API_IO_KEY
+      ? { oddsApiIoKey: parsed.ODDS_API_IO_KEY }
+      : {}),
+    oddsApiIoBaseUrl: parsed.ODDS_API_IO_BASE_URL,
+    oddsApiIoLeague: parsed.ODDS_API_IO_LEAGUE,
+    oddsApiIoBookmakers: parsed.ODDS_API_IO_BOOKMAKERS.split(',')
+      .map((bookmaker) => bookmaker.trim())
+      .filter(Boolean),
+    oddsApiIoDailyRequestLimit: parsed.ODDS_API_IO_DAILY_REQUEST_LIMIT,
+    oddsApiIoHourlyRequestLimit: parsed.ODDS_API_IO_HOURLY_REQUEST_LIMIT,
     corsOrigins: parsed.CORS_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean),
   };
 }

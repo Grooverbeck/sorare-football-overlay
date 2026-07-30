@@ -10,6 +10,8 @@ export interface CardTarget {
 const playerPath = /\/(?:football\/)?players\/([a-z0-9]+(?:-[a-z0-9]+)*)/i;
 const cardImageAlt = /^(.+?)\s+-\s+(?:common|limited|rare|super rare|unique)$/i;
 const cardPicturePath = /\/cardsamplepicture\/([a-z0-9-]+)\//i;
+const minimumOverlayCardWidth = 72;
+const minimumOverlayCardHeight = 110;
 const knownPlayerNamesByPictureId = new Map<string, string>();
 const discoveredPlayerNamesByPictureId = new Map<string, string>();
 const positionAliases: Readonly<Record<string, FootballPosition>> = {
@@ -282,6 +284,24 @@ export function findImageCardContainer(image: HTMLImageElement): HTMLElement | n
   ) ?? image.parentElement;
 }
 
+export function isMiniatureCardTarget(container: HTMLElement): boolean {
+  const renderedCardRects = Array.from(
+    container.querySelectorAll<HTMLImageElement>('img[alt]'),
+  )
+    .filter((image) => extractPlayerName(image) !== null)
+    .map((image) => image.getBoundingClientRect())
+    .filter((rect) => rect.width > 0 && rect.height > 0);
+
+  return (
+    renderedCardRects.length > 0 &&
+    renderedCardRects.every(
+      (rect) =>
+        rect.width < minimumOverlayCardWidth ||
+        rect.height < minimumOverlayCardHeight,
+    )
+  );
+}
+
 export function isScoreDetailsDialogTarget(container: HTMLElement): boolean {
   const dialog = container.closest<HTMLElement>('[role="dialog"]');
   if (!dialog) return false;
@@ -303,6 +323,7 @@ export function findCardTargets(root: ParentNode): CardTarget[] {
     const container = slug ? findCardContainer(anchor) : null;
     if (!slug || !container) continue;
     if (isScoreDetailsDialogTarget(container)) continue;
+    if (isMiniatureCardTarget(container)) continue;
     const position =
       inferCardPosition(container) ?? inferNearbyPlayerPosition(container, slug);
     targets.push({ slug, container, ...(position ? { position } : {}) });
@@ -320,6 +341,7 @@ export function findCardTargets(root: ParentNode): CardTarget[] {
     const container = playerName ? findImageCardContainer(image) : null;
     if (!playerName || !container) continue;
     if (isScoreDetailsDialogTarget(container)) continue;
+    if (isMiniatureCardTarget(container)) continue;
     if (!extractPlayerName(image) && !hasNearbyTeamRow(container)) continue;
     if (targets.some((target) => target.container === container)) continue;
     const concretePosition = inferCardPosition(container);

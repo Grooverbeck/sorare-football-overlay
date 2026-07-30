@@ -5,7 +5,7 @@ const statsApiUrl =
   'https://sorare-football-overlay-api.grooverbeck.workers.dev/api/player-stats';
 const windowHours = Math.max(
   1,
-  Math.min(168, Number(process.env.ODDS_FETCH_WINDOW_HOURS ?? 24)),
+  Math.min(168, Number(process.env.ODDS_FETCH_WINDOW_HOURS ?? 72)),
 );
 const now = Date.now();
 const windowEnd = now + windowHours * 60 * 60 * 1_000;

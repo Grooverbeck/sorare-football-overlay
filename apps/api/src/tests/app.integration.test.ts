@@ -1,11 +1,12 @@
 import type { FootballPosition, PlayerStats } from '@sorare-overlay/shared';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import pino from 'pino';
 import { createApp } from '../app.js';
 import { TtlCache } from '../cache.js';
 import { MockDataSource } from '../mock/mock-data-source.js';
 import { HistoricalGoalscorerProvider } from '../providers/goalscorer-provider.js';
 import { MockPlayerMarketOddsProvider } from '../providers/market-odds-provider.js';
+import type { AppLogger } from '../logger.js';
 import { StatsService } from '../services/stats-service.js';
 
 const logger = pino({ level: 'silent' });
@@ -127,6 +128,56 @@ describe('POST /api/player-stats', () => {
       l15: { sampleSize: 15 },
       l40: { sampleSize: 40 },
     });
+  });
+
+  it('logs structured phase timings without player identifiers', async () => {
+    const info = vi.fn<AppLogger['info']>();
+    const phaseLogger: AppLogger = {
+      debug: vi.fn(),
+      info,
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      new MockPlayerMarketOddsProvider(),
+    );
+    const app = createApp({
+      statsService: service,
+      logger: phaseLogger,
+      corsOrigins: [],
+    });
+
+    await app.request('/api/player-stats', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slugs: ['private-player-slug'] }),
+    });
+
+    const phaseCall = info.mock.calls.find(
+      ([, message]) => message === 'Player statistics phases completed',
+    );
+    expect(phaseCall?.[0]).toMatchObject({
+      requestedPlayers: 1,
+      resolvedPlayers: 1,
+      returnedPlayers: 1,
+      cacheHits: 0,
+      deferredNames: 0,
+      partialHistories: 0,
+      durationsMs: {
+        nameResolution: expect.any(Number),
+        cache: expect.any(Number),
+        baseAndHistory: expect.any(Number),
+        result: expect.any(Number),
+        total: expect.any(Number),
+      },
+    });
+    expect(JSON.stringify(phaseCall?.[0])).not.toContain(
+      'private-player-slug',
+    );
   });
 });
 

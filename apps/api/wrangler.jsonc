@@ -24,15 +24,25 @@
     "ODDS_API_SPORT_KEY": "soccer_usa_mls",
     "ODDS_API_REGION": "us",
     "ODDS_API_FALLBACK_REGION": "uk",
-    "ODDS_FETCH_WINDOW_HOURS": "24",
+    "ODDS_FETCH_WINDOW_HOURS": "72",
     "MATCH_ODDS_FALLBACK_WINDOW_HOURS": "72",
     "ODDS_MISS_CACHE_TTL_SECONDS": "21600",
     "SPORTS_GAME_ODDS_BASE_URL": "https://api.sportsgameodds.com/v2",
     "SPORTS_GAME_ODDS_LEAGUE_ID": "MLS",
+    "ODDS_API_IO_BASE_URL": "https://api.odds-api.io/v3",
+    "ODDS_API_IO_LEAGUE": "austria-bundesliga",
+    "ODDS_API_IO_BOOKMAKERS": "Bet365,Unibet",
+    "ODDS_API_IO_DAILY_REQUEST_LIMIT": "500",
+    "ODDS_API_IO_HOURLY_REQUEST_LIMIT": "100",
     "CORS_ORIGINS": "http://localhost:5173"
   },
   "secrets": {
-    "required": ["THE_ODDS_API_KEY", "SPORTS_GAME_ODDS_API_KEY"]
+    "required": [
+      "SORARE_API_KEY",
+      "THE_ODDS_API_KEY",
+      "SPORTS_GAME_ODDS_API_KEY",
+      "ODDS_API_IO_KEY"
+    ]
   },
   "kv_namespaces": [
     {

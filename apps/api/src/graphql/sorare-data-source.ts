@@ -1,5 +1,6 @@
 import type { FootballPosition, PlayerAppearance } from '@sorare-overlay/shared';
 import { parse } from 'graphql';
+import { AppError } from '../errors.js';
 import type {
   PlayerAppearanceHistoryQuery,
   PlayerAppearanceHistoryQueryVariables,
@@ -151,6 +152,18 @@ interface SlugCandidatePlayer {
   slug: string;
   displayName: string;
   position: string;
+}
+
+type HistoryLoadMode = 'base' | 'complete';
+
+function batchFailureCanBeSplit(error: unknown): boolean {
+  return (
+    error instanceof AppError &&
+    error.code === 'SORARE_GRAPHQL_ERROR' &&
+    /(?:query\s+)?complexity|exceeds?\s+(?:the\s+)?max(?:imum)?\s+complexity/i.test(
+      error.message,
+    )
+  );
 }
 
 const RESOLVE_SLUG_CANDIDATES_QUERY = parse(`
@@ -345,7 +358,22 @@ export class SorareDataSource implements PlayerStatsDataSource {
     }
   }
 
-  async fetchPlayers(requests: readonly SourcePlayerRequest[]): Promise<SourcePlayer[]> {
+  async fetchPlayers(
+    requests: readonly SourcePlayerRequest[],
+  ): Promise<SourcePlayer[]> {
+    return this.fetchPlayersWithHistoryMode(requests, 'complete');
+  }
+
+  async fetchPlayersBase(
+    requests: readonly SourcePlayerRequest[],
+  ): Promise<SourcePlayer[]> {
+    return this.fetchPlayersWithHistoryMode(requests, 'base');
+  }
+
+  private async fetchPlayersWithHistoryMode(
+    requests: readonly SourcePlayerRequest[],
+    historyMode: HistoryLoadMode,
+  ): Promise<SourcePlayer[]> {
     const groups = new Map<
       string,
       {
@@ -375,11 +403,63 @@ export class SorareDataSource implements PlayerStatsDataSource {
     } of groups.values()) {
       for (const batch of chunks(groupedRequests, this.batchSize)) {
         calls.push(
-          this.fetchBatch(batch, position, includeHistoricalAssists),
+          this.fetchBatchIsolated(
+            batch,
+            position,
+            includeHistoricalAssists,
+            historyMode,
+          ),
         );
       }
     }
-    return (await Promise.all(calls)).flat();
+    const settled = await Promise.allSettled(calls);
+    const fulfilled = settled.flatMap((entry) =>
+      entry.status === 'fulfilled' ? entry.value : [],
+    );
+    if (
+      fulfilled.length === 0 &&
+      calls.length > 0 &&
+      settled.every((entry) => entry.status === 'rejected')
+    ) {
+      const firstFailure = settled[0];
+      if (firstFailure?.status === 'rejected') throw firstFailure.reason;
+    }
+    return fulfilled;
+  }
+
+  private async fetchBatchIsolated(
+    requests: readonly SourcePlayerRequest[],
+    requestedPosition: FootballPosition | undefined,
+    includeHistoricalAssists: boolean,
+    historyMode: HistoryLoadMode,
+  ): Promise<SourcePlayer[]> {
+    try {
+      return await this.fetchBatch(
+        requests,
+        requestedPosition,
+        includeHistoricalAssists,
+        historyMode,
+      );
+    } catch (error) {
+      if (!batchFailureCanBeSplit(error)) throw error;
+      if (requests.length <= 1) return [];
+      const midpoint = Math.ceil(requests.length / 2);
+      const [left, right] = await Promise.all([
+        this.fetchBatchIsolated(
+          requests.slice(0, midpoint),
+          requestedPosition,
+          includeHistoricalAssists,
+          historyMode,
+        ),
+        this.fetchBatchIsolated(
+          requests.slice(midpoint),
+          requestedPosition,
+          includeHistoricalAssists,
+          historyMode,
+        ),
+      ]);
+      return [...left, ...right];
+    }
   }
 
   async fetchNextGames(
@@ -552,6 +632,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
     requests: readonly SourcePlayerRequest[],
     requestedPosition: FootballPosition | undefined,
     includeHistoricalAssists: boolean,
+    historyMode: HistoryLoadMode,
   ): Promise<SourcePlayer[]> {
     const variables: PlayerStatsBatchQueryVariables = {
       slugs: requests.map(({ slug }) => slug),
@@ -615,18 +696,6 @@ export class SorareDataSource implements PlayerStatsDataSource {
 
     return Promise.all(
       candidates.map(async ({ player, scoreWindowWasFull }) => {
-        if (includeHistoricalAssists) {
-          const appearances = await this.fetchAppearanceHistory(
-            player.slug,
-            player.position,
-            player.activeClubId,
-            true,
-          );
-          return {
-            ...player,
-            appearances: this.selectAppearanceWindow(appearances, 40),
-          };
-        }
         const validForSelectedPosition = this.validAppearanceCount(
           player.appearances,
           player.position,
@@ -634,21 +703,48 @@ export class SorareDataSource implements PlayerStatsDataSource {
         const containsOtherPositions = player.appearances.some(
           (appearance) => appearance.position !== player.position,
         );
-        if (
-          validForSelectedPosition >= 10 ||
-          (!scoreWindowWasFull && !containsOtherPositions)
-        ) {
-          return player;
+        const needsHistory =
+          includeHistoricalAssists ||
+          (validForSelectedPosition < 10 &&
+            (scoreWindowWasFull || containsOtherPositions));
+        if (!needsHistory) {
+          return { ...player, historyStatus: 'complete' as const };
         }
-        const appearances = await this.fetchAppearanceHistory(
-          player.slug,
-          player.position,
-          player.activeClubId,
-        );
-        return {
-          ...player,
-          appearances: this.selectAppearanceWindow(appearances),
-        };
+        if (historyMode === 'base') {
+          return { ...player, historyStatus: 'partial' as const };
+        }
+
+        if (includeHistoricalAssists) {
+          try {
+            const appearances = await this.fetchAppearanceHistory(
+              player.slug,
+              player.position,
+              player.activeClubId,
+              true,
+            );
+            return {
+              ...player,
+              appearances: this.selectAppearanceWindow(appearances, 40),
+              historyStatus: 'complete' as const,
+            };
+          } catch {
+            return { ...player, historyStatus: 'partial' as const };
+          }
+        }
+        try {
+          const appearances = await this.fetchAppearanceHistory(
+            player.slug,
+            player.position,
+            player.activeClubId,
+          );
+          return {
+            ...player,
+            appearances: this.selectAppearanceWindow(appearances),
+            historyStatus: 'complete' as const,
+          };
+        } catch {
+          return { ...player, historyStatus: 'partial' as const };
+        }
       }),
     );
   }

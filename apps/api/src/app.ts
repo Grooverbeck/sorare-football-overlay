@@ -95,6 +95,13 @@ export function createApp(options: CreateAppOptions): Hono<AppEnv> {
     }
 
     const result = await options.statsService.getPlayerStats(parsed.data);
+    options.logger.info(
+      {
+        requestId: context.get('requestId'),
+        ...result.diagnostics,
+      },
+      'Player statistics phases completed',
+    );
     let data = result.data;
     if (options.mlsAaBenchmarkStore) {
       try {

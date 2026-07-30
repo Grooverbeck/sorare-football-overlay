@@ -5,6 +5,7 @@ import {
   InMemoryMatchOddsSnapshotStore,
   TheOddsApiFixtureMatchOddsProvider,
 } from '../providers/match-odds-provider.js';
+import { CONTENDER_THE_ODDS_API_ROUTES } from '../providers/competition-odds-routes.js';
 import { playerMarketOddsKey } from '../providers/market-odds-provider.js';
 
 const now = Date.parse('2026-07-29T12:00:00.000Z');
@@ -153,5 +154,83 @@ describe('TheOddsApiFixtureMatchOddsProvider', () => {
       draw: 0.25,
       loss: 0.5,
     });
+  });
+
+  it('matches an Austrian Contender fixture despite provider team-name differences', async () => {
+    const kickoff = '2026-07-31T17:30:00.000Z';
+    const contenderPlayer: PlayerStats = {
+      ...player(kickoff, 'Wattens'),
+      slug: 'wattens-defender',
+      nextGame: {
+        date: kickoff,
+        competitionSlug: 'austrian-bundesliga',
+        homeTeamName: 'Wattens',
+        awayTeamName: 'Sturm Graz',
+        playerTeamName: 'Wattens',
+        opponentTeamName: 'Sturm Graz',
+        cleanSheetProbability: null,
+        matchProbabilities: null,
+      },
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      expect(String(input)).toContain(
+        '/sports/soccer_austria_bundesliga/odds?',
+      );
+      return new Response(
+        JSON.stringify([
+          {
+            id: 'austria-event',
+            commence_time: kickoff,
+            home_team: 'WSG Tirol',
+            away_team: 'Sturm Graz',
+            bookmakers: [
+              {
+                key: 'book-one',
+                title: 'Book One',
+                markets: [
+                  {
+                    key: 'h2h',
+                    outcomes: [
+                      { name: 'WSG Tirol', price: 3 },
+                      { name: 'Draw', price: 3.4 },
+                      { name: 'Sturm Graz', price: 2.2 },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ]),
+        {
+          headers: {
+            'content-type': 'application/json',
+            'x-requests-used': '5',
+            'x-requests-remaining': '495',
+          },
+        },
+      );
+    });
+    const oddsProvider = new TheOddsApiFixtureMatchOddsProvider({
+      apiKey: 'test-key',
+      baseUrl: 'https://api.the-odds-api.test/v4',
+      routes: CONTENDER_THE_ODDS_API_ROUTES,
+      fallbackWindowMs: 72 * 60 * 60 * 1_000,
+      missTtlMs: 6 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store: new InMemoryMatchOddsSnapshotStore(() => now),
+      logger,
+      fetchImpl,
+      now: () => now,
+    });
+
+    const result = await oddsProvider.load([contenderPlayer]);
+
+    expect(result.get(playerMarketOddsKey(contenderPlayer))).toEqual({
+      win: expect.any(Number),
+      draw: expect.any(Number),
+      loss: expect.any(Number),
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });

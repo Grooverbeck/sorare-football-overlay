@@ -20,13 +20,19 @@ import {
   playerMarketOddsKey,
   type PlayerMarketOddsProvider,
 } from '../providers/market-odds-provider.js';
-import type { FixtureMatchOddsProvider } from '../providers/match-odds-provider.js';
+import {
+  UnavailableFixtureMatchOddsProvider,
+  type FixtureMatchOddsProvider,
+} from '../providers/match-odds-provider.js';
 import type {
   PlayerNameResolutionOptions,
   PlayerStatsDataSource,
   SourcePlayerRequest,
 } from '../services/data-source.js';
-import { StatsService } from '../services/stats-service.js';
+import {
+  DEFAULT_NAME_RESOLUTION_BUDGET_MS,
+  StatsService,
+} from '../services/stats-service.js';
 
 class FillMissingCache implements Cache<PlayerStats> {
   fillMissingCalls = 0;
@@ -124,6 +130,42 @@ describe('StatsService cache writes', () => {
     ]);
   });
 
+  it('defers a stuck cold name within the short production budget', async () => {
+    const never = new Promise<SourcePlayerRequest[]>(() => undefined);
+    const source: PlayerStatsDataSource = {
+      source: 'sorare',
+      resolvePlayerNames: async (_names, _positions, options) =>
+        options?.cacheOnly ? [] : never,
+      fetchPlayers: vi.fn(async () => []),
+      fetchNextGames: async () => [],
+    };
+    const backgroundTasks: Promise<void>[] = [];
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      new MockPlayerMarketOddsProvider(),
+      (task) => backgroundTasks.push(task),
+    );
+    const startedAt = performance.now();
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        playerNames: ['Never Resolves'],
+        positions: { 'Never Resolves': 'Midfielder' },
+      }),
+    );
+
+    expect(performance.now() - startedAt).toBeLessThan(
+      DEFAULT_NAME_RESOLUTION_BUDGET_MS + 500,
+    );
+    expect(result.data).toEqual([]);
+    expect(result.deferredPlayerNames).toEqual(['Never Resolves']);
+    expect(backgroundTasks).toHaveLength(1);
+    expect(source.fetchPlayers).not.toHaveBeenCalled();
+  });
+
   it('re-resolves a name-derived slug when it points to a completely empty player', async () => {
     const resolvePlayerNames = vi.fn(
       async (
@@ -202,6 +244,88 @@ describe('StatsService cache writes', () => {
     ]);
   });
 
+  it('keeps cache hits when a force-search replacement load fails', async () => {
+    const cache = new TtlCache<PlayerStats>(60_000);
+    cache.set('cached-player:Midfielder:no-low', {
+      slug: 'cached-player',
+      displayName: 'Cached Player',
+      position: 'Midfielder',
+      aaL10: { value: 14, sampleSize: 10 },
+      cleanSheetL10: { value: 0.2, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      nextGame: null,
+      excludedLowCoverage: 0,
+    });
+    const resolvePlayerNames = vi.fn(
+      async (
+        names: readonly string[],
+        positions?: Readonly<Record<string, FootballPosition>>,
+        options?: PlayerNameResolutionOptions,
+      ): Promise<SourcePlayerRequest[]> =>
+        names.map((name) => ({
+          slug: options?.forceSearch
+            ? 'corrected-empty-player'
+            : 'empty-direct-player',
+          ...(positions?.[name] ? { position: positions[name] } : {}),
+          resolvedFromName: name,
+          nameResolution: options?.forceSearch ? 'search' : 'direct',
+        })),
+    );
+    const fetchPlayers = vi.fn<
+      PlayerStatsDataSource['fetchPlayers']
+    >(async (requests) => {
+      if (
+        requests.some(
+          (request) => request.slug === 'corrected-empty-player',
+        )
+      ) {
+        throw new Error('Replacement player load timed out');
+      }
+      return requests.map((request) => ({
+        slug: request.slug,
+        displayName: 'Empty Direct Player',
+        position: request.position ?? 'Midfielder',
+        appearances: [],
+        nextGame: null,
+      }));
+    });
+    const source: PlayerStatsDataSource = {
+      source: 'sorare',
+      resolvePlayerNames,
+      fetchPlayers,
+      fetchNextGames: async () => [],
+    };
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      cache,
+      true,
+      new MockPlayerMarketOddsProvider(),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['cached-player'],
+        playerNames: ['Empty Player'],
+        positions: {
+          'cached-player': 'Midfielder',
+          'Empty Player': 'Midfielder',
+        },
+      }),
+    );
+
+    expect(fetchPlayers).toHaveBeenCalledTimes(2);
+    expect(result.cacheHits).toBe(1);
+    expect(result.data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          slug: 'cached-player',
+          aaL10: { value: 14, sampleSize: 10 },
+        }),
+      ]),
+    );
+  });
+
   it('does not queue bookmaker refreshes for provider-unsupported fixtures', async () => {
     const load = vi.fn<PlayerMarketOddsProvider['load']>(async () => new Map());
     const marketOddsProvider: PlayerMarketOddsProvider = {
@@ -254,6 +378,73 @@ describe('StatsService cache writes', () => {
     });
   });
 
+  it('keeps an existing cache hit when a cold player load rejects', async () => {
+    const cache = new TtlCache<PlayerStats>(60_000);
+    cache.set('cached-player:auto-v3:no-low', {
+      slug: 'cached-player',
+      displayName: 'Cached Player',
+      position: 'Midfielder',
+      aaL10: { value: 14, sampleSize: 10 },
+      cleanSheetL10: { value: 0.2, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      nextGame: null,
+      excludedLowCoverage: 0,
+    });
+    const source: PlayerStatsDataSource = {
+      source: 'sorare',
+      resolvePlayerNames: async () => [],
+      fetchPlayers: vi.fn(async () => {
+        throw new Error('Cold Sorare batch failed');
+      }),
+      fetchNextGames: async () => [],
+    };
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      cache,
+      true,
+      new MockPlayerMarketOddsProvider(),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['cached-player', 'cold-player'],
+      }),
+    );
+
+    expect(result.cacheHits).toBe(1);
+    expect(result.data).toMatchObject([
+      {
+        slug: 'cached-player',
+        aaL10: { value: 14, sampleSize: 10 },
+      },
+    ]);
+  });
+
+  it('still reports a cold-load failure when no player can be returned', async () => {
+    const source: PlayerStatsDataSource = {
+      source: 'sorare',
+      resolvePlayerNames: async () => [],
+      fetchPlayers: vi.fn(async () => {
+        throw new Error('Cold Sorare batch failed');
+      }),
+      fetchNextGames: async () => [],
+    };
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      new MockPlayerMarketOddsProvider(),
+    );
+
+    await expect(
+      service.getPlayerStats(
+        PlayerStatsRequestSchema.parse({ slugs: ['cold-player'] }),
+      ),
+    ).rejects.toThrow('Cold Sorare batch failed');
+  });
+
   it('loads and stores historical assist windows only when requested', async () => {
     const cache = new FillMissingCache();
     const source = new MockDataSource();
@@ -298,6 +489,367 @@ describe('StatsService cache writes', () => {
       l15: { sampleSize: 15 },
       l40: { sampleSize: 40 },
     });
+  });
+
+  it('returns an explicitly partial form immediately and caches only the completed history', async () => {
+    let finishHistory:
+      | ((players: Awaited<ReturnType<PlayerStatsDataSource['fetchPlayers']>>) => void)
+      | undefined;
+    const completedHistory = new Promise<
+      Awaited<ReturnType<PlayerStatsDataSource['fetchPlayers']>>
+    >((resolve) => {
+      finishHistory = resolve;
+    });
+    const appearance = (index: number) => ({
+      date: new Date(Date.UTC(2026, 6, 24 - index)).toISOString(),
+      allAroundScore: 10 + index,
+      goals: 0,
+      assists: 0,
+      minsPlayed: 90,
+      cleanSheet60: 0,
+      lowCoverage: false,
+      position: 'Midfielder' as const,
+    });
+    const heldFixture = {
+      date: '2026-07-29T18:00:00.000Z',
+      competitionSlug: 'mlspa',
+      homeTeamName: 'Held Home',
+      awayTeamName: 'Held Away',
+      playerTeamName: 'Held Home',
+      opponentTeamName: 'Held Away',
+      cleanSheetProbability: 0.3,
+      matchProbabilities: { win: 0.5, draw: 0.25, loss: 0.25 },
+    } as const;
+    const laterFixture = {
+      ...heldFixture,
+      date: '2026-08-05T18:00:00.000Z',
+      homeTeamName: 'Later Home',
+      playerTeamName: 'Later Home',
+    } as const;
+    const source: PlayerStatsDataSource = {
+      source: 'sorare',
+      resolvePlayerNames: async () => [],
+      fetchPlayersBase: vi.fn(async () => [
+        {
+          slug: 'cold-history-player',
+          displayName: 'Cold History Player',
+          position: 'Midfielder',
+          appearances: [appearance(0), appearance(1)],
+          nextGame: heldFixture,
+          historyStatus: 'partial',
+        },
+      ]),
+      fetchPlayers: vi.fn(async () => completedHistory),
+      fetchNextGames: async () => [],
+    };
+    const cache = new SplitPlayerStatsCache(
+      new TtlCache<PlayerFormStats>(60_000),
+      new TtlCache<PlayerFixtureStats>(60_000),
+    );
+    const backgroundTasks: Promise<void>[] = [];
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      cache,
+      true,
+      new MockPlayerMarketOddsProvider(),
+      (task) => backgroundTasks.push(task),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['cold-history-player'],
+        positions: { 'cold-history-player': 'Midfielder' },
+        includeHistoricalAssists: true,
+        supportsPartialFormHistory: true,
+      }),
+    );
+
+    expect(result.data[0]).toMatchObject({
+      slug: 'cold-history-player',
+      aaL10: { sampleSize: 2 },
+      pendingRefreshes: ['formHistory'],
+    });
+    expect(result.data[0]?.historicalAssists).toBeUndefined();
+    expect(result.data[0]?.historicalGoals).toBeUndefined();
+    expect(result.data[0]?.historicalDecisives).toBeUndefined();
+    await expect(
+      cache.get('cold-history-player:Midfielder:no-low'),
+    ).resolves.toBeUndefined();
+    expect(backgroundTasks).toHaveLength(1);
+
+    finishHistory?.([
+      {
+        slug: 'cold-history-player',
+        displayName: 'Cold History Player',
+        position: 'Midfielder',
+        appearances: Array.from({ length: 40 }, (_, index) =>
+          appearance(index),
+        ),
+        nextGame: laterFixture,
+        historyStatus: 'complete',
+      },
+    ]);
+    await Promise.all(backgroundTasks);
+
+    await expect(
+      cache.get('cold-history-player:Midfielder:no-low'),
+    ).resolves.toMatchObject({
+      aaL10: { sampleSize: 10 },
+      historicalAssists: { l40: { sampleSize: 40 } },
+      nextGame: {
+        date: heldFixture.date,
+        homeTeamName: heldFixture.homeTeamName,
+      },
+    });
+    expect(
+      (
+        await cache.get('cold-history-player:Midfielder:no-low')
+      )?.pendingRefreshes,
+    ).toBeUndefined();
+  });
+
+  it('claims one shared full-history refresh across service instances', async () => {
+    let finishHistory:
+      | ((
+          players: Awaited<
+            ReturnType<PlayerStatsDataSource['fetchPlayers']>
+          >,
+        ) => void)
+      | undefined;
+    const completedHistory = new Promise<
+      Awaited<ReturnType<PlayerStatsDataSource['fetchPlayers']>>
+    >((resolve) => {
+      finishHistory = resolve;
+    });
+    const appearance = (index: number) => ({
+      date: new Date(Date.UTC(2026, 6, 24 - index)).toISOString(),
+      allAroundScore: 10 + index,
+      goals: 0,
+      assists: 0,
+      minsPlayed: 90,
+      cleanSheet60: 0,
+      lowCoverage: false,
+      position: 'Midfielder' as const,
+    });
+    const fetchPlayers = vi.fn(async () => completedHistory);
+    const source: PlayerStatsDataSource = {
+      source: 'sorare',
+      resolvePlayerNames: async () => [],
+      fetchPlayersBase: async () => [
+        {
+          slug: 'shared-history-player',
+          displayName: 'Shared History Player',
+          position: 'Midfielder',
+          appearances: [appearance(0), appearance(1)],
+          nextGame: null,
+          historyStatus: 'partial',
+        },
+      ],
+      fetchPlayers,
+      fetchNextGames: async () => [],
+    };
+    const cache = new SplitPlayerStatsCache(
+      new TtlCache<PlayerFormStats>(60_000),
+      new TtlCache<PlayerFixtureStats>(60_000),
+    );
+    const backgroundTasks: Promise<void>[] = [];
+    const createService = () =>
+      new StatsService(
+        source,
+        new HistoricalGoalscorerProvider(),
+        cache,
+        true,
+        new MockPlayerMarketOddsProvider(),
+        (task) => backgroundTasks.push(task),
+      );
+    const request = PlayerStatsRequestSchema.parse({
+      slugs: ['shared-history-player'],
+      positions: { 'shared-history-player': 'Midfielder' },
+      supportsPartialFormHistory: true,
+    });
+
+    const [first, second] = await Promise.all([
+      createService().getPlayerStats(request),
+      createService().getPlayerStats(request),
+    ]);
+
+    expect(first.data[0]?.pendingRefreshes).toContain('formHistory');
+    expect(second.data[0]?.pendingRefreshes).toContain('formHistory');
+    await vi.waitFor(() => expect(fetchPlayers).toHaveBeenCalledTimes(1));
+
+    finishHistory?.([
+      {
+        slug: 'shared-history-player',
+        displayName: 'Shared History Player',
+        position: 'Midfielder',
+        appearances: Array.from({ length: 10 }, (_, index) =>
+          appearance(index),
+        ),
+        nextGame: null,
+        historyStatus: 'complete',
+      },
+    ]);
+    await Promise.all(backgroundTasks);
+
+    await expect(
+      cache.get('shared-history-player:Midfielder:no-low'),
+    ).resolves.toMatchObject({
+      aaL10: { sampleSize: 10 },
+    });
+  });
+
+  it('releases a failed history-refresh claim so the next request can retry', async () => {
+    const appearance = (index: number) => ({
+      date: new Date(Date.UTC(2026, 6, 24 - index)).toISOString(),
+      allAroundScore: 10 + index,
+      goals: 0,
+      assists: 0,
+      minsPlayed: 90,
+      cleanSheet60: 0,
+      lowCoverage: false,
+      position: 'Midfielder' as const,
+    });
+    const completePlayer = {
+      slug: 'retry-history-player',
+      displayName: 'Retry History Player',
+      position: 'Midfielder' as const,
+      appearances: Array.from({ length: 10 }, (_, index) =>
+        appearance(index),
+      ),
+      nextGame: null,
+      historyStatus: 'complete' as const,
+    };
+    const fetchPlayers = vi
+      .fn<PlayerStatsDataSource['fetchPlayers']>()
+      .mockRejectedValueOnce(new Error('Transient history failure'))
+      .mockResolvedValueOnce([completePlayer]);
+    const source: PlayerStatsDataSource = {
+      source: 'sorare',
+      resolvePlayerNames: async () => [],
+      fetchPlayersBase: async () => [
+        {
+          ...completePlayer,
+          appearances: completePlayer.appearances.slice(0, 2),
+          historyStatus: 'partial',
+        },
+      ],
+      fetchPlayers,
+      fetchNextGames: async () => [],
+    };
+    const cache = new SplitPlayerStatsCache(
+      new TtlCache<PlayerFormStats>(60_000),
+      new TtlCache<PlayerFixtureStats>(60_000),
+    );
+    const backgroundTasks: Promise<void>[] = [];
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      cache,
+      true,
+      new MockPlayerMarketOddsProvider(),
+      (task) => backgroundTasks.push(task),
+    );
+    const request = PlayerStatsRequestSchema.parse({
+      slugs: ['retry-history-player'],
+      positions: { 'retry-history-player': 'Midfielder' },
+      supportsPartialFormHistory: true,
+    });
+
+    await service.getPlayerStats(request);
+    await expect(backgroundTasks[0]).rejects.toThrow(
+      'player form history refreshes remained incomplete',
+    );
+
+    await service.getPlayerStats(request);
+    await expect(backgroundTasks[1]).resolves.toBeUndefined();
+
+    expect(fetchPlayers).toHaveBeenCalledTimes(2);
+    await expect(
+      cache.get('retry-history-player:Midfielder:no-low'),
+    ).resolves.toMatchObject({
+      aaL10: { sampleSize: 10 },
+    });
+  });
+
+  it('keeps the complete synchronous history path for clients without the capability flag', async () => {
+    const appearance = (index: number) => ({
+      date: new Date(Date.UTC(2026, 6, 24 - index)).toISOString(),
+      allAroundScore: 10 + index,
+      goals: 0,
+      assists: 0,
+      minsPlayed: 90,
+      cleanSheet60: 0,
+      lowCoverage: false,
+      position: 'Midfielder' as const,
+    });
+    const fetchPlayersBase = vi.fn(async () => {
+      throw new Error('Legacy clients must never use the partial response path');
+    });
+    const fetchPlayers = vi.fn(async () => [
+      {
+        slug: 'legacy-client-player',
+        displayName: 'Legacy Client Player',
+        position: 'Midfielder' as const,
+        appearances: Array.from({ length: 10 }, (_, index) =>
+          appearance(index),
+        ),
+        nextGame: null,
+        historyStatus: 'complete' as const,
+      },
+    ]);
+    const source: PlayerStatsDataSource = {
+      source: 'sorare',
+      resolvePlayerNames: async () => [],
+      fetchPlayersBase,
+      fetchPlayers,
+      fetchNextGames: async () => [],
+    };
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      new MockPlayerMarketOddsProvider(),
+      vi.fn(),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['legacy-client-player'],
+        positions: { 'legacy-client-player': 'Midfielder' },
+      }),
+    );
+
+    expect(fetchPlayersBase).not.toHaveBeenCalled();
+    expect(fetchPlayers).toHaveBeenCalledOnce();
+    expect(result.data[0]).toMatchObject({
+      aaL10: { sampleSize: 10 },
+    });
+    expect(result.data[0]?.pendingRefreshes).toBeUndefined();
+  });
+
+  it('falls back to the complete path when partial history was requested without scheduler support', async () => {
+    const source = new MockDataSource();
+    const fetchPlayers = vi.spyOn(source, 'fetchPlayers');
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      new MockPlayerMarketOddsProvider(),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['jude-bellingham'],
+        supportsPartialFormHistory: true,
+      }),
+    );
+
+    expect(fetchPlayers).toHaveBeenCalledOnce();
+    expect(result.data[0]?.aaL10.sampleSize).toBe(10);
+    expect(result.data[0]?.pendingRefreshes).toBeUndefined();
   });
 
   it('returns cached L10 immediately and refreshes only an expired fixture', async () => {
@@ -702,6 +1254,61 @@ describe('StatsService cache writes', () => {
 
     releaseOdds?.(new Map());
     await Promise.all(backgroundTasks);
+  });
+
+  it('does not let a stuck cache-only odds read block available statistics', async () => {
+    const never = new Promise<Map<string, PlayerMarketOdds | null>>(
+      () => undefined,
+    );
+    const load = vi.fn<
+      PlayerMarketOddsProvider['load']
+    >(async (players, options) =>
+      options?.cacheOnly
+        ? never
+        : new Map(
+            players.map((player) => [playerMarketOddsKey(player), null]),
+          ),
+    );
+    const scheduleBackground = vi.fn();
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      { load },
+      scheduleBackground,
+      3_000,
+      new UnavailableFixtureMatchOddsProvider(),
+      1,
+    );
+
+    const result = await Promise.race([
+      service.getPlayerStats(
+        PlayerStatsRequestSchema.parse({
+          slugs: ['jude-bellingham'],
+          positions: { 'jude-bellingham': 'Midfielder' },
+        }),
+      ),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error('Cache-only odds read blocked the response')),
+          100,
+        ),
+      ),
+    ]);
+
+    expect(result.data[0]).toMatchObject({
+      slug: 'jude-bellingham',
+      aaL10: { sampleSize: 10 },
+    });
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(load).toHaveBeenNthCalledWith(
+      1,
+      expect.any(Array),
+      { cacheOnly: true },
+    );
+    expect(load).toHaveBeenNthCalledWith(2, expect.any(Array));
+    expect(scheduleBackground).toHaveBeenCalledTimes(1);
   });
 
   it('fills only missing H-D-A values and keeps Sorare probabilities authoritative', async () => {

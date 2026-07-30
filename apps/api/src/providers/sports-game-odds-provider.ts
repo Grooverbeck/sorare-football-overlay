@@ -777,6 +777,10 @@ export class SupplementingPlayerMarketOddsProvider
   constructor(
     private readonly primary: PlayerMarketOddsProvider,
     private readonly fallback: PlayerMarketOddsProvider,
+    private readonly supplementMarkets: readonly ('goal' | 'assist')[] = [
+      'goal',
+      'assist',
+    ],
   ) {}
 
   supports(player: PlayerStats): boolean {
@@ -802,7 +806,7 @@ export class SupplementingPlayerMarketOddsProvider
     const primaryValues = await this.primary.load(eligiblePlayers, loadOptions);
     const fallbackPlayers = eligiblePlayers.filter((player) => {
       const odds = primaryValues.get(playerMarketOddsKey(player));
-      return !odds?.goal || !odds?.assist;
+      return this.supplementMarkets.some((market) => !odds?.[market]);
     });
     const fallbackValues =
       fallbackPlayers.length > 0
@@ -817,8 +821,12 @@ export class SupplementingPlayerMarketOddsProvider
         if (!primary) return [key, fallback];
         if (!fallback) return [key, primary];
         const usedFallback =
-          (!primary.goal && Boolean(fallback.goal)) ||
-          (!primary.assist && Boolean(fallback.assist));
+          (this.supplementMarkets.includes('goal') &&
+            !primary.goal &&
+            Boolean(fallback.goal)) ||
+          (this.supplementMarkets.includes('assist') &&
+            !primary.assist &&
+            Boolean(fallback.assist));
         if (!usedFallback) return [key, primary];
         return [
           key,

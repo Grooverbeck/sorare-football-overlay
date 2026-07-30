@@ -163,6 +163,36 @@ describe('Cloudflare Worker', () => {
     await expect(cache.claimFixtureRefresh(fixture)).resolves.toBe(false);
   });
 
+  it('shares the form-history refresh lease across cache instances', async () => {
+    const nowMs = Date.now();
+    const key = `form-history-lease-${nowMs}:Midfielder:no-low`;
+    const store = new D1JsonKeyValueStore(
+      env.CACHE_DB,
+      env.STATS_CACHE,
+      () => Math.floor(nowMs / 1_000),
+    );
+    const first = new CloudflarePlayerStatsCache(
+      store,
+      604_800,
+      14_400,
+      createExecutionContext(),
+      () => nowMs,
+    );
+    const second = new CloudflarePlayerStatsCache(
+      store,
+      604_800,
+      14_400,
+      createExecutionContext(),
+      () => nowMs,
+    );
+
+    const claims = await Promise.all([
+      first.claimFormHistoryRefresh(key),
+      second.claimFormHistoryRefresh(key),
+    ]);
+    expect(claims.filter(Boolean)).toHaveLength(1);
+  });
+
   it('migrates and preserves an active fixture instead of accepting Sorare nextGame', async () => {
     const nowMs = Date.now();
     const currentFixtureDate = new Date(nowMs + 30 * 60 * 1_000).toISOString();
