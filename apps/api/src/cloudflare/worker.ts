@@ -6,6 +6,7 @@ import { MlsMarketPrewarmer } from '../services/mls-market-prewarmer.js';
 import { MlsAaBenchmarkRefresher } from '../services/mls-aa-benchmark.js';
 import {
   CloudflareMarketSnapshotStore,
+  CloudflareMatchOddsSnapshotStore,
   CloudflareMlsAaBenchmarkStore,
   CloudflareNameResolutionCache,
   CloudflarePlayerStatsCache,
@@ -37,10 +38,17 @@ const configKeys = [
   'ODDS_API_REGION',
   'ODDS_API_FALLBACK_REGION',
   'ODDS_FETCH_WINDOW_HOURS',
+  'MATCH_ODDS_FALLBACK_WINDOW_HOURS',
   'ODDS_MISS_CACHE_TTL_SECONDS',
   'SPORTS_GAME_ODDS_API_KEY',
   'SPORTS_GAME_ODDS_BASE_URL',
   'SPORTS_GAME_ODDS_LEAGUE_ID',
+  'ODDS_API_IO_KEY',
+  'ODDS_API_IO_BASE_URL',
+  'ODDS_API_IO_LEAGUE',
+  'ODDS_API_IO_BOOKMAKERS',
+  'ODDS_API_IO_DAILY_REQUEST_LIMIT',
+  'ODDS_API_IO_HOURLY_REQUEST_LIMIT',
   'CORS_ORIGINS',
 ] as const;
 
@@ -94,6 +102,7 @@ function createWorkerServices(
       Math.floor(config.oddsMissCacheTtlMs / 1_000),
       context,
     ),
+    matchOddsSnapshotStore: new CloudflareMatchOddsSnapshotStore(cacheStore),
     providerQuotaUsageStore: new CloudflareProviderQuotaUsageStore(
       cacheStore,
     ),

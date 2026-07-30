@@ -34,6 +34,7 @@ export interface PlayerNameResolutionCache {
 
 export interface SourceNextGame {
   date: string;
+  competitionSlug?: string | null;
   homeTeamName: string | null;
   awayTeamName: string | null;
   playerTeamName: string | null;
@@ -48,6 +49,10 @@ export interface SourcePlayer {
   position: FootballPosition;
   activeClubId?: string;
   appearances: PlayerAppearance[];
+  // `partial` means the returned appearances are the useful subset from the
+  // cheap player payload. They are safe to display with their real sample
+  // size, but must not be stored as the normal weekly L10 form snapshot.
+  historyStatus?: 'complete' | 'partial';
   nextGame: SourceNextGame | null;
 }
 
@@ -63,6 +68,12 @@ export interface PlayerStatsDataSource {
     positions?: Readonly<Record<string, FootballPosition>>,
     options?: PlayerNameResolutionOptions,
   ): Promise<SourcePlayerRequest[]>;
+  // Optional fast path for request handlers with a background-task scheduler.
+  // Implementations return the cheap, immediately available score window and
+  // mark players that still need deeper history as `partial`.
+  fetchPlayersBase?(
+    requests: readonly SourcePlayerRequest[],
+  ): Promise<SourcePlayer[]>;
   fetchPlayers(requests: readonly SourcePlayerRequest[]): Promise<SourcePlayer[]>;
   fetchNextGames(
     requests: readonly SourcePlayerRequest[],

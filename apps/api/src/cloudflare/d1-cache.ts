@@ -70,6 +70,37 @@ export class D1JsonKeyValueStore implements JsonKeyValueStore {
   }
 
   /**
+   * Atomically acquires a short-lived lease. An expired row may be replaced,
+   * while an active row is left untouched.
+   */
+  async putIfAbsent(
+    key: string,
+    value: string,
+    options: CacheWriteOptions = {},
+  ): Promise<boolean> {
+    const now = this.nowSeconds();
+    const expiresAt =
+      options.expiration ??
+      (options.expirationTtl === undefined
+        ? null
+        : now + options.expirationTtl);
+    const result = await this.database
+      .prepare(
+        `INSERT INTO cache_entries (cache_key, value, expires_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(cache_key) DO UPDATE SET
+           value = excluded.value,
+           expires_at = excluded.expires_at,
+           updated_at = excluded.updated_at
+         WHERE cache_entries.expires_at IS NOT NULL
+           AND cache_entries.expires_at <= ?4`,
+      )
+      .bind(key, value, expiresAt, now)
+      .run();
+    return (result.meta.changes ?? 0) > 0;
+  }
+
+  /**
    * Atomically keeps the fixture with the earlier kickoff. This is used by
    * the team fixture cache so concurrent Worker isolates cannot overwrite a
    * held match with the following fixture.

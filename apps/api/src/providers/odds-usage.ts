@@ -3,6 +3,8 @@ import type { AppLogger } from '../logger.js';
 
 export const OddsProviderNameSchema = z.enum([
   'the-odds-api',
+  'odds-api-io',
+  'odds-api-io-hourly',
   'sports-game-odds',
 ]);
 export type OddsProviderName = z.infer<typeof OddsProviderNameSchema>;

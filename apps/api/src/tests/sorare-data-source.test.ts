@@ -1,5 +1,6 @@
 import { calculatePlayerMetrics } from '@sorare-overlay/shared';
 import { describe, expect, it, vi } from 'vitest';
+import { AppError } from '../errors.js';
 import type { SorareGraphqlClient } from '../graphql/client.js';
 import { SorareDataSource } from '../graphql/sorare-data-source.js';
 import type {
@@ -1100,6 +1101,216 @@ describe('SorareDataSource player-name resolution', () => {
       player?.appearances.filter((appearance) => appearance.assists === 1),
     ).toHaveLength(10);
   });
+
+  it('returns a partial base window without waiting for extra history', async () => {
+    const request = vi.fn(
+      async (_document: unknown, variables: { slug?: string }) => {
+        if (variables.slug) {
+          throw new Error('Base loading must not request appearance history');
+        }
+        return {
+          players: [
+            {
+              __typename: 'Player',
+              slug: 'cold-base-player',
+              displayName: 'Cold Base Player',
+              position: 'Midfielder',
+              activeClub: null,
+              nextGame: null,
+              playerGameScores: Array.from({ length: 15 }, (_, index) => ({
+                __typename: 'PlayerGameScore',
+                positionTyped: 'Midfielder',
+                allAroundScore: index < 2 ? 12 + index : 0,
+                footballGame: {
+                  date: new Date(Date.UTC(2026, 6, 24 - index)).toISOString(),
+                  lowCoverage: false,
+                },
+                footballPlayerGameStats: {
+                  goals: 0,
+                  minsPlayed: index < 2 ? 90 : null,
+                  cleanSheet60: 0,
+                  playedInGame: index < 2,
+                },
+              })),
+            },
+          ],
+        };
+      },
+    );
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    const [player] = await source.fetchPlayersBase?.([
+      { slug: 'cold-base-player', position: 'Midfielder' },
+    ]) ?? [];
+
+    expect(request).toHaveBeenCalledOnce();
+    expect(player?.historyStatus).toBe('partial');
+    expect(player?.appearances).toHaveLength(2);
+  });
+
+  it('keeps other players when one appearance-history request fails', async () => {
+    const recentScores = (slug: string) =>
+      Array.from({ length: 15 }, (_, index) => ({
+        __typename: 'PlayerGameScore',
+        positionTyped: 'Forward',
+        allAroundScore: index === 0 ? 7 : 0,
+        footballGame: {
+          date: new Date(Date.UTC(2026, 6, 24 - index)).toISOString(),
+          lowCoverage: false,
+        },
+        footballPlayerGameStats: {
+          goals: 0,
+          minsPlayed: index === 0 ? 90 : null,
+          cleanSheet60: 0,
+          playedInGame: index === 0,
+          anyTeam: { id: `club-${slug}` },
+        },
+      }));
+    const request = vi.fn(
+      async (
+        _document: unknown,
+        variables: { slugs?: string[]; slug?: string },
+      ) => {
+        if (variables.slug === 'broken-history') {
+          throw new Error('One player history timed out');
+        }
+        if (variables.slug) {
+          return {
+            anyPlayer: {
+              __typename: 'Player',
+              slug: variables.slug,
+              pastGames: {
+                nodes: Array.from({ length: 10 }, (_, index) => ({
+                  date: new Date(Date.UTC(2026, 5, 30 - index)).toISOString(),
+                  lowCoverage: false,
+                  playerGameScore: {
+                    __typename: 'PlayerGameScore',
+                    positionTyped: 'Forward',
+                    allAroundScore: 10 + index,
+                    footballPlayerGameStats: {
+                      goals: 0,
+                      goalAssist: 0,
+                      minsPlayed: 90,
+                      cleanSheet60: 0,
+                      playedInGame: true,
+                      anyTeam: { id: `club-${variables.slug}` },
+                    },
+                  },
+                })),
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          };
+        }
+        return {
+          players: (variables.slugs ?? []).map((slug) => ({
+            __typename: 'Player',
+            slug,
+            displayName: slug,
+            position: 'Forward',
+            activeClub: { id: `club-${slug}` },
+            nextGame: null,
+            playerGameScores: recentScores(slug),
+          })),
+        };
+      },
+    );
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    const players = await source.fetchPlayers([
+      { slug: 'broken-history', position: 'Forward' },
+      { slug: 'healthy-history', position: 'Forward' },
+    ]);
+
+    expect(players).toHaveLength(2);
+    expect(
+      players.find((player) => player.slug === 'broken-history')
+        ?.historyStatus,
+    ).toBe('partial');
+    expect(
+      players.find((player) => player.slug === 'healthy-history')
+        ?.historyStatus,
+    ).toBe('complete');
+    expect(
+      players.find((player) => player.slug === 'healthy-history')
+        ?.appearances,
+    ).toHaveLength(10);
+  });
+
+  it('splits a failed Sorare batch and still returns the healthy players', async () => {
+    const request = vi.fn(
+      async (_document: unknown, variables: { slugs: string[] }) => {
+        if (variables.slugs.includes('broken-player')) {
+          throw new AppError(
+            502,
+            'SORARE_GRAPHQL_ERROR',
+            'Query has complexity which exceeds max complexity',
+          );
+        }
+        return {
+          players: variables.slugs.map((slug) => ({
+            __typename: 'Player',
+            slug,
+            displayName: slug,
+            position: 'Defender',
+            activeClub: null,
+            nextGame: null,
+            playerGameScores: [],
+          })),
+        };
+      },
+    );
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    const players = await source.fetchPlayers([
+      { slug: 'healthy-one', position: 'Defender' },
+      { slug: 'broken-player', position: 'Defender' },
+      { slug: 'healthy-two', position: 'Defender' },
+    ]);
+
+    expect(players.map((player) => player.slug)).toEqual([
+      'healthy-one',
+      'healthy-two',
+    ]);
+  });
+
+  it.each([
+    ['SORARE_TIMEOUT', 'Sorare request timed out'],
+    ['SORARE_HTTP_ERROR', 'Sorare API returned HTTP 429'],
+  ])(
+    'does not multiply transient %s batch failures into per-player requests',
+    async (code, message) => {
+    const request = vi.fn(async () => {
+      throw new AppError(
+        502,
+        code,
+        message,
+      );
+    });
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    await expect(
+      source.fetchPlayers([
+        { slug: 'one', position: 'Defender' },
+        { slug: 'two', position: 'Defender' },
+        { slug: 'three', position: 'Defender' },
+      ]),
+    ).rejects.toMatchObject({ code });
+    expect(request).toHaveBeenCalledOnce();
+    },
+  );
 
   it('refreshes next fixtures with a lightweight query instead of reloading L10 history', async () => {
     const request = vi.fn(

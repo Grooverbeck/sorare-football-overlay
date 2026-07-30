@@ -1,4 +1,8 @@
-import type { PlayerStatsRequest, PlayerStatsSuccessResponse } from '@sorare-overlay/shared';
+import type {
+  PlayerStats,
+  PlayerStatsRequest,
+  PlayerStatsSuccessResponse,
+} from '@sorare-overlay/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   extractPlayerSlug,
@@ -163,6 +167,7 @@ describe('Sorare card DOM discovery', () => {
       slugs: [],
       playerNames: ['Matt Turner'],
       positions: { 'Matt Turner': 'Goalkeeper' },
+      supportsPartialFormHistory: true,
     });
   });
 
@@ -325,6 +330,7 @@ describe('Sorare card DOM discovery', () => {
       slugs: [],
       playerNames: ['Marcel Hartel'],
       positions: { 'Marcel Hartel': 'Midfielder' },
+      supportsPartialFormHistory: true,
     });
     expect(document.querySelector('[data-sorare-overlay-root]')).not.toBeNull();
   });
@@ -817,6 +823,66 @@ describe('Sorare card DOM discovery', () => {
     expect(findCardTargets(document)).toEqual([]);
   });
 
+  it('ignores card miniatures based on their rendered size', () => {
+    document.body.innerHTML = `
+      <button type="button">
+        <a href="/de/football/players/grayson-dettoni">
+          <img
+            width="160"
+            height="259.2"
+            alt="Grayson Dettoni - limited"
+            src="https://assets.sorare.com/image-resize/card/card-id/picture/card.png?width=160"
+          >
+        </a>
+      </button>
+    `;
+    const image = document.querySelector<HTMLImageElement>('img');
+    if (!image) throw new Error('Expected miniature card image');
+    vi.spyOn(image, 'getBoundingClientRect').mockReturnValue({
+      x: 850,
+      y: 320,
+      top: 320,
+      right: 890,
+      bottom: 384.8,
+      left: 850,
+      width: 40,
+      height: 64.8,
+      toJSON: () => ({}),
+    });
+
+    expect(findCardTargets(document)).toEqual([]);
+  });
+
+  it('keeps compact but usable cards above the overlay size threshold', () => {
+    document.body.innerHTML = `
+      <button type="button">
+        <img
+          alt="Compact Player - common"
+          src="https://assets.sorare.com/card.png"
+        >
+      </button>
+    `;
+    const image = document.querySelector<HTMLImageElement>('img');
+    if (!image) throw new Error('Expected compact card image');
+    vi.spyOn(image, 'getBoundingClientRect').mockReturnValue({
+      x: 100,
+      y: 100,
+      top: 100,
+      right: 172,
+      bottom: 216.64,
+      left: 100,
+      width: 72,
+      height: 116.64,
+      toJSON: () => ({}),
+    });
+
+    expect(findCardTargets(document)).toMatchObject([
+      {
+        playerName: 'Compact Player',
+      },
+    ]);
+  });
+
   it('retries a transient no-data response and updates the existing card automatically', async () => {
     document.body.innerHTML = `
       <button type="button">
@@ -937,7 +1003,15 @@ describe('Sorare card DOM discovery', () => {
               },
             },
     );
-    const coordinator = new StatsBatchCoordinator(fetcher, 0, [5]);
+    const coordinator = new StatsBatchCoordinator(
+      fetcher,
+      0,
+      [5],
+      3,
+      2,
+      [2_500, 8_000],
+      5,
+    );
     for (const { playerName, container, view } of cards) {
       coordinator.enqueue(
         { playerName, position: 'Midfielder', container },
@@ -960,6 +1034,444 @@ describe('Sorare card DOM discovery', () => {
       'Lade L10',
     );
     cards.forEach(({ view }) => view.destroy());
+  });
+
+  it('rechecks a deferred player name after the dedicated 750 ms warm-up delay', async () => {
+    vi.useFakeTimers();
+    try {
+      const card = document.createElement('article');
+      document.body.append(card);
+      const view = new OverlayView(
+        card,
+        { playerName: 'Deferred Player' },
+        'Midfielder',
+      );
+      const fetcher = vi.fn(
+        async (): Promise<PlayerStatsSuccessResponse> =>
+          fetcher.mock.calls.length === 1
+            ? {
+                data: [],
+                meta: {
+                  requested: 1,
+                  returned: 0,
+                  cacheHits: 0,
+                  source: 'sorare',
+                  deferredPlayerNames: ['Deferred Player'],
+                },
+              }
+            : {
+                data: [
+                  {
+                    slug: 'deferred-player',
+                    displayName: 'Deferred Player',
+                    position: 'Midfielder',
+                    aaL10: { value: 12.8, sampleSize: 10 },
+                    cleanSheetL10: { value: 0.2, sampleSize: 10 },
+                    goalL10: { value: 0.1, sampleSize: 10 },
+                    nextGame: null,
+                    excludedLowCoverage: 0,
+                  },
+                ],
+                meta: {
+                  requested: 1,
+                  returned: 1,
+                  cacheHits: 1,
+                  source: 'sorare',
+                },
+              },
+      );
+      const coordinator = new StatsBatchCoordinator(fetcher, 0);
+      coordinator.enqueue(
+        {
+          playerName: 'Deferred Player',
+          position: 'Midfielder',
+          container: card,
+        },
+        view,
+      );
+
+      await coordinator.flush();
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(749);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await coordinator.flush();
+
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(view.host.shadowRoot?.textContent).not.toContain('Lade L10');
+      view.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('limits overlapping flushes to two global backend batches', async () => {
+    let activeRequests = 0;
+    let maximumActiveRequests = 0;
+    const completeRequests: Array<() => void> = [];
+    const fetcher = vi.fn(
+      (request: PlayerStatsRequest): Promise<PlayerStatsSuccessResponse> =>
+        new Promise((resolve) => {
+          activeRequests += 1;
+          maximumActiveRequests = Math.max(
+            maximumActiveRequests,
+            activeRequests,
+          );
+          completeRequests.push(() => {
+            activeRequests -= 1;
+            resolve({
+              data: request.slugs.map((slug) => ({
+                slug,
+                displayName: slug,
+                position: 'Midfielder',
+                aaL10: { value: 10, sampleSize: 10 },
+                cleanSheetL10: { value: 0.2, sampleSize: 10 },
+                goalL10: { value: 0.1, sampleSize: 10 },
+                nextGame: null,
+                excludedLowCoverage: 0,
+              })),
+              meta: {
+                requested: request.slugs.length,
+                returned: request.slugs.length,
+                cacheHits: 0,
+                source: 'sorare',
+              },
+            });
+          });
+        }),
+    );
+    const coordinator = new StatsBatchCoordinator(
+      fetcher,
+      60_000,
+      [5_000],
+      1,
+      2,
+    );
+    const views: OverlayView[] = [];
+    const enqueue = (slug: string): void => {
+      const card = document.createElement('article');
+      document.body.append(card);
+      const view = new OverlayView(card, { slug }, 'Midfielder');
+      views.push(view);
+      coordinator.enqueue(
+        { slug, position: 'Midfielder', container: card },
+        view,
+      );
+    };
+    enqueue('overlap-one');
+    enqueue('overlap-two');
+    const firstFlush = coordinator.flush();
+    enqueue('overlap-three');
+    enqueue('overlap-four');
+    const secondFlush = coordinator.flush();
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(maximumActiveRequests).toBe(2);
+    completeRequests.shift()?.();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+    expect(maximumActiveRequests).toBe(2);
+    completeRequests.shift()?.();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(4));
+    expect(maximumActiveRequests).toBe(2);
+    completeRequests.shift()?.();
+    completeRequests.shift()?.();
+    await Promise.all([firstFlush, secondFlush]);
+
+    expect(maximumActiveRequests).toBe(2);
+    views.forEach((view) => view.destroy());
+  });
+
+  it('attaches duplicate views to an in-flight target without another request', async () => {
+    let completeRequest:
+      | ((response: PlayerStatsSuccessResponse) => void)
+      | undefined;
+    const fetcher = vi.fn(
+      async (): Promise<PlayerStatsSuccessResponse> =>
+        new Promise((resolve) => {
+          completeRequest = resolve;
+        }),
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const cards = [document.createElement('article'), document.createElement('article')];
+    cards.forEach((card) => document.body.append(card));
+    const views = cards.map(
+      (card) => new OverlayView(card, { slug: 'shared-player' }, 'Forward'),
+    );
+    const targetFor = (container: HTMLElement) => ({
+      slug: 'shared-player',
+      position: 'Forward' as const,
+      container,
+    });
+
+    coordinator.enqueue(targetFor(cards[0]!), views[0]!);
+    const firstFlush = coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    coordinator.enqueue(targetFor(cards[1]!), views[1]!);
+    await coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    completeRequest?.({
+      data: [
+        {
+          slug: 'shared-player',
+          displayName: 'Shared Player',
+          position: 'Forward',
+          aaL10: { value: 14.2, sampleSize: 10 },
+          cleanSheetL10: { value: 0.2, sampleSize: 10 },
+          goalL10: { value: 0.4, sampleSize: 10 },
+          nextGame: null,
+          excludedLowCoverage: 0,
+        },
+      ],
+      meta: {
+        requested: 1,
+        returned: 1,
+        cacheHits: 0,
+        source: 'sorare',
+      },
+    });
+    await firstFlush;
+
+    expect(
+      views.every(
+        (view) =>
+          view.host.shadowRoot?.querySelector(
+            '.aa-percentile .market-value',
+          )?.textContent === '14.2',
+      ),
+    ).toBe(true);
+    views.forEach((view) => view.destroy());
+  });
+
+  it('pauses retries while a card is offscreen and resumes the remaining delay', async () => {
+    vi.useFakeTimers();
+    try {
+      const card = document.createElement('article');
+      document.body.append(card);
+      const view = new OverlayView(
+        card,
+        { slug: 'retry-visibility-player' },
+        'Midfielder',
+      );
+      const stats = {
+        slug: 'retry-visibility-player',
+        displayName: 'Retry Visibility Player',
+        position: 'Midfielder' as const,
+        aaL10: { value: 11.4, sampleSize: 10 },
+        cleanSheetL10: { value: 0.2, sampleSize: 10 },
+        goalL10: { value: 0.1, sampleSize: 10 },
+        nextGame: null,
+        excludedLowCoverage: 0,
+      };
+      const fetcher = vi.fn(
+        async (): Promise<PlayerStatsSuccessResponse> => ({
+          data: fetcher.mock.calls.length === 1 ? [] : [stats],
+          meta: {
+            requested: 1,
+            returned: fetcher.mock.calls.length === 1 ? 0 : 1,
+            cacheHits: 0,
+            source: 'sorare',
+          },
+        }),
+      );
+      const coordinator = new StatsBatchCoordinator(
+        fetcher,
+        0,
+        [1_000],
+      );
+      const target = {
+        slug: 'retry-visibility-player',
+        position: 'Midfielder' as const,
+        container: card,
+      };
+      coordinator.enqueue(target, view);
+      await coordinator.flush();
+      await vi.advanceTimersByTimeAsync(400);
+      view.setViewportPriorityActive(false);
+      coordinator.setViewViewportActive(target, view, false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+
+      view.setViewportPriorityActive(true);
+      coordinator.setViewViewportActive(target, view, true, 2);
+      await vi.advanceTimersByTimeAsync(599);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await coordinator.flush();
+
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      view.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('pauses pending refreshes while a card is offscreen', async () => {
+    vi.useFakeTimers();
+    try {
+      const card = document.createElement('article');
+      document.body.append(card);
+      const view = new OverlayView(
+        card,
+        { slug: 'refresh-visibility-player' },
+        'Forward',
+      );
+      const baseStats = {
+        slug: 'refresh-visibility-player',
+        displayName: 'Refresh Visibility Player',
+        position: 'Forward' as const,
+        aaL10: { value: 12.2, sampleSize: 10 },
+        cleanSheetL10: { value: 0.1, sampleSize: 10 },
+        goalL10: { value: 0.3, sampleSize: 10 },
+        nextGame: null,
+        excludedLowCoverage: 0,
+      };
+      const fetcher = vi.fn(
+        async (): Promise<PlayerStatsSuccessResponse> => ({
+          data: [
+            fetcher.mock.calls.length === 1
+              ? { ...baseStats, pendingRefreshes: ['formHistory'] }
+              : baseStats,
+          ],
+          meta: {
+            requested: 1,
+            returned: 1,
+            cacheHits: 1,
+            source: 'sorare',
+          },
+        }),
+      );
+      const coordinator = new StatsBatchCoordinator(
+        fetcher,
+        0,
+        [5_000],
+        3,
+        2,
+        [1_000],
+      );
+      const target = {
+        slug: 'refresh-visibility-player',
+        position: 'Forward' as const,
+        container: card,
+      };
+      coordinator.enqueue(target, view);
+      await coordinator.flush();
+      await vi.advanceTimersByTimeAsync(300);
+      view.setViewportPriorityActive(false);
+      coordinator.setViewViewportActive(target, view, false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+
+      view.setViewportPriorityActive(true);
+      coordinator.setViewViewportActive(target, view, true, 2);
+      await vi.advanceTimersByTimeAsync(699);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await coordinator.flush();
+
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      view.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('renders a visible-card refresh into every connected duplicate view', async () => {
+    vi.useFakeTimers();
+    try {
+      const cards = [
+        document.createElement('article'),
+        document.createElement('article'),
+      ];
+      cards.forEach((card) => document.body.append(card));
+      const views = cards.map(
+        (card) =>
+          new OverlayView(
+            card,
+            { slug: 'duplicate-refresh-player' },
+            'Forward',
+          ),
+      );
+      views[1]?.setViewportPriorityActive(false);
+      const baseStats = {
+        slug: 'duplicate-refresh-player',
+        displayName: 'Duplicate Refresh Player',
+        position: 'Forward' as const,
+        aaL10: { value: 9.1, sampleSize: 10 },
+        cleanSheetL10: { value: 0.1, sampleSize: 10 },
+        goalL10: { value: 0.2, sampleSize: 10 },
+        nextGame: null,
+        excludedLowCoverage: 0,
+      };
+      const fetcher = vi.fn(
+        async (): Promise<PlayerStatsSuccessResponse> => ({
+          data: [
+            fetcher.mock.calls.length === 1
+              ? { ...baseStats, pendingRefreshes: ['marketOdds'] }
+              : {
+                  ...baseStats,
+                  aaL10: { value: 17.3, sampleSize: 10 },
+                },
+          ],
+          meta: {
+            requested: 1,
+            returned: 1,
+            cacheHits: 1,
+            source: 'sorare',
+          },
+        }),
+      );
+      const coordinator = new StatsBatchCoordinator(
+        fetcher,
+        0,
+        [5_000],
+        3,
+        2,
+        [500],
+      );
+      cards.forEach((card, index) => {
+        const view = views[index];
+        if (!view) throw new Error('Expected duplicate overlay view');
+        coordinator.enqueue(
+          {
+            slug: 'duplicate-refresh-player',
+            position: 'Forward',
+            container: card,
+          },
+          view,
+        );
+      });
+
+      await coordinator.flush();
+      await vi.advanceTimersByTimeAsync(500);
+      await coordinator.flush();
+
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(
+        views.map(
+          (view) =>
+            view.host.shadowRoot?.querySelector(
+              '.aa-bracket-cell .market-value',
+            )?.textContent,
+        ),
+      ).toEqual(['17.3', '17.3']);
+
+      views[1]?.setViewportPriorityActive(true);
+      coordinator.setViewViewportActive(
+        {
+          slug: 'duplicate-refresh-player',
+          position: 'Forward',
+        },
+        views[1]!,
+        true,
+        2,
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      views.forEach((view) => view.destroy());
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('loads large card lists progressively in small request groups', async () => {
@@ -1196,7 +1708,7 @@ describe('Sorare card DOM discovery', () => {
     vi.unstubAllGlobals();
   });
 
-  it('uses anonymous-safe groups of three by default', async () => {
+  it('uses API-key optimized groups of twelve plus a remainder by default', async () => {
     const fetcher = vi.fn(
       async (
         request: PlayerStatsRequest,
@@ -1221,10 +1733,10 @@ describe('Sorare card DOM discovery', () => {
     );
     const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
     const views: OverlayView[] = [];
-    for (let index = 0; index < 8; index += 1) {
+    for (let index = 0; index < 19; index += 1) {
       const card = document.createElement('article');
       document.body.append(card);
-      const slug = `anonymous-safe-${index + 1}`;
+      const slug = `api-key-batch-${index + 1}`;
       const view = new OverlayView(card, { slug }, 'Midfielder');
       views.push(view);
       coordinator.enqueue(
@@ -1237,7 +1749,7 @@ describe('Sorare card DOM discovery', () => {
 
     expect(
       fetcher.mock.calls.map(([request]) => request.slugs.length),
-    ).toEqual([3, 3, 2]);
+    ).toEqual([12, 7]);
     for (const view of views) view.destroy();
   });
 
@@ -1302,6 +1814,290 @@ describe('Sorare card DOM discovery', () => {
       view.host.shadowRoot?.querySelector('.aa-percentile .market-value')
         ?.textContent,
     ).toBe('13.7');
+    view.destroy();
+  });
+
+  it.each([
+    {
+      cachedSampleSize: 2,
+      partialSampleSize: 1,
+      additionalPending: [] as const,
+    },
+    {
+      cachedSampleSize: 10,
+      partialSampleSize: 10,
+      additionalPending: ['fixture', 'marketOdds'] as const,
+    },
+  ])(
+    'keeps complete cached form n=$cachedSampleSize over an explicitly partial form response n=$partialSampleSize',
+    async ({
+      cachedSampleSize,
+      partialSampleSize,
+      additionalPending,
+    }) => {
+      vi.useFakeTimers();
+      try {
+        const completeStats: PlayerStatsSuccessResponse['data'][number] = {
+          slug: 'partial-form-player',
+          displayName: 'Partial Form Player',
+          position: 'Forward',
+          aaL10: { value: 18.4, sampleSize: cachedSampleSize },
+          cleanSheetL10: { value: 0.2, sampleSize: cachedSampleSize },
+          goalL10: { value: 0.4, sampleSize: cachedSampleSize },
+          historicalGoals: {
+            l10: { value: 0.4, sampleSize: cachedSampleSize },
+            l15: { value: 0.3, sampleSize: 15 },
+            l40: { value: 0.25, sampleSize: 40 },
+          },
+          nextGame: null,
+          pendingRefreshes: ['marketOdds'],
+          excludedLowCoverage: 1,
+        };
+        const partialStats: PlayerStatsSuccessResponse['data'][number] = {
+          ...completeStats,
+          aaL10: { value: 4.2, sampleSize: partialSampleSize },
+          cleanSheetL10: { value: 0, sampleSize: partialSampleSize },
+          goalL10: { value: 1 / 3, sampleSize: partialSampleSize },
+          historicalGoals: {
+            l10: { value: 1 / 3, sampleSize: partialSampleSize },
+            l15: { value: 1 / 3, sampleSize: partialSampleSize },
+            l40: { value: 1 / 3, sampleSize: partialSampleSize },
+          },
+          nextGame: {
+            date: '2026-08-01T18:00:00.000Z',
+            cleanSheetProbability: null,
+            matchProbabilities: { win: 0.51, draw: 0.25, loss: 0.24 },
+            marketOdds: {
+              source: 'sports-game-odds',
+              capturedAt: '2026-07-29T18:00:00.000Z',
+              goal: {
+                probability: 0.44,
+                bookmakerCount: 3,
+              },
+              assist: null,
+              decisive: null,
+            },
+          },
+          pendingRefreshes: ['formHistory', ...additionalPending],
+          excludedLowCoverage: 0,
+        };
+        const {
+          pendingRefreshes: _partialPending,
+          ...partialWithoutPending
+        } = partialStats;
+        const finalStats: PlayerStatsSuccessResponse['data'][number] = {
+          ...partialWithoutPending,
+          aaL10: { value: 21.6, sampleSize: 10 },
+          cleanSheetL10: { value: 0.3, sampleSize: 10 },
+          goalL10: { value: 0.5, sampleSize: 10 },
+          excludedLowCoverage: 0,
+        };
+        const fetcher = vi.fn(
+          async (): Promise<PlayerStatsSuccessResponse> => ({
+            data: [
+              fetcher.mock.calls.length === 1
+                ? completeStats
+                : fetcher.mock.calls.length === 2
+                  ? partialStats
+                  : finalStats,
+            ],
+            meta: {
+              requested: 1,
+              returned: 1,
+              cacheHits: fetcher.mock.calls.length === 1 ? 1 : 0,
+              source: 'sorare',
+            },
+          }),
+        );
+        const coordinator = new StatsBatchCoordinator(
+          fetcher,
+          0,
+          [5_000],
+          3,
+          2,
+          [750, 750],
+        );
+        const card = document.createElement('article');
+        document.body.append(card);
+        const view = new OverlayView(
+          card,
+          { slug: 'partial-form-player' },
+          'Forward',
+        );
+        coordinator.enqueue(
+          {
+            slug: 'partial-form-player',
+            position: 'Forward',
+            container: card,
+          },
+          view,
+        );
+
+        await coordinator.flush();
+        await vi.advanceTimersByTimeAsync(750);
+        await coordinator.flush();
+
+        expect(fetcher).toHaveBeenCalledTimes(2);
+        expect(
+          fetcher.mock.calls.every(
+            ([request]) => request.supportsPartialFormHistory === true,
+          ),
+        ).toBe(true);
+        expect(
+          view.host.shadowRoot?.querySelector(
+            '.aa-bracket-cell .market-value',
+          )?.textContent,
+        ).toBe('18.4');
+        expect(
+          view.host.shadowRoot?.querySelector<HTMLElement>(
+            '[data-market="goal"]',
+          )?.textContent,
+        ).toBe('44%');
+        const localCache = (
+          coordinator as unknown as {
+            cache: Map<string, PlayerStats>;
+          }
+        ).cache;
+        expect(
+          localCache.get('slug:partial-form-player:Forward')
+            ?.pendingRefreshes,
+        ).toEqual(['formHistory', ...additionalPending]);
+
+        await vi.advanceTimersByTimeAsync(750);
+        await coordinator.flush();
+        expect(fetcher).toHaveBeenCalledTimes(3);
+        expect(
+          view.host.shadowRoot?.querySelector(
+            '.aa-bracket-cell .market-value',
+          )?.textContent,
+        ).toBe('21.6');
+        expect(
+          localCache.get('slug:partial-form-player:Forward')
+            ?.pendingRefreshes,
+        ).toBeUndefined();
+        view.destroy();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('keeps rendered stats when a pending refresh temporarily fails', async () => {
+    const cachedStats: PlayerStatsSuccessResponse['data'][number] = {
+      slug: 'juan-manuel-sanabria-magole',
+      displayName: 'Juan Sanabria',
+      position: 'Midfielder',
+      aaL10: { value: 14.15, sampleSize: 10 },
+      cleanSheetL10: { value: 2 / 9, sampleSize: 9 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-02T00:30:00.000Z',
+        homeTeamName: 'St. Louis City',
+        awayTeamName: 'Real Salt Lake',
+        playerTeamName: 'Real Salt Lake',
+        opponentTeamName: 'St. Louis City',
+        cleanSheetProbability: 0.21,
+        matchProbabilities: { win: 0.31, draw: 0.25, loss: 0.44 },
+        marketOdds: null,
+      },
+      pendingRefreshes: ['marketOdds'],
+      excludedLowCoverage: 0,
+    };
+    const fetcher = vi.fn(
+      async (): Promise<PlayerStatsSuccessResponse> => {
+        if (fetcher.mock.calls.length > 1) {
+          throw new Error(
+            'BACKEND_UNAVAILABLE: Statistikdienst ist nicht erreichbar',
+          );
+        }
+        return {
+          data: [cachedStats],
+          meta: {
+            requested: 1,
+            returned: 1,
+            cacheHits: 1,
+            source: 'sorare',
+          },
+        };
+      },
+    );
+    const coordinator = new StatsBatchCoordinator(
+      fetcher,
+      0,
+      [60_000],
+      8,
+      2,
+      [5],
+    );
+    const card = document.createElement('article');
+    document.body.append(card);
+    const view = new OverlayView(
+      card,
+      { playerName: 'Juan Sanabria' },
+      'Midfielder',
+    );
+    coordinator.enqueue(
+      {
+        playerName: 'Juan Sanabria',
+        position: 'Midfielder',
+        container: card,
+      },
+      view,
+    );
+
+    await coordinator.flush();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+
+    expect(
+      view.host.shadowRoot?.querySelector(
+        '.aa-bracket-cell .market-value',
+      )?.textContent,
+    ).toBe('14.2');
+    expect(
+      view.lineupOddsHost.shadowRoot?.querySelectorAll('.lineup-odd'),
+    ).toHaveLength(3);
+    expect(view.host.shadowRoot?.textContent).not.toContain(
+      'BACKEND_UNAVAILABLE',
+    );
+    expect(view.host.shadowRoot?.textContent).not.toContain(
+      'Kurz nicht verfügbar',
+    );
+    view.destroy();
+  });
+
+  it('shows a short user-facing message for an initial request failure', async () => {
+    const fetcher = vi.fn(async () => {
+      throw new Error(
+        'BACKEND_UNAVAILABLE: Statistikdienst ist nicht erreichbar',
+      );
+    });
+    const coordinator = new StatsBatchCoordinator(
+      fetcher,
+      0,
+      [],
+    );
+    const card = document.createElement('article');
+    document.body.append(card);
+    const view = new OverlayView(
+      card,
+      { playerName: 'Unavailable Player' },
+      'Midfielder',
+    );
+    coordinator.enqueue(
+      {
+        playerName: 'Unavailable Player',
+        position: 'Midfielder',
+        container: card,
+      },
+      view,
+    );
+
+    await coordinator.flush();
+
+    const state = view.host.shadowRoot?.querySelector<HTMLElement>('.state');
+    expect(state?.textContent).toBe('Kurz nicht verfügbar');
+    expect(state?.textContent).not.toContain('BACKEND_UNAVAILABLE');
+    expect(state?.title).toContain('automatisch erneut');
     view.destroy();
   });
 
@@ -1378,6 +2174,100 @@ describe('Sorare card DOM discovery', () => {
       view.host.shadowRoot?.querySelector('.clean-sheet-bracket-cell .market-value')
         ?.textContent,
     ).toBe('29%');
+    view.destroy();
+  });
+
+  it('does not attach a fixture refresh to an incompatible normal in-flight request', async () => {
+    const baseStats: PlayerStatsSuccessResponse['data'][number] = {
+      slug: 'fixture-flight-player',
+      displayName: 'Fixture Flight Player',
+      position: 'Goalkeeper',
+      aaL10: { value: 8.1, sampleSize: 4 },
+      cleanSheetL10: { value: 0.25, sampleSize: 4 },
+      goalL10: { value: 0, sampleSize: 4 },
+      nextGame: null,
+      excludedLowCoverage: 0,
+    };
+    let resolveNormalRequest:
+      | ((response: PlayerStatsSuccessResponse) => void)
+      | undefined;
+    const fetcher = vi.fn(
+      (
+        request: PlayerStatsRequest,
+      ): Promise<PlayerStatsSuccessResponse> => {
+        if (fetcher.mock.calls.length === 1) {
+          expect(request.refreshFixtures).toBeUndefined();
+          return new Promise((resolve) => {
+            resolveNormalRequest = resolve;
+          });
+        }
+        return Promise.resolve({
+          data: [
+            {
+              ...baseStats,
+              nextGame: {
+                date: '2026-08-02T18:00:00.000Z',
+                cleanSheetProbability: 0.36,
+                matchProbabilities: {
+                  win: 0.48,
+                  draw: 0.27,
+                  loss: 0.25,
+                },
+              },
+            },
+          ],
+          meta: {
+            requested: 1,
+            returned: 1,
+            cacheHits: 1,
+            source: 'sorare',
+          },
+        });
+      },
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 0);
+    const card = document.createElement('article');
+    document.body.append(card);
+    const view = new OverlayView(
+      card,
+      { slug: 'fixture-flight-player' },
+      'Goalkeeper',
+    );
+    const target = {
+      slug: 'fixture-flight-player',
+      position: 'Goalkeeper' as const,
+      container: card,
+    };
+    coordinator.enqueue(target, view);
+    const normalFlush = coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    const fixtureRefreshTargets = (
+      coordinator as unknown as {
+        fixtureRefreshTargets: Set<string>;
+      }
+    ).fixtureRefreshTargets;
+    fixtureRefreshTargets.add('slug:fixture-flight-player:Goalkeeper');
+    coordinator.enqueue(target, view);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    resolveNormalRequest?.({
+      data: [baseStats],
+      meta: {
+        requested: 1,
+        returned: 1,
+        cacheHits: 0,
+        source: 'sorare',
+      },
+    });
+    await normalFlush;
+    await coordinator.flush();
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[1]?.[0]).toMatchObject({
+      refreshFixtures: true,
+      supportsPartialFormHistory: true,
+    });
     view.destroy();
   });
 
@@ -3149,6 +4039,7 @@ describe('Sorare card DOM discovery', () => {
       playerNames: [],
       positions: { 'historical-assist-player': 'Forward' },
       includeHistoricalAssists: true,
+      supportsPartialFormHistory: true,
     });
     view.destroy();
   });

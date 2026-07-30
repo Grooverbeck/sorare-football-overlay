@@ -1,6 +1,6 @@
 {
   "name": "@sorare-overlay/api",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,6 +9,7 @@
     "benchmark:mls-cs": "node scripts/analyze-mls-clean-sheets.mjs",
     "benchmark:mls-market": "tsx scripts/derive-mls-market-benchmarks.mjs",
     "benchmark:mls-win": "node scripts/analyze-mls-win-probabilities.mjs",
+    "benchmark:sorare-batching": "node --experimental-strip-types --env-file-if-exists=.dev.vars scripts/benchmark-sorare-batching.mjs",
     "analyze:mls-props": "tsx --env-file-if-exists=.dev.vars scripts/analyze-mls-player-props.mjs",
     "prewarm:mls-props": "node scripts/prewarm-mls-market-odds.mjs",
     "cf:deploy": "wrangler deploy --config wrangler.jsonc",

@@ -33,6 +33,7 @@ const playerPositions = new Set([
   'Midfielder',
   'Forward',
 ]);
+const FORM_HISTORY_REFRESH_LEASE_MS = 60_000;
 
 /**
  * Form values depend on the concrete card position, but a player's next
@@ -57,6 +58,9 @@ export function playerFixtureCacheKey(key: string): string {
 
 export interface SplitPlayerStatsCacheAccess extends Cache<PlayerStats> {
   getParts(key: string): Promise<PlayerStatsCacheParts>;
+  setForm(key: string, value: PlayerFormStats): void | Promise<void>;
+  claimFormHistoryRefresh(key: string): boolean | Promise<boolean>;
+  releaseFormHistoryRefresh(key: string): void | Promise<void>;
   claimFixtureRefresh(value: PlayerFixtureStats): boolean | Promise<boolean>;
   setFixture(
     key: string,
@@ -74,6 +78,9 @@ export function supportsSplitPlayerStatsCache(
   const candidate = cache as Partial<SplitPlayerStatsCacheAccess>;
   return (
     typeof candidate.getParts === 'function' &&
+    typeof candidate.setForm === 'function' &&
+    typeof candidate.claimFormHistoryRefresh === 'function' &&
+    typeof candidate.releaseFormHistoryRefresh === 'function' &&
     typeof candidate.claimFixtureRefresh === 'function' &&
     typeof candidate.setFixture === 'function' &&
     typeof candidate.refreshFixture === 'function'
@@ -115,10 +122,13 @@ export class TtlCache<T> implements Cache<T> {
 }
 
 export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
+  private readonly formHistoryRefreshLeases = new Map<string, number>();
+
   constructor(
     private readonly formCache: Cache<PlayerFormStats>,
     private readonly fixtureCache: Cache<PlayerFixtureStats>,
     private readonly legacyCache?: ReadonlyCache<PlayerStats>,
+    private readonly now: () => number = Date.now,
   ) {}
 
   async getParts(key: string): Promise<PlayerStatsCacheParts> {
@@ -167,6 +177,43 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
     return refreshable.claimRefresh
       ? refreshable.claimRefresh(value)
       : false;
+  }
+
+  async claimFormHistoryRefresh(key: string): Promise<boolean> {
+    const claimable = this.formCache as Cache<PlayerFormStats> & {
+      claimFormHistoryRefresh?: (
+        cacheKey: string,
+      ) => boolean | Promise<boolean>;
+    };
+    if (claimable.claimFormHistoryRefresh) {
+      return claimable.claimFormHistoryRefresh(key);
+    }
+
+    const now = this.now();
+    const expiresAt = this.formHistoryRefreshLeases.get(key);
+    if (expiresAt !== undefined && expiresAt > now) return false;
+    this.formHistoryRefreshLeases.set(
+      key,
+      now + FORM_HISTORY_REFRESH_LEASE_MS,
+    );
+    return true;
+  }
+
+  async releaseFormHistoryRefresh(key: string): Promise<void> {
+    const claimable = this.formCache as Cache<PlayerFormStats> & {
+      releaseFormHistoryRefresh?: (
+        cacheKey: string,
+      ) => void | Promise<void>;
+    };
+    if (claimable.releaseFormHistoryRefresh) {
+      await claimable.releaseFormHistoryRefresh(key);
+      return;
+    }
+    this.formHistoryRefreshLeases.delete(key);
+  }
+
+  async setForm(key: string, value: PlayerFormStats): Promise<void> {
+    await this.formCache.set(key, value);
   }
 
   async set(key: string, value: PlayerStats): Promise<void> {

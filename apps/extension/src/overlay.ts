@@ -2295,10 +2295,14 @@ export class OverlayView {
     this.state('Lade L10 …', 'pulse');
   }
 
-  error(message = 'Stats nicht verfügbar'): void {
+  error(): void {
     this.clearLineupOdds();
     this.clearPlayerMarketTooltip();
-    this.state(message, 'error');
+    this.state(
+      'Kurz nicht verfügbar',
+      'error',
+      'Die zuletzt angefragten Daten konnten nicht geladen werden. Die Extension versucht es automatisch erneut.',
+    );
   }
 
   noData(): void {
@@ -2677,7 +2681,11 @@ export class OverlayView {
     }
   }
 
-  private state(message: string, modifier: string): void {
+  private state(
+    message: string,
+    modifier: string,
+    title?: string,
+  ): void {
     if (this.destroyed) return;
     this.stopPackBracketSettling();
     this.panel.classList.remove('bracket-only');
@@ -2685,6 +2693,7 @@ export class OverlayView {
     const state = document.createElement('div');
     state.className = `state ${modifier}`.trim();
     state.textContent = message;
+    if (title) state.title = title;
     this.panel.append(state);
     this.reposition();
     if (!packRevealScope(this.container)) {

@@ -26,6 +26,10 @@ export const PlayerStatsRequestSchema = z
       ]),
     positions: z.record(z.string(), FootballPositionSchema).optional(),
     includeHistoricalAssists: z.boolean().default(false),
+    // Capability handshake for rollout safety. Older extension versions reject
+    // the `formHistory` refresh hint, so the backend may only return an early
+    // partial form window when the caller opts in explicitly.
+    supportsPartialFormHistory: z.boolean().default(false),
     // Follow-up reads may hydrate a missing/expired fixture synchronously.
     // The initial request remains fast and can return cached L10 form values
     // with `pendingRefreshes: ['fixture']`.
@@ -97,6 +101,7 @@ export const MarketProbabilitySchema = z.object({
 export const PlayerMarketOddsSchema = z.object({
   source: z.enum([
     'the-odds-api',
+    'odds-api-io',
     'sports-game-odds',
     'mixed',
     'mock',
@@ -150,9 +155,11 @@ export const PlayerStatsSchema = z.object({
     .nullable(),
   // Response-only hint. Cache implementations deliberately omit this field.
   // The extension uses it for a small number of follow-up reads while the
-  // Worker refreshes fixtures or player-prop snapshots in the background.
+  // Worker refreshes form history, fixtures or player-prop snapshots in the
+  // background. `formHistory` always denotes an intentionally partial form
+  // response which must never be persisted as the normal weekly L10 value.
   pendingRefreshes: z
-    .array(z.enum(['fixture', 'marketOdds']))
+    .array(z.enum(['formHistory', 'fixture', 'marketOdds']))
     .min(1)
     .optional(),
   excludedLowCoverage: z.number().int().nonnegative(),

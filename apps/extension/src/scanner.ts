@@ -47,6 +47,26 @@ interface PendingTarget {
   priority: number;
 }
 
+interface ScheduledTargetWork {
+  target: Pick<PendingTarget, 'slug' | 'playerName' | 'position'>;
+  views: Set<OverlayView>;
+  priority: number;
+  remainingMs: number;
+  startedAt?: number;
+  timer?: number;
+}
+
+interface PendingRefreshWork extends ScheduledTargetWork {
+  refreshFixture: boolean;
+}
+
+interface BatchJob {
+  batch: PendingTarget[];
+  priority: number;
+  sequence: number;
+  resolve: () => void;
+}
+
 interface MountedOverlay {
   key: string;
   target: CardTarget;
@@ -110,13 +130,19 @@ function viewportPriorityForRect(rect: DOMRectReadOnly): number {
 
 export class StatsBatchCoordinator {
   private readonly pending = new Map<string, PendingTarget>();
+  private readonly inFlightTargets = new Map<string, PendingTarget>();
+  private readonly inFlightFixtureRefreshKeys = new Set<string>();
+  private readonly afterFlightTargets = new Map<string, PendingTarget>();
+  private readonly batchQueue: BatchJob[] = [];
   private readonly cache = new Map<string, PlayerStats>();
   private readonly retryAttempts = new Map<string, number>();
-  private readonly retryTimers = new Map<string, number>();
+  private readonly retryWork = new Map<string, ScheduledTargetWork>();
+  private readonly deferredRetryUsed = new Set<string>();
   private readonly refreshAttempts = new Map<string, number>();
-  private readonly refreshTimers = new Map<string, number>();
-  private readonly refreshViews = new Map<string, Set<OverlayView>>();
+  private readonly refreshWork = new Map<string, PendingRefreshWork>();
   private readonly fixtureRefreshTargets = new Set<string>();
+  private activeBatchCount = 0;
+  private batchSequence = 0;
   private timer: number | undefined;
   private includeHistoricalAssists = false;
 
@@ -124,9 +150,10 @@ export class StatsBatchCoordinator {
     private readonly fetcher: StatsFetcher = fetchPlayerStats,
     private readonly debounceMs = 40,
     private readonly retryDelaysMs: readonly number[] = [5_000, 30_000],
-    private readonly progressiveBatchSize = 3,
+    private readonly progressiveBatchSize = 12,
     private readonly maxConcurrentBatches = 2,
     private readonly refreshDelaysMs: readonly number[] = [2_500, 8_000],
+    private readonly deferredRetryDelayMs = 750,
   ) {}
 
   setIncludeHistoricalAssists(enabled: boolean): void {
@@ -138,16 +165,7 @@ export class StatsBatchCoordinator {
   enqueue(target: CardTarget, view: OverlayView, priority = 0): void {
     const key = targetKey(target);
     this.clearRetry(key);
-    const exact = this.cache.get(key);
-    const cached =
-      exact ??
-      [...this.cache.values()].find(
-        (stats) =>
-          (target.position === undefined || stats.position === target.position) &&
-          ((target.slug !== undefined && stats.slug === target.slug) ||
-            (target.playerName !== undefined &&
-              namesLikelyMatch(target.playerName, stats.displayName))),
-      );
+    const cached = this.cachedStatsForTarget(target);
     if (cached) {
       logStatsDiagnostic('cache-hit-render', {
         key,
@@ -175,12 +193,61 @@ export class StatsBatchCoordinator {
     this.queueTarget(target, [view], priority);
   }
 
+  setViewViewportActive(
+    target: Pick<PendingTarget, 'slug' | 'playerName' | 'position'>,
+    view: OverlayView,
+    active: boolean,
+    priority = 0,
+  ): void {
+    const key = targetKey(target);
+    const retry = this.retryWork.get(key);
+    if (retry) {
+      retry.views.add(view);
+      retry.priority = Math.max(retry.priority, priority);
+      if (active) this.startRetryWork(key, retry);
+      else if (!this.hasActiveViews(retry.views)) this.pauseScheduledWork(retry);
+    }
+
+    const refresh = this.refreshWork.get(key);
+    if (refresh) {
+      refresh.views.add(view);
+      refresh.priority = Math.max(refresh.priority, priority);
+      if (active) this.startRefreshWork(key, refresh);
+      else if (!this.hasActiveViews(refresh.views)) {
+        this.pauseScheduledWork(refresh);
+      }
+    }
+  }
+
   private queueTarget(
     target: Pick<PendingTarget, 'slug' | 'playerName' | 'position'>,
     views: Iterable<OverlayView>,
     priority = 0,
   ): void {
     const key = targetKey(target);
+    const inFlight = this.inFlightTargets.get(key);
+    if (inFlight) {
+      const requiresFixtureRefresh = this.fixtureRefreshTargets.has(key);
+      if (
+        !requiresFixtureRefresh ||
+        this.inFlightFixtureRefreshKeys.has(key)
+      ) {
+        for (const view of views) inFlight.views.add(view);
+        inFlight.priority = Math.max(inFlight.priority, priority);
+        return;
+      }
+      const followUp = this.afterFlightTargets.get(key) ?? {
+        ...(target.slug ? { slug: target.slug } : {}),
+        ...(target.playerName ? { playerName: target.playerName } : {}),
+        ...(target.position ? { position: target.position } : {}),
+        views: new Set<OverlayView>(),
+        priority,
+      };
+      for (const view of views) followUp.views.add(view);
+      followUp.priority = Math.max(followUp.priority, priority);
+      this.afterFlightTargets.set(key, followUp);
+      return;
+    }
     const pendingTarget = this.pending.get(key) ?? {
       ...(target.slug ? { slug: target.slug } : {}),
       ...(target.playerName ? { playerName: target.playerName } : {}),
@@ -205,27 +272,62 @@ export class StatsBatchCoordinator {
     this.pending.clear();
     if (queued.length === 0) return;
 
-    const batches = chunks(
-      queued,
-      Math.max(1, this.progressiveBatchSize),
+    for (const target of queued) {
+      this.inFlightTargets.set(targetKey(target), target);
+    }
+    const batches = chunks(queued, Math.max(1, this.progressiveBatchSize));
+    await Promise.all(
+      batches.map((batch) => this.scheduleBatch(batch)),
     );
-    let nextBatch = 0;
-    const workers = Array.from(
-      {
-        length: Math.min(
-          Math.max(1, this.maxConcurrentBatches),
-          batches.length,
-        ),
-      },
-      async () => {
-        while (nextBatch < batches.length) {
-          const batch = batches[nextBatch];
-          nextBatch += 1;
-          if (batch) await this.loadBatch(batch);
+  }
+
+  private scheduleBatch(batch: PendingTarget[]): Promise<void> {
+    return new Promise((resolve) => {
+      this.batchQueue.push({
+        batch,
+        priority: Math.max(...batch.map((target) => target.priority)),
+        sequence: this.batchSequence,
+        resolve,
+      });
+      this.batchSequence += 1;
+      this.pumpBatchQueue();
+    });
+  }
+
+  private pumpBatchQueue(): void {
+    const concurrency = Math.max(1, this.maxConcurrentBatches);
+    while (this.activeBatchCount < concurrency && this.batchQueue.length > 0) {
+      this.batchQueue.sort(
+        (left, right) =>
+          right.priority - left.priority || left.sequence - right.sequence,
+      );
+      const job = this.batchQueue.shift();
+      if (!job) return;
+      this.activeBatchCount += 1;
+      void this.runBatchJob(job);
+    }
+  }
+
+  private async runBatchJob(job: BatchJob): Promise<void> {
+    try {
+      await this.loadBatch(job.batch);
+    } finally {
+      for (const target of job.batch) {
+        const key = targetKey(target);
+        this.inFlightFixtureRefreshKeys.delete(key);
+        if (this.inFlightTargets.get(key) === target) {
+          this.inFlightTargets.delete(key);
         }
-      },
-    );
-    await Promise.all(workers);
+        const followUp = this.afterFlightTargets.get(key);
+        if (followUp) {
+          this.afterFlightTargets.delete(key);
+          this.queueTarget(followUp, followUp.views, followUp.priority);
+        }
+      }
+      this.activeBatchCount -= 1;
+      job.resolve();
+      this.pumpBatchQueue();
+    }
   }
 
   private async loadBatch(batch: PendingTarget[]): Promise<void> {
@@ -243,11 +345,17 @@ export class StatsBatchCoordinator {
     const refreshFixtures = batch.some((target) =>
       this.fixtureRefreshTargets.has(targetKey(target)),
     );
+    if (refreshFixtures) {
+      for (const target of batch) {
+        this.inFlightFixtureRefreshKeys.add(targetKey(target));
+      }
+    }
 
     try {
       const response = await this.fetcher({
         slugs,
         playerNames,
+        supportsPartialFormHistory: true,
         ...(Object.keys(positions).length ? { positions } : {}),
         ...(includeHistoricalAssists
           ? { includeHistoricalAssists: true }
@@ -257,6 +365,7 @@ export class StatsBatchCoordinator {
       const diagnosticRequestId = statsDiagnosticRequestId(response);
       if (includeHistoricalAssists !== this.includeHistoricalAssists) {
         for (const target of batch) {
+          this.inFlightTargets.delete(targetKey(target));
           this.queueTarget(target, target.views, target.priority);
         }
         return;
@@ -266,16 +375,27 @@ export class StatsBatchCoordinator {
       );
       for (const stats of response.data) {
         if (!hasAnyDisplayData(stats)) continue;
-        this.cache.set(targetKey({ slug: stats.slug, position: stats.position }), stats);
-        this.cache.set(targetKey({ slug: stats.slug }), stats);
+        const mergedStats = this.mergeWithCompleteCachedForm(stats);
         this.cache.set(
-          targetKey({ playerName: stats.displayName, position: stats.position }),
-          stats,
+          targetKey({ slug: mergedStats.slug, position: mergedStats.position }),
+          mergedStats,
         );
-        this.cache.set(targetKey({ playerName: stats.displayName }), stats);
+        this.cache.set(targetKey({ slug: mergedStats.slug }), mergedStats);
+        this.cache.set(
+          targetKey({
+            playerName: mergedStats.displayName,
+            position: mergedStats.position,
+          }),
+          mergedStats,
+        );
+        this.cache.set(
+          targetKey({ playerName: mergedStats.displayName }),
+          mergedStats,
+        );
       }
       for (const target of batch) {
-        this.fixtureRefreshTargets.delete(targetKey(target));
+        const key = targetKey(target);
+        if (refreshFixtures) this.fixtureRefreshTargets.delete(key);
         const stats =
           this.cache.get(targetKey(target)) ??
           response.data.find(
@@ -317,8 +437,17 @@ export class StatsBatchCoordinator {
             view.noData();
           }
         }
-        if (stats && hasAnyDisplayData(stats)) this.clearRetry(targetKey(target));
-        else this.scheduleRetry(target);
+        if (stats && hasAnyDisplayData(stats)) {
+          this.clearRetry(targetKey(target));
+        } else {
+          this.scheduleRetry(
+            target,
+            Boolean(
+              target.playerName &&
+                deferredPlayerNames.has(normalizeName(target.playerName)),
+            ),
+          );
+        }
         if (stats?.pendingRefreshes?.length) {
           this.schedulePendingRefresh(
             target,
@@ -327,7 +456,10 @@ export class StatsBatchCoordinator {
             target.priority,
           );
         } else if (stats) {
-          this.clearPendingRefresh(targetKey(target));
+          this.clearPendingRefresh(
+            key,
+            this.fixtureRefreshTargets.has(key) && !refreshFixtures,
+          );
         }
       }
     } catch (error) {
@@ -337,7 +469,20 @@ export class StatsBatchCoordinator {
           : 'UNKNOWN_ERROR: Stats nicht verfügbar';
       console.warn('[Sorare Overlay] Statistikabruf fehlgeschlagen:', error);
       for (const target of batch) {
-        for (const view of target.views) view.error(message);
+        const cached = this.cachedStatsForTarget(target);
+        logStatsDiagnostic('request-failed', {
+          target: {
+            slug: target.slug ?? null,
+            playerName: target.playerName ?? null,
+            position: target.position ?? null,
+          },
+          message,
+          retained: cached ? summarizeStats(cached) : null,
+        });
+        for (const view of target.views) {
+          if (cached) view.render(cached);
+          else view.error();
+        }
         this.scheduleRetry(target);
       }
     }
@@ -351,86 +496,202 @@ export class StatsBatchCoordinator {
   ): void {
     const key = targetKey(target);
     if (refreshFixture) this.fixtureRefreshTargets.add(key);
-    const activeCandidates =
-      this.refreshViews.get(key) ?? new Set<OverlayView>();
-    for (const view of views) activeCandidates.add(view);
-    this.refreshViews.set(key, activeCandidates);
-    if (this.refreshTimers.has(key)) return;
+    const existing = this.refreshWork.get(key);
+    if (existing) {
+      for (const view of views) existing.views.add(view);
+      existing.priority = Math.max(existing.priority, priority);
+      existing.refreshFixture ||= refreshFixture;
+      this.startRefreshWork(key, existing);
+      return;
+    }
+
     const attempt = this.refreshAttempts.get(key) ?? 0;
     const delay = this.refreshDelaysMs[attempt];
     if (delay === undefined) {
-      this.refreshViews.delete(key);
       this.fixtureRefreshTargets.delete(key);
       return;
     }
 
     this.refreshAttempts.set(key, attempt + 1);
-    const timer = window.setTimeout(() => {
-      this.refreshTimers.delete(key);
-      const activeViews = [...(this.refreshViews.get(key) ?? [])].filter(
-        (view) => view.host.isConnected,
-      );
-      this.refreshViews.delete(key);
-      if (activeViews.length === 0) {
+    const work: PendingRefreshWork = {
+      target,
+      views: new Set(views),
+      priority,
+      remainingMs: delay,
+      refreshFixture,
+    };
+    this.refreshWork.set(key, work);
+    this.startRefreshWork(key, work);
+  }
+
+  private startRefreshWork(key: string, work: PendingRefreshWork): void {
+    if (work.timer !== undefined || !this.hasActiveViews(work.views)) return;
+    work.startedAt = Date.now();
+    work.timer = window.setTimeout(() => {
+      delete work.timer;
+      delete work.startedAt;
+      work.remainingMs = 0;
+      const connectedViews = this.connectedViews(work.views);
+      if (connectedViews.length === 0) {
+        this.refreshWork.delete(key);
         this.refreshAttempts.delete(key);
         this.fixtureRefreshTargets.delete(key);
         return;
       }
-      this.removeCachedTarget(target);
-      this.queueTarget(target, activeViews, priority);
-    }, delay);
-    this.refreshTimers.set(key, timer);
+      const activeViews = connectedViews.filter((view) =>
+        view.isViewportPriorityActive(),
+      );
+      if (activeViews.length === 0) return;
+      this.refreshWork.delete(key);
+      this.queueTarget(work.target, connectedViews, work.priority);
+    }, work.remainingMs);
   }
 
-  private removeCachedTarget(
+  private cachedStatsForTarget(
     target: Pick<PendingTarget, 'slug' | 'playerName' | 'position'>,
-  ): void {
-    for (const [key, stats] of this.cache) {
-      const identityMatches =
-        (target.slug !== undefined && stats.slug === target.slug) ||
-        (target.playerName !== undefined &&
-          namesLikelyMatch(target.playerName, stats.displayName));
-      const positionMatches =
-        target.position === undefined || stats.position === target.position;
-      if (identityMatches && positionMatches) this.cache.delete(key);
+  ): PlayerStats | undefined {
+    return (
+      this.cache.get(targetKey(target)) ??
+      [...this.cache.values()].find(
+        (stats) =>
+          (target.position === undefined ||
+            stats.position === target.position) &&
+          ((target.slug !== undefined && stats.slug === target.slug) ||
+            (target.playerName !== undefined &&
+              namesLikelyMatch(target.playerName, stats.displayName))),
+      )
+    );
+  }
+
+  private mergeWithCompleteCachedForm(incoming: PlayerStats): PlayerStats {
+    const cached = this.cachedStatsForTarget({
+      slug: incoming.slug,
+      position: incoming.position,
+    });
+    const isPartialFormRefresh =
+      incoming.pendingRefreshes?.includes('formHistory') === true;
+    const cachedIsPartialForm =
+      cached?.pendingRefreshes?.includes('formHistory') === true;
+    if (
+      !cached ||
+      !isPartialFormRefresh ||
+      cachedIsPartialForm
+    ) {
+      return incoming;
     }
+
+    return {
+      ...cached,
+      ...incoming,
+      aaL10: cached.aaL10,
+      cleanSheetL10: cached.cleanSheetL10,
+      goalL10: cached.goalL10,
+      excludedLowCoverage: cached.excludedLowCoverage,
+      ...(cached.mlsAaContext
+        ? { mlsAaContext: cached.mlsAaContext }
+        : {}),
+      ...(cached.historicalGoals
+        ? { historicalGoals: cached.historicalGoals }
+        : {}),
+      ...(cached.historicalAssists
+        ? { historicalAssists: cached.historicalAssists }
+        : {}),
+      ...(cached.historicalDecisives
+        ? { historicalDecisives: cached.historicalDecisives }
+        : {}),
+    };
   }
 
-  private clearPendingRefresh(key: string): void {
-    const timer = this.refreshTimers.get(key);
-    if (timer !== undefined) window.clearTimeout(timer);
-    this.refreshTimers.delete(key);
-    this.refreshViews.delete(key);
+  private clearPendingRefresh(
+    key: string,
+    preserveFixtureRefresh = false,
+  ): void {
+    const work = this.refreshWork.get(key);
+    if (work?.timer !== undefined) window.clearTimeout(work.timer);
+    this.refreshWork.delete(key);
     this.refreshAttempts.delete(key);
-    this.fixtureRefreshTargets.delete(key);
+    if (!preserveFixtureRefresh) this.fixtureRefreshTargets.delete(key);
   }
 
-  private scheduleRetry(target: PendingTarget): void {
+  private scheduleRetry(target: PendingTarget, deferred = false): void {
     const key = targetKey(target);
-    if (this.retryTimers.has(key)) return;
-    const attempt = this.retryAttempts.get(key) ?? 0;
-    const delay = this.retryDelaysMs[attempt];
+    const existing = this.retryWork.get(key);
+    if (existing) {
+      for (const view of target.views) existing.views.add(view);
+      existing.priority = Math.max(existing.priority, target.priority);
+      this.startRetryWork(key, existing);
+      return;
+    }
+
+    let delay: number | undefined;
+    if (deferred && !this.deferredRetryUsed.has(key)) {
+      this.deferredRetryUsed.add(key);
+      delay = this.deferredRetryDelayMs;
+    } else {
+      const attempt = this.retryAttempts.get(key) ?? 0;
+      delay = this.retryDelaysMs[attempt];
+      if (delay !== undefined) this.retryAttempts.set(key, attempt + 1);
+    }
     if (delay === undefined) return;
 
-    const views = new Set(target.views);
-    this.retryAttempts.set(key, attempt + 1);
-    const timer = window.setTimeout(() => {
-      this.retryTimers.delete(key);
-      const activeViews = [...views].filter((view) => view.host.isConnected);
-      if (activeViews.length === 0) {
+    const work: ScheduledTargetWork = {
+      target,
+      views: new Set(target.views),
+      priority: target.priority,
+      remainingMs: delay,
+    };
+    this.retryWork.set(key, work);
+    this.startRetryWork(key, work);
+  }
+
+  private startRetryWork(key: string, work: ScheduledTargetWork): void {
+    if (work.timer !== undefined || !this.hasActiveViews(work.views)) return;
+    work.startedAt = Date.now();
+    work.timer = window.setTimeout(() => {
+      delete work.timer;
+      delete work.startedAt;
+      work.remainingMs = 0;
+      const connectedViews = this.connectedViews(work.views);
+      if (connectedViews.length === 0) {
+        this.retryWork.delete(key);
         this.retryAttempts.delete(key);
+        this.deferredRetryUsed.delete(key);
         return;
       }
-      this.queueTarget(target, activeViews, target.priority);
-    }, delay);
-    this.retryTimers.set(key, timer);
+      const activeViews = connectedViews.filter((view) =>
+        view.isViewportPriorityActive(),
+      );
+      if (activeViews.length === 0) return;
+      this.retryWork.delete(key);
+      this.queueTarget(work.target, connectedViews, work.priority);
+    }, work.remainingMs);
+  }
+
+  private connectedViews(views: Iterable<OverlayView>): OverlayView[] {
+    return [...views].filter((view) => view.host.isConnected);
+  }
+
+  private hasActiveViews(views: Iterable<OverlayView>): boolean {
+    return this.connectedViews(views).some((view) =>
+      view.isViewportPriorityActive(),
+    );
+  }
+
+  private pauseScheduledWork(work: ScheduledTargetWork): void {
+    if (work.timer === undefined) return;
+    window.clearTimeout(work.timer);
+    const elapsed = Math.max(0, Date.now() - (work.startedAt ?? Date.now()));
+    work.remainingMs = Math.max(0, work.remainingMs - elapsed);
+    delete work.timer;
+    delete work.startedAt;
   }
 
   private clearRetry(key: string): void {
-    const timer = this.retryTimers.get(key);
-    if (timer !== undefined) window.clearTimeout(timer);
-    this.retryTimers.delete(key);
+    const work = this.retryWork.get(key);
+    if (work?.timer !== undefined) window.clearTimeout(work.timer);
+    this.retryWork.delete(key);
     this.retryAttempts.delete(key);
+    this.deferredRetryUsed.delete(key);
   }
 }
 
@@ -702,6 +963,12 @@ export class SorareCardScanner {
           if (mounted.viewportActive !== viewportActive) {
             mounted.viewportActive = viewportActive;
             mounted.view.setViewportPriorityActive(viewportActive);
+            this.coordinator.setViewViewportActive(
+              mounted.target,
+              mounted.view,
+              viewportActive,
+              priority,
+            );
           }
           if (viewportActive) this.requestStats(mounted, priority);
         }

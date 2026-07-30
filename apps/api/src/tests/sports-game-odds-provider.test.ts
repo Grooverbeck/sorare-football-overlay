@@ -521,4 +521,33 @@ describe('SupplementingPlayerMarketOddsProvider', () => {
 
     expect(result.get(playerMarketOddsKey(stats))).toEqual(primaryOdds);
   });
+
+  it('does not call a goal-only fallback when only the assist market is missing', async () => {
+    const stats = player();
+    const primaryOdds: PlayerMarketOdds = {
+      source: 'the-odds-api',
+      capturedAt: '2026-07-25T10:00:00.000Z',
+      goal: { probability: 0.35, bookmakerCount: 1 },
+      assist: null,
+      decisive: null,
+    };
+    const primary: PlayerMarketOddsProvider = {
+      load: vi.fn(async () =>
+        new Map([[playerMarketOddsKey(stats), primaryOdds]]),
+      ),
+    };
+    const fallback: PlayerMarketOddsProvider = {
+      load: vi.fn(async () => new Map()),
+    };
+    const combined = new SupplementingPlayerMarketOddsProvider(
+      primary,
+      fallback,
+      ['goal'],
+    );
+
+    const result = await combined.load([stats]);
+
+    expect(result.get(playerMarketOddsKey(stats))).toEqual(primaryOdds);
+    expect(fallback.load).not.toHaveBeenCalled();
+  });
 });

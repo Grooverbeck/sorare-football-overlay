@@ -8,6 +8,7 @@ import {
   normalizeTeamName,
   playerNameMatchScore,
   playerMarketOddsKey,
+  supportsFixtureCompetition,
 } from '../providers/market-odds-provider.js';
 import {
   InMemoryProviderQuotaUsageStore,
@@ -504,6 +505,35 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     expect(normalizeTeamName('SJ Earthquakes')).toBe(
       normalizeTeamName('San Jose Earthquakes'),
     );
+    expect(normalizeTeamName('Wattens')).toBe(
+      normalizeTeamName('WSG Tirol'),
+    );
+    expect(normalizeTeamName('Salzburg')).toBe(
+      normalizeTeamName('RB Salzburg'),
+    );
+    expect(normalizeTeamName('Hertha BSC')).toBe(
+      normalizeTeamName('Hertha Berlin'),
+    );
+    expect(normalizeTeamName('Bochum')).toBe(
+      normalizeTeamName('VfL Bochum'),
+    );
+  });
+
+  it('does not treat a legacy Contender fixture as MLS after adding team aliases', () => {
+    const legacyContenderPlayer = player({
+      nextGame: {
+        ...player().nextGame!,
+        competitionSlug: undefined,
+        homeTeamName: 'Wattens',
+        awayTeamName: 'Sturm Graz',
+        playerTeamName: 'Wattens',
+        opponentTeamName: 'Sturm Graz',
+      },
+    });
+
+    expect(
+      supportsFixtureCompetition(legacyContenderPlayer, ['mlspa']),
+    ).toBe(false);
   });
 
   it('freezes real goal and assist market consensus after the first capture', async () => {
@@ -963,9 +993,9 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     ).toBe(true);
   });
 
-  it('backs off unavailable markets and stops after the final pre-kickoff check', async () => {
+  it('checks unavailable markets at most three times across the 72-hour window', async () => {
     const adaptiveKickoff = Date.parse('2026-07-26T12:00:00.000Z');
-    let clock = adaptiveKickoff - 24 * 60 * 60 * 1_000;
+    let clock = adaptiveKickoff - 72 * 60 * 60 * 1_000;
     const store = new InMemoryMarketSnapshotStore(
       30 * 60 * 1_000,
       () => clock,
@@ -997,7 +1027,7 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
       baseUrl: 'https://api.the-odds-api.com/v4',
       sportKey: 'soccer_usa_mls',
       region: 'us',
-      fetchWindowMs: 24 * 60 * 60 * 1_000,
+      fetchWindowMs: 72 * 60 * 60 * 1_000,
       requestTimeoutMs: 1_000,
       maxRetries: 0,
       store,
@@ -1016,15 +1046,15 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
       status: 'unavailable',
       attemptCount: 1,
       nextRetryAt: new Date(
-        adaptiveKickoff - 12 * 60 * 60 * 1_000,
+        adaptiveKickoff - 24 * 60 * 60 * 1_000,
       ).toISOString(),
     });
 
-    clock = adaptiveKickoff - 13 * 60 * 60 * 1_000;
+    clock = adaptiveKickoff - 25 * 60 * 60 * 1_000;
     await provider.load([stats]);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
 
-    clock = adaptiveKickoff - 12 * 60 * 60 * 1_000;
+    clock = adaptiveKickoff - 24 * 60 * 60 * 1_000;
     await provider.load([stats]);
     expect(fetchImpl).toHaveBeenCalledTimes(4);
     await expect(

@@ -19,6 +19,10 @@ import {
   type PlayerMarketOddsProvider,
 } from '../providers/market-odds-provider.js';
 import type { GoalscorerProbabilityProvider } from '../providers/goalscorer-provider.js';
+import {
+  UnavailableFixtureMatchOddsProvider,
+  type FixtureMatchOddsProvider,
+} from '../providers/match-odds-provider.js';
 import type {
   PlayerStatsDataSource,
   SourcePlayer,
@@ -33,6 +37,21 @@ export interface StatsServiceResult {
   cacheHits: number;
   source: 'sorare' | 'mock';
   deferredPlayerNames: string[];
+  diagnostics: {
+    requestedPlayers: number;
+    resolvedPlayers: number;
+    returnedPlayers: number;
+    cacheHits: number;
+    deferredNames: number;
+    partialHistories: number;
+    durationsMs: {
+      nameResolution: number;
+      cache: number;
+      baseAndHistory: number;
+      result: number;
+      total: number;
+    };
+  };
 }
 
 function cacheKey(request: SourcePlayerRequest, excludeLowCoverage: boolean): string {
@@ -67,6 +86,30 @@ function hasNoUsablePlayerData(stats: PlayerStats): boolean {
     stats.aaL10.sampleSize === 0 &&
     stats.cleanSheetL10.sampleSize === 0 &&
     stats.goalL10.sampleSize === 0
+  );
+}
+
+function mergeMatchProbabilities(
+  primary: NonNullable<PlayerStats['nextGame']>['matchProbabilities'],
+  fallback: NonNullable<PlayerStats['nextGame']>['matchProbabilities'],
+): NonNullable<PlayerStats['nextGame']>['matchProbabilities'] {
+  if (primary === null) return fallback;
+  if (fallback === null) return primary;
+  return {
+    win: primary.win ?? fallback.win,
+    draw: primary.draw ?? fallback.draw,
+    loss: primary.loss ?? fallback.loss,
+  };
+}
+
+function needsMatchProbabilitiesFallback(stats: PlayerStats): boolean {
+  if (!stats.nextGame) return false;
+  const probabilities = stats.nextGame.matchProbabilities;
+  return (
+    (probabilities === null ||
+      probabilities.win === null ||
+      probabilities.draw === null ||
+      probabilities.loss === null)
   );
 }
 
@@ -117,7 +160,7 @@ function harmonizePlayerTeamFixtures(
   });
 }
 
-type PendingRefresh = 'fixture' | 'marketOdds';
+type PendingRefresh = 'formHistory' | 'fixture' | 'marketOdds';
 
 interface FixtureRefreshEntry {
   key: string;
@@ -127,6 +170,18 @@ interface FixtureRefreshEntry {
 }
 
 export type BackgroundTaskScheduler = (task: Promise<void>) => void;
+export const DEFAULT_NAME_RESOLUTION_BUDGET_MS = 650;
+
+interface LoadBatchOptions {
+  allowPartialHistory?: boolean;
+  completeHistory?: boolean;
+  overwriteForm?: boolean;
+  scheduleHistoryCompletion?: boolean;
+}
+
+function elapsedMs(startedAt: number): number {
+  return Math.round((performance.now() - startedAt) * 10) / 10;
+}
 
 type TimedResult<T> =
   | { status: 'fulfilled'; value: T }
@@ -171,10 +226,16 @@ export class StatsService {
     private readonly excludeLowCoverage: boolean,
     private readonly marketOddsProvider: PlayerMarketOddsProvider,
     private readonly scheduleBackground?: BackgroundTaskScheduler,
-    private readonly nameResolutionBudgetMs = 3_000,
+    private readonly nameResolutionBudgetMs =
+      DEFAULT_NAME_RESOLUTION_BUDGET_MS,
+    private readonly fixtureMatchOddsProvider: FixtureMatchOddsProvider =
+      new UnavailableFixtureMatchOddsProvider(),
+    private readonly cacheOnlyOddsBudgetMs = 350,
   ) {}
 
   async getPlayerStats(request: ValidatedPlayerStatsRequest): Promise<StatsServiceResult> {
+    const requestStartedAt = performance.now();
+    const nameResolutionStartedAt = performance.now();
     const directRequests = request.slugs.map((slug): SourcePlayerRequest => {
       const position = request.positions?.[slug];
       return {
@@ -190,6 +251,7 @@ export class StatsService {
       request.positions,
       request.includeHistoricalAssists,
     );
+    const nameResolutionDurationMs = elapsedMs(nameResolutionStartedAt);
     const resolvedRequests = nameResolution.resolved.map(
       (resolved): SourcePlayerRequest => ({
         ...resolved,
@@ -206,6 +268,7 @@ export class StatsService {
         ]),
       ).values(),
     ];
+    const cacheStartedAt = performance.now();
     const immediate = new Map<string, PlayerStats>();
     const fixtureRefreshEntries: FixtureRefreshEntry[] = [];
     let cacheHits = 0;
@@ -288,6 +351,8 @@ export class StatsService {
         }
       }
     }
+    const cacheDurationMs = elapsedMs(cacheStartedAt);
+    const baseAndHistoryStartedAt = performance.now();
 
     if (
       request.refreshFixtures &&
@@ -320,7 +385,9 @@ export class StatsService {
     });
 
     if (fresh.length > 0) {
-      const batch = this.loadBatch(fresh);
+      const batch = this.loadBatch(fresh, {
+        allowPartialHistory: request.supportsPartialFormHistory,
+      });
       for (const playerRequest of fresh) {
         const key = cacheKey(playerRequest, this.excludeLowCoverage);
         const pendingKey = inFlightKey(
@@ -336,33 +403,60 @@ export class StatsService {
       }
     }
 
+    let firstColdLoadError: unknown;
     let cachedOrLoaded = (
       await Promise.all(
         playerRequests.map(async (playerRequest) => {
           const key = cacheKey(playerRequest, this.excludeLowCoverage);
-          return (
-            immediate.get(key) ??
-            (await this.inFlight.get(
+          const cached = immediate.get(key);
+          if (cached) return cached;
+          try {
+            return await this.inFlight.get(
               inFlightKey(playerRequest, this.excludeLowCoverage),
-            ))
-          );
+            );
+          } catch (error) {
+            // A failed cold player must not discard unrelated cache hits or
+            // successfully loaded players from the same API response.
+            firstColdLoadError ??= error;
+            return undefined;
+          }
         }),
       )
     ).filter((stats): stats is PlayerStats => Boolean(stats));
+    if (
+      cachedOrLoaded.length === 0 &&
+      firstColdLoadError !== undefined &&
+      nameResolution.deferred.length === 0
+    ) {
+      throw firstColdLoadError;
+    }
     cachedOrLoaded = await this.recoverEmptyNameResolutions(
       playerRequests,
       cachedOrLoaded,
       request.positions,
       request.includeHistoricalAssists,
+      request.supportsPartialFormHistory,
     );
+    const baseAndHistoryDurationMs = elapsedMs(baseAndHistoryStartedAt);
+    const resultStartedAt = performance.now();
     cachedOrLoaded = harmonizePlayerTeamFixtures(cachedOrLoaded);
     const oddsEligiblePlayers = cachedOrLoaded.filter(
       (stats) => playerMarketOddsSupported(this.marketOddsProvider, stats),
     );
-    const marketOdds = await this.marketOddsProvider
-      .load(oddsEligiblePlayers, { cacheOnly: true })
-      .catch(() => new Map());
+    const [fixtureMatchOdds, marketOdds] = await Promise.all([
+      this.loadCacheOnlyWithinBudget(
+        this.fixtureMatchOddsProvider.load(cachedOrLoaded, {
+          cacheOnly: true,
+        }),
+      ),
+      this.loadCacheOnlyWithinBudget(
+        this.marketOddsProvider.load(oddsEligiblePlayers, {
+          cacheOnly: true,
+        }),
+      ),
+    ]);
     const marketRefreshPlayers: PlayerStats[] = [];
+    const matchOddsRefreshPlayers: PlayerStats[] = [];
     const data = cachedOrLoaded.map((stats): PlayerStats => {
       const pending = new Set<PendingRefresh>(
         stats.pendingRefreshes ?? [],
@@ -374,6 +468,19 @@ export class StatsService {
       );
       const odds =
         supportsMarketOdds ? marketOdds.get(key) ?? null : null;
+      const fallbackMatchProbabilities =
+        fixtureMatchOdds.get(key) ?? null;
+      const nextGame = stats.nextGame
+        ? {
+            ...stats.nextGame,
+            matchProbabilities: mergeMatchProbabilities(
+              stats.nextGame.matchProbabilities,
+              fallbackMatchProbabilities,
+            ),
+            marketOdds: odds,
+          }
+        : null;
+      const statsWithFallback = { ...stats, nextGame };
       if (
         this.scheduleBackground &&
         supportsMarketOdds &&
@@ -382,14 +489,17 @@ export class StatsService {
         pending.add('marketOdds');
         marketRefreshPlayers.push(stats);
       }
+      if (
+        this.scheduleBackground &&
+        this.fixtureMatchOddsProvider.supports(statsWithFallback) &&
+        needsMatchProbabilitiesFallback(statsWithFallback)
+      ) {
+        pending.add('fixture');
+        matchOddsRefreshPlayers.push(statsWithFallback);
+      }
       return {
         ...stats,
-        nextGame: stats.nextGame
-          ? {
-              ...stats.nextGame,
-              marketOdds: odds,
-            }
-          : null,
+        nextGame,
         ...(pending.size > 0
           ? { pendingRefreshes: [...pending] }
           : { pendingRefreshes: undefined }),
@@ -408,17 +518,52 @@ export class StatsService {
             .then(() => undefined),
         );
       }
+      if (matchOddsRefreshPlayers.length > 0) {
+        tasks.push(
+          this.fixtureMatchOddsProvider
+            .load(matchOddsRefreshPlayers)
+            .then(() => undefined),
+        );
+      }
       if (tasks.length > 0) {
         this.scheduleBackground(Promise.all(tasks).then(() => undefined));
       }
     }
 
+    const resultDurationMs = elapsedMs(resultStartedAt);
+    const partialHistories = data.filter((stats) =>
+      stats.pendingRefreshes?.includes('formHistory'),
+    ).length;
     return {
       data,
       cacheHits,
       source: this.dataSource.source,
       deferredPlayerNames: nameResolution.deferred,
+      diagnostics: {
+        requestedPlayers:
+          request.slugs.length + request.playerNames.length,
+        resolvedPlayers: playerRequests.length,
+        returnedPlayers: data.length,
+        cacheHits,
+        deferredNames: nameResolution.deferred.length,
+        partialHistories,
+        durationsMs: {
+          nameResolution: nameResolutionDurationMs,
+          cache: cacheDurationMs,
+          baseAndHistory: baseAndHistoryDurationMs,
+          result: resultDurationMs,
+          total: elapsedMs(requestStartedAt),
+        },
+      },
     };
+  }
+
+  private async loadCacheOnlyWithinBudget<T>(
+    pending: Promise<Map<string, T>>,
+  ): Promise<Map<string, T>> {
+    const result = await settleWithin(pending, this.cacheOnlyOddsBudgetMs);
+    if (result.status === 'fulfilled') return result.value;
+    return new Map();
   }
 
   private async resolveNamesForResponse(
@@ -496,7 +641,13 @@ export class StatsService {
     // A cold or invalid player must not prevent the other newly resolved
     // gallery cards from reaching the cache.
     await Promise.allSettled(
-      requests.map((request) => this.loadBatch([request])),
+      requests.map((request) =>
+        this.loadBatch([request], {
+          completeHistory: true,
+          overwriteForm: true,
+          scheduleHistoryCompletion: false,
+        }),
+      ),
     );
   }
 
@@ -505,6 +656,7 @@ export class StatsService {
     loadedStats: readonly PlayerStats[],
     positions: Readonly<Record<string, FootballPosition>> | undefined,
     includeHistoricalAssists: boolean,
+    allowPartialHistory: boolean,
   ): Promise<PlayerStats[]> {
     const emptyNameMatches = playerRequests.flatMap((playerRequest) => {
       if (
@@ -519,60 +671,71 @@ export class StatsService {
           (!playerRequest.position ||
             candidate.position === playerRequest.position),
       );
-      return stats && hasNoUsablePlayerData(stats)
+      return stats &&
+        !stats.pendingRefreshes?.includes('formHistory') &&
+        hasNoUsablePlayerData(stats)
         ? [{ playerRequest, stats }]
         : [];
     });
     if (emptyNameMatches.length === 0) return [...loadedStats];
 
-    const names = [
-      ...new Set(
-        emptyNameMatches.map(
-          ({ playerRequest }) => playerRequest.resolvedFromName!,
+    try {
+      const names = [
+        ...new Set(
+          emptyNameMatches.map(
+            ({ playerRequest }) => playerRequest.resolvedFromName!,
+          ),
         ),
-      ),
-    ];
-    const searched = await this.dataSource.resolvePlayerNames(
-      names,
-      positions,
-      { forceSearch: true },
-    );
-    const searchedByName = new Map(
-      searched.flatMap((resolved) =>
-        resolved.resolvedFromName
-          ? [[resolved.resolvedFromName, resolved] as const]
-          : [],
-      ),
-    );
-    const replacements = new Map<PlayerStats, SourcePlayerRequest>();
-    for (const { playerRequest, stats } of emptyNameMatches) {
-      const corrected = searchedByName.get(playerRequest.resolvedFromName!);
-      if (!corrected || corrected.slug === playerRequest.slug) continue;
-      replacements.set(stats, {
-        ...corrected,
-        ...(includeHistoricalAssists
-          ? { includeHistoricalAssists: true }
-          : {}),
-      });
-    }
-    if (replacements.size === 0) return [...loadedStats];
+      ];
+      const searched = await this.dataSource.resolvePlayerNames(
+        names,
+        positions,
+        { forceSearch: true },
+      );
+      const searchedByName = new Map(
+        searched.flatMap((resolved) =>
+          resolved.resolvedFromName
+            ? [[resolved.resolvedFromName, resolved] as const]
+            : [],
+        ),
+      );
+      const replacements = new Map<PlayerStats, SourcePlayerRequest>();
+      for (const { playerRequest, stats } of emptyNameMatches) {
+        const corrected = searchedByName.get(playerRequest.resolvedFromName!);
+        if (!corrected || corrected.slug === playerRequest.slug) continue;
+        replacements.set(stats, {
+          ...corrected,
+          ...(includeHistoricalAssists
+            ? { includeHistoricalAssists: true }
+            : {}),
+        });
+      }
+      if (replacements.size === 0) return [...loadedStats];
 
-    const correctedRequests = [
-      ...new Map(
-        [...replacements.values()].map((request) => [
-          `${request.slug}:${request.position ?? 'default'}`,
-          request,
-        ]),
-      ).values(),
-    ];
-    const corrected = await this.loadBatch(correctedRequests);
-    return loadedStats.map((stats) => {
-      const correctedRequest = replacements.get(stats);
-      return correctedRequest
-        ? corrected.get(cacheKey(correctedRequest, this.excludeLowCoverage)) ??
-            stats
-        : stats;
-    });
+      const correctedRequests = [
+        ...new Map(
+          [...replacements.values()].map((request) => [
+            `${request.slug}:${request.position ?? 'default'}`,
+            request,
+          ]),
+        ).values(),
+      ];
+      const corrected = await this.loadBatch(correctedRequests, {
+        allowPartialHistory,
+      });
+      return loadedStats.map((stats) => {
+        const correctedRequest = replacements.get(stats);
+        return correctedRequest
+          ? corrected.get(
+              cacheKey(correctedRequest, this.excludeLowCoverage),
+            ) ?? stats
+          : stats;
+      });
+    } catch {
+      // Name correction is best effort. A failed search or replacement fetch
+      // must never discard unrelated cache hits from the current response.
+      return [...loadedStats];
+    }
   }
 
   private async hydrateFixturesForResponse(
@@ -650,8 +813,19 @@ export class StatsService {
     }
   }
 
-  private async loadBatch(requests: SourcePlayerRequest[]): Promise<Map<string, PlayerStats>> {
-    const players = await this.dataSource.fetchPlayers(requests);
+  private async loadBatch(
+    requests: SourcePlayerRequest[],
+    options: LoadBatchOptions = {},
+  ): Promise<Map<string, PlayerStats>> {
+    const allowPartialHistory = options.allowPartialHistory === true;
+    const useBasePath =
+      allowPartialHistory &&
+      !options.completeHistory &&
+      Boolean(this.scheduleBackground) &&
+      this.dataSource.fetchPlayersBase !== undefined;
+    const players = useBasePath
+      ? await this.dataSource.fetchPlayersBase!(requests)
+      : await this.dataSource.fetchPlayers(requests);
     const splitCache = supportsSplitPlayerStatsCache(this.cache)
       ? this.cache
       : undefined;
@@ -659,6 +833,7 @@ export class StatsService {
       requests.map((request) => [`${request.slug}:${request.position ?? 'default'}`, request]),
     );
     const result = new Map<string, PlayerStats>();
+    const partialRequests: SourcePlayerRequest[] = [];
 
     for (const player of players) {
       const requested =
@@ -671,8 +846,40 @@ export class StatsService {
         requested.includeHistoricalAssists === true,
       );
       const key = cacheKey(requested, this.excludeLowCoverage);
+      const historyIsPartial = player.historyStatus === 'partial';
+      if (historyIsPartial && !allowPartialHistory) {
+        // Old clients do not understand the `formHistory` capability. Keep
+        // the failure isolated to this player rather than returning an
+        // apparently complete short form or breaking the entire batch.
+        continue;
+      }
       let storedStats = stats;
-      if (requested.includeHistoricalAssists && splitCache) {
+      if (historyIsPartial) {
+        storedStats = {
+          ...stats,
+          pendingRefreshes: ['formHistory'],
+        };
+        if (splitCache) {
+          const resolvedNextGame = await splitCache.setFixture(
+            key,
+            stats.nextGame,
+          );
+          storedStats = { ...storedStats, nextGame: resolvedNextGame };
+        }
+        partialRequests.push(requested);
+      } else if (options.overwriteForm && splitCache) {
+        const {
+          nextGame,
+          pendingRefreshes: _pendingRefreshes,
+          mlsAaContext: _mlsAaContext,
+          ...form
+        } = stats;
+        const resolvedNextGame = await splitCache.setFixture(key, nextGame);
+        await splitCache.setForm(key, form);
+        storedStats = { ...form, nextGame: resolvedNextGame };
+      } else if (options.overwriteForm) {
+        await this.cache.set(key, stats);
+      } else if (requested.includeHistoricalAssists && splitCache) {
         const resolvedNextGame = await splitCache.setFixture(
           key,
           stats.nextGame,
@@ -688,7 +895,66 @@ export class StatsService {
       }
       result.set(key, storedStats);
     }
+    if (
+      partialRequests.length > 0 &&
+      options.scheduleHistoryCompletion !== false
+    ) {
+      this.scheduleHistoryCompletion(partialRequests);
+    }
     return result;
+  }
+
+  private scheduleHistoryCompletion(
+    requests: readonly SourcePlayerRequest[],
+  ): void {
+    if (!this.scheduleBackground) return;
+    const unique = [
+      ...new Map(
+        requests.map((request) => [
+          inFlightKey(request, this.excludeLowCoverage),
+          request,
+        ]),
+      ).values(),
+    ];
+    const splitCache = supportsSplitPlayerStatsCache(this.cache)
+      ? this.cache
+      : undefined;
+    const tasks = unique.map(async (request) => {
+      const refreshKey = inFlightKey(request, this.excludeLowCoverage);
+      const claimed =
+        splitCache === undefined ||
+        (await splitCache.claimFormHistoryRefresh(refreshKey));
+      if (!claimed) return;
+      try {
+        const loaded = await this.loadBatch([request], {
+          allowPartialHistory: true,
+          completeHistory: true,
+          overwriteForm: true,
+          scheduleHistoryCompletion: false,
+        });
+        const stats = loaded.get(cacheKey(request, this.excludeLowCoverage));
+        if (!stats || stats.pendingRefreshes?.includes('formHistory')) {
+          throw new Error('Player form history remained incomplete');
+        }
+      } catch (error) {
+        if (splitCache) {
+          await splitCache.releaseFormHistoryRefresh(refreshKey);
+        }
+        throw error;
+      }
+    });
+    this.scheduleBackground(
+      Promise.allSettled(tasks).then((settled) => {
+        const failed = settled.filter(
+          (entry) => entry.status === 'rejected',
+        ).length;
+        if (failed > 0) {
+          throw new Error(
+            `${failed} player form history refreshes remained incomplete`,
+          );
+        }
+      }),
+    );
   }
 
   private toPlayerStats(
@@ -710,7 +976,7 @@ export class StatsService {
       aaL10: metrics.aaL10,
       cleanSheetL10: metrics.cleanSheetL10,
       goalL10: goalProbability.metric,
-      ...(includeHistoricalAssists
+      ...(includeHistoricalAssists && player.historyStatus !== 'partial'
         ? {
             historicalGoals: calculateHistoricalGoalMetrics(
               player.appearances,

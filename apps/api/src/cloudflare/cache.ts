@@ -27,6 +27,11 @@ import {
   type OddsMarketKey,
 } from '../providers/market-odds-provider.js';
 import {
+  MatchOddsSnapshotSchema,
+  type MatchOddsSnapshot,
+  type MatchOddsSnapshotStore,
+} from '../providers/match-odds-provider.js';
+import {
   ProviderQuotaUsageSchema,
   type OddsProviderName,
   type ProviderQuotaUsage,
@@ -85,6 +90,11 @@ export interface JsonKeyValueStore {
     value: string,
     options?: { expiration?: number; expirationTtl?: number },
   ): Promise<void>;
+  putIfAbsent?(
+    key: string,
+    value: string,
+    options?: { expiration?: number; expirationTtl?: number },
+  ): Promise<boolean>;
   putEarlierFixture?(
     key: string,
     value: string,
@@ -135,6 +145,9 @@ const WEEKLY_FORM_REFRESH_HOUR_UTC = 10;
 const FIXTURE_ROLLOVER_HOUR_UTC = 8;
 const FIXTURE_MINIMUM_POST_KICKOFF_SECONDS = 6 * 60 * 60;
 const HOUR_MS = 60 * 60 * 1_000;
+const FORM_HISTORY_REFRESH_LEASE_SECONDS = 60;
+const FORM_HISTORY_REFRESH_LEASE_PREFIX =
+  'player-form-history-refresh:v1:';
 const FIXTURE_ODDS_REFRESH_LEASE_SECONDS = 15 * 60;
 const FIXTURE_ODDS_CHECK_PREFIX = 'sorare-fixture-odds-check:v1:';
 const PLAYER_TEAM_FIXTURE_PREFIX = 'player-team-fixture:v1:';
@@ -451,6 +464,42 @@ export class CloudflareMarketSnapshotStore
   }
 }
 
+export class CloudflareMatchOddsSnapshotStore
+  implements MatchOddsSnapshotStore
+{
+  constructor(private readonly namespace: JsonKeyValueStore) {}
+
+  async get(fixtureKey: string): Promise<MatchOddsSnapshot | undefined> {
+    const key = this.key(fixtureKey);
+    const raw = await this.namespace.get<unknown>(key, 'json');
+    if (raw === null) return undefined;
+    const parsed = MatchOddsSnapshotSchema.safeParse(raw);
+    if (!parsed.success) {
+      await this.namespace.delete(key);
+      return undefined;
+    }
+    if (Date.parse(parsed.data.expiresAt) <= Date.now()) {
+      await this.namespace.delete(key);
+      return undefined;
+    }
+    return parsed.data;
+  }
+
+  async set(
+    fixtureKey: string,
+    snapshot: MatchOddsSnapshot,
+  ): Promise<void> {
+    const parsed = MatchOddsSnapshotSchema.parse(snapshot);
+    await this.namespace.put(this.key(fixtureKey), JSON.stringify(parsed), {
+      expiration: Math.floor(Date.parse(parsed.expiresAt) / 1_000),
+    });
+  }
+
+  private key(fixtureKey: string): string {
+    return `match-odds:v1:${encodeURIComponent(fixtureKey)}`;
+  }
+}
+
 export class CloudflareProviderQuotaUsageStore
   implements ProviderQuotaUsageStore
 {
@@ -513,6 +562,34 @@ class CloudflarePlayerFormCache
       `player-form:v2:${key}`,
       PlayerFormStatsSchema.parse(value),
       nextMondayFormExpiration(this.now(), this.ttlSeconds),
+    );
+  }
+
+  async claimFormHistoryRefresh(key: string): Promise<boolean> {
+    const leaseKey = `${FORM_HISTORY_REFRESH_LEASE_PREFIX}${encodeURIComponent(
+      key,
+    )}`;
+    const value = JSON.stringify({
+      claimedAt: new Date(this.now()).toISOString(),
+    });
+    if (this.namespace.putIfAbsent) {
+      return this.namespace.putIfAbsent(leaseKey, value, {
+        expirationTtl: FORM_HISTORY_REFRESH_LEASE_SECONDS,
+      });
+    }
+    const existing = await this.namespace.get<unknown>(leaseKey, 'json');
+    if (existing !== null) return false;
+    await this.namespace.put(
+      leaseKey,
+      value,
+      { expirationTtl: FORM_HISTORY_REFRESH_LEASE_SECONDS },
+    );
+    return true;
+  }
+
+  async releaseFormHistoryRefresh(key: string): Promise<void> {
+    await this.namespace.delete(
+      `${FORM_HISTORY_REFRESH_LEASE_PREFIX}${encodeURIComponent(key)}`,
     );
   }
 }
@@ -956,6 +1033,18 @@ export class CloudflarePlayerStatsCache
 
   getParts(key: string): Promise<PlayerStatsCacheParts> {
     return this.splitCache.getParts(key);
+  }
+
+  setForm(key: string, value: PlayerFormStats): Promise<void> {
+    return this.splitCache.setForm(key, value);
+  }
+
+  claimFormHistoryRefresh(key: string): boolean | Promise<boolean> {
+    return this.splitCache.claimFormHistoryRefresh(key);
+  }
+
+  releaseFormHistoryRefresh(key: string): void | Promise<void> {
+    return this.splitCache.releaseFormHistoryRefresh(key);
   }
 
   claimFixtureRefresh(
