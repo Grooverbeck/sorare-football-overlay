@@ -3,6 +3,7 @@ import {
   PlayerStatsRequestSchema,
   PlayerStatsSuccessResponseSchema,
 } from '@sorare-overlay/shared';
+import { registerRuntimeMessageHandler } from './browser-api.js';
 import type { FetchPlayerStatsMessage, WorkerResponse } from './messages.js';
 
 const backendRequestTimeoutMs = 15_000;
@@ -154,13 +155,15 @@ export async function handleMessage(
   }
 }
 
-if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
-  chrome.runtime.onMessage.addListener(
-    (message: unknown, sender, sendResponse) => {
-      void handleMessage(message as FetchPlayerStatsMessage, sender).then(
-        sendResponse,
-      );
-      return true;
-    },
+const extensionGlobals = globalThis as {
+  browser?: typeof chrome;
+  chrome?: typeof chrome;
+};
+if (
+  extensionGlobals.chrome?.runtime?.onMessage ||
+  extensionGlobals.browser?.runtime?.onMessage
+) {
+  registerRuntimeMessageHandler<WorkerResponse>((message, sender) =>
+    handleMessage(message as FetchPlayerStatsMessage, sender),
   );
 }

@@ -8,6 +8,7 @@ nicht erforderlich.
 
 - Google Chrome
 - Microsoft Edge
+- Mozilla Firefox Desktop ab Version 142
 
 Die manuell installierte Version wird gegen das öffentliche Backend des
 Projekts gebaut. Zugangsdaten oder Sorare-Passwörter gehören niemals in die
@@ -36,6 +37,44 @@ Erweiterung.
 
 Über das Erweiterungssymbol in der Browserleiste lässt sich das Overlay
 jederzeit ein- und ausschalten.
+
+## Firefox aus dem Quellcode laden
+
+Für Firefox wird ein eigenes Manifest mit einem Background-Skript gebaut. Die
+Chromium-Ausgabe bleibt davon getrennt und liegt weiterhin unter `dist`.
+Der direkte Firefox-Build ist ein Entwicklungsbuild und verwendet standardmäßig
+`http://localhost:8787`. Starte dafür bei Bedarf in einem zweiten Terminal das
+lokale Backend mit `npm run dev:api`; ohne lokales Backend erscheinen keine
+Statistiken.
+
+1. Installiere Node.js 22 oder neuer und npm.
+2. Klone oder entpacke das Projekt und führe im Projektordner aus:
+
+   ```powershell
+   npm install
+   npm run build:firefox
+   ```
+
+   Für einen normalen Test gegen das öffentliche Backend verwende
+   `npm run package:firefox`. Dieser Befehl baut `dist-firefox` gegen das
+   produktive Cloudflare-Backend und erzeugt zusätzlich eine noch unsignierte
+   ZIP unter `artifacts/`. Diese ZIP ist nicht als Release gedacht und kann in
+   einem normalen Firefox nicht dauerhaft installiert werden.
+
+3. Öffne in Firefox `about:debugging#/runtime/this-firefox`.
+4. Klicke auf **Temporäres Add-on laden**.
+5. Wähle
+   `apps/extension/dist-firefox/manifest.json` aus.
+6. Öffne oder aktualisiere anschließend eine Sorare-Fußballseite.
+
+Die temporäre Installation endet beim Neustart von Firefox. Nach einem neuen
+Build auf der Debugging-Seite **Neu laden** anklicken und die bereits geöffneten
+Sorare-Tabs aktualisieren.
+
+Eine dauerhafte Installation in Firefox Release/Beta erfordert ein von Mozilla
+signiertes Add-on. Dafür kann das erzeugte Firefox-Paket später über AMO als
+gelistetes oder nicht gelistetes Add-on signiert werden; dieser Port erstellt
+bewusst noch kein Release.
 
 ## Manuelles Update
 
@@ -66,6 +105,11 @@ Pfad geladen, kann der Browser sie als zusätzliche Erweiterung behandeln.
 Meist wurde der übergeordnete Download-Ordner ausgewählt. Öffne den entpackten
 Ordner und wähle genau den Ordner aus, in dem `manifest.json` liegt.
 
+Bei Firefox für die lokale Entwicklung muss in `about:debugging` die Datei
+`apps/extension/dist-firefox/manifest.json` ausgewählt werden. Eine unsignierte
+ZIP lässt sich in einem normalen Firefox Release nicht als dauerhaftes Add-on
+installieren.
+
 ### Nach einem Update erscheint noch die alte Anzeige
 
 1. Auf der Erweiterungsseite **Neu laden** anklicken.
@@ -88,6 +132,9 @@ Ordner und wähle genau den Ordner aus, in dem `manifest.json` liegt.
 1. `chrome://extensions` beziehungsweise `edge://extensions` öffnen.
 2. Bei der Erweiterung **Entfernen** auswählen.
 3. Danach kann der lokale Erweiterungsordner gelöscht werden.
+
+Für Firefox `about:addons` öffnen und die Erweiterung entfernen. Bei einer
+temporären Installation verschwindet sie alternativ beim Neustart des Browsers.
 
 Sobald eine freigegebene Chrome-Web-Store-Version verfügbar ist, übernimmt
 der Store Installation und Updates automatisch. Bis dahin ist das hier

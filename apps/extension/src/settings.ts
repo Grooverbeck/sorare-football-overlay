@@ -1,3 +1,5 @@
+import { getExtensionApi } from './browser-api.js';
+
 export const OVERLAY_ENABLED_KEY = 'overlayEnabled';
 export const MARKET_BRACKET_SIDE_KEY = 'marketBracketSide';
 export const MARKET_BRACKET_COMPACT_VIEW_KEY = 'marketBracketCompactView';
@@ -12,12 +14,12 @@ export type MarketValueFormat = 'percentage' | 'decimal';
 const maxRememberedCardPictures = 2_000;
 
 export async function getOverlayEnabled(): Promise<boolean> {
-  const stored = await chrome.storage.local.get({ [OVERLAY_ENABLED_KEY]: true });
+  const stored = await getExtensionApi().storage.local.get({ [OVERLAY_ENABLED_KEY]: true });
   return stored[OVERLAY_ENABLED_KEY] !== false;
 }
 
 export async function setOverlayEnabled(enabled: boolean): Promise<void> {
-  await chrome.storage.local.set({ [OVERLAY_ENABLED_KEY]: enabled });
+  await getExtensionApi().storage.local.set({ [OVERLAY_ENABLED_KEY]: enabled });
 }
 
 export function normalizeMarketBracketSide(value: unknown): MarketBracketSide {
@@ -25,7 +27,7 @@ export function normalizeMarketBracketSide(value: unknown): MarketBracketSide {
 }
 
 export async function getMarketBracketSide(): Promise<MarketBracketSide> {
-  const stored = await chrome.storage.local.get({
+  const stored = await getExtensionApi().storage.local.get({
     [MARKET_BRACKET_SIDE_KEY]: 'right',
   });
   return normalizeMarketBracketSide(stored[MARKET_BRACKET_SIDE_KEY]);
@@ -34,7 +36,7 @@ export async function getMarketBracketSide(): Promise<MarketBracketSide> {
 export async function setMarketBracketSide(
   side: MarketBracketSide,
 ): Promise<void> {
-  await chrome.storage.local.set({ [MARKET_BRACKET_SIDE_KEY]: side });
+  await getExtensionApi().storage.local.set({ [MARKET_BRACKET_SIDE_KEY]: side });
 }
 
 export async function getMarketBracketCompactView(): Promise<boolean> {
@@ -62,7 +64,7 @@ export async function getHistoricalAssistFallbackSettings(): Promise<{
   enabled: boolean;
   window: HistoricalAssistWindow;
 }> {
-  const stored = await chrome.storage.local.get({
+  const stored = await getExtensionApi().storage.local.get({
     [HISTORICAL_ASSIST_FALLBACK_ENABLED_KEY]: false,
     [HISTORICAL_ASSIST_WINDOW_KEY]: 15,
   });
@@ -77,7 +79,7 @@ export async function getHistoricalAssistFallbackSettings(): Promise<{
 export async function setHistoricalAssistFallbackEnabled(
   enabled: boolean,
 ): Promise<void> {
-  await chrome.storage.local.set({
+  await getExtensionApi().storage.local.set({
     [HISTORICAL_ASSIST_FALLBACK_ENABLED_KEY]: enabled,
   });
 }
@@ -85,7 +87,7 @@ export async function setHistoricalAssistFallbackEnabled(
 export async function setHistoricalAssistWindow(
   window: HistoricalAssistWindow,
 ): Promise<void> {
-  await chrome.storage.local.set({ [HISTORICAL_ASSIST_WINDOW_KEY]: window });
+  await getExtensionApi().storage.local.set({ [HISTORICAL_ASSIST_WINDOW_KEY]: window });
 }
 
 export function normalizeMarketValueFormat(
@@ -95,7 +97,7 @@ export function normalizeMarketValueFormat(
 }
 
 export async function getMarketValueFormat(): Promise<MarketValueFormat> {
-  const stored = await chrome.storage.local.get({
+  const stored = await getExtensionApi().storage.local.get({
     [MARKET_VALUE_FORMAT_KEY]: 'percentage',
   });
   return normalizeMarketValueFormat(stored[MARKET_VALUE_FORMAT_KEY]);
@@ -104,11 +106,11 @@ export async function getMarketValueFormat(): Promise<MarketValueFormat> {
 export async function setMarketValueFormat(
   format: MarketValueFormat,
 ): Promise<void> {
-  await chrome.storage.local.set({ [MARKET_VALUE_FORMAT_KEY]: format });
+  await getExtensionApi().storage.local.set({ [MARKET_VALUE_FORMAT_KEY]: format });
 }
 
 export async function getCardPictureNames(): Promise<Record<string, string>> {
-  const stored = await chrome.storage.local.get({
+  const stored = await getExtensionApi().storage.local.get({
     [CARD_PICTURE_NAMES_KEY]: {},
   });
   const value = stored[CARD_PICTURE_NAMES_KEY];
@@ -129,5 +131,5 @@ export async function setCardPictureNames(
   const trimmed = Object.fromEntries(
     Object.entries(entries).slice(-maxRememberedCardPictures),
   );
-  await chrome.storage.local.set({ [CARD_PICTURE_NAMES_KEY]: trimmed });
+  await getExtensionApi().storage.local.set({ [CARD_PICTURE_NAMES_KEY]: trimmed });
 }

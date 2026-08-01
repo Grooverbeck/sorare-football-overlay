@@ -4,10 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "node scripts/build.mjs --target chromium",
+    "build:chrome": "node scripts/build.mjs --target chromium",
+    "build:firefox": "node scripts/build.mjs --target firefox",
     "assets:store": "node scripts/generate-store-assets.mjs",
-    "dev": "node scripts/build.mjs --watch",
+    "dev": "node scripts/build.mjs --target chromium --watch",
+    "dev:firefox": "node scripts/build.mjs --target firefox --watch",
     "package:store": "node scripts/package-store.mjs",
+    "package:firefox": "node scripts/package-firefox.mjs",
+    "verify:targets": "node scripts/verify-build-targets.mjs",
+    "test:build-targets": "npm run build:chrome && npm run build:firefox && npm run verify:targets",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit"

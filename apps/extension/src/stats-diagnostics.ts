@@ -3,6 +3,7 @@ import type {
   PlayerStatsRequest,
   PlayerStatsSuccessResponse,
 } from '@sorare-overlay/shared';
+import { getExtensionApi } from './browser-api.js';
 
 const diagnosticPrefix = '[Sorare Overlay][StatsDiag]';
 const responseRequestIds = new WeakMap<
@@ -14,8 +15,7 @@ let requestSequence = 0;
 function diagnosticsEnabled(): boolean {
   try {
     return (
-      typeof chrome !== 'undefined' &&
-      Boolean(chrome.runtime?.id) &&
+      Boolean(getExtensionApi().runtime?.id) &&
       ['sorare.com', 'www.sorare.com'].includes(
         globalThis.location?.hostname ?? '',
       )

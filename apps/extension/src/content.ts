@@ -1,4 +1,5 @@
 import { SorareCardScanner } from './scanner.js';
+import { getExtensionApi } from './browser-api.js';
 import { hydrateCardPictureNames } from './dom.js';
 import { supportsCompactViewPath } from './compact-view-route.js';
 import {
@@ -116,7 +117,7 @@ void Promise.all([
   },
 );
 
-chrome.storage.onChanged.addListener((changes, areaName) => {
+getExtensionApi().storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'local') return;
   const enabledChange = changes[OVERLAY_ENABLED_KEY];
   if (enabledChange) applyEnabled(enabledChange.newValue !== false);
