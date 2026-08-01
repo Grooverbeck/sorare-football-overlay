@@ -4,13 +4,43 @@ import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const watch = process.argv.includes('--watch');
+const targetFlag = process.argv.find((argument) =>
+  argument.startsWith('--target='),
+);
+const targetOptionIndex = process.argv.indexOf('--target');
+const targetValue = targetFlag
+  ? targetFlag.slice('--target='.length)
+  : targetOptionIndex >= 0
+    ? process.argv[targetOptionIndex + 1]
+    : undefined;
+const target = targetValue ?? 'chromium';
+if (target !== 'chromium' && target !== 'firefox') {
+  throw new Error(`Unknown extension target: ${target}`);
+}
+
+const targetConfig = {
+  chromium: {
+    manifest: 'chromium.json',
+    outdir: 'dist',
+    backgroundEntryName: 'service-worker',
+    esbuildTarget: ['chrome120', 'edge120'],
+  },
+  firefox: {
+    manifest: 'firefox.json',
+    outdir: 'dist-firefox',
+    backgroundEntryName: 'background',
+    esbuildTarget: ['firefox142'],
+  },
+}[target];
+
 const apiBaseUrl = (process.env.EXTENSION_API_BASE_URL ?? 'http://localhost:8787').replace(/\/$/, '');
 const marketOddsPreview = process.env.EXTENSION_MARKET_ODDS_PREVIEW === 'true';
 const apiUrl = new URL(apiBaseUrl);
 if (!['http:', 'https:'].includes(apiUrl.protocol)) {
   throw new Error('EXTENSION_API_BASE_URL must use http or https');
 }
-// Chrome match patterns do not include a port. A host permission such as
+
+// Match patterns do not include a port. A host permission such as
 // http://127.0.0.1/* covers every port on that host, while the actual fetch
 // URL below still keeps its configured development port.
 const apiHostPermission = `${apiUrl.protocol}//${apiUrl.hostname}/*`;
@@ -19,47 +49,21 @@ const root = path.resolve(import.meta.dirname, '..');
 const packageJson = JSON.parse(
   await readFile(path.join(root, 'package.json'), 'utf8'),
 );
-const outdir = path.join(root, 'dist');
+const outdir = path.join(root, targetConfig.outdir);
 await rm(outdir, { recursive: true, force: true });
 await mkdir(outdir, { recursive: true });
 await mkdir(path.join(outdir, 'icons'), { recursive: true });
 
-const manifest = {
-  manifest_version: 3,
-  name: 'Sorare Football Stats Overlay – Unofficial',
-  version: packageJson.version,
-  description: 'Unofficial overlay showing position-aware football metrics on Sorare cards.',
-  permissions: ['storage'],
-  host_permissions: [apiHostPermission],
-  icons: {
-    16: 'icons/icon-16.png',
-    32: 'icons/icon-32.png',
-    48: 'icons/icon-48.png',
-    128: 'icons/icon-128.png',
-  },
-  background: { service_worker: 'service-worker.js' },
-  content_scripts: [
-    {
-      matches: ['https://sorare.com/*', 'https://www.sorare.com/*'],
-      css: ['sorare-native.css'],
-      js: ['content.js'],
-      run_at: 'document_idle',
-    },
-  ],
-  action: {
-    default_title: 'Sorare Football Stats Overlay',
-    default_popup: 'popup.html',
-    default_icon: {
-      16: 'icons/icon-16.png',
-      32: 'icons/icon-32.png',
-      48: 'icons/icon-48.png',
-    },
-  },
-  content_security_policy: {
-    extension_pages: "script-src 'self'; object-src 'self'",
-  },
-};
+const manifest = JSON.parse(
+  await readFile(
+    path.join(root, 'manifests', targetConfig.manifest),
+    'utf8',
+  ),
+);
+manifest.version = packageJson.version;
+manifest.host_permissions = [apiHostPermission];
 await writeFile(path.join(outdir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
 await Promise.all([
   copyFile(path.join(root, 'src', 'popup.html'), path.join(outdir, 'popup.html')),
   copyFile(path.join(root, 'src', 'popup.css'), path.join(outdir, 'popup.css')),
@@ -80,17 +84,18 @@ const buildContext = await context({
   entryPoints: {
     content: 'src/content.ts',
     popup: 'src/popup.ts',
-    'service-worker': 'src/service-worker.ts',
+    [targetConfig.backgroundEntryName]: 'src/service-worker.ts',
   },
   outdir,
   entryNames: '[name]',
   bundle: true,
   format: 'iife',
   platform: 'browser',
-  target: ['chrome120', 'edge120'],
+  target: targetConfig.esbuildTarget,
   define: {
     __API_BASE_URL__: JSON.stringify(apiBaseUrl),
     __MARKET_ODDS_PREVIEW__: JSON.stringify(marketOddsPreview),
+    __EXTENSION_BROWSER__: JSON.stringify(target),
   },
   logLevel: 'info',
   sourcemap: watch,
@@ -99,12 +104,12 @@ const buildContext = await context({
 if (watch) {
   await buildContext.watch();
   console.log(
-    `Watching extension sources (backend: ${apiBaseUrl}, market preview: ${marketOddsPreview})`,
+    `Watching ${target} extension sources (backend: ${apiBaseUrl}, market preview: ${marketOddsPreview})`,
   );
 } else {
   await buildContext.rebuild();
   await buildContext.dispose();
   console.log(
-    `Built extension in dist (backend: ${apiBaseUrl}, market preview: ${marketOddsPreview})`,
+    `Built ${target} extension in ${targetConfig.outdir} (backend: ${apiBaseUrl}, market preview: ${marketOddsPreview})`,
   );
 }

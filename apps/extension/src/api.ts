@@ -1,5 +1,6 @@
 import type { PlayerStatsRequest, PlayerStatsSuccessResponse } from '@sorare-overlay/shared';
 import type { FetchPlayerStatsMessage, WorkerResponse } from './messages.js';
+import { sendRuntimeMessage } from './browser-api.js';
 import {
   beginStatsDiagnosticRequest,
   logStatsDiagnostic,
@@ -11,20 +12,18 @@ export async function fetchPlayerStats(
 ): Promise<PlayerStatsSuccessResponse> {
   const requestId = beginStatsDiagnosticRequest(payload, __API_BASE_URL__);
   const message: FetchPlayerStatsMessage = { type: 'FETCH_PLAYER_STATS', payload };
-  const response = await new Promise<WorkerResponse>((resolve, reject) => {
-    chrome.runtime.sendMessage(message, (result: WorkerResponse) => {
-      const runtimeError = chrome.runtime.lastError;
-      if (runtimeError) {
-        logStatsDiagnostic('runtime-error', {
-          requestId,
-          message: runtimeError.message,
-        });
-        reject(new Error(runtimeError.message));
-        return;
-      }
-      resolve(result);
+  let response: WorkerResponse;
+  try {
+    response = await sendRuntimeMessage<WorkerResponse>(message);
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : 'Unknown runtime error';
+    logStatsDiagnostic('runtime-error', {
+      requestId,
+      message: errorMessage,
     });
-  });
+    throw error instanceof Error ? error : new Error(errorMessage);
+  }
 
   if (!response.ok) {
     logStatsDiagnostic('backend-error', {

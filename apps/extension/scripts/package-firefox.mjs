@@ -5,7 +5,7 @@ import { createZip, listFiles } from './zip.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const workspaceRoot = path.resolve(root, '..', '..');
-const distDir = path.join(root, 'dist');
+const distDir = path.join(root, 'dist-firefox');
 const artifactsDir = path.join(workspaceRoot, 'artifacts');
 const productionApiUrl =
   process.env.EXTENSION_API_BASE_URL ??
@@ -26,29 +26,32 @@ function runNode(script, args = [], env = process.env) {
   });
 }
 
-await runNode(path.join(import.meta.dirname, 'generate-store-assets.mjs'));
-await runNode(path.join(import.meta.dirname, 'build.mjs'), ['--target', 'chromium'], {
+await runNode(path.join(import.meta.dirname, 'build.mjs'), ['--target', 'firefox'], {
   ...process.env,
   EXTENSION_API_BASE_URL: productionApiUrl,
 });
 
 const files = await listFiles(distDir);
 const manifestEntry = files.find((file) => file.name === 'manifest.json');
-if (!manifestEntry) throw new Error('Store package has no root manifest.json');
+if (!manifestEntry) throw new Error('Firefox package has no root manifest.json');
 const manifest = JSON.parse(manifestEntry.data.toString('utf8'));
-for (const iconPath of Object.values(manifest.icons ?? {})) {
-  if (!files.some((file) => file.name === iconPath)) {
-    throw new Error(`Manifest icon is missing from package: ${iconPath}`);
-  }
+if (!manifest.browser_specific_settings?.gecko?.id) {
+  throw new Error('Firefox package has no browser_specific_settings.gecko.id');
+}
+if (!manifest.background?.scripts?.includes('background.js')) {
+  throw new Error('Firefox package must use background.scripts');
+}
+if (manifest.background.service_worker) {
+  throw new Error('Firefox package must not use background.service_worker');
 }
 if (files.some((file) => file.name.endsWith('.map'))) {
-  throw new Error('Store package must not contain source maps');
+  throw new Error('Firefox package must not contain source maps');
 }
 
 await mkdir(artifactsDir, { recursive: true });
 const outputPath = path.join(
   artifactsDir,
-  `sorare-football-overlay-chrome-web-store-${manifest.version}.zip`,
+  `sorare-football-overlay-firefox-${manifest.version}.zip`,
 );
 await writeFile(outputPath, createZip(files));
-console.log(`Created Chrome Web Store package: ${outputPath}`);
+console.log(`Created unsigned Firefox package: ${outputPath}`);

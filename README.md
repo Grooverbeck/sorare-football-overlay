@@ -1,6 +1,6 @@
 # Sorare Football Stats Overlay
 
-Produktionsnahes TypeScript-Monorepo für eine Chrome-/Edge-Manifest-V3-Extension, die kompakte, positionsabhängige L10-Statistiken auf dynamisch geladenen Sorare-Fußballkarten anzeigt.
+Produktionsnahes TypeScript-Monorepo für eine Chrome-/Edge-/Firefox-Manifest-V3-Extension, die kompakte, positionsabhängige L10-Statistiken auf dynamisch geladenen Sorare-Fußballkarten anzeigt.
 
 > Du möchtest die fertige Erweiterung nur benutzen?
 > Zur [Installations- und Update-Anleitung](docs/INSTALLATION.md) – Node.js
@@ -11,7 +11,7 @@ Produktionsnahes TypeScript-Monorepo für eine Chrome-/Edge-Manifest-V3-Extensio
 ```text
 apps/
   api/          Hono-Backend, Sorare-GraphQL-Client, Cache, Provider, Mock-Daten
-  extension/    MV3-Content-Script, Service Worker, DOM-Scanner, Shadow-DOM-UI
+  extension/    MV3-Content-Script, Chromium-Service-Worker, Firefox-Background-Skript, DOM-Scanner, Shadow-DOM-UI
 packages/
   shared/       Zod-API-Verträge, gemeinsame Typen und Statistikberechnungen
 ```
@@ -22,7 +22,7 @@ Die Extension ruft ausschließlich das eigene Backend auf. Sorare-API-Key, JWT u
 
 - Node.js 22 oder neuer
 - npm 11 oder neuer
-- Chrome oder Edge mit aktiviertem Entwicklermodus
+- Chrome, Edge oder Firefox (Firefox Desktop ab Version 142) mit aktivierter Erweiterungsentwicklung
 
 ```bash
 npm install
@@ -30,7 +30,7 @@ npm run codegen
 npm run verify
 ```
 
-`npm run verify` führt GraphQL-Codegen, Typecheck, Vitest und beide Builds aus.
+`npm run verify` führt GraphQL-Codegen, Typecheck, Vitest sowie die Chromium- und Firefox-Builds aus.
 
 ## Lokal mit Mock-Daten starten
 
@@ -61,6 +61,31 @@ Bekannte Mock-Slugs sind `kylian-mbappe-lottin`, `virgil-van-dijk`, `manuel-neue
 5. Nach jedem Neubau die Extension auf der Extensions-Seite neu laden.
 
 Über das Extension-Symbol in der Browserleiste öffnet sich ein kleines Popup mit dem Schalter „Overlay aktiviert/deaktiviert“ und der Wahl, ob die Tor-/Assistklammer links oder rechts an der Karte sitzt. Die Klammerwerte lassen sich als Prozent oder als faire Dezimalquote anzeigen. Dort können außerdem historische Ersatzwerte für fehlende Tor- und Assistquoten ein- und ausgeschaltet sowie auf `L10`, `L15` oder `L40` gestellt werden. Die Einstellungen werden über `chrome.storage.local` gespeichert und gelten für alle Sorare-Tabs. Änderungen wirken sofort: Ausschalten entfernt vorhandene Overlays und pausiert den Scanner; Einschalten scannt die aktuell geöffnete Seite erneut.
+
+## Extension in Firefox laden
+
+Für Firefox wird derselbe TypeScript-Quellcode mit einem eigenen Manifest und
+einem eigenen Background-Skript gebaut:
+
+```powershell
+npm run build:firefox
+```
+
+Dieser direkte Build ist ein Entwicklungsbuild gegen `http://localhost:8787`.
+Für lokale Mock-Daten das Backend separat mit `npm run dev:api` starten. Für
+einen Test gegen das öffentliche Backend `npm run package:firefox` verwenden;
+der Befehl baut `dist-firefox` produktiv und legt zusätzlich eine unsignierte
+ZIP unter `artifacts/` ab.
+
+Danach in Firefox `about:debugging#/runtime/this-firefox` öffnen, **Temporäres
+Add-on laden** wählen und `apps/extension/dist-firefox/manifest.json`
+auswählen. Nach einem Neubau das Add-on dort neu laden und die Sorare-Tabs
+aktualisieren. Temporäre Add-ons werden beim Neustart von Firefox entfernt.
+
+`npm run package:firefox` erzeugt optional eine unsignierte ZIP unter
+`artifacts/`. Für eine dauerhafte Installation in Firefox Release/Beta muss
+dieses Paket später von Mozilla signiert werden; dieses Projekt erstellt mit
+dieser Portierung noch kein Release.
 
 `EXTENSION_API_BASE_URL` wird beim Build eingebettet und zugleich als eng begrenzte `host_permission` ins generierte Manifest geschrieben. Nach einer URL-Änderung muss neu gebaut und neu geladen werden. In diese Variable gehört nur die URL des eigenen Backends, niemals ein Token.
 
