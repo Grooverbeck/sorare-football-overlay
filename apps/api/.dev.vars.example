@@ -9,5 +9,6 @@ SORARE_JWT_AUD=
 # Create one at https://the-odds-api.com and never add it to the extension.
 THE_ODDS_API_KEY=
 ODDS_API_FALLBACK_REGION=uk
+MATCH_ODDS_MISS_CACHE_TTL_SECONDS=3600
 SPORTS_GAME_ODDS_API_KEY=
 ODDS_API_IO_KEY=

@@ -727,8 +727,8 @@ describe('Cloudflare Worker', () => {
     const [formKeys, fixtureKeys, positiveNameKeys, negativeNameKeys] = await Promise.all([
       env.STATS_CACHE.list({ prefix: 'player-form:v2:ttl-probe:' }),
       env.STATS_CACHE.list({ prefix: 'player-fixture:v1:ttl-probe:' }),
-      env.STATS_CACHE.list({ prefix: 'player-name:v4:ttl%20positive%20probe:' }),
-      env.STATS_CACHE.list({ prefix: 'player-name:v4:ttl%20negative%20probe:' }),
+      env.STATS_CACHE.list({ prefix: 'player-name:v5:ttl%20positive%20probe:' }),
+      env.STATS_CACHE.list({ prefix: 'player-name:v5:ttl%20negative%20probe:' }),
     ]);
 
     expect(formKeys.keys).toHaveLength(1);

@@ -142,10 +142,16 @@ const eventSchema = z.object({
 });
 const eventsSchema = z.array(eventSchema);
 type OddsEvent = z.infer<typeof eventSchema>;
+type AvailableMatchOddsSnapshot = z.infer<typeof availableSnapshotSchema>;
 
 interface JsonResponse {
   body: unknown;
   headers: Headers;
+}
+
+interface RouteFetchResult {
+  unresolved: FixtureGroup[];
+  complete: boolean;
 }
 
 class OddsApiHttpError extends Error {
@@ -159,6 +165,10 @@ const HOUR_MS = 60 * 60 * 1_000;
 const MATCH_TOLERANCE_MS = 36 * HOUR_MS;
 const SNAPSHOT_AFTER_KICKOFF_MS = 36 * HOUR_MS;
 const retryStatuses = new Set([429, 502, 503, 504]);
+
+function oddsApiDate(timestamp: number): string {
+  return new Date(timestamp).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
 
 function median(values: readonly number[]): number {
   const ordered = [...values].sort((left, right) => left - right);
@@ -259,6 +269,33 @@ function eventProbabilities(
   };
 }
 
+function eventFixtureKey(event: OddsEvent): string | null {
+  const kickoff = Date.parse(event.commence_time);
+  if (!Number.isFinite(kickoff)) return null;
+  return [
+    new Date(kickoff).toISOString(),
+    normalizeTeamName(event.home_team),
+    normalizeTeamName(event.away_team),
+  ].join('|');
+}
+
+function availableSnapshotForEvent(
+  event: OddsEvent,
+  capturedAt: string,
+): AvailableMatchOddsSnapshot | null {
+  const probabilities = eventProbabilities(event);
+  if (!probabilities) return null;
+  return availableSnapshotSchema.parse({
+    status: 'available',
+    eventId: event.id,
+    capturedAt,
+    expiresAt: new Date(
+      Date.parse(event.commence_time) + SNAPSHOT_AFTER_KICKOFF_MS,
+    ).toISOString(),
+    ...probabilities,
+  });
+}
+
 function playerProbabilities(
   player: PlayerStats,
   snapshot: z.infer<typeof availableSnapshotSchema>,
@@ -323,7 +360,11 @@ export class TheOddsApiFixtureMatchOddsProvider
     const snapshots = new Map<string, MatchOddsSnapshot>();
     const missing: FixtureGroup[] = [];
     for (const fixture of fixtures) {
-      const snapshot = await this.options.store.get(fixture.key);
+      const storedSnapshot = await this.options.store.get(fixture.key);
+      const snapshot =
+        storedSnapshot && this.snapshotIsReusable(storedSnapshot)
+          ? storedSnapshot
+          : undefined;
       if (snapshot) snapshots.set(fixture.key, snapshot);
       if (
         !snapshot &&
@@ -351,39 +392,45 @@ export class TheOddsApiFixtureMatchOddsProvider
           fixture.players.some((player) => this.routeFor(player) === route),
         );
         if (routeFixtures.length === 0) continue;
-        const unresolved = await this.fetchRoute(
+        const primary = await this.fetchRoute(
           route,
           routeFixtures,
           route.region,
           snapshots,
         );
+        let unresolved = primary.unresolved;
+        let missCheckComplete = primary.complete;
         if (
           unresolved.length > 0 &&
           route.fallbackRegion &&
           route.fallbackRegion !== route.region &&
           protection.allowRegionalFallback
         ) {
-          await this.fetchRoute(
+          const fallback = await this.fetchRoute(
             route,
             unresolved,
             route.fallbackRegion,
             snapshots,
           );
+          unresolved = fallback.unresolved;
+          missCheckComplete = missCheckComplete && fallback.complete;
         }
-        for (const fixture of unresolved) {
-          if (snapshots.has(fixture.key)) continue;
-          const snapshot = MatchOddsSnapshotSchema.parse({
-            status: 'unavailable',
-            checkedAt: new Date(this.now()).toISOString(),
-            expiresAt: new Date(
-              Math.min(
-                Date.parse(fixture.date),
-                this.now() + this.options.missTtlMs,
-              ),
-            ).toISOString(),
-          });
-          await this.options.store.set(fixture.key, snapshot);
-          snapshots.set(fixture.key, snapshot);
+        if (missCheckComplete) {
+          for (const fixture of unresolved) {
+            if (snapshots.has(fixture.key)) continue;
+            const snapshot = MatchOddsSnapshotSchema.parse({
+              status: 'unavailable',
+              checkedAt: new Date(this.now()).toISOString(),
+              expiresAt: new Date(
+                Math.min(
+                  Date.parse(fixture.date),
+                  this.now() + this.options.missTtlMs,
+                ),
+              ).toISOString(),
+            });
+            await this.options.store.set(fixture.key, snapshot);
+            snapshots.set(fixture.key, snapshot);
+          }
         }
       }
     }
@@ -399,6 +446,15 @@ export class TheOddsApiFixtureMatchOddsProvider
       }
     }
     return output;
+  }
+
+  private snapshotIsReusable(snapshot: MatchOddsSnapshot): boolean {
+    if (snapshot.status === 'available') return true;
+    const checkedAt = Date.parse(snapshot.checkedAt);
+    return (
+      Number.isFinite(checkedAt) &&
+      checkedAt + this.options.missTtlMs > this.now()
+    );
   }
 
   private routeFor(player: PlayerStats): MatchOddsRoute | null {
@@ -428,19 +484,20 @@ export class TheOddsApiFixtureMatchOddsProvider
     fixtures: readonly FixtureGroup[],
     region: string,
     snapshots: Map<string, MatchOddsSnapshot>,
-  ): Promise<FixtureGroup[]> {
+  ): Promise<RouteFetchResult> {
     let unresolved = [...fixtures];
+    let complete = true;
     for (const sportKey of route.sportKeys) {
       if (unresolved.length === 0) break;
       try {
-        const from = new Date(
+        const from = oddsApiDate(
           Math.min(...unresolved.map(({ date }) => Date.parse(date))) -
             MATCH_TOLERANCE_MS,
-        ).toISOString();
-        const to = new Date(
+        );
+        const to = oddsApiDate(
           Math.max(...unresolved.map(({ date }) => Date.parse(date))) +
             MATCH_TOLERANCE_MS,
-        ).toISOString();
+        );
         const response = await this.requestJson(
           `/sports/${encodeURIComponent(sportKey)}/odds`,
           {
@@ -457,21 +514,31 @@ export class TheOddsApiFixtureMatchOddsProvider
         if (usage && this.options.usageStore) {
           await this.options.usageStore.set(usage);
         }
+
+        // One league request already contains every event in the requested
+        // time range. Persist all usable H-D-A snapshots so opening another
+        // card from the same match window does not spend another API credit.
+        const eventSnapshots = new Map<string, AvailableMatchOddsSnapshot>();
+        const snapshotWrites = new Map<
+          string,
+          AvailableMatchOddsSnapshot
+        >();
+        for (const event of events) {
+          const eventKey = eventFixtureKey(event);
+          const snapshot = availableSnapshotForEvent(event, capturedAt);
+          if (!eventKey || !snapshot) continue;
+          eventSnapshots.set(event.id, snapshot);
+          snapshotWrites.set(eventKey, snapshot);
+        }
         for (const fixture of unresolved) {
           const event = findEvent(fixture, events);
-          const probabilities = event ? eventProbabilities(event) : null;
-          if (!event || !probabilities) continue;
-          const snapshot = MatchOddsSnapshotSchema.parse({
-            status: 'available',
-            eventId: event.id,
-            capturedAt,
-            expiresAt: new Date(
-              Date.parse(fixture.date) + SNAPSHOT_AFTER_KICKOFF_MS,
-            ).toISOString(),
-            ...probabilities,
-          });
-          await this.options.store.set(fixture.key, snapshot);
-          snapshots.set(fixture.key, snapshot);
+          const snapshot = event ? eventSnapshots.get(event.id) : undefined;
+          if (!snapshot) continue;
+          snapshotWrites.set(fixture.key, snapshot);
+        }
+        for (const [fixtureKey, snapshot] of snapshotWrites) {
+          await this.options.store.set(fixtureKey, snapshot);
+          snapshots.set(fixtureKey, snapshot);
         }
         unresolved = unresolved.filter(
           (fixture) => !snapshots.has(fixture.key),
@@ -482,10 +549,12 @@ export class TheOddsApiFixtureMatchOddsProvider
             region,
             requestedFixtures: fixtures.length,
             matchedFixtures: fixtures.length - unresolved.length,
+            cachedEvents: snapshotWrites.size,
           },
           'External H-D-A fallback batch received',
         );
       } catch (error) {
+        complete = false;
         this.options.logger.warn(
           {
             sportKey,
@@ -496,7 +565,7 @@ export class TheOddsApiFixtureMatchOddsProvider
         );
       }
     }
-    return unresolved;
+    return { unresolved, complete };
   }
 
   private async requestJson(

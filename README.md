@@ -104,6 +104,7 @@ Alle Werte werden aus `apps/api/.env` oder der Prozessumgebung gelesen.
 | `ODDS_API_FALLBACK_REGION` | leer | Optionale zweite Region für weiterhin fehlende Spieler- oder H/D/A-Märkte; Produktion nutzt `uk` |
 | `ODDS_FETCH_WINDOW_HOURS` | `72` | Tor-/Assistquoten frühestens so viele Stunden vor Anpfiff abrufen |
 | `MATCH_ODDS_FALLBACK_WINDOW_HOURS` | `72` | Externe H/D/A-Quoten nur innerhalb dieses Zeitfensters ergänzen, wenn Sorare noch Werte fehlen |
+| `MATCH_ODDS_MISS_CACHE_TTL_SECONDS` | `3600` | Fehlende H/D/A-Märkte nach spätestens einer Stunde erneut prüfen; ein erfolgreicher Abruf wird weiterhin bis nach Anpfiff eingefroren |
 | `ODDS_MISS_CACHE_TTL_SECONDS` | `21600` | Legacy-Fallback für alte negative Quoten-Cacheeinträge; neue Einträge nutzen 12h/24h plus eine letzte Prüfung vier Stunden vor Anpfiff |
 | `SPORTS_GAME_ODDS_API_KEY` | leer | Serverseitiger Schlüssel für direkte Tor-, Assist- und Tor-oder-Assist-Märkte |
 | `SPORTS_GAME_ODDS_BASE_URL` | `https://api.sportsgameodds.com/v2` | Basis-URL von SportsGameOdds |

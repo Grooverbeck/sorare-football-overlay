@@ -303,7 +303,7 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
             ...CONTENDER_THE_ODDS_API_ROUTES,
           ],
           fallbackWindowMs: config.matchOddsFallbackWindowMs,
-          missTtlMs: config.oddsMissCacheTtlMs,
+          missTtlMs: config.matchOddsMissCacheTtlMs,
           requestTimeoutMs: config.requestTimeoutMs,
           maxRetries: config.maxRetries,
           store:

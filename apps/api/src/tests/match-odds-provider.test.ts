@@ -6,7 +6,10 @@ import {
   TheOddsApiFixtureMatchOddsProvider,
 } from '../providers/match-odds-provider.js';
 import { CONTENDER_THE_ODDS_API_ROUTES } from '../providers/competition-odds-routes.js';
-import { playerMarketOddsKey } from '../providers/market-odds-provider.js';
+import {
+  marketFixtureKey,
+  playerMarketOddsKey,
+} from '../providers/market-odds-provider.js';
 
 const now = Date.parse('2026-07-29T12:00:00.000Z');
 const logger: AppLogger = {
@@ -119,7 +122,16 @@ describe('TheOddsApiFixtureMatchOddsProvider', () => {
 
   it('removes the bookmaker margin and returns player-relative H-D-A values', async () => {
     const kickoff = new Date(now + 48 * 60 * 60 * 1_000).toISOString();
-    const fetchImpl = vi.fn<typeof fetch>(async () => oddsResponse(kickoff));
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      expect(url.searchParams.get('commenceTimeFrom')).toMatch(
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/,
+      );
+      expect(url.searchParams.get('commenceTimeTo')).toMatch(
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/,
+      );
+      return oddsResponse(kickoff);
+    });
     const awayPlayer = player(kickoff);
     const homePlayer = player(kickoff, 'Chicago Fire FC');
 
@@ -150,6 +162,145 @@ describe('TheOddsApiFixtureMatchOddsProvider', () => {
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(cached.get(playerMarketOddsKey(testPlayer))).toEqual({
+      win: 0.25,
+      draw: 0.25,
+      loss: 0.5,
+    });
+  });
+
+  it('refreshes an old miss using the dedicated match-odds TTL', async () => {
+    const kickoff = new Date(now + 48 * 60 * 60 * 1_000).toISOString();
+    const testPlayer = player(kickoff);
+    const fixtureKey = marketFixtureKey(testPlayer.nextGame!);
+    expect(fixtureKey).not.toBeNull();
+    const store = new InMemoryMatchOddsSnapshotStore(() => now);
+    await store.set(fixtureKey!, {
+      status: 'unavailable',
+      checkedAt: new Date(now - 2 * 60 * 60 * 1_000).toISOString(),
+      expiresAt: new Date(now + 4 * 60 * 60 * 1_000).toISOString(),
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async () => oddsResponse(kickoff));
+    const oddsProvider = new TheOddsApiFixtureMatchOddsProvider({
+      apiKey: 'test-key',
+      baseUrl: 'https://api.the-odds-api.test/v4',
+      routes: [
+        {
+          sportKeys: ['soccer_usa_mls'],
+          competitionSlugs: ['mlspa'],
+          region: 'us',
+        },
+      ],
+      fallbackWindowMs: 72 * 60 * 60 * 1_000,
+      missTtlMs: 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store,
+      logger,
+      fetchImpl,
+      now: () => now,
+    });
+
+    const result = await oddsProvider.load([testPlayer]);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result.get(playerMarketOddsKey(testPlayer))).toEqual({
+      win: 0.25,
+      draw: 0.25,
+      loss: 0.5,
+    });
+  });
+
+  it('does not negative-cache a temporary provider failure', async () => {
+    const kickoff = new Date(now + 48 * 60 * 60 * 1_000).toISOString();
+    const testPlayer = player(kickoff);
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('', { status: 503 }))
+      .mockResolvedValueOnce(oddsResponse(kickoff));
+    const store = new InMemoryMatchOddsSnapshotStore(() => now);
+    const oddsProvider = provider(fetchImpl, store);
+
+    const failed = await oddsProvider.load([testPlayer]);
+    const recovered = await oddsProvider.load([testPlayer]);
+
+    expect(failed.get(playerMarketOddsKey(testPlayer))).toBeNull();
+    expect(recovered.get(playerMarketOddsKey(testPlayer))).toEqual({
+      win: 0.25,
+      draw: 0.25,
+      loss: 0.5,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('prefetches all returned MLS fixtures and matches Montreal-New England aliases', async () => {
+    const chicagoKickoff = new Date(
+      now + 46 * 60 * 60 * 1_000,
+    ).toISOString();
+    const newEnglandKickoff = new Date(
+      now + 48 * 60 * 60 * 1_000,
+    ).toISOString();
+    const chicagoPlayer = player(chicagoKickoff);
+    const newEnglandPlayer: PlayerStats = {
+      ...player(newEnglandKickoff, 'New England'),
+      slug: 'matt-turner',
+      position: 'Goalkeeper',
+      nextGame: {
+        date: newEnglandKickoff,
+        competitionSlug: 'mlspa',
+        homeTeamName: 'Montreal Impact',
+        awayTeamName: 'New England',
+        playerTeamName: 'New England',
+        opponentTeamName: 'Montreal Impact',
+        cleanSheetProbability: null,
+        matchProbabilities: null,
+      },
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      new Response(
+        JSON.stringify([
+          JSON.parse(await oddsResponse(chicagoKickoff).text())[0],
+          {
+            id: 'montreal-new-england',
+            commence_time: newEnglandKickoff,
+            home_team: 'CF Montreal',
+            away_team: 'New England Revolution',
+            bookmakers: [
+              {
+                key: 'book-one',
+                title: 'Book One',
+                markets: [
+                  {
+                    key: 'h2h',
+                    outcomes: [
+                      { name: 'CF Montreal', price: 2 },
+                      { name: 'Draw', price: 4 },
+                      { name: 'New England Revolution', price: 4 },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ]),
+        {
+          headers: {
+            'content-type': 'application/json',
+            'x-requests-used': '5',
+            'x-requests-remaining': '495',
+          },
+        },
+      ),
+    );
+    const store = new InMemoryMatchOddsSnapshotStore(() => now);
+    const oddsProvider = provider(fetchImpl, store);
+
+    await oddsProvider.load([chicagoPlayer]);
+    const cached = await oddsProvider.load([newEnglandPlayer], {
+      cacheOnly: true,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(cached.get(playerMarketOddsKey(newEnglandPlayer))).toEqual({
       win: 0.25,
       draw: 0.25,
       loss: 0.5,
