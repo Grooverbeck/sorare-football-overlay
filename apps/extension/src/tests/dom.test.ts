@@ -1243,6 +1243,90 @@ describe('Sorare card DOM discovery', () => {
     views.forEach((view) => view.destroy());
   });
 
+  it('isolates one player\'s position variants without poisoning the default cache', async () => {
+    const playerName = 'Marcel Hartel';
+    const fetcher = vi.fn(
+      async (request: PlayerStatsRequest): Promise<PlayerStatsSuccessResponse> => {
+        const requestedPosition = request.positions?.[playerName];
+        const position = requestedPosition ?? 'Midfielder';
+        return {
+          data: [
+            {
+              slug: 'marcel-hartel',
+              displayName: playerName,
+              position,
+              aaL10: {
+                value: position === 'Forward' ? 21.4 : 17.4,
+                sampleSize: 10,
+              },
+              cleanSheetL10: { value: null, sampleSize: 0 },
+              goalL10: { value: 0.2, sampleSize: 10 },
+              nextGame: null,
+              excludedLowCoverage: 0,
+            },
+          ],
+          meta: { requested: 1, returned: 1, cacheHits: 0, source: 'sorare' },
+        };
+      },
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const variants = [
+      { position: undefined, expectedAa: '17.4' },
+      { position: 'Midfielder' as const, expectedAa: '17.4' },
+      { position: 'Forward' as const, expectedAa: '21.4' },
+    ];
+    const mounted = variants.map(({ position }) => {
+      const card = document.createElement('article');
+      document.body.append(card);
+      const view = new OverlayView(card, { playerName }, position);
+      coordinator.enqueue(
+        {
+          playerName,
+          ...(position ? { position } : {}),
+          container: card,
+        },
+        view,
+      );
+      return { card, view };
+    });
+
+    await coordinator.flush();
+
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(fetcher.mock.calls.map(([request]) => request.positions)).toEqual([
+      undefined,
+      { [playerName]: 'Midfielder' },
+      { [playerName]: 'Forward' },
+    ]);
+    variants.forEach(({ expectedAa }, index) => {
+      expect(
+        mounted[index]?.view.host.shadowRoot?.querySelector(
+          '.aa-bracket-cell .market-value',
+        )?.textContent,
+      ).toBe(expectedAa);
+    });
+
+    const repeatedDefaultCard = document.createElement('article');
+    document.body.append(repeatedDefaultCard);
+    const repeatedDefaultView = new OverlayView(
+      repeatedDefaultCard,
+      { playerName },
+    );
+    coordinator.enqueue(
+      { playerName, container: repeatedDefaultCard },
+      repeatedDefaultView,
+    );
+
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(
+      repeatedDefaultView.host.shadowRoot?.querySelector(
+        '.aa-bracket-cell .market-value',
+      )?.textContent,
+    ).toBe('17.4');
+    mounted.forEach(({ view }) => view.destroy());
+    repeatedDefaultView.destroy();
+  });
+
   it('pauses retries while a card is offscreen and resumes the remaining delay', async () => {
     vi.useFakeTimers();
     try {
@@ -2065,40 +2149,120 @@ describe('Sorare card DOM discovery', () => {
     view.destroy();
   });
 
-  it('shows a short user-facing message for an initial request failure', async () => {
-    const fetcher = vi.fn(async () => {
-      throw new Error(
-        'BACKEND_UNAVAILABLE: Statistikdienst ist nicht erreichbar',
+  it('recovers from one transient request failure without showing an error', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher = vi.fn(
+        async (): Promise<PlayerStatsSuccessResponse> => {
+          if (fetcher.mock.calls.length === 1) {
+            throw new Error(
+              'BACKEND_UNAVAILABLE: Statistikdienst ist nicht erreichbar',
+            );
+          }
+          return {
+            data: [
+              {
+                slug: 'temporarily-unavailable-player',
+                displayName: 'Temporarily Unavailable Player',
+                position: 'Midfielder',
+                aaL10: { value: 13.4, sampleSize: 10 },
+                cleanSheetL10: { value: 0.2, sampleSize: 10 },
+                goalL10: { value: 0.1, sampleSize: 10 },
+                nextGame: null,
+                excludedLowCoverage: 0,
+              },
+            ],
+            meta: {
+              requested: 1,
+              returned: 1,
+              cacheHits: 1,
+              source: 'sorare',
+            },
+          };
+        },
       );
-    });
-    const coordinator = new StatsBatchCoordinator(
-      fetcher,
-      0,
-      [],
-    );
-    const card = document.createElement('article');
-    document.body.append(card);
-    const view = new OverlayView(
-      card,
-      { playerName: 'Unavailable Player' },
-      'Midfielder',
-    );
-    coordinator.enqueue(
-      {
-        playerName: 'Unavailable Player',
-        position: 'Midfielder',
-        container: card,
-      },
-      view,
-    );
+      const coordinator = new StatsBatchCoordinator(fetcher, 0, [5_000]);
+      const card = document.createElement('article');
+      document.body.append(card);
+      const view = new OverlayView(
+        card,
+        { playerName: 'Temporarily Unavailable Player' },
+        'Midfielder',
+      );
+      coordinator.enqueue(
+        {
+          playerName: 'Temporarily Unavailable Player',
+          position: 'Midfielder',
+          container: card,
+        },
+        view,
+      );
 
-    await coordinator.flush();
+      await coordinator.flush();
 
-    const state = view.host.shadowRoot?.querySelector<HTMLElement>('.state');
-    expect(state?.textContent).toBe('Kurz nicht verfügbar');
-    expect(state?.textContent).not.toContain('BACKEND_UNAVAILABLE');
-    expect(state?.title).toContain('automatisch erneut');
-    view.destroy();
+      expect(view.host.shadowRoot?.textContent).toContain('Lade L10');
+      expect(view.host.shadowRoot?.textContent).not.toContain(
+        'Kurz nicht verfügbar',
+      );
+
+      await vi.advanceTimersByTimeAsync(750);
+      await coordinator.flush();
+
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(
+        view.host.shadowRoot?.querySelector(
+          '.aa-bracket-cell .market-value',
+        )?.textContent,
+      ).toBe('13.4');
+      expect(view.host.shadowRoot?.textContent).not.toContain(
+        'Kurz nicht verfügbar',
+      );
+      view.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows a short user-facing message when the quick retry also fails', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher = vi.fn(async () => {
+        throw new Error(
+          'BACKEND_UNAVAILABLE: Statistikdienst ist nicht erreichbar',
+        );
+      });
+      const coordinator = new StatsBatchCoordinator(fetcher, 0, []);
+      const card = document.createElement('article');
+      document.body.append(card);
+      const view = new OverlayView(
+        card,
+        { playerName: 'Unavailable Player' },
+        'Midfielder',
+      );
+      coordinator.enqueue(
+        {
+          playerName: 'Unavailable Player',
+          position: 'Midfielder',
+          container: card,
+        },
+        view,
+      );
+
+      await coordinator.flush();
+      expect(view.host.shadowRoot?.textContent).toContain('Lade L10');
+
+      await vi.advanceTimersByTimeAsync(750);
+      await coordinator.flush();
+
+      const state = view.host.shadowRoot?.querySelector<HTMLElement>('.state');
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(state?.textContent).toBe('Kurz nicht verfügbar');
+      expect(state?.textContent).not.toContain('BACKEND_UNAVAILABLE');
+      expect(state?.title).toContain('automatisch erneut');
+      view.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('requests synchronous fixture hydration on a pending-fixture follow-up', async () => {
@@ -2468,6 +2632,42 @@ describe('Sorare card DOM discovery', () => {
     expect(view.host.dataset.horizontalAnchor).toBe('card-image');
     expect(view.host.style.left).toBe('400.25px');
     expect(view.host.style.width).toBe('300.5px');
+    expect(view.host.dataset.cardSize).toBeUndefined();
+    view.destroy();
+  });
+
+  it('scales bracket values down for mini but still usable card images', () => {
+    document.body.innerHTML = `
+      <article data-testid="football-card">
+        <img alt="Compact Player - common" src="https://assets.sorare.com/card.png">
+      </article>
+    `;
+    const card = document.querySelector<HTMLElement>('article');
+    const image = document.querySelector<HTMLImageElement>('img');
+    if (!card || !image) throw new Error('Expected compact card and image');
+    const compactRect = {
+      x: 100,
+      y: 100,
+      top: 100,
+      right: 173.4,
+      bottom: 218.91,
+      left: 100,
+      width: 73.4,
+      height: 118.91,
+      toJSON: () => ({}),
+    };
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue(compactRect);
+    vi.spyOn(image, 'getBoundingClientRect').mockReturnValue(compactRect);
+
+    const view = new OverlayView(
+      card,
+      { playerName: 'Compact Player' },
+      'Midfielder',
+    );
+
+    expect(view.host.dataset.horizontalAnchor).toBe('card-image');
+    expect(view.host.style.width).toBe('73.4px');
+    expect(view.host.dataset.cardSize).toBe('mini');
     view.destroy();
   });
 

@@ -107,6 +107,15 @@ const styles = `
   :host([data-market-value-format="decimal"]) .market-bracket {
     width: 54px;
   }
+  :host([data-card-size="mini"]) .market-bracket {
+    transform: scale(.9);
+    transform-origin: top right;
+  }
+  :host(
+    [data-card-size="mini"][data-market-bracket-side="left"]
+  ) .market-bracket {
+    transform-origin: top left;
+  }
   .market-bracket[data-fold-tone="very-low"] { --market-fold: #ff5d62; }
   .market-bracket[data-fold-tone="low"] { --market-fold: #ff922b; }
   .market-bracket[data-fold-tone="balanced"] { --market-fold: #ffd43b; }
@@ -290,25 +299,15 @@ const styles = `
     pointer-events: auto;
     transform: translate(2px, -2px);
   }
-  .aa-sample-warning::before,
-  .aa-sample-warning::after {
-    position: absolute;
-    left: 50%;
+  .aa-sample-warning-glyph {
     display: block;
-    width: 2px;
-    border-radius: 999px;
-    background: currentColor;
-    content: "";
+    width: 9px;
+    height: 10px;
+    flex: 0 0 auto;
+    overflow: visible;
+    fill: currentColor;
     pointer-events: none;
-    transform: translateX(-50%);
-  }
-  .aa-sample-warning::before {
-    top: 2px;
-    height: 4px;
-  }
-  .aa-sample-warning::after {
-    bottom: 2px;
-    height: 2px;
+    shape-rendering: geometricPrecision;
   }
   :host([data-market-bracket-side="left"]) .aa-sample-warning {
     right: auto;
@@ -1324,6 +1323,21 @@ function aaStatNode(
       'aria-label',
       `Warnung: Begrenzte AA-Datenbasis. ${sampleWarningReason}`,
     );
+    const warningGlyph = svgElement('svg', {
+      class: 'aa-sample-warning-glyph',
+      viewBox: '0 0 12 12',
+      'aria-hidden': 'true',
+    });
+    warningGlyph.append(
+      svgElement('path', {
+        d: 'M5.15 1.1h1.7l-.35 6H5.5z',
+      }),
+      svgElement('circle', {
+        cx: '6',
+        cy: '9.7',
+        r: '1.05',
+      }),
+    );
     const warningTooltip = document.createElement('span');
     warningTooltip.className = 'aa-sample-warning-tooltip';
     warningTooltip.setAttribute('aria-hidden', 'true');
@@ -1334,7 +1348,7 @@ function aaStatNode(
     warningDetail.className = 'aa-sample-warning-detail';
     warningDetail.textContent = sampleWarningReason;
     warningTooltip.append(warningTitle, warningDetail);
-    warning.append(warningTooltip);
+    warning.append(warningGlyph, warningTooltip);
     stat.append(warning);
   }
   if (topRank) {
@@ -1504,6 +1518,7 @@ const packDialogText = /\b(?:deine\s+karten|your\s+cards|neuverpflichtungen|new\
 const packDialogHeaderText =
   /^(?:deine\s+karten|your\s+cards|neuverpflichtungen|new\s+signings)(?:\s*:\s*\d+\s*\/\s*\d+)?$/i;
 const packStatusClearancePx = 10;
+const miniBracketCardWidthPx = 88;
 const packReservedStatusHeightPx = 24;
 const packDialogHeaderClearancePx = 6;
 const packOverlayMinimumHeightPx = 22;
@@ -2103,6 +2118,11 @@ export class OverlayView {
       this.host.dataset.horizontalAnchor = cardImageRect
         ? 'card-image'
         : 'container-inset';
+      if (compactWidth < miniBracketCardWidthPx) {
+        this.host.dataset.cardSize = 'mini';
+      } else {
+        delete this.host.dataset.cardSize;
+      }
       this.host.style.left = cssPixels(compactLeft);
       this.host.style.width = cssPixels(compactWidth);
       if (

@@ -104,12 +104,46 @@ function targetKey(target: Pick<PendingTarget, 'slug' | 'playerName' | 'position
   return `name:${normalizeName(target.playerName ?? '')}:${target.position ?? 'default'}`;
 }
 
-function chunks<T>(values: readonly T[], size: number): T[][] {
-  const output: T[][] = [];
-  for (let index = 0; index < values.length; index += size) {
-    output.push(values.slice(index, index + size));
+function requestIdentity(
+  target: Pick<PendingTarget, 'slug' | 'playerName'>,
+): string {
+  return target.slug
+    ? `slug:${target.slug}`
+    : `name:${normalizeName(target.playerName ?? '')}`;
+}
+
+function conflictFreeBatches(
+  targets: readonly PendingTarget[],
+  size: number,
+): PendingTarget[][] {
+  const batches: PendingTarget[][] = [];
+  const identitiesByBatch: Set<string>[] = [];
+  for (const target of targets) {
+    const identity = requestIdentity(target);
+    let batchIndex = batches.findIndex(
+      (batch, index) =>
+        batch.length < size && !identitiesByBatch[index]?.has(identity),
+    );
+    if (batchIndex < 0) {
+      batchIndex = batches.length;
+      batches.push([]);
+      identitiesByBatch.push(new Set<string>());
+    }
+    batches[batchIndex]?.push(target);
+    identitiesByBatch[batchIndex]?.add(identity);
   }
-  return output;
+  return batches;
+}
+
+function targetMatchesStats(
+  target: Pick<PendingTarget, 'slug' | 'playerName'>,
+  stats: PlayerStats,
+): boolean {
+  return (
+    (target.slug !== undefined && target.slug === stats.slug) ||
+    (target.playerName !== undefined &&
+      namesLikelyMatch(target.playerName, stats.displayName))
+  );
 }
 
 function viewportPriorityForRect(rect: DOMRectReadOnly): number {
@@ -275,7 +309,10 @@ export class StatsBatchCoordinator {
     for (const target of queued) {
       this.inFlightTargets.set(targetKey(target), target);
     }
-    const batches = chunks(queued, Math.max(1, this.progressiveBatchSize));
+    const batches = conflictFreeBatches(
+      queued,
+      Math.max(1, this.progressiveBatchSize),
+    );
     await Promise.all(
       batches.map((batch) => this.scheduleBatch(batch)),
     );
@@ -380,7 +417,6 @@ export class StatsBatchCoordinator {
           targetKey({ slug: mergedStats.slug, position: mergedStats.position }),
           mergedStats,
         );
-        this.cache.set(targetKey({ slug: mergedStats.slug }), mergedStats);
         this.cache.set(
           targetKey({
             playerName: mergedStats.displayName,
@@ -388,10 +424,19 @@ export class StatsBatchCoordinator {
           }),
           mergedStats,
         );
-        this.cache.set(
-          targetKey({ playerName: mergedStats.displayName }),
-          mergedStats,
-        );
+        if (
+          batch.some(
+            (target) =>
+              target.position === undefined &&
+              targetMatchesStats(target, mergedStats),
+          )
+        ) {
+          this.cache.set(targetKey({ slug: mergedStats.slug }), mergedStats);
+          this.cache.set(
+            targetKey({ playerName: mergedStats.displayName }),
+            mergedStats,
+          );
+        }
       }
       for (const target of batch) {
         const key = targetKey(target);
@@ -402,9 +447,7 @@ export class StatsBatchCoordinator {
             (candidate) =>
               hasAnyDisplayData(candidate) &&
               (target.position === undefined || candidate.position === target.position) &&
-              ((target.slug !== undefined && candidate.slug === target.slug) ||
-                (target.playerName !== undefined &&
-                namesLikelyMatch(target.playerName, candidate.displayName))),
+              targetMatchesStats(target, candidate),
           );
         logStatsDiagnostic('target-resolution', {
           requestId: diagnosticRequestId ?? null,
@@ -469,7 +512,10 @@ export class StatsBatchCoordinator {
           : 'UNKNOWN_ERROR: Stats nicht verfügbar';
       console.warn('[Sorare Overlay] Statistikabruf fehlgeschlagen:', error);
       for (const target of batch) {
+        const key = targetKey(target);
         const cached = this.cachedStatsForTarget(target);
+        const isFirstTransientFailure = !this.deferredRetryUsed.has(key);
+        const retryScheduled = this.scheduleRetry(target, true);
         logStatsDiagnostic('request-failed', {
           target: {
             slug: target.slug ?? null,
@@ -478,12 +524,14 @@ export class StatsBatchCoordinator {
           },
           message,
           retained: cached ? summarizeStats(cached) : null,
+          retryScheduled,
+          transient: isFirstTransientFailure,
         });
         for (const view of target.views) {
           if (cached) view.render(cached);
+          else if (isFirstTransientFailure && retryScheduled) view.loading();
           else view.error();
         }
-        this.scheduleRetry(target);
       }
     }
   }
@@ -550,16 +598,11 @@ export class StatsBatchCoordinator {
   private cachedStatsForTarget(
     target: Pick<PendingTarget, 'slug' | 'playerName' | 'position'>,
   ): PlayerStats | undefined {
-    return (
-      this.cache.get(targetKey(target)) ??
-      [...this.cache.values()].find(
-        (stats) =>
-          (target.position === undefined ||
-            stats.position === target.position) &&
-          ((target.slug !== undefined && stats.slug === target.slug) ||
-            (target.playerName !== undefined &&
-              namesLikelyMatch(target.playerName, stats.displayName))),
-      )
+    const exact = this.cache.get(targetKey(target));
+    if (exact || target.position === undefined) return exact;
+    return [...this.cache.values()].find(
+      (stats) =>
+        stats.position === target.position && targetMatchesStats(target, stats),
     );
   }
 
@@ -613,14 +656,14 @@ export class StatsBatchCoordinator {
     if (!preserveFixtureRefresh) this.fixtureRefreshTargets.delete(key);
   }
 
-  private scheduleRetry(target: PendingTarget, deferred = false): void {
+  private scheduleRetry(target: PendingTarget, deferred = false): boolean {
     const key = targetKey(target);
     const existing = this.retryWork.get(key);
     if (existing) {
       for (const view of target.views) existing.views.add(view);
       existing.priority = Math.max(existing.priority, target.priority);
       this.startRetryWork(key, existing);
-      return;
+      return true;
     }
 
     let delay: number | undefined;
@@ -632,7 +675,7 @@ export class StatsBatchCoordinator {
       delay = this.retryDelaysMs[attempt];
       if (delay !== undefined) this.retryAttempts.set(key, attempt + 1);
     }
-    if (delay === undefined) return;
+    if (delay === undefined) return false;
 
     const work: ScheduledTargetWork = {
       target,
@@ -642,6 +685,7 @@ export class StatsBatchCoordinator {
     };
     this.retryWork.set(key, work);
     this.startRetryWork(key, work);
+    return true;
   }
 
   private startRetryWork(key: string, work: ScheduledTargetWork): void {
