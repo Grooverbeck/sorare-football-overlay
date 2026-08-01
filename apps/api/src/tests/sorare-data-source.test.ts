@@ -369,7 +369,7 @@ describe('SorareDataSource player-name resolution', () => {
     );
   });
 
-  it('prefers exact card-search evidence when an image-only name is ambiguous', async () => {
+  it('prefers an exact display-name hit over accent-insensitive alternatives', async () => {
     const request = vi.fn(
       async (
         _document: unknown,
@@ -444,6 +444,75 @@ describe('SorareDataSource player-name resolution', () => {
       {
         slug: 'ederson-santana-de-moraes',
         resolvedFromName: 'Ederson',
+        nameResolution: 'search',
+      },
+    ]);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('prefers Sorare player relevance over historical card volume for identical names', async () => {
+    const request = vi.fn(
+      async (
+        _document: unknown,
+        variables: { query?: string; slugs?: string[] },
+      ) => {
+        if (variables.slugs) return { players: [] };
+        const goalkeeperCard = {
+          card: {
+            __typename: 'Card',
+            anyPlayer: {
+              __typename: 'Player',
+              slug: 'andre-nogueira-gomes',
+              displayName: 'André Gomes',
+              position: 'Goalkeeper',
+            },
+          },
+        };
+        return {
+          searchPlayers: {
+            hits: [
+              {
+                player: {
+                  slug: 'andre-filipe-tavares-gomes',
+                  displayName: 'André Gomes',
+                  position: 'Midfielder',
+                },
+              },
+              {
+                player: goalkeeperCard.card.anyPlayer,
+              },
+            ],
+          },
+          searchCards: {
+            hits: [
+              goalkeeperCard,
+              goalkeeperCard,
+              goalkeeperCard,
+              {
+                card: {
+                  __typename: 'Card',
+                  anyPlayer: {
+                    __typename: 'Player',
+                    slug: 'andre-filipe-tavares-gomes',
+                    displayName: 'André Gomes',
+                    position: 'Midfielder',
+                  },
+                },
+              },
+            ],
+          },
+        };
+      },
+    );
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    await expect(source.resolvePlayerNames(['André Gomes'])).resolves.toEqual([
+      {
+        slug: 'andre-filipe-tavares-gomes',
+        resolvedFromName: 'André Gomes',
         nameResolution: 'search',
       },
     ]);

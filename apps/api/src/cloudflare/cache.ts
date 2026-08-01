@@ -1174,6 +1174,6 @@ export class CloudflareNameResolutionCache
   }
 
   private key(name: string, position: FootballPosition | undefined): string {
-    return `player-name:v4:${encodeURIComponent(normalizeName(name))}:${position ?? 'any'}`;
+    return `player-name:v5:${encodeURIComponent(normalizeName(name))}:${position ?? 'any'}`;
   }
 }

@@ -540,10 +540,12 @@ export class SorareDataSource implements PlayerStatsDataSource {
         normalizeExactDisplayName(player.displayName) ===
         normalizeExactDisplayName(name),
     );
+    // Sorare orders searchPlayers by player relevance. Prefer its exact display-name
+    // hit before card volume, which can be dominated by an older namesake's editions.
     const exact =
       expectedPositionMatch ??
-      strongestCardMatch ??
       exactPlayerMatch ??
+      strongestCardMatch ??
       playerMatches[0];
     const position = exact ? fromSorarePosition[exact.position] : undefined;
     const key = resolutionKey(name, expectedPosition);
