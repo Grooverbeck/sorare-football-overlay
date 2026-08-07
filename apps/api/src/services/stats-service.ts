@@ -14,6 +14,7 @@ import {
   type SplitPlayerStatsCacheAccess,
 } from '../cache.js';
 import {
+  playerMarketFieldSupported,
   playerMarketOddsKey,
   playerMarketOddsSupported,
   type PlayerMarketOddsProvider,
@@ -249,6 +250,7 @@ export class StatsService {
     const nameResolution = await this.resolveNamesForResponse(
       request.playerNames,
       request.positions,
+      request.playerTeams,
       request.includeHistoricalAssists,
     );
     const nameResolutionDurationMs = elapsedMs(nameResolutionStartedAt);
@@ -434,6 +436,7 @@ export class StatsService {
       playerRequests,
       cachedOrLoaded,
       request.positions,
+      request.playerTeams,
       request.includeHistoricalAssists,
       request.supportsPartialFormHistory,
     );
@@ -455,6 +458,14 @@ export class StatsService {
         }),
       ),
     ]);
+    const playersWithFixtureRefresh = new Set(
+      fixtureRefreshEntries.map(({ request, form }) =>
+        playerMarketOddsKey({
+          slug: request.slug,
+          position: request.position ?? form.position,
+        }),
+      ),
+    );
     const marketRefreshPlayers: PlayerStats[] = [];
     const matchOddsRefreshPlayers: PlayerStats[] = [];
     const data = cachedOrLoaded.map((stats): PlayerStats => {
@@ -468,6 +479,14 @@ export class StatsService {
       );
       const odds =
         supportsMarketOdds ? marketOdds.get(key) ?? null : null;
+      const needsMarketOddsRefresh = (['goal', 'assist'] as const).some(
+        (market) =>
+          playerMarketFieldSupported(
+            this.marketOddsProvider,
+            stats,
+            market,
+          ) && !odds?.[market],
+      );
       const fallbackMatchProbabilities =
         fixtureMatchOdds.get(key) ?? null;
       const nextGame = stats.nextGame
@@ -484,10 +503,12 @@ export class StatsService {
       if (
         this.scheduleBackground &&
         supportsMarketOdds &&
-        (!odds?.goal || !odds.assist)
+        needsMarketOddsRefresh
       ) {
         pending.add('marketOdds');
-        marketRefreshPlayers.push(stats);
+        if (!playersWithFixtureRefresh.has(key)) {
+          marketRefreshPlayers.push(stats);
+        }
       }
       if (
         this.scheduleBackground &&
@@ -495,7 +516,9 @@ export class StatsService {
         needsMatchProbabilitiesFallback(statsWithFallback)
       ) {
         pending.add('fixture');
-        matchOddsRefreshPlayers.push(statsWithFallback);
+        if (!playersWithFixtureRefresh.has(key)) {
+          matchOddsRefreshPlayers.push(statsWithFallback);
+        }
       }
       return {
         ...stats,
@@ -526,7 +549,9 @@ export class StatsService {
         );
       }
       if (tasks.length > 0) {
-        this.scheduleBackground(Promise.all(tasks).then(() => undefined));
+        this.scheduleBackground(
+          Promise.allSettled(tasks).then(() => undefined),
+        );
       }
     }
 
@@ -569,6 +594,7 @@ export class StatsService {
   private async resolveNamesForResponse(
     names: readonly string[],
     positions: Readonly<Record<string, FootballPosition>> | undefined,
+    teamSlugs: Readonly<Record<string, string>> | undefined,
     includeHistoricalAssists: boolean,
   ): Promise<{
     resolved: SourcePlayerRequest[];
@@ -577,7 +603,11 @@ export class StatsService {
     if (names.length === 0) return { resolved: [], deferred: [] };
     if (!this.scheduleBackground) {
       return {
-        resolved: await this.dataSource.resolvePlayerNames(names, positions),
+        resolved: teamSlugs
+          ? await this.dataSource.resolvePlayerNames(names, positions, {
+              teamSlugs,
+            })
+          : await this.dataSource.resolvePlayerNames(names, positions),
         deferred: [],
       };
     }
@@ -585,7 +615,7 @@ export class StatsService {
     const cached = await this.dataSource.resolvePlayerNames(
       names,
       positions,
-      { cacheOnly: true },
+      { cacheOnly: true, ...(teamSlugs ? { teamSlugs } : {}) },
     );
     const cachedNames = new Set(
       cached.flatMap((request) =>
@@ -599,7 +629,9 @@ export class StatsService {
     );
     if (missing.length === 0) return { resolved: cached, deferred: [] };
 
-    const pending = this.dataSource.resolvePlayerNames(missing, positions);
+    const pending = this.dataSource.resolvePlayerNames(missing, positions, {
+      ...(teamSlugs ? { teamSlugs } : {}),
+    });
     const result = await settleWithin(pending, this.nameResolutionBudgetMs);
     if (result.status === 'fulfilled') {
       return {
@@ -655,6 +687,7 @@ export class StatsService {
     playerRequests: readonly SourcePlayerRequest[],
     loadedStats: readonly PlayerStats[],
     positions: Readonly<Record<string, FootballPosition>> | undefined,
+    teamSlugs: Readonly<Record<string, string>> | undefined,
     includeHistoricalAssists: boolean,
     allowPartialHistory: boolean,
   ): Promise<PlayerStats[]> {
@@ -690,7 +723,7 @@ export class StatsService {
       const searched = await this.dataSource.resolvePlayerNames(
         names,
         positions,
-        { forceSearch: true },
+        { forceSearch: true, ...(teamSlugs ? { teamSlugs } : {}) },
       );
       const searchedByName = new Map(
         searched.flatMap((resolved) =>
@@ -752,7 +785,9 @@ export class StatsService {
           ]),
         ).values(),
       ];
-      const fixtures = await this.dataSource.fetchNextGames(requests);
+      const fixtures = await this.dataSource.fetchNextGames(
+        requests.map(({ slug }) => ({ slug })),
+      );
       const fixtureBySlug = new Map(
         fixtures.map(({ slug, nextGame }) => [slug, nextGame]),
       );
@@ -789,28 +824,58 @@ export class StatsService {
         ]),
       ).values(),
     ];
-    const fixtures = await this.dataSource.fetchNextGames(requests);
-    const fixtureBySlug = new Map(
-      fixtures.map(({ slug, nextGame }) => [slug, nextGame]),
-    );
-    const refreshedPlayers: PlayerStats[] = [];
-    await Promise.all(
-      entries.map(async ({ key, request, form, existingFixture }) => {
-        if (!fixtureBySlug.has(request.slug)) return;
-        const nextGame = fixtureBySlug.get(request.slug) ?? null;
-        const resolvedNextGame =
-          existingFixture === undefined
-            ? await splitCache.setFixture(key, nextGame)
-            : await splitCache.refreshFixture(key, nextGame);
-        refreshedPlayers.push({ ...form, nextGame: resolvedNextGame });
-      }),
-    );
+    const fixtureRequests = requests.map(({ slug }) => ({ slug }));
+    let fixtureBySlug = new Map<string, PlayerStats['nextGame']>();
+    try {
+      const fixtures = await this.dataSource.fetchNextGames(fixtureRequests);
+      fixtureBySlug = new Map(
+        fixtures.map(({ slug, nextGame }) => [slug, nextGame]),
+      );
+    } catch {
+      // A temporary Sorare fixture error must not suppress bookmaker refreshes
+      // for the last authoritative fixture already held in the cache.
+    }
+    const refreshedPlayers = (
+      await Promise.all(
+        entries.map(async ({ key, request, form, existingFixture }) => {
+          if (!fixtureBySlug.has(request.slug)) {
+            return existingFixture === undefined
+              ? null
+              : { ...form, nextGame: existingFixture };
+          }
+          const nextGame = fixtureBySlug.get(request.slug) ?? null;
+          try {
+            const resolvedNextGame =
+              existingFixture === undefined
+                ? await splitCache.setFixture(key, nextGame)
+                : await splitCache.refreshFixture(key, nextGame);
+            return { ...form, nextGame: resolvedNextGame };
+          } catch {
+            return existingFixture === undefined
+              ? null
+              : { ...form, nextGame: existingFixture };
+          }
+        }),
+      )
+    ).filter((player): player is PlayerStats => player !== null);
     const oddsEligible = refreshedPlayers.filter(
       (stats) => playerMarketOddsSupported(this.marketOddsProvider, stats),
     );
-    if (oddsEligible.length > 0) {
-      await this.marketOddsProvider.load(oddsEligible);
-    }
+    const matchOddsEligible = refreshedPlayers.filter(
+      (stats) =>
+        this.fixtureMatchOddsProvider.supports(stats) &&
+        needsMatchProbabilitiesFallback(stats),
+    );
+    await Promise.allSettled([
+      oddsEligible.length > 0
+        ? this.marketOddsProvider.load(oddsEligible).then(() => undefined)
+        : Promise.resolve(),
+      matchOddsEligible.length > 0
+        ? this.fixtureMatchOddsProvider
+            .load(matchOddsEligible)
+            .then(() => undefined)
+        : Promise.resolve(),
+    ]);
   }
 
   private async loadBatch(

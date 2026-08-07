@@ -190,5 +190,27 @@ export function hasAnyDisplayData(stats: PlayerStats): boolean {
     stats.position === 'Goalkeeper' || stats.position === 'Defender'
       ? stats.cleanSheetL10
       : stats.goalL10;
-  return stats.aaL10.value !== null || roleMetric.value !== null;
+  const nextGame = stats.nextGame;
+  const matchProbabilities = nextGame?.matchProbabilities;
+  const hasCompleteMatchProbabilities = Boolean(
+    matchProbabilities &&
+      matchProbabilities.win !== null &&
+      matchProbabilities.draw !== null &&
+      matchProbabilities.loss !== null,
+  );
+  const hasRelevantCleanSheetProbability =
+    (stats.position === 'Goalkeeper' || stats.position === 'Defender') &&
+    nextGame?.cleanSheetProbability !== null &&
+    nextGame?.cleanSheetProbability !== undefined;
+  const hasRelevantPlayerMarket =
+    stats.position !== 'Goalkeeper' &&
+    Boolean(nextGame?.marketOdds?.goal || nextGame?.marketOdds?.assist);
+
+  return (
+    stats.aaL10.value !== null ||
+    roleMetric.value !== null ||
+    hasCompleteMatchProbabilities ||
+    hasRelevantCleanSheetProbability ||
+    hasRelevantPlayerMarket
+  );
 }

@@ -4,6 +4,8 @@ import {
   calculateHistoricalDecisiveMetrics,
   calculateHistoricalGoalMetrics,
   calculatePlayerMetrics,
+  hasAnyDisplayData,
+  type PlayerStats,
   type PlayerAppearance,
 } from '../index.js';
 
@@ -145,5 +147,41 @@ describe('calculatePlayerMetrics', () => {
     expect(decisives.l10).toEqual({ value: 0.4, sampleSize: 10 });
     expect(decisives.l15).toEqual({ value: 0.4, sampleSize: 15 });
     expect(decisives.l40).toEqual({ value: 0.4, sampleSize: 40 });
+  });
+});
+
+describe('hasAnyDisplayData', () => {
+  const emptyDefender: PlayerStats = {
+    slug: 'new-defender',
+    displayName: 'New Defender',
+    position: 'Defender',
+    aaL10: { value: null, sampleSize: 0 },
+    cleanSheetL10: { value: null, sampleSize: 0 },
+    goalL10: { value: null, sampleSize: 0 },
+    nextGame: null,
+    excludedLowCoverage: 0,
+  };
+
+  it('keeps a zero-L10 player displayable when next-game data exists', () => {
+    expect(
+      hasAnyDisplayData({
+        ...emptyDefender,
+        nextGame: {
+          date: '2026-08-06T23:30:00.000Z',
+          cleanSheetProbability: 0.38,
+          matchProbabilities: { win: 0.6, draw: 0.22, loss: 0.18 },
+          marketOdds: {
+            source: 'odds-api-io',
+            capturedAt: '2026-08-06T20:00:00.000Z',
+            goal: { probability: 0.11, bookmakerCount: 1 },
+            assist: null,
+          },
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it('still treats a player without form or usable fixture data as empty', () => {
+    expect(hasAnyDisplayData(emptyDefender)).toBe(false);
   });
 });

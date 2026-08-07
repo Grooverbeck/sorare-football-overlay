@@ -92,8 +92,39 @@ function expectedPositionForName(
   return Object.entries(positions).find(([key]) => normalizeName(key) === normalized)?.[1];
 }
 
-function resolutionKey(name: string, position: FootballPosition | undefined): string {
-  return `${normalizeName(name)}:${position ?? 'any'}`;
+function expectedTeamSlugForName(
+  name: string,
+  teamSlugs: Readonly<Record<string, string>> | undefined,
+): string | undefined {
+  if (!teamSlugs) return undefined;
+  const normalized = normalizeName(name);
+  return Object.entries(teamSlugs)
+    .find(([key]) => normalizeName(key) === normalized)?.[1]
+    ?.trim()
+    .toLowerCase();
+}
+
+function teamSlugsLikelyMatch(
+  candidateSlug: string | undefined,
+  expectedSlug: string | undefined,
+): boolean {
+  if (!expectedSlug) return true;
+  if (!candidateSlug) return false;
+  const candidate = candidateSlug.trim().toLowerCase();
+  const expected = expectedSlug.trim().toLowerCase();
+  return (
+    candidate === expected ||
+    candidate.startsWith(`${expected}-`) ||
+    expected.startsWith(`${candidate}-`)
+  );
+}
+
+function resolutionKey(
+  name: string,
+  position: FootballPosition | undefined,
+  teamSlug?: string,
+): string {
+  return `${normalizeName(name)}:${position ?? 'any'}:${teamSlug ?? 'any-team'}`;
 }
 
 function namesLikelyMatch(query: string, displayName: string): boolean {
@@ -126,6 +157,7 @@ interface SearchPlayerHit {
     slug: string;
     displayName: string;
     position: string;
+    activeClub?: { slug: string } | null;
   };
 }
 
@@ -142,6 +174,7 @@ interface SearchCardResult {
         slug: string;
         displayName: string;
         position: string;
+        activeClub?: { slug: string } | null;
       };
     } | null;
   }>;
@@ -152,6 +185,7 @@ interface SlugCandidatePlayer {
   slug: string;
   displayName: string;
   position: string;
+  activeClub?: { slug: string } | null;
 }
 
 type HistoryLoadMode = 'base' | 'complete';
@@ -170,7 +204,7 @@ const RESOLVE_SLUG_CANDIDATES_QUERY = parse(`
   query ResolveSlugCandidates($slugs: [String!]!) {
     players(slugs: $slugs) {
       __typename
-      ... on Player { slug displayName position }
+      ... on Player { slug displayName position activeClub { slug } }
     }
   }
 `);
@@ -179,7 +213,7 @@ const RESOLVE_PLAYER_NAME_QUERY = parse(`
   query ResolvePlayerName($query: String!) {
     searchPlayers(query: $query, pageSize: 5) {
       hits {
-        player { slug displayName position }
+        player { slug displayName position activeClub { slug } }
       }
     }
     searchCards(query: $query, pageSize: 5) {
@@ -188,7 +222,7 @@ const RESOLVE_PLAYER_NAME_QUERY = parse(`
           __typename
           anyPlayer {
             __typename
-            ... on Player { slug displayName position }
+            ... on Player { slug displayName position activeClub { slug } }
           }
         }
       }
@@ -227,18 +261,28 @@ export class SorareDataSource implements PlayerStatsDataSource {
     expectedPositions?: Readonly<Record<string, FootballPosition>>,
     options: PlayerNameResolutionOptions = {},
   ): Promise<SourcePlayerRequest[]> {
+    const expectedTeamSlugs = options.teamSlugs;
     if (!options.forceSearch) {
-      await this.hydrateCachedResolutions(names, expectedPositions);
+      await this.hydrateCachedResolutions(
+        names,
+        expectedPositions,
+        expectedTeamSlugs,
+      );
     }
     if (options.cacheOnly) {
-      return this.resolvedRequestsForNames(names, expectedPositions);
+      return this.resolvedRequestsForNames(
+        names,
+        expectedPositions,
+        expectedTeamSlugs,
+      );
     }
     const missing = [
       ...new Map(
         names
           .filter((name) => {
             const position = expectedPositionForName(name, expectedPositions);
-            return options.forceSearch || !this.hasCachedResolution(name, position);
+            const teamSlug = expectedTeamSlugForName(name, expectedTeamSlugs);
+            return options.forceSearch || !this.hasCachedResolution(name, position, teamSlug);
           })
           .map((name) => [normalizeName(name), name]),
       ).values(),
@@ -250,7 +294,11 @@ export class SorareDataSource implements PlayerStatsDataSource {
     // hold back every other player in the request.
     if (!options.forceSearch) {
       try {
-        await this.resolveSlugCandidates(missing, expectedPositions);
+        await this.resolveSlugCandidates(
+          missing,
+          expectedPositions,
+          expectedTeamSlugs,
+        );
       } catch {
         // Search fallbacks below can still resolve each name independently.
       }
@@ -259,13 +307,15 @@ export class SorareDataSource implements PlayerStatsDataSource {
       ? missing
       : missing.filter((name) => {
           const position = expectedPositionForName(name, expectedPositions);
-          return !this.resolvedNames.has(resolutionKey(name, position));
+          const teamSlug = expectedTeamSlugForName(name, expectedTeamSlugs);
+          return !this.resolvedNames.has(resolutionKey(name, position, teamSlug));
         });
     const completedSearches = new Set<string>();
     await Promise.all(
       searchFallbacks.map(async (name) => {
         const position = expectedPositionForName(name, expectedPositions);
-        const key = resolutionKey(name, position);
+        const teamSlug = expectedTeamSlugForName(name, expectedTeamSlugs);
+        const key = resolutionKey(name, position, teamSlug);
         if (options.forceSearch) {
           // The cached/direct slug is precisely what is being revalidated.
           // Do not let a failed or empty search silently reuse it.
@@ -273,7 +323,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
           this.unresolvedNamesUntil.delete(key);
         }
         try {
-          await this.resolveName(name, position);
+          await this.resolveName(name, position, teamSlug);
           completedSearches.add(key);
         } catch {
           // Do not fail or negative-cache the entire batch when one Sorare
@@ -283,27 +333,37 @@ export class SorareDataSource implements PlayerStatsDataSource {
     );
     const unresolved = searchFallbacks.filter((name) => {
       const position = expectedPositionForName(name, expectedPositions);
-      const key = resolutionKey(name, position);
+      const teamSlug = expectedTeamSlugForName(name, expectedTeamSlugs);
+      const key = resolutionKey(name, position, teamSlug);
       return completedSearches.has(key) && !this.resolvedNames.has(key);
     });
     await Promise.all(
       unresolved.map(async (name) => {
         const position = expectedPositionForName(name, expectedPositions);
-        if (!this.resolvedNames.has(resolutionKey(name, position))) {
-          await this.persistResolution(name, position, null);
+        const teamSlug = expectedTeamSlugForName(name, expectedTeamSlugs);
+        if (!this.resolvedNames.has(resolutionKey(name, position, teamSlug))) {
+          await this.persistResolution(name, position, teamSlug, null);
         }
       }),
     );
-    return this.resolvedRequestsForNames(names, expectedPositions);
+    return this.resolvedRequestsForNames(
+      names,
+      expectedPositions,
+      expectedTeamSlugs,
+    );
   }
 
   private resolvedRequestsForNames(
     names: readonly string[],
     expectedPositions?: Readonly<Record<string, FootballPosition>>,
+    expectedTeamSlugs?: Readonly<Record<string, string>>,
   ): SourcePlayerRequest[] {
     return names.flatMap((name) => {
       const expectedPosition = expectedPositionForName(name, expectedPositions);
-      const resolved = this.resolvedNames.get(resolutionKey(name, expectedPosition));
+      const expectedTeamSlug = expectedTeamSlugForName(name, expectedTeamSlugs);
+      const resolved = this.resolvedNames.get(
+        resolutionKey(name, expectedPosition, expectedTeamSlug),
+      );
       if (!resolved) return [];
       // A position persisted during name resolution is the player's broad
       // profile position, not necessarily the concrete current card position.
@@ -324,6 +384,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
   private async resolveSlugCandidates(
     names: readonly string[],
     expectedPositions?: Readonly<Record<string, FootballPosition>>,
+    expectedTeamSlugs?: Readonly<Record<string, string>>,
   ): Promise<void> {
     if (names.length === 0) return;
     const nameBySlug = new Map(names.map((name) => [slugFromName(name), name]));
@@ -339,21 +400,36 @@ export class SorareDataSource implements PlayerStatsDataSource {
       const expectedPosition = requestedName
         ? expectedPositionForName(requestedName, expectedPositions)
         : undefined;
+      const expectedTeamSlug = requestedName
+        ? expectedTeamSlugForName(requestedName, expectedTeamSlugs)
+        : undefined;
+      const activeClubSlug = player.activeClub?.slug.toLowerCase();
       if (
         requestedName &&
         position &&
         (!expectedPosition || position === expectedPosition) &&
+        teamSlugsLikelyMatch(activeClubSlug, expectedTeamSlug) &&
         namesLikelyMatch(requestedName, player.displayName)
       ) {
-        const key = resolutionKey(requestedName, expectedPosition);
+        const key = resolutionKey(
+          requestedName,
+          expectedPosition,
+          expectedTeamSlug,
+        );
         const resolved = {
           slug: player.slug,
           position,
+          ...(activeClubSlug ? { teamSlug: activeClubSlug } : {}),
           nameResolution: 'direct' as const,
         };
         this.resolvedNames.set(key, resolved);
         this.unresolvedNamesUntil.delete(key);
-        await this.persistResolution(requestedName, expectedPosition, resolved);
+        await this.persistResolution(
+          requestedName,
+          expectedPosition,
+          expectedTeamSlug,
+          resolved,
+        );
       }
     }
   }
@@ -484,6 +560,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
   private async resolveName(
     name: string,
     expectedPosition: FootballPosition | undefined,
+    expectedTeamSlug: string | undefined,
   ): Promise<void> {
     const data = await this.client.request<
       { searchPlayers: SearchPlayerResult; searchCards?: SearchCardResult },
@@ -509,19 +586,46 @@ export class SorareDataSource implements PlayerStatsDataSource {
         fromSorarePosition[player.position] !== undefined,
     );
     const candidates = [...playerMatches, ...cardMatches];
+    const teamMatches = expectedTeamSlug
+      ? candidates.filter(
+          (player) =>
+            teamSlugsLikelyMatch(
+              player.activeClub?.slug.toLowerCase(),
+              expectedTeamSlug,
+            ),
+        )
+      : candidates;
     const expectedPositionMatch = expectedPosition
-      ? candidates.find(
+      ? teamMatches.find(
           (player) => fromSorarePosition[player.position] === expectedPosition,
         )
       : undefined;
-    const exactCardMatches = cardMatches.filter(
+    const eligibleCardMatches = expectedTeamSlug
+      ? cardMatches.filter(
+          (player) =>
+            teamSlugsLikelyMatch(
+              player.activeClub?.slug.toLowerCase(),
+              expectedTeamSlug,
+            ),
+        )
+      : cardMatches;
+    const eligiblePlayerMatches = expectedTeamSlug
+      ? playerMatches.filter(
+          (player) =>
+            teamSlugsLikelyMatch(
+              player.activeClub?.slug.toLowerCase(),
+              expectedTeamSlug,
+            ),
+        )
+      : playerMatches;
+    const exactCardMatches = eligibleCardMatches.filter(
       (player) =>
         normalizeExactDisplayName(player.displayName) ===
         normalizeExactDisplayName(name),
     );
     const cardEvidence = exactCardMatches.length > 0
       ? exactCardMatches
-      : cardMatches;
+      : eligibleCardMatches;
     const cardCounts = new Map<string, number>();
     for (const player of cardEvidence) {
       cardCounts.set(player.slug, (cardCounts.get(player.slug) ?? 0) + 1);
@@ -535,7 +639,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
         ? player
         : best;
     }, undefined);
-    const exactPlayerMatch = playerMatches.find(
+    const exactPlayerMatch = eligiblePlayerMatches.find(
       (player) =>
         normalizeExactDisplayName(player.displayName) ===
         normalizeExactDisplayName(name),
@@ -546,18 +650,25 @@ export class SorareDataSource implements PlayerStatsDataSource {
       expectedPositionMatch ??
       exactPlayerMatch ??
       strongestCardMatch ??
-      playerMatches[0];
+      eligiblePlayerMatches[0];
     const position = exact ? fromSorarePosition[exact.position] : undefined;
-    const key = resolutionKey(name, expectedPosition);
+    const activeClubSlug = exact?.activeClub?.slug.toLowerCase();
+    const key = resolutionKey(name, expectedPosition, expectedTeamSlug);
     if (exact && position) {
       const resolved = {
         slug: exact.slug,
         position,
+        ...(activeClubSlug ? { teamSlug: activeClubSlug } : {}),
         nameResolution: 'search' as const,
       };
       this.resolvedNames.set(key, resolved);
       this.unresolvedNamesUntil.delete(key);
-      await this.persistResolution(name, expectedPosition, resolved);
+      await this.persistResolution(
+        name,
+        expectedPosition,
+        expectedTeamSlug,
+        resolved,
+      );
     } else {
       this.unresolvedNamesUntil.set(key, Date.now() + this.unresolvedNameTtlMs);
     }
@@ -566,35 +677,45 @@ export class SorareDataSource implements PlayerStatsDataSource {
   private async hydrateCachedResolutions(
     names: readonly string[],
     expectedPositions: Readonly<Record<string, FootballPosition>> | undefined,
+    expectedTeamSlugs: Readonly<Record<string, string>> | undefined,
   ): Promise<void> {
     if (!this.nameResolutionCache) return;
     const unique = [
       ...new Map(
         names.map((name) => {
           const position = expectedPositionForName(name, expectedPositions);
-          return [resolutionKey(name, position), { name, position }] as const;
+          const teamSlug = expectedTeamSlugForName(name, expectedTeamSlugs);
+          return [
+            resolutionKey(name, position, teamSlug),
+            { name, position, teamSlug },
+          ] as const;
         }),
       ).values(),
     ];
 
     await Promise.all(
-      unique.map(async ({ name, position }) => {
-        if (this.hasCachedResolution(name, position)) return;
-        const positionCached = await this.nameResolutionCache?.get(name, position);
+      unique.map(async ({ name, position, teamSlug }) => {
+        if (this.hasCachedResolution(name, position, teamSlug)) return;
+        const positionCached = await this.nameResolutionCache?.get(
+          name,
+          position,
+          teamSlug,
+        );
         const genericCached =
           position && !positionCached
-            ? await this.nameResolutionCache?.get(name, undefined)
+            ? await this.nameResolutionCache?.get(name, undefined, teamSlug)
             : undefined;
         const compatibleGeneric =
           genericCached &&
-          (!position || genericCached.position === position)
+          (!position || genericCached.position === position) &&
+          teamSlugsLikelyMatch(genericCached.teamSlug, teamSlug)
             ? genericCached
             : undefined;
         const cached =
           positionCached === null
             ? compatibleGeneric ?? null
             : positionCached ?? compatibleGeneric;
-        const key = resolutionKey(name, position);
+        const key = resolutionKey(name, position, teamSlug);
         if (cached === null) {
           if (genericCached === undefined) {
             this.unresolvedNamesUntil.set(
@@ -613,16 +734,22 @@ export class SorareDataSource implements PlayerStatsDataSource {
   private async persistResolution(
     name: string,
     position: FootballPosition | undefined,
+    teamSlug: string | undefined,
     value: SourcePlayerRequest | null,
   ): Promise<void> {
-    await this.nameResolutionCache?.set(name, position, value);
+    if (teamSlug) {
+      await this.nameResolutionCache?.set(name, position, value, teamSlug);
+    } else {
+      await this.nameResolutionCache?.set(name, position, value);
+    }
   }
 
   private hasCachedResolution(
     name: string,
     expectedPosition: FootballPosition | undefined,
+    expectedTeamSlug: string | undefined,
   ): boolean {
-    const key = resolutionKey(name, expectedPosition);
+    const key = resolutionKey(name, expectedPosition, expectedTeamSlug);
     if (this.resolvedNames.has(key)) return true;
     const unresolvedUntil = this.unresolvedNamesUntil.get(key);
     if (unresolvedUntil !== undefined && unresolvedUntil > Date.now()) return true;
@@ -679,7 +806,6 @@ export class SorareDataSource implements PlayerStatsDataSource {
             },
           ];
         });
-
         return [
           {
             player: {

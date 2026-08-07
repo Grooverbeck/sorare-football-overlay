@@ -1,11 +1,30 @@
 import type { MatchOddsRoute } from './match-odds-provider.js';
 
 /**
+ * Sorare labels the MLS/Liga MX tournament as `leagues-cup-mls`, while
+ * The Odds API exposes the same fixtures through its CONCACAF Leagues Cup
+ * feed. Keep this separate from the regular MLS feed so a Leagues Cup card
+ * never consumes an MLS request that cannot contain its fixture.
+ */
+export const LEAGUES_CUP_COMPETITION_SLUGS = [
+  'leagues-cup-mls',
+] as const;
+
+export const LEAGUES_CUP_THE_ODDS_API_ROUTES = [
+  {
+    sportKeys: ['soccer_concacaf_leagues_cup'],
+    competitionSlugs: LEAGUES_CUP_COMPETITION_SLUGS,
+    region: 'us',
+    fallbackRegion: 'uk',
+  },
+] as const satisfies readonly MatchOddsRoute[];
+
+/**
  * Sorare 27 Contender pool (Limited/Rare).
  *
- * The external providers do not currently cover all four competitions:
- * The Odds API exposes Austria and Germany's second tier, while neither
- * configured provider exposes Croatia's HNL or France's Ligue 2.
+ * The Odds API exposes Austria and Germany's second tier. Croatia's HNL and
+ * France's Ligue 2 use the Odds-API.io goalscorer fallback; that provider does
+ * not expose an assist market for these routes.
  */
 export const CONTENDER_COMPETITION_SLUGS = [
   'austrian-bundesliga',
@@ -43,6 +62,10 @@ export const ODDS_API_IO_PLAYER_ROUTES = [
   {
     competitionSlugs: ['mlspa'],
     leagueSlugs: ['usa-mls'],
+  },
+  {
+    competitionSlugs: LEAGUES_CUP_COMPETITION_SLUGS,
+    leagueSlugs: ['international-clubs-leagues-cup-group-stage'],
   },
   {
     competitionSlugs: ['uefa-champions-league'],

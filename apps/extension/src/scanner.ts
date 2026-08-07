@@ -43,12 +43,18 @@ interface PendingTarget {
   slug?: string;
   playerName?: string;
   position?: FootballPosition;
+  teamSlug?: string;
   views: Set<OverlayView>;
   priority: number;
 }
 
+type TargetIdentity = Pick<
+  PendingTarget,
+  'slug' | 'playerName' | 'position' | 'teamSlug'
+>;
+
 interface ScheduledTargetWork {
-  target: Pick<PendingTarget, 'slug' | 'playerName' | 'position'>;
+  target: TargetIdentity;
   views: Set<OverlayView>;
   priority: number;
   remainingMs: number;
@@ -99,9 +105,13 @@ function namesLikelyMatch(query: string, displayName: string): boolean {
   );
 }
 
-function targetKey(target: Pick<PendingTarget, 'slug' | 'playerName' | 'position'>): string {
-  if (target.slug) return `slug:${target.slug}:${target.position ?? 'default'}`;
-  return `name:${normalizeName(target.playerName ?? '')}:${target.position ?? 'default'}`;
+function targetKey(
+  target: TargetIdentity,
+): string {
+  const base = target.slug
+    ? `slug:${target.slug}:${target.position ?? 'default'}`
+    : `name:${normalizeName(target.playerName ?? '')}:${target.position ?? 'default'}`;
+  return target.teamSlug ? `${base}:team:${target.teamSlug}` : base;
 }
 
 function requestIdentity(
@@ -144,6 +154,65 @@ function targetMatchesStats(
     (target.playerName !== undefined &&
       namesLikelyMatch(target.playerName, stats.displayName))
   );
+}
+
+function canTrackStats(stats: PlayerStats): boolean {
+  return hasAnyDisplayData(stats) || Boolean(stats.pendingRefreshes?.length);
+}
+
+function samePlayerTeamFixture(
+  left: NonNullable<PlayerStats['nextGame']>,
+  right: NonNullable<PlayerStats['nextGame']>,
+): boolean {
+  return (
+    left.date === right.date &&
+    normalizeName(left.homeTeamName ?? '') ===
+      normalizeName(right.homeTeamName ?? '') &&
+    normalizeName(left.awayTeamName ?? '') ===
+      normalizeName(right.awayTeamName ?? '') &&
+    Boolean(left.playerTeamName && right.playerTeamName) &&
+    normalizeName(left.playerTeamName ?? '') ===
+      normalizeName(right.playerTeamName ?? '')
+  );
+}
+
+function mergeSharedFixtureTeamData(
+  stats: PlayerStats,
+  candidates: Iterable<PlayerStats>,
+): PlayerStats {
+  if (!stats.nextGame) return stats;
+  let cleanSheetProbability = stats.nextGame.cleanSheetProbability;
+  let matchProbabilities = stats.nextGame.matchProbabilities;
+
+  for (const candidate of candidates) {
+    const fixture = candidate.nextGame;
+    if (!fixture || !samePlayerTeamFixture(stats.nextGame, fixture)) continue;
+    cleanSheetProbability ??= fixture.cleanSheetProbability;
+    if (fixture.matchProbabilities) {
+      matchProbabilities = {
+        win: matchProbabilities?.win ?? fixture.matchProbabilities.win,
+        draw: matchProbabilities?.draw ?? fixture.matchProbabilities.draw,
+        loss: matchProbabilities?.loss ?? fixture.matchProbabilities.loss,
+      };
+    }
+  }
+
+  if (
+    cleanSheetProbability === stats.nextGame.cleanSheetProbability &&
+    matchProbabilities?.win === stats.nextGame.matchProbabilities?.win &&
+    matchProbabilities?.draw === stats.nextGame.matchProbabilities?.draw &&
+    matchProbabilities?.loss === stats.nextGame.matchProbabilities?.loss
+  ) {
+    return stats;
+  }
+  return {
+    ...stats,
+    nextGame: {
+      ...stats.nextGame,
+      cleanSheetProbability,
+      matchProbabilities,
+    },
+  };
 }
 
 function viewportPriorityForRect(rect: DOMRectReadOnly): number {
@@ -228,7 +297,7 @@ export class StatsBatchCoordinator {
   }
 
   setViewViewportActive(
-    target: Pick<PendingTarget, 'slug' | 'playerName' | 'position'>,
+    target: TargetIdentity,
     view: OverlayView,
     active: boolean,
     priority = 0,
@@ -254,7 +323,7 @@ export class StatsBatchCoordinator {
   }
 
   private queueTarget(
-    target: Pick<PendingTarget, 'slug' | 'playerName' | 'position'>,
+    target: TargetIdentity,
     views: Iterable<OverlayView>,
     priority = 0,
   ): void {
@@ -274,6 +343,7 @@ export class StatsBatchCoordinator {
         ...(target.slug ? { slug: target.slug } : {}),
         ...(target.playerName ? { playerName: target.playerName } : {}),
         ...(target.position ? { position: target.position } : {}),
+        ...(target.teamSlug ? { teamSlug: target.teamSlug } : {}),
         views: new Set<OverlayView>(),
         priority,
       };
@@ -286,6 +356,7 @@ export class StatsBatchCoordinator {
       ...(target.slug ? { slug: target.slug } : {}),
       ...(target.playerName ? { playerName: target.playerName } : {}),
       ...(target.position ? { position: target.position } : {}),
+      ...(target.teamSlug ? { teamSlug: target.teamSlug } : {}),
       views: new Set<OverlayView>(),
       priority,
     };
@@ -382,6 +453,12 @@ export class StatsBatchCoordinator {
     const refreshFixtures = batch.some((target) =>
       this.fixtureRefreshTargets.has(targetKey(target)),
     );
+    const playerTeams = Object.fromEntries(
+      batch.flatMap(({ slug, playerName, teamSlug }) => {
+        const identity = slug ?? playerName;
+        return identity && teamSlug ? [[identity, teamSlug]] : [];
+      }),
+    );
     if (refreshFixtures) {
       for (const target of batch) {
         this.inFlightFixtureRefreshKeys.add(targetKey(target));
@@ -394,6 +471,7 @@ export class StatsBatchCoordinator {
         playerNames,
         supportsPartialFormHistory: true,
         ...(Object.keys(positions).length ? { positions } : {}),
+        ...(Object.keys(playerTeams).length ? { playerTeams } : {}),
         ...(includeHistoricalAssists
           ? { includeHistoricalAssists: true }
           : {}),
@@ -410,8 +488,12 @@ export class StatsBatchCoordinator {
       const deferredPlayerNames = new Set(
         (response.meta.deferredPlayerNames ?? []).map(normalizeName),
       );
-      for (const stats of response.data) {
-        if (!hasAnyDisplayData(stats)) continue;
+      const fixtureCandidates = [...response.data, ...this.cache.values()];
+      const responseData = response.data.map((stats) =>
+        mergeSharedFixtureTeamData(stats, fixtureCandidates),
+      );
+      for (const stats of responseData) {
+        if (!canTrackStats(stats)) continue;
         const mergedStats = this.mergeWithCompleteCachedForm(stats);
         this.cache.set(
           targetKey({ slug: mergedStats.slug, position: mergedStats.position }),
@@ -443,9 +525,9 @@ export class StatsBatchCoordinator {
         if (refreshFixtures) this.fixtureRefreshTargets.delete(key);
         const stats =
           this.cache.get(targetKey(target)) ??
-          response.data.find(
+          responseData.find(
             (candidate) =>
-              hasAnyDisplayData(candidate) &&
+              canTrackStats(candidate) &&
               (target.position === undefined || candidate.position === target.position) &&
               targetMatchesStats(target, candidate),
           );
@@ -457,7 +539,7 @@ export class StatsBatchCoordinator {
             position: target.position ?? null,
           },
           resolved: stats ? summarizeStats(stats) : null,
-          responsePlayers: response.data.map(summarizeStats),
+          responsePlayers: responseData.map(summarizeStats),
         });
         for (const view of target.views) {
           if (stats && hasAnyDisplayData(stats)) {
@@ -481,6 +563,12 @@ export class StatsBatchCoordinator {
           }
         }
         if (stats && hasAnyDisplayData(stats)) {
+          this.cache.set(key, stats);
+          this.clearRetry(targetKey(target));
+        } else if (stats?.pendingRefreshes?.length) {
+          // A resolved zero-L10 player may only be waiting for its independent
+          // fixture/market snapshot. The pending-refresh path below owns that
+          // follow-up; a second generic retry would duplicate API traffic.
           this.clearRetry(targetKey(target));
         } else {
           this.scheduleRetry(
@@ -537,7 +625,7 @@ export class StatsBatchCoordinator {
   }
 
   private schedulePendingRefresh(
-    target: Pick<PendingTarget, 'slug' | 'playerName' | 'position'>,
+    target: TargetIdentity,
     views: Iterable<OverlayView>,
     refreshFixture = false,
     priority = 0,
@@ -596,10 +684,12 @@ export class StatsBatchCoordinator {
   }
 
   private cachedStatsForTarget(
-    target: Pick<PendingTarget, 'slug' | 'playerName' | 'position'>,
+    target: TargetIdentity,
   ): PlayerStats | undefined {
     const exact = this.cache.get(targetKey(target));
-    if (exact || target.position === undefined) return exact;
+    if (exact || target.position === undefined || target.teamSlug !== undefined) {
+      return exact;
+    }
     return [...this.cache.values()].find(
       (stats) =>
         stats.position === target.position && targetMatchesStats(target, stats),

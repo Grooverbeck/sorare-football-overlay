@@ -25,6 +25,12 @@ export const PlayerStatsRequestSchema = z
         ...new Map(names.map((name) => [name.toLocaleLowerCase(), name.trim()])).values(),
       ]),
     positions: z.record(z.string(), FootballPositionSchema).optional(),
+    playerTeams: z
+      .record(
+        z.string(),
+        z.string().trim().min(1).max(180).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i),
+      )
+      .optional(),
     includeHistoricalAssists: z.boolean().default(false),
     // Capability handshake for rollout safety. Older extension versions reject
     // the `formHistory` refresh hint, so the backend may only return an early

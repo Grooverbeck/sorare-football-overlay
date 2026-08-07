@@ -15,6 +15,7 @@ import {
   needsFrozenSnapshotSupplement,
   normalizePlayerName,
   normalizeTeamName,
+  playerMarketFieldSupported,
   playerMarketOddsKey,
   playerProbability,
   recordFrozenSnapshotCheck,
@@ -28,6 +29,7 @@ import {
   type OddsMarketKey,
   type PlayerMarketOddsLoadOptions,
   type PlayerMarketOddsProvider,
+  type PlayerMarketField,
 } from './market-odds-provider.js';
 import {
   providerProtection,
@@ -142,6 +144,7 @@ interface SportsGameOddsOptions {
   logger: AppLogger;
   usageStore?: ProviderQuotaUsageStore;
   refreshUsage?: boolean;
+  refreshLeaseTtlMs?: number;
   supportedCompetitionSlugs?: readonly string[];
   fetchImpl?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
@@ -225,6 +228,7 @@ class SportsGameOddsHttpError extends Error {
 
 const defaultSleep = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+const defaultRefreshLeaseTtlMs = 90 * 1_000;
 
 function retryDelayMs(value: string | null, attempt: number): number {
   if (value) {
@@ -462,6 +466,10 @@ export class SportsGameOddsPlayerMarketOddsProvider
     );
   }
 
+  supportsMarket(player: PlayerStats): boolean {
+    return this.supports(player);
+  }
+
   async refreshUsage(): Promise<ProviderQuotaUsage[]> {
     if (this.options.refreshUsage === false) return [];
     const body = await this.requestJson('/account/usage', {});
@@ -543,7 +551,31 @@ export class SportsGameOddsPlayerMarketOddsProvider
         protection.allowExternalRequests &&
         markets.length > 0
       ) {
-        pending.push({ fixture, markets });
+        const requestGroup = [
+          'sports-game-odds',
+          this.options.leagueId,
+          'player-props',
+        ].join(':');
+        const ownsLease = this.options.store.claimRefreshLease
+          ? await this.options.store.claimRefreshLease(
+              fixture.key,
+              requestGroup,
+              this.options.refreshLeaseTtlMs ??
+                defaultRefreshLeaseTtlMs,
+            )
+          : true;
+        if (ownsLease) {
+          pending.push({ fixture, markets });
+        } else {
+          this.options.logger.debug(
+            {
+              provider: 'sports-game-odds',
+              leagueId: this.options.leagueId,
+              fixture: fixture.key,
+            },
+            'SportsGameOdds fixture refresh skipped because another Worker owns the lease',
+          );
+        }
       }
     }
 
@@ -589,6 +621,18 @@ export class SportsGameOddsPlayerMarketOddsProvider
           snapshots.set(fixture.key, byMarket);
         }
       } catch (error) {
+        await Promise.all(
+          pending.map(({ fixture }) =>
+            this.options.store.releaseRefreshLease?.(
+              fixture.key,
+              [
+                'sports-game-odds',
+                this.options.leagueId,
+                'player-props',
+              ].join(':'),
+            ),
+          ),
+        );
         this.options.logger.warn(
           {
             error: error instanceof Error ? error.message : String(error),
@@ -790,12 +834,22 @@ export class SupplementingPlayerMarketOddsProvider
     );
   }
 
+  supportsMarket(player: PlayerStats, market: PlayerMarketField): boolean {
+    return (
+      playerMarketFieldSupported(this.primary, player, market) ||
+      (this.supplementMarkets.includes(market) &&
+        playerMarketFieldSupported(this.fallback, player, market))
+    );
+  }
+
   async refreshUsage(): Promise<ProviderQuotaUsage[]> {
-    const results = await Promise.all([
+    const results = await Promise.allSettled([
       this.primary.refreshUsage?.() ?? Promise.resolve([]),
       this.fallback.refreshUsage?.() ?? Promise.resolve([]),
     ]);
-    return results.flat();
+    return results.flatMap((result) =>
+      result.status === 'fulfilled' ? result.value : [],
+    );
   }
 
   async load(
@@ -803,15 +857,66 @@ export class SupplementingPlayerMarketOddsProvider
     loadOptions?: PlayerMarketOddsLoadOptions,
   ): Promise<Map<string, PlayerMarketOdds | null>> {
     const eligiblePlayers = players.filter((player) => this.supports(player));
-    const primaryValues = await this.primary.load(eligiblePlayers, loadOptions);
-    const fallbackPlayers = eligiblePlayers.filter((player) => {
-      const odds = primaryValues.get(playerMarketOddsKey(player));
-      return this.supplementMarkets.some((market) => !odds?.[market]);
-    });
-    const fallbackValues =
-      fallbackPlayers.length > 0
-        ? await this.fallback.load(fallbackPlayers, loadOptions)
-        : new Map<string, PlayerMarketOdds | null>();
+    const primaryPlayers = eligiblePlayers.filter(
+      (player) => this.primary.supports?.(player) ?? true,
+    );
+    const fallbackCanSupply = (player: PlayerStats) =>
+      this.supplementMarkets.some((market) =>
+        playerMarketFieldSupported(this.fallback, player, market),
+      );
+
+    let primaryValues: Map<string, PlayerMarketOdds | null>;
+    let fallbackValues: Map<string, PlayerMarketOdds | null>;
+    if (loadOptions?.cacheOnly) {
+      // Cache reads are independent. Running them concurrently keeps a deep
+      // provider chain inside the response budget and avoids briefly hiding
+      // a quote that is already present in a lower-priority snapshot.
+      const fallbackPlayers = eligiblePlayers.filter(fallbackCanSupply);
+      const [primaryResult, fallbackResult] = await Promise.allSettled([
+        primaryPlayers.length > 0
+          ? this.primary.load(primaryPlayers, loadOptions)
+          : Promise.resolve(new Map<string, PlayerMarketOdds | null>()),
+        fallbackPlayers.length > 0
+          ? this.fallback.load(fallbackPlayers, loadOptions)
+          : Promise.resolve(new Map<string, PlayerMarketOdds | null>()),
+      ]);
+      primaryValues =
+        primaryResult.status === 'fulfilled'
+          ? primaryResult.value
+          : new Map<string, PlayerMarketOdds | null>();
+      fallbackValues =
+        fallbackResult.status === 'fulfilled'
+          ? fallbackResult.value
+          : new Map<string, PlayerMarketOdds | null>();
+    } else {
+      // Paid network fallbacks remain sequential: only contact the next
+      // provider for markets the higher-priority provider could not fill.
+      try {
+        primaryValues =
+          primaryPlayers.length > 0
+            ? await this.primary.load(primaryPlayers, loadOptions)
+            : new Map<string, PlayerMarketOdds | null>();
+      } catch {
+        primaryValues = new Map<string, PlayerMarketOdds | null>();
+      }
+      const fallbackPlayers = eligiblePlayers.filter((player) => {
+        if (!fallbackCanSupply(player)) return false;
+        const odds = primaryValues.get(playerMarketOddsKey(player));
+        return this.supplementMarkets.some(
+          (market) =>
+            playerMarketFieldSupported(this.fallback, player, market) &&
+            !odds?.[market],
+        );
+      });
+      try {
+        fallbackValues =
+          fallbackPlayers.length > 0
+            ? await this.fallback.load(fallbackPlayers, loadOptions)
+            : new Map<string, PlayerMarketOdds | null>();
+      } catch {
+        fallbackValues = new Map<string, PlayerMarketOdds | null>();
+      }
+    }
     return new Map(
       players.map((player) => {
         const key = playerMarketOddsKey(player);

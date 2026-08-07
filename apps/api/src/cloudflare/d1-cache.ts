@@ -135,6 +135,82 @@ export class D1JsonKeyValueStore implements JsonKeyValueStore {
       .run();
   }
 
+  /**
+   * Atomically merges players into a short-lived market supplement batch.
+   * A single D1 statement avoids the read/merge/write race between isolates.
+   */
+  async mergeMarketSupplementBatch(
+    key: string,
+    playersJson: string,
+    queuedAt: string,
+    readyAt: string,
+    expirationTtl: number,
+  ): Promise<string> {
+    const now = this.nowSeconds();
+    const expiresAt = now + Math.max(1, expirationTtl);
+    await this.database
+      .prepare(
+        `WITH active_existing AS (
+           SELECT value
+           FROM cache_entries
+           WHERE cache_key = ?1
+             AND (expires_at IS NULL OR expires_at > ?5)
+         ),
+         combined AS (
+           SELECT existing_player.value AS player_json, 0 AS source
+           FROM active_existing,
+                json_each(active_existing.value, '$.players') AS existing_player
+           UNION ALL
+           SELECT incoming_player.value AS player_json, 1 AS source
+           FROM json_each(?2) AS incoming_player
+         ),
+         ranked AS (
+           SELECT player_json,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY json_extract(player_json, '$.slug'),
+                                 json_extract(player_json, '$.position')
+                    ORDER BY source
+                  ) AS player_rank
+           FROM combined
+         ),
+         payload AS (
+           SELECT json_object(
+             'queuedAt', COALESCE(
+               (SELECT json_extract(value, '$.queuedAt') FROM active_existing),
+               ?3
+             ),
+             'readyAt', COALESCE(
+               (SELECT json_extract(value, '$.readyAt') FROM active_existing),
+               ?4
+             ),
+             'players', json(COALESCE(
+               (SELECT json_group_array(json(player_json))
+                FROM ranked
+                WHERE player_rank = 1),
+               '[]'
+             ))
+           ) AS value
+         )
+         INSERT INTO cache_entries (cache_key, value, expires_at, updated_at)
+         SELECT ?1, value, ?6, ?5 FROM payload WHERE true
+         ON CONFLICT(cache_key) DO UPDATE SET
+           value = excluded.value,
+           expires_at = excluded.expires_at,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(key, playersJson, queuedAt, readyAt, now, expiresAt)
+      .run();
+
+    const row = await this.database
+      .prepare('SELECT value FROM cache_entries WHERE cache_key = ?1')
+      .bind(key)
+      .first<D1CacheRow>();
+    if (!row) {
+      throw new Error('D1 market supplement batch merge produced no row');
+    }
+    return row.value;
+  }
+
   async delete(key: string): Promise<void> {
     await this.database
       .prepare('DELETE FROM cache_entries WHERE cache_key = ?1')

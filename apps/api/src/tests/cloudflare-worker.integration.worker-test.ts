@@ -641,6 +641,113 @@ describe('Cloudflare Worker', () => {
     expect(assistKey?.expiration).toBe(missExpiration);
   });
 
+  it('coordinates market refreshes and supplement batches through D1', async () => {
+    const probe = Date.now();
+    const fixtureKey = `${probe}|lease home|lease away`;
+    const requestGroup = 'the-odds-api:soccer_usa_mls:us:player-props';
+    const namespace = new D1JsonKeyValueStore(env.CACHE_DB, env.STATS_CACHE);
+    const first = new CloudflareMarketSnapshotStore(
+      namespace,
+      1_800,
+      createExecutionContext(),
+    );
+    const second = new CloudflareMarketSnapshotStore(
+      namespace,
+      1_800,
+      createExecutionContext(),
+    );
+
+    const claims = await Promise.all([
+      first.claimRefreshLease(fixtureKey, requestGroup, 90_000),
+      second.claimRefreshLease(fixtureKey, requestGroup, 90_000),
+    ]);
+    expect(claims.filter(Boolean)).toHaveLength(1);
+
+    await Promise.all([
+      first.enqueueSupplementPlayers(
+        fixtureKey,
+        requestGroup,
+        [
+          {
+            slug: 'first-player',
+            displayName: 'First Player',
+            position: 'Forward',
+          },
+        ],
+        1_500,
+        15 * 60 * 1_000,
+      ),
+      second.enqueueSupplementPlayers(
+        fixtureKey,
+        requestGroup,
+        [
+          {
+            slug: 'second-player',
+            displayName: 'Second Player',
+            position: 'Midfielder',
+          },
+        ],
+        1_500,
+        15 * 60 * 1_000,
+      ),
+    ]);
+
+    await expect(
+      first.getSupplementBatch(fixtureKey, requestGroup),
+    ).resolves.toMatchObject({
+      players: expect.arrayContaining([
+        expect.objectContaining({ slug: 'first-player' }),
+        expect.objectContaining({ slug: 'second-player' }),
+      ]),
+    });
+    await first.clearSupplementBatch(fixtureKey, requestGroup);
+    await expect(
+      second.getSupplementBatch(fixtureKey, requestGroup),
+    ).resolves.toBeUndefined();
+  });
+
+  it('atomically coordinates Sorare fixture-odds refreshes through D1', async () => {
+    const nowMs = Date.now();
+    const fixture = {
+      date: new Date(nowMs + 24 * 60 * 60 * 1_000).toISOString(),
+      homeTeamName: `Lease Home ${nowMs}`,
+      awayTeamName: `Lease Away ${nowMs}`,
+      playerTeamName: `Lease Home ${nowMs}`,
+      opponentTeamName: `Lease Away ${nowMs}`,
+      cleanSheetProbability: null,
+      matchProbabilities: { win: null, draw: null, loss: null },
+    };
+    const first = new CloudflarePlayerStatsCache(
+      new D1JsonKeyValueStore(
+        env.CACHE_DB,
+        env.STATS_CACHE,
+        () => Math.floor(nowMs / 1_000),
+      ),
+      604_800,
+      14_400,
+      createExecutionContext(),
+      () => nowMs,
+    );
+    const second = new CloudflarePlayerStatsCache(
+      new D1JsonKeyValueStore(
+        env.CACHE_DB,
+        env.STATS_CACHE,
+        () => Math.floor(nowMs / 1_000),
+      ),
+      604_800,
+      14_400,
+      createExecutionContext(),
+      () => nowMs,
+    );
+
+    const claims = await Promise.all([
+      first.claimFixtureRefresh(fixture),
+      second.claimFixtureRefresh(fixture),
+    ]);
+
+    expect(claims.filter(Boolean)).toHaveLength(1);
+  });
+
   it('serves the readiness endpoint', async () => {
     const response = await SELF.fetch('https://overlay.example/health');
 

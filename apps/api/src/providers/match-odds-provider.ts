@@ -46,12 +46,22 @@ export type MatchOddsSnapshot = z.infer<typeof MatchOddsSnapshotSchema>;
 export interface MatchOddsSnapshotStore {
   get(fixtureKey: string): Promise<MatchOddsSnapshot | undefined>;
   set(fixtureKey: string, snapshot: MatchOddsSnapshot): void | Promise<void>;
+  claimRefreshLease?(
+    fixtureKey: string,
+    requestGroup: string,
+    ttlMs: number,
+  ): Promise<boolean>;
+  releaseRefreshLease?(
+    fixtureKey: string,
+    requestGroup: string,
+  ): Promise<void>;
 }
 
 export class InMemoryMatchOddsSnapshotStore
   implements MatchOddsSnapshotStore
 {
   private readonly entries = new Map<string, MatchOddsSnapshot>();
+  private readonly refreshLeases = new Map<string, number>();
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -67,6 +77,25 @@ export class InMemoryMatchOddsSnapshotStore
 
   set(fixtureKey: string, snapshot: MatchOddsSnapshot): void {
     this.entries.set(fixtureKey, MatchOddsSnapshotSchema.parse(snapshot));
+  }
+
+  async claimRefreshLease(
+    fixtureKey: string,
+    requestGroup: string,
+    ttlMs: number,
+  ): Promise<boolean> {
+    const key = `${requestGroup}:${fixtureKey}`;
+    const expiresAt = this.refreshLeases.get(key);
+    if (expiresAt !== undefined && expiresAt > this.now()) return false;
+    this.refreshLeases.set(key, this.now() + Math.max(1, ttlMs));
+    return true;
+  }
+
+  async releaseRefreshLease(
+    fixtureKey: string,
+    requestGroup: string,
+  ): Promise<void> {
+    this.refreshLeases.delete(`${requestGroup}:${fixtureKey}`);
   }
 }
 
@@ -112,6 +141,7 @@ interface TheOddsApiFixtureMatchOddsOptions {
   store: MatchOddsSnapshotStore;
   logger: AppLogger;
   usageStore?: ProviderQuotaUsageStore;
+  refreshLeaseTtlMs?: number;
   fetchImpl?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
   now?: () => number;
@@ -164,6 +194,7 @@ class OddsApiHttpError extends Error {
 const HOUR_MS = 60 * 60 * 1_000;
 const MATCH_TOLERANCE_MS = 36 * HOUR_MS;
 const SNAPSHOT_AFTER_KICKOFF_MS = 36 * HOUR_MS;
+const defaultRefreshLeaseTtlMs = 90 * 1_000;
 const retryStatuses = new Set([429, 502, 503, 504]);
 
 function oddsApiDate(timestamp: number): string {
@@ -388,9 +419,39 @@ export class TheOddsApiFixtureMatchOddsProvider
       missing.length > 0
     ) {
       for (const route of this.options.routes) {
-        const routeFixtures = missing.filter((fixture) =>
+        const candidates = missing.filter((fixture) =>
           fixture.players.some((player) => this.routeFor(player) === route),
         );
+        const requestGroup = [
+          'the-odds-api',
+          'match-odds',
+          ...route.sportKeys,
+          route.region,
+        ].join(':');
+        const routeFixtures = (
+          await Promise.all(
+            candidates.map(async (fixture) => {
+              const ownsLease = this.options.store.claimRefreshLease
+                ? await this.options.store.claimRefreshLease(
+                    fixture.key,
+                    requestGroup,
+                    this.options.refreshLeaseTtlMs ??
+                      defaultRefreshLeaseTtlMs,
+                  )
+                : true;
+              if (!ownsLease) {
+                this.options.logger.debug(
+                  {
+                    fixture: fixture.key,
+                    requestGroup,
+                  },
+                  'External H-D-A refresh skipped because another Worker owns the lease',
+                );
+              }
+              return ownsLease ? fixture : null;
+            }),
+          )
+        ).filter((fixture): fixture is FixtureGroup => fixture !== null);
         if (routeFixtures.length === 0) continue;
         const primary = await this.fetchRoute(
           route,
@@ -414,6 +475,16 @@ export class TheOddsApiFixtureMatchOddsProvider
           );
           unresolved = fallback.unresolved;
           missCheckComplete = missCheckComplete && fallback.complete;
+        }
+        if (!missCheckComplete) {
+          await Promise.all(
+            unresolved.map((fixture) =>
+              this.options.store.releaseRefreshLease?.(
+                fixture.key,
+                requestGroup,
+              ),
+            ),
+          );
         }
         if (missCheckComplete) {
           for (const fixture of unresolved) {

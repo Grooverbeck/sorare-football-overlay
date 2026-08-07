@@ -5,7 +5,10 @@ import {
   InMemoryMatchOddsSnapshotStore,
   TheOddsApiFixtureMatchOddsProvider,
 } from '../providers/match-odds-provider.js';
-import { CONTENDER_THE_ODDS_API_ROUTES } from '../providers/competition-odds-routes.js';
+import {
+  CONTENDER_THE_ODDS_API_ROUTES,
+  LEAGUES_CUP_THE_ODDS_API_ROUTES,
+} from '../providers/competition-odds-routes.js';
 import {
   marketFixtureKey,
   playerMarketOddsKey,
@@ -166,6 +169,26 @@ describe('TheOddsApiFixtureMatchOddsProvider', () => {
       draw: 0.25,
       loss: 0.5,
     });
+  });
+
+  it('deduplicates a concurrent H-D-A refresh across provider instances sharing a store', async () => {
+    const kickoff = new Date(now + 48 * 60 * 60 * 1_000).toISOString();
+    const fetchImpl = vi.fn<typeof fetch>(async () => oddsResponse(kickoff));
+    const store = new InMemoryMatchOddsSnapshotStore(() => now);
+    const testPlayer = player(kickoff);
+
+    const results = await Promise.all([
+      provider(fetchImpl, store).load([testPlayer]),
+      provider(fetchImpl, store).load([testPlayer]),
+    ]);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(
+      results.some(
+        (result) =>
+          result.get(playerMarketOddsKey(testPlayer))?.win === 0.25,
+      ),
+    ).toBe(true);
   });
 
   it('refreshes an old miss using the dedicated match-odds TTL', async () => {
@@ -378,6 +401,85 @@ describe('TheOddsApiFixtureMatchOddsProvider', () => {
     const result = await oddsProvider.load([contenderPlayer]);
 
     expect(result.get(playerMarketOddsKey(contenderPlayer))).toEqual({
+      win: expect.any(Number),
+      draw: expect.any(Number),
+      loss: expect.any(Number),
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('loads Leagues Cup odds and matches Liga MX team aliases', async () => {
+    const kickoff = new Date(now + 48 * 60 * 60 * 1_000).toISOString();
+    const leaguesCupPlayer: PlayerStats = {
+      ...player(kickoff, 'Inter Miami CF'),
+      slug: 'lionel-messi',
+      position: 'Forward',
+      nextGame: {
+        date: kickoff,
+        competitionSlug: 'leagues-cup-mls',
+        homeTeamName: 'Inter Miami CF',
+        awayTeamName: 'Atlético San Luis',
+        playerTeamName: 'Inter Miami CF',
+        opponentTeamName: 'Atlético San Luis',
+        cleanSheetProbability: null,
+        matchProbabilities: null,
+      },
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      expect(String(input)).toContain(
+        '/sports/soccer_concacaf_leagues_cup/odds?',
+      );
+      return new Response(
+        JSON.stringify([
+          {
+            id: 'leagues-cup-event',
+            commence_time: kickoff,
+            home_team: 'Inter Miami',
+            away_team: 'Atlético de San Luis',
+            bookmakers: [
+              {
+                key: 'book-one',
+                title: 'Book One',
+                markets: [
+                  {
+                    key: 'h2h',
+                    outcomes: [
+                      { name: 'Inter Miami', price: 1.8 },
+                      { name: 'Draw', price: 4 },
+                      { name: 'Atlético de San Luis', price: 4.5 },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ]),
+        {
+          headers: {
+            'content-type': 'application/json',
+            'x-requests-used': '5',
+            'x-requests-remaining': '495',
+          },
+        },
+      );
+    });
+    const oddsProvider = new TheOddsApiFixtureMatchOddsProvider({
+      apiKey: 'test-key',
+      baseUrl: 'https://api.the-odds-api.test/v4',
+      routes: LEAGUES_CUP_THE_ODDS_API_ROUTES,
+      fallbackWindowMs: 72 * 60 * 60 * 1_000,
+      missTtlMs: 6 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store: new InMemoryMatchOddsSnapshotStore(() => now),
+      logger,
+      fetchImpl,
+      now: () => now,
+    });
+
+    const result = await oddsProvider.load([leaguesCupPlayer]);
+
+    expect(result.get(playerMarketOddsKey(leaguesCupPlayer))).toEqual({
       win: expect.any(Number),
       draw: expect.any(Number),
       loss: expect.any(Number),

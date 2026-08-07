@@ -4,6 +4,7 @@ export interface CardTarget {
   slug?: string;
   playerName?: string;
   position?: FootballPosition;
+  teamSlug?: string;
   container: HTMLElement;
 }
 
@@ -284,6 +285,54 @@ export function findImageCardContainer(image: HTMLImageElement): HTMLElement | n
   ) ?? image.parentElement;
 }
 
+function inferHighlightedPlayerTeamSlug(
+  container: HTMLElement,
+): string | undefined {
+  let scope = container.parentElement;
+  for (let depth = 0; scope && depth < 6; depth += 1) {
+    const teamsByRow = new Map<HTMLElement, HTMLElement[]>();
+    for (const teamNode of scope.querySelectorAll<HTMLElement>(
+      '[aria-label="Team"]',
+    )) {
+      if (teamNode.closest('[data-sorare-overlay-root], [data-sorare-overlay-companion]')) {
+        continue;
+      }
+      const row = teamNode.parentElement;
+      if (!row) continue;
+      const teams = teamsByRow.get(row) ?? [];
+      teams.push(teamNode);
+      teamsByRow.set(row, teams);
+    }
+
+    const rows = [...teamsByRow.values()].filter((teams) => teams.length === 2);
+    if (rows.length > 0) {
+      const selectedTeamSlugs = new Set<string>();
+      for (const teams of rows) {
+        const selectedTeams = teams.filter(
+          (team) =>
+            team.classList.contains('highlighted') ||
+            team.getAttribute('aria-current') === 'true' ||
+            team.getAttribute('aria-selected') === 'true' ||
+            team.dataset.state === 'active',
+        );
+        if (selectedTeams.length !== 1) continue;
+        const slug = selectedTeams[0]
+          ?.querySelector<HTMLImageElement>('img[alt]')
+          ?.alt.trim()
+          .toLowerCase();
+        if (slug && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
+          selectedTeamSlugs.add(slug);
+        }
+      }
+      return selectedTeamSlugs.size === 1
+        ? [...selectedTeamSlugs][0]
+        : undefined;
+    }
+    scope = scope.parentElement;
+  }
+  return undefined;
+}
+
 export function isMiniatureCardTarget(container: HTMLElement): boolean {
   const renderedCardRects = Array.from(
     container.querySelectorAll<HTMLImageElement>('img[alt]'),
@@ -351,7 +400,13 @@ export function findCardTargets(root: ParentNode): CardTarget[] {
       (lineupSlotPosition === null
         ? undefined
         : lineupSlotPosition ?? inferActivePositionSelection(container));
-    targets.push({ playerName, container, ...(position ? { position } : {}) });
+    const teamSlug = inferHighlightedPlayerTeamSlug(container);
+    targets.push({
+      playerName,
+      container,
+      ...(position ? { position } : {}),
+      ...(teamSlug ? { teamSlug } : {}),
+    });
   }
 
   return targets;

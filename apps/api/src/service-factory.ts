@@ -32,6 +32,7 @@ import {
 } from './providers/match-odds-provider.js';
 import {
   CONTENDER_THE_ODDS_API_ROUTES,
+  LEAGUES_CUP_THE_ODDS_API_ROUTES,
   ODDS_API_IO_PLAYER_ROUTES,
 } from './providers/competition-odds-routes.js';
 import type {
@@ -142,10 +143,27 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
         usageStore: providerQuotaUsageStore,
         refreshUsage: providerOptions.refreshUsage ?? true,
         supportedCompetitionSlugs,
+        // Player cards arrive progressively from the extension. A short
+        // distributed batching window lets one full-fixture market response
+        // satisfy the whole visible cohort instead of refreshing per card.
+        supplementBatchDelayMs: 1_500,
+        supplementBatchTtlMs: 15 * 60 * 1_000,
+        refreshLeaseTtlMs: 90 * 1_000,
       });
     const theOddsProvider = config.oddsApiKey
       ? supplementPlayerMarketOddsProviders([
           createTheOddsProvider(config.oddsApiSportKey, ['mlspa']),
+          ...LEAGUES_CUP_THE_ODDS_API_ROUTES.map((route) =>
+            createTheOddsProvider(
+              route.sportKeys[0],
+              route.competitionSlugs,
+              {
+                region: route.region,
+                fallbackRegion: route.fallbackRegion,
+                refreshUsage: false,
+              },
+            ),
+          ),
           createTheOddsProvider(
             'soccer_uefa_champs_league_qualification',
             ['uefa-champions-league'],
@@ -279,6 +297,7 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
                 ? { fallbackRegion: config.oddsApiFallbackRegion }
                 : {}),
             },
+            ...LEAGUES_CUP_THE_ODDS_API_ROUTES,
             {
               sportKeys: [
                 'soccer_uefa_champs_league_qualification',

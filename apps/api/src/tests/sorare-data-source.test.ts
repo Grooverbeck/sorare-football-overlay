@@ -369,6 +369,57 @@ describe('SorareDataSource player-name resolution', () => {
     );
   });
 
+  it('uses the highlighted card team to resolve same-name players without a DOM position', async () => {
+    const wrongPlayer = {
+      slug: 'joaquin-pereyra',
+      displayName: 'Joaquín Pereyra',
+      position: 'Defender',
+      activeClub: { slug: 'estudiantes-la-plata-buenos-aires' },
+    };
+    const correctPlayer = {
+      slug: 'joaquin-nicolas-pereyra',
+      displayName: 'Joaquín Pereyra',
+      position: 'Midfielder',
+      activeClub: {
+        slug: 'minnesota-united',
+      },
+    };
+    const request = vi.fn(async (_document: unknown, variables: { query?: string; slugs?: string[] }) => {
+      if (variables.slugs) {
+        return { players: [{ __typename: 'Player', ...wrongPlayer }] };
+      }
+      return {
+        searchPlayers: {
+          hits: [
+            { player: wrongPlayer },
+            { player: correctPlayer },
+          ],
+        },
+        searchCards: { hits: [] },
+      };
+    });
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    await expect(
+      source.resolvePlayerNames(['Joaquín Pereyra'], undefined, {
+        teamSlugs: {
+          'Joaquín Pereyra':
+            'minnesota-united-minneapolis-saint-paul-minnesota',
+        },
+      }),
+    ).resolves.toEqual([
+      {
+        slug: 'joaquin-nicolas-pereyra',
+        resolvedFromName: 'Joaquín Pereyra',
+        nameResolution: 'search',
+      },
+    ]);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
   it('prefers an exact display-name hit over accent-insensitive alternatives', async () => {
     const request = vi.fn(
       async (

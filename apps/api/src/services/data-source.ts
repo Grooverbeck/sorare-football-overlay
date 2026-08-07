@@ -7,6 +7,7 @@ import type {
 export interface SourcePlayerRequest {
   slug: string;
   position?: FootballPosition;
+  teamSlug?: string;
   includeHistoricalAssists?: boolean;
   resolvedFromName?: string;
   nameResolution?: 'direct' | 'search';
@@ -18,17 +19,20 @@ export interface PlayerNameResolutionOptions {
   // handlers return known players immediately while cold resolutions continue
   // through ExecutionContext.waitUntil().
   cacheOnly?: boolean;
+  teamSlugs?: Readonly<Record<string, string>>;
 }
 
 export interface PlayerNameResolutionCache {
   get(
     name: string,
     position: FootballPosition | undefined,
+    teamSlug?: string,
   ): Promise<SourcePlayerRequest | null | undefined>;
   set(
     name: string,
     position: FootballPosition | undefined,
     value: SourcePlayerRequest | null,
+    teamSlug?: string,
   ): void | Promise<void>;
 }
 

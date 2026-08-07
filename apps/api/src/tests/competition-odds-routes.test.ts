@@ -2,8 +2,26 @@ import { describe, expect, it } from 'vitest';
 import {
   CONTENDER_COMPETITION_SLUGS,
   CONTENDER_THE_ODDS_API_ROUTES,
+  LEAGUES_CUP_COMPETITION_SLUGS,
+  LEAGUES_CUP_THE_ODDS_API_ROUTES,
   ODDS_API_IO_PLAYER_ROUTES,
 } from '../providers/competition-odds-routes.js';
+
+describe('Leagues Cup external odds route', () => {
+  it('maps the Sorare competition to the dedicated CONCACAF feed', () => {
+    expect(LEAGUES_CUP_COMPETITION_SLUGS).toEqual([
+      'leagues-cup-mls',
+    ]);
+    expect(LEAGUES_CUP_THE_ODDS_API_ROUTES).toEqual([
+      {
+        sportKeys: ['soccer_concacaf_leagues_cup'],
+        competitionSlugs: ['leagues-cup-mls'],
+        region: 'us',
+        fallbackRegion: 'uk',
+      },
+    ]);
+  });
+});
 
 describe('Contender external odds routes', () => {
   it('documents every Sorare 27 Contender competition exactly once', () => {
@@ -48,6 +66,7 @@ describe('Contender external odds routes', () => {
     expect(competitions).toEqual(
       expect.arrayContaining([
         'mlspa',
+        'leagues-cup-mls',
         'uefa-champions-league',
         'uefa-europa-league',
         'uefa-europa-conference-league',
@@ -55,6 +74,11 @@ describe('Contender external odds routes', () => {
       ]),
     );
     expect(new Set(competitions).size).toBe(competitions.length);
+    expect(
+      ODDS_API_IO_PLAYER_ROUTES.find(({ competitionSlugs }) =>
+        competitionSlugs.some((slug) => slug === 'leagues-cup-mls'),
+      )?.leagueSlugs,
+    ).toEqual(['international-clubs-leagues-cup-group-stage']);
     expect(
       ODDS_API_IO_PLAYER_ROUTES.find(({ competitionSlugs }) =>
         competitionSlugs.some(

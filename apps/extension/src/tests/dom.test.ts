@@ -198,6 +198,142 @@ describe('Sorare card DOM discovery', () => {
     ]);
   });
 
+  it('uses Sorare\'s highlighted native team to disambiguate an image-only namesake', async () => {
+    document.body.innerHTML = `
+      <div data-testid="player-row">
+        <button type="button">
+          <img
+            alt="Joaquín Pereyra - common"
+            src="https://assets.sorare.com/image-resize/cardsamplepicture/pereyra/picture/card.png"
+          >
+        </button>
+        <button type="button">
+          <div data-testid="fixture-teams">
+            <div aria-label="Team" class="generated highlighted">
+              <img alt="minnesota-united-minneapolis-saint-paul-minnesota" src="/min.png">
+              <span>MIN</span>
+            </div>
+            <div aria-label="Team">
+              <span>JUA</span>
+              <img alt="juarez-ciudad-juarez-chihuahua" src="/jua.png">
+            </div>
+          </div>
+        </button>
+      </div>
+    `;
+    const response: PlayerStatsSuccessResponse = {
+      data: [
+        {
+          slug: 'joaquin-nicolas-pereyra',
+          displayName: 'Joaquín Pereyra',
+          position: 'Midfielder',
+          aaL10: { value: 15.8, sampleSize: 10 },
+          cleanSheetL10: { value: null, sampleSize: 0 },
+          goalL10: { value: 0.2, sampleSize: 10 },
+          nextGame: null,
+          excludedLowCoverage: 0,
+        },
+      ],
+      meta: { requested: 1, returned: 1, cacheHits: 0, source: 'sorare' },
+    };
+    const fetcher = vi.fn(async () => response);
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const scanner = new SorareCardScanner(coordinator);
+
+    expect(findCardTargets(document)).toMatchObject([
+      {
+        playerName: 'Joaquín Pereyra',
+        teamSlug: 'minnesota-united-minneapolis-saint-paul-minnesota',
+      },
+    ]);
+    scanner.scan(document);
+    await coordinator.flush();
+
+    expect(fetcher).toHaveBeenCalledWith({
+      slugs: [],
+      playerNames: ['Joaquín Pereyra'],
+      playerTeams: {
+        'Joaquín Pereyra': 'minnesota-united-minneapolis-saint-paul-minnesota',
+      },
+      supportsPartialFormHistory: true,
+    });
+  });
+
+  it('keeps exact team cache keys isolated while preserving the teamless name fallback', async () => {
+    const fetcher = vi.fn(
+      async (
+        request: PlayerStatsRequest,
+      ): Promise<PlayerStatsSuccessResponse> => {
+        const teamSlug = request.playerTeams?.['Alex Smith'];
+        const isSecondTeam = teamSlug === 'second-team-city';
+        return {
+          data: [
+            {
+              slug: isSecondTeam ? 'alex-smith-second' : 'alex-smith-first',
+              displayName: 'Alex Smith',
+              position: 'Midfielder',
+              aaL10: { value: isSecondTeam ? 22 : 11, sampleSize: 10 },
+              cleanSheetL10: { value: null, sampleSize: 0 },
+              goalL10: { value: 0.1, sampleSize: 10 },
+              nextGame: null,
+              excludedLowCoverage: 0,
+            },
+          ],
+          meta: { requested: 1, returned: 1, cacheHits: 0, source: 'sorare' },
+        };
+      },
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const enqueue = (teamSlug?: string) => {
+      const card = document.createElement('button');
+      document.body.append(card);
+      const view = new OverlayView(
+        card,
+        { playerName: 'Alex Smith' },
+        'Midfielder',
+      );
+      coordinator.enqueue(
+        {
+          playerName: 'Alex Smith',
+          position: 'Midfielder',
+          ...(teamSlug ? { teamSlug } : {}),
+          container: card,
+        },
+        view,
+      );
+      return view;
+    };
+
+    const firstTeamView = enqueue('first-team-town');
+    await coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    const secondTeamView = enqueue('second-team-city');
+    await coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[1]?.[0]).toMatchObject({
+      playerTeams: { 'Alex Smith': 'second-team-city' },
+    });
+    expect(
+      secondTeamView.host.shadowRoot?.querySelector(
+        '.aa-bracket-cell .market-value',
+      )?.textContent,
+    ).toBe('22.0');
+
+    const teamlessView = enqueue();
+    await coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(
+      teamlessView.host.shadowRoot?.querySelector(
+        '.aa-bracket-cell .market-value',
+      )?.textContent,
+    ).toBe('22.0');
+
+    firstTeamView.destroy();
+    secondTeamView.destroy();
+    teamlessView.destroy();
+  });
+
   it('does not inherit a distant position filter from an unrelated app area', () => {
     document.body.innerHTML = `
       <main data-testid="app-shell">
@@ -618,6 +754,144 @@ describe('Sorare card DOM discovery', () => {
     scanner.stop();
   });
 
+  it('reuses known team fixture odds when a teammate response is temporarily incomplete', async () => {
+    const completeFixture = {
+      date: '2026-08-08T02:30:00.000Z',
+      homeTeamName: 'Vancouver Whitecaps',
+      awayTeamName: 'Juárez',
+      playerTeamName: 'Vancouver Whitecaps',
+      opponentTeamName: 'Juárez',
+      cleanSheetProbability: 1 / 3,
+      matchProbabilities: { win: 0.61, draw: 0.21, loss: 0.18 },
+      marketOdds: null,
+    } as const;
+    const fetcher = vi.fn(
+      async (
+        request: PlayerStatsRequest,
+      ): Promise<PlayerStatsSuccessResponse> => ({
+        data: request.playerNames.includes('Isaac Boehmer')
+          ? [
+              {
+                slug: 'isaac-boehmer',
+                displayName: 'Isaac Boehmer',
+                position: 'Goalkeeper',
+                aaL10: { value: 7.9, sampleSize: 3 },
+                cleanSheetL10: { value: 0, sampleSize: 2 },
+                goalL10: { value: 0, sampleSize: 3 },
+                nextGame: completeFixture,
+                excludedLowCoverage: 0,
+              },
+            ]
+          : [
+              {
+                slug: 'sam-adekugbe',
+                displayName: 'Samuel Adekugbe',
+                position: 'Defender',
+                aaL10: { value: 2.2, sampleSize: 2 },
+                cleanSheetL10: { value: null, sampleSize: 0 },
+                goalL10: { value: 0, sampleSize: 2 },
+                nextGame: {
+                  ...completeFixture,
+                  cleanSheetProbability: null,
+                  matchProbabilities: null,
+                },
+                excludedLowCoverage: 0,
+              },
+            ],
+        meta: { requested: 1, returned: 1, cacheHits: 1, source: 'sorare' },
+      }),
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+
+    const goalkeeperCard = document.createElement('button');
+    document.body.append(goalkeeperCard);
+    const goalkeeperView = new OverlayView(
+      goalkeeperCard,
+      { playerName: 'Isaac Boehmer' },
+      'Goalkeeper',
+    );
+    coordinator.enqueue(
+      {
+        playerName: 'Isaac Boehmer',
+        position: 'Goalkeeper',
+        container: goalkeeperCard,
+      },
+      goalkeeperView,
+    );
+    await coordinator.flush();
+
+    const defenderShell = document.createElement('section');
+    defenderShell.innerHTML = `
+      <button data-testid="adekugbe-card">
+        <img alt="Samuel Adekugbe - common" src="/adekugbe.png">
+      </button>
+      <button>
+        <div data-testid="adekugbe-teams">
+          <div aria-label="Team">VAN</div>
+          <div aria-label="Team">JUA</div>
+        </div>
+      </button>
+    `;
+    document.body.append(defenderShell);
+    const defenderCard = defenderShell.querySelector<HTMLElement>(
+      '[data-testid="adekugbe-card"]',
+    );
+    const teamRow = defenderShell.querySelector<HTMLElement>(
+      '[data-testid="adekugbe-teams"]',
+    );
+    if (!defenderCard || !teamRow) throw new Error('Expected defender fixture');
+    vi.spyOn(defenderCard, 'getBoundingClientRect').mockReturnValue({
+      x: 40,
+      y: 100,
+      top: 100,
+      right: 150,
+      bottom: 278,
+      left: 40,
+      width: 110,
+      height: 178,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(teamRow, 'getBoundingClientRect').mockReturnValue({
+      x: 40,
+      y: 300,
+      top: 300,
+      right: 150,
+      bottom: 320,
+      left: 40,
+      width: 110,
+      height: 20,
+      toJSON: () => ({}),
+    });
+    const defenderView = new OverlayView(
+      defenderCard,
+      { playerName: 'Samuel Adekugbe' },
+      'Defender',
+    );
+    coordinator.enqueue(
+      {
+        playerName: 'Samuel Adekugbe',
+        position: 'Defender',
+        container: defenderCard,
+      },
+      defenderView,
+    );
+    await coordinator.flush();
+
+    const companion = teamRow.nextElementSibling as HTMLElement | null;
+    expect(companion?.dataset.sorareOverlayCompanion).toBe('lineup-odds');
+    expect(
+      companion?.shadowRoot?.querySelector('.lineup-odds-bar')?.textContent,
+    ).toBe('61%21%18%');
+    expect(
+      defenderView.host.shadowRoot?.querySelector(
+        '.clean-sheet-bracket-cell .market-value',
+      )?.textContent,
+    ).toBe('33%');
+
+    goalkeeperView.destroy();
+    defenderView.destroy();
+  });
+
   it('does not borrow a fixture row from a different lineup slot', () => {
     document.body.innerHTML = `
       <div class="FOOTBALL slots5">
@@ -912,6 +1186,7 @@ describe('Sorare card DOM discovery', () => {
                 aaL10: { value: null, sampleSize: 0 },
                 cleanSheetL10: { value: null, sampleSize: 0 },
                 goalL10: { value: null, sampleSize: 0 },
+                nextGame: null,
               },
             ]
           : [stats];
@@ -2338,6 +2613,98 @@ describe('Sorare card DOM discovery', () => {
       view.host.shadowRoot?.querySelector('.clean-sheet-bracket-cell .market-value')
         ?.textContent,
     ).toBe('29%');
+    view.destroy();
+  });
+
+  it('hydrates and renders fixture brackets for a resolved player without L10 appearances', async () => {
+    const emptyStats: PlayerStatsSuccessResponse['data'][number] = {
+      slug: 'maxwell-murray',
+      displayName: 'Maxwell Murray',
+      position: 'Defender',
+      aaL10: { value: null, sampleSize: 0 },
+      cleanSheetL10: { value: null, sampleSize: 0 },
+      goalL10: { value: null, sampleSize: 0 },
+      nextGame: null,
+      pendingRefreshes: ['formHistory', 'fixture', 'marketOdds'],
+      excludedLowCoverage: 0,
+    };
+    const fetcher = vi.fn(
+      async (
+        request: PlayerStatsRequest,
+      ): Promise<PlayerStatsSuccessResponse> => ({
+        data: [
+          fetcher.mock.calls.length === 1
+            ? emptyStats
+            : {
+                ...emptyStats,
+                nextGame: {
+                  date: '2026-08-06T23:30:00.000Z',
+                  homeTeamName: 'New York City',
+                  awayTeamName: 'Santos Laguna',
+                  playerTeamName: 'New York City',
+                  opponentTeamName: 'Santos Laguna',
+                  cleanSheetProbability: 0.38,
+                  matchProbabilities: { win: 0.6, draw: 0.22, loss: 0.18 },
+                  marketOdds: {
+                    source: 'odds-api-io',
+                    capturedAt: '2026-08-06T20:00:00.000Z',
+                    goal: { probability: 0.11, bookmakerCount: 1 },
+                    assist: null,
+                  },
+                },
+                pendingRefreshes: ['formHistory', 'marketOdds'],
+              },
+        ],
+        meta: {
+          requested: request.playerNames.length,
+          returned: 1,
+          cacheHits: fetcher.mock.calls.length === 1 ? 0 : 1,
+          source: 'sorare',
+        },
+      }),
+    );
+    const coordinator = new StatsBatchCoordinator(
+      fetcher,
+      0,
+      [5_000],
+      8,
+      2,
+      [5],
+    );
+    const card = document.createElement('article');
+    document.body.append(card);
+    const view = new OverlayView(
+      card,
+      { playerName: 'Maxwell Murray' },
+      'Defender',
+    );
+    coordinator.enqueue(
+      {
+        playerName: 'Maxwell Murray',
+        position: 'Defender',
+        teamSlug: 'new-york-city-new-york-new-york',
+        container: card,
+      },
+      view,
+    );
+
+    await coordinator.flush();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+
+    expect(fetcher.mock.calls[1]?.[0]).toMatchObject({
+      refreshFixtures: true,
+    });
+    const bracket =
+      view.host.shadowRoot?.querySelector<HTMLElement>('.market-bracket');
+    expect(bracket?.querySelector('.aa-bracket-cell')).toBeNull();
+    expect(
+      bracket?.querySelector('.clean-sheet-bracket-cell .market-value')
+        ?.textContent,
+    ).toBe('38%');
+    expect(
+      bracket?.querySelector('[data-market="goal"] .market-value')?.textContent,
+    ).toBe('11%');
+    expect(view.host.shadowRoot?.textContent).not.toContain('Keine L10-Daten');
     view.destroy();
   });
 

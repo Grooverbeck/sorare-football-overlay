@@ -60,6 +60,7 @@ function createProvider(
     },
   ],
   maxRetries = 0,
+  store = new InMemoryMarketSnapshotStore(60_000, () => now),
 ) {
   return {
     provider: new OddsApiIoPlayerMarketOddsProvider({
@@ -72,7 +73,7 @@ function createProvider(
       hourlyRequestLimit: 100,
       requestTimeoutMs: 1_000,
       maxRetries,
-      store: new InMemoryMarketSnapshotStore(60_000, () => now),
+      store,
       logger,
       usageStore,
       fetchImpl,
@@ -83,6 +84,99 @@ function createProvider(
 }
 
 describe('OddsApiIoPlayerMarketOddsProvider', () => {
+  it('advertises goalscorer support without claiming an assist market', () => {
+    const { provider } = createProvider(vi.fn<typeof fetch>());
+
+    expect(provider.supportsMarket(player(), 'goal')).toBe(true);
+    expect(provider.supportsMarket(player(), 'assist')).toBe(false);
+  });
+
+  it('maps a Leagues Cup goalscorer quote for Antoine Griezmann', async () => {
+    const griezmann = player({
+      slug: 'antoine-griezmann',
+      displayName: 'Antoine Griezmann',
+      position: 'Forward',
+      nextGame: {
+        ...player().nextGame!,
+        date: kickoff,
+        competitionSlug: 'leagues-cup-mls',
+        homeTeamName: 'Monterrey',
+        awayTeamName: 'Orlando City',
+        playerTeamName: 'Orlando City',
+        opponentTeamName: 'Monterrey',
+      },
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/events')) {
+        expect(url.searchParams.get('league')).toBe(
+          'international-clubs-leagues-cup-group-stage',
+        );
+        return json([
+          {
+            id: 'leagues-cup-fixture-1',
+            date: kickoff,
+            home: 'CF Monterrey',
+            away: 'Orlando City SC',
+          },
+        ]);
+      }
+      if (url.pathname.endsWith('/odds/multi')) {
+        return json([
+          {
+            id: 'leagues-cup-fixture-1',
+            date: kickoff,
+            home: 'CF Monterrey',
+            away: 'Orlando City SC',
+            bookmakers: {
+              Bet365: [
+                {
+                  name: 'ML',
+                  odds: [{ label: null, home: '1.70', away: '4.50' }],
+                },
+                {
+                  name: 'Anytime Goalscorer',
+                  odds: [
+                    { label: 'Antoine Griezmann', hdp: 0.5, over: '2.200' },
+                  ],
+                },
+              ],
+              Unibet: [
+                {
+                  name: 'Anytime Goalscorer',
+                  odds: [
+                    { label: 'Antoine Griezmann', hdp: 0.5, over: '2.60' },
+                  ],
+                },
+              ],
+            },
+          },
+        ]);
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    const { provider } = createProvider(
+      fetchImpl,
+      new InMemoryProviderQuotaUsageStore(() => now),
+      [
+        {
+          competitionSlugs: ['leagues-cup-mls'],
+          leagueSlugs: ['international-clubs-leagues-cup-group-stage'],
+        },
+      ],
+    );
+
+    const result = await provider.load([griezmann]);
+
+    expect(result.get(playerMarketOddsKey(griezmann))).toMatchObject({
+      source: 'odds-api-io',
+      goal: {
+        probability: (1 / 2.2 + 1 / 2.6) / 2,
+        bookmakerCount: 2,
+      },
+    });
+  });
+
   it('batches Austrian fixtures and maps Bet365 anytime-goalscorer odds', async () => {
     const secondPlayer = player({
       slug: 'seedy-jatta',
@@ -387,21 +481,126 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
     });
   });
 
-  it('deduplicates refreshes across provider instances after an error', async () => {
+  it('deduplicates a concurrent same-fixture refresh across provider instances', async () => {
     const usageStore = new InMemoryProviderQuotaUsageStore(() => now);
-    const firstFetch = vi.fn<typeof fetch>(async () =>
-      new Response(null, { status: 500 }),
-    );
+    const store = new InMemoryMarketSnapshotStore(60_000, () => now);
+    let releaseFirstFetch = () => undefined;
+    const firstFetchGate = new Promise<void>((resolve) => {
+      releaseFirstFetch = resolve;
+    });
+    const firstFetch = vi.fn<typeof fetch>(async () => {
+      await firstFetchGate;
+      return new Response(null, { status: 500 });
+    });
     const secondFetch = vi.fn<typeof fetch>(async () =>
       json([]),
     );
-    const first = createProvider(firstFetch, usageStore).provider;
-    const second = createProvider(secondFetch, usageStore).provider;
+    const first = createProvider(
+      firstFetch,
+      usageStore,
+      undefined,
+      0,
+      store,
+    ).provider;
+    const second = createProvider(
+      secondFetch,
+      usageStore,
+      undefined,
+      0,
+      store,
+    ).provider;
 
-    await first.load([player()]);
-    await second.load([player()]);
+    const firstLoad = first.load([player()]);
+    await vi.waitFor(() => expect(firstFetch).toHaveBeenCalledTimes(1));
+    try {
+      await second.load([player()]);
+      expect(secondFetch).not.toHaveBeenCalled();
+    } finally {
+      releaseFirstFetch();
+      await firstLoad;
+    }
+  });
 
-    expect(firstFetch).toHaveBeenCalledTimes(1);
-    expect(secondFetch).not.toHaveBeenCalled();
+  it('does not let one fixture lease block a different fixture', async () => {
+    const usageStore = new InMemoryProviderQuotaUsageStore(() => now);
+    const store = new InMemoryMarketSnapshotStore(60_000, () => now);
+    const firstFixture = player();
+    const secondFixture = player({
+      slug: 'seedy-jatta',
+      displayName: 'Seedy Jatta',
+      nextGame: {
+        ...player().nextGame!,
+        date: '2026-08-01T18:00:00.000Z',
+        homeTeamName: 'Rapid Wien',
+        awayTeamName: 'Sturm Graz',
+        playerTeamName: 'Sturm Graz',
+        opponentTeamName: 'Rapid Wien',
+      },
+    });
+    let releaseFirstFetch = () => undefined;
+    const firstFetchGate = new Promise<void>((resolve) => {
+      releaseFirstFetch = resolve;
+    });
+    const firstFetch = vi.fn<typeof fetch>(async () => {
+      await firstFetchGate;
+      return new Response(null, { status: 500 });
+    });
+    const secondFetch = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/events')) {
+        return json([
+          {
+            id: 'austria-fixture-2',
+            date: secondFixture.nextGame!.date,
+            home: 'Rapid Wien',
+            away: 'SK Sturm Graz',
+          },
+        ]);
+      }
+      return json([
+        {
+          id: 'austria-fixture-2',
+          date: secondFixture.nextGame!.date,
+          home: 'Rapid Wien',
+          away: 'SK Sturm Graz',
+          bookmakers: {
+            Bet365: [
+              {
+                name: 'Anytime Goalscorer',
+                odds: [{ label: 'Seedy Jatta', over: 3.5 }],
+              },
+            ],
+          },
+        },
+      ]);
+    });
+    const first = createProvider(
+      firstFetch,
+      usageStore,
+      undefined,
+      0,
+      store,
+    ).provider;
+    const second = createProvider(
+      secondFetch,
+      usageStore,
+      undefined,
+      0,
+      store,
+    ).provider;
+
+    const firstLoad = first.load([firstFixture]);
+    await vi.waitFor(() => expect(firstFetch).toHaveBeenCalledTimes(1));
+    try {
+      const result = await second.load([secondFixture]);
+
+      expect(secondFetch).toHaveBeenCalledTimes(2);
+      expect(
+        result.get(playerMarketOddsKey(secondFixture))?.goal?.probability,
+      ).toBeCloseTo(1 / 3.5);
+    } finally {
+      releaseFirstFetch();
+      await firstLoad;
+    }
   });
 });

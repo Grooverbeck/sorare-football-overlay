@@ -26,6 +26,7 @@ import {
   type MarketSnapshotStore,
   type PlayerMarketOddsLoadOptions,
   type PlayerMarketOddsProvider,
+  type PlayerMarketField,
 } from './market-odds-provider.js';
 import {
   protectionForUsage,
@@ -47,7 +48,10 @@ const OddsApiIoEventsSchema = z.array(OddsApiIoEventSchema);
 type OddsApiIoEvent = z.infer<typeof OddsApiIoEventSchema>;
 
 const OddsApiIoMarketOddSchema = z.object({
-  label: z.string().min(1),
+  // Team and totals markets in the same response legitimately use
+  // `label: null`. They are irrelevant for player props and must not make the
+  // complete event response fail validation.
+  label: z.string().min(1).nullable().optional(),
   over: z.union([z.string(), z.number()]).optional(),
 });
 
@@ -89,8 +93,7 @@ class OddsApiIoHttpError extends Error {
   }
 }
 
-const ODDS_API_IO_REFRESH_LEASE_SECONDS = 5 * 60;
-const ODDS_API_IO_REFRESH_LEASE = 'player-props';
+const ODDS_API_IO_REFRESH_LEASE_MS = 90 * 1_000;
 const HOUR_MS = 60 * 60 * 1_000;
 
 const defaultSleep = (milliseconds: number) =>
@@ -252,6 +255,7 @@ function anytimeGoalscorerSnapshot(
     );
     if (!market) continue;
     for (const odd of market.odds) {
+      if (!odd.label) continue;
       const decimalOdds = Number(odd.over);
       if (!Number.isFinite(decimalOdds) || decimalOdds <= 1) continue;
       const playerName = normalizePlayerName(odd.label);
@@ -348,6 +352,10 @@ export class OddsApiIoPlayerMarketOddsProvider
     return this.routeForPlayer(player) !== null;
   }
 
+  supportsMarket(player: PlayerStats, market: PlayerMarketField): boolean {
+    return market === 'goal' && this.supports(player);
+  }
+
   async refreshUsage(): Promise<ProviderQuotaUsage[]> {
     const now = this.now();
     const [daily, hourly] = await Promise.all([
@@ -405,29 +413,31 @@ export class OddsApiIoPlayerMarketOddsProvider
         !loadOptions?.cacheOnly &&
         protection.allowExternalRequests
       ) {
-        pending.push(fixture);
+        const requestGroup = this.refreshRequestGroup(fixture);
+        const claimed = this.options.store.claimRefreshLease
+          ? await this.options.store.claimRefreshLease(
+              fixture.key,
+              requestGroup,
+              ODDS_API_IO_REFRESH_LEASE_MS,
+            )
+          : true;
+        if (claimed) {
+          pending.push(fixture);
+        } else {
+          this.options.logger.debug(
+            {
+              provider: 'odds-api-io',
+              fixture: fixture.key,
+              requestGroup,
+            },
+            'Odds-API.io fixture refresh skipped because another Worker owns the lease',
+          );
+        }
       }
     }
 
     if (pending.length > 0) {
-      const claimed =
-        !this.options.usageStore?.claimRefreshLease ||
-        (await this.options.usageStore.claimRefreshLease(
-          'odds-api-io',
-          ODDS_API_IO_REFRESH_LEASE,
-          ODDS_API_IO_REFRESH_LEASE_SECONDS,
-        ));
-      if (claimed) {
-        await this.refreshFixtures(pending, snapshots);
-      } else {
-        this.options.logger.debug(
-          {
-            provider: 'odds-api-io',
-            fixtures: pending.length,
-          },
-          'Odds-API.io refresh skipped because another Worker owns the lease',
-        );
-      }
+      await this.refreshFixtures(pending, snapshots);
     }
 
     for (const fixture of fixtures) {
@@ -504,6 +514,14 @@ export class OddsApiIoPlayerMarketOddsProvider
       try {
         await this.refreshRoute(route, routedFixtures, snapshots);
       } catch (error) {
+        await Promise.all(
+          routedFixtures.map((fixture) =>
+            this.options.store.releaseRefreshLease?.(
+              fixture.key,
+              this.refreshRequestGroup(fixture),
+            ),
+          ),
+        );
         this.options.logger.warn(
           {
             competitions: route.competitionSlugs,
@@ -526,6 +544,19 @@ export class OddsApiIoPlayerMarketOddsProvider
         supportsPlayerCompetition(player, route.competitionSlugs),
       ) ?? null
     );
+  }
+
+  private refreshRequestGroup(fixture: FixtureGroup): string {
+    const route = fixture.players
+      .map((player) => this.routeForPlayer(player))
+      .find((candidate): candidate is OddsApiIoPlayerRoute =>
+        Boolean(candidate),
+      );
+    return [
+      'odds-api-io',
+      ...(route?.leagueSlugs ?? ['unrouted']),
+      'player-props',
+    ].join(':');
   }
 
   private async refreshRoute(

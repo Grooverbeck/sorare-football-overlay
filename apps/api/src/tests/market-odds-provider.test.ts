@@ -189,6 +189,37 @@ function unavailableMarketResponse() {
 }
 
 describe('TheOddsApiPlayerMarketOddsProvider', () => {
+  it('normalizes common Liga MX names used by Leagues Cup feeds', () => {
+    expect(normalizeTeamName('Atlético de San Luis FC')).toBe(
+      'atletico san luis',
+    );
+    expect(normalizeTeamName('Chivas Guadalajara')).toBe('guadalajara');
+    expect(normalizeTeamName('CF Monterrey')).toBe('monterrey');
+    expect(normalizeTeamName('Club América')).toBe('club america');
+  });
+
+  it('accepts Leagues Cup only through its dedicated competition route', () => {
+    const leaguesCupPlayer = player({
+      nextGame: {
+        ...player().nextGame!,
+        competitionSlug: 'leagues-cup-mls',
+        homeTeamName: 'Inter Miami CF',
+        awayTeamName: 'Atlético de San Luis',
+        playerTeamName: 'Inter Miami CF',
+        opponentTeamName: 'Atlético de San Luis',
+      },
+    });
+
+    expect(
+      supportsFixtureCompetition(leaguesCupPlayer, [
+        'leagues-cup-mls',
+      ]),
+    ).toBe(true);
+    expect(supportsFixtureCompetition(leaguesCupPlayer, ['mlspa'])).toBe(
+      false,
+    );
+  });
+
   it('does not call the MLS feed for an explicitly unsupported competition', async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const provider = new TheOddsApiPlayerMarketOddsProvider({
@@ -754,6 +785,151 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it('allows only one provider instance to refresh a fixture at a time', async () => {
+    const store = new InMemoryMarketSnapshotStore(30 * 60 * 1_000, () => now);
+    let releaseCatalog: (() => void) | undefined;
+    const catalogGate = new Promise<void>((resolve) => {
+      releaseCatalog = resolve;
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes('/events?')) {
+        await catalogGate;
+        return json(eventResponse());
+      }
+      return json(marketResponse());
+    });
+    const createProvider = () =>
+      new TheOddsApiPlayerMarketOddsProvider({
+        apiKey: 'test-key',
+        baseUrl: 'https://api.the-odds-api.com/v4',
+        sportKey: 'soccer_usa_mls',
+        region: 'us',
+        fetchWindowMs: 12 * 60 * 60 * 1_000,
+        requestTimeoutMs: 1_000,
+        maxRetries: 0,
+        store,
+        logger,
+        fetchImpl,
+        now: () => now,
+      });
+    const firstProvider = createProvider();
+    const secondProvider = createProvider();
+    const stats = player();
+
+    const first = firstProvider.load([stats]);
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+    const competing = await secondProvider.load([stats]);
+
+    expect(competing.get(playerMarketOddsKey(stats))).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    releaseCatalog?.();
+    await expect(first).resolves.toBeInstanceOf(Map);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+    const cached = await secondProvider.load([stats], { cacheOnly: true });
+    expect(cached.get(playerMarketOddsKey(stats))?.goal).toBeTruthy();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('collects progressive missing players before one supplement request', async () => {
+    const store = new InMemoryMarketSnapshotStore(30 * 60 * 1_000, () => now);
+    const base = player();
+    const fixtureKey = marketFixtureKey(base.nextGame!);
+    if (!fixtureKey) throw new Error('Expected fixture key');
+    for (const market of [
+      'player_goal_scorer_anytime',
+      'player_assists',
+    ] as const) {
+      store.set(fixtureKey, {
+        status: 'available',
+        market,
+        eventId: 'fixture-1',
+        capturedAt: '2026-07-23T00:00:00.000Z',
+        players: {
+          'timo werner': {
+            probability:
+              market === 'player_goal_scorer_anytime' ? 0.4 : 0.2,
+            bookmakerCount: 1,
+            bookmakerQuotes: [
+              {
+                key: 'frozen-book',
+                title: 'Frozen Book',
+                decimalOdds:
+                  market === 'player_goal_scorer_anytime' ? 2.5 : 5,
+                probability:
+                  market === 'player_goal_scorer_anytime' ? 0.4 : 0.2,
+              },
+            ],
+          },
+        },
+      });
+    }
+
+    let releaseBatch: (() => void) | undefined;
+    const batchGate = new Promise<void>((resolve) => {
+      releaseBatch = resolve;
+    });
+    const sleep = vi.fn(async () => batchGate);
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/events')) return json(eventResponse());
+      return url.searchParams.get('regions') === 'uk'
+        ? json(marketResponseForPlayers(['Luis Suarez']))
+        : json(marketResponseForPlayers(['Antoine Griezmann']));
+    });
+    const createProvider = () =>
+      new TheOddsApiPlayerMarketOddsProvider({
+        apiKey: 'test-key',
+        baseUrl: 'https://api.the-odds-api.com/v4',
+        sportKey: 'soccer_usa_mls',
+        region: 'us',
+        fallbackRegion: 'uk',
+        fetchWindowMs: 12 * 60 * 60 * 1_000,
+        requestTimeoutMs: 1_000,
+        maxRetries: 0,
+        store,
+        logger,
+        fetchImpl,
+        sleep,
+        supplementBatchDelayMs: 1_500,
+        now: () => now,
+      });
+    const griezmann = player({
+      slug: 'antoine-griezmann',
+      displayName: 'Antoine Griezmann',
+    });
+    const suarez = player({
+      slug: 'luis-suarez',
+      displayName: 'Luis Suarez',
+    });
+
+    const leader = createProvider().load([griezmann]);
+    await vi.waitFor(() => expect(sleep).toHaveBeenCalledWith(1_500));
+    const follower = await createProvider().load([suarez]);
+    expect(follower.get(playerMarketOddsKey(suarez))).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    releaseBatch?.();
+    await expect(leader).resolves.toBeInstanceOf(Map);
+    expect(
+      fetchImpl.mock.calls.filter(([input]) =>
+        String(input).includes('/events/fixture-1/odds'),
+      ),
+    ).toHaveLength(2);
+    expect(
+      fetchImpl.mock.calls.some(([input]) =>
+        String(input).includes('regions=uk'),
+      ),
+    ).toBe(true);
+
+    const cached = await createProvider().load([suarez], { cacheOnly: true });
+    expect(cached.get(playerMarketOddsKey(suarez))).toMatchObject({
+      goal: { probability: expect.any(Number) },
+      assist: { probability: expect.any(Number) },
+    });
+  });
+
   it('rechecks a missing player at the adaptive pre-kickoff checkpoint without changing frozen odds', async () => {
     let clock = now;
     const store = new InMemoryMarketSnapshotStore(
@@ -1172,6 +1348,15 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
   it('matches Korean names when the feed uses family-name-first order', () => {
     expect(playerNameMatchScore('Heung-min Son', 'Son Heung Min')).toBe(95);
     expect(playerNameMatchScore('Heung-min Son', 'Son Heung-Woo')).toBe(0);
+  });
+
+  it('matches Icelandic thorn and eth with provider transliterations', () => {
+    expect(playerNameMatchScore('Stefán Þórðarson', 'Stefan Thordarson')).toBe(100);
+    expect(playerNameMatchScore('Stefán Þórðarson', 'Stefán Thórdarson')).toBe(100);
+  });
+
+  it('matches the known Markhiev bookmaker transliteration', () => {
+    expect(playerNameMatchScore('Adam Markhiev', 'Adam Markhiyev')).toBe(100);
   });
 
   it('rejects an abbreviated market name that fits two fixture players', async () => {

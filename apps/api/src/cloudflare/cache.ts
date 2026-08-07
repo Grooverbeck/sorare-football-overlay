@@ -19,9 +19,13 @@ import {
   type SplitPlayerStatsCacheAccess,
 } from '../cache.js';
 import {
+  MarketSupplementBatchSchema,
   MarketSnapshotSchema,
   marketFixtureKey,
+  mergeSupplementBatch,
   normalizeTeamName,
+  type MarketSupplementBatch,
+  type MarketSupplementPlayer,
   type MarketSnapshot,
   type MarketSnapshotStore,
   type OddsMarketKey,
@@ -53,6 +57,7 @@ import {
 const SourcePlayerRequestSchema = z.object({
   slug: z.string().trim().min(1).max(160).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i),
   position: FootballPositionSchema.optional(),
+  teamSlug: z.string().trim().min(1).max(180).optional(),
   nameResolution: z.enum(['direct', 'search']).optional(),
 });
 
@@ -100,6 +105,18 @@ export interface JsonKeyValueStore {
     value: string,
     options?: { expiration?: number; expirationTtl?: number },
   ): Promise<void>;
+  /**
+   * D1 can merge the short-lived bookmaker supplement queue in one SQL
+   * statement. Keeping this optional preserves the KV/in-memory fallback,
+   * while preventing concurrent Worker isolates from overwriting players.
+   */
+  mergeMarketSupplementBatch?(
+    key: string,
+    playersJson: string,
+    queuedAt: string,
+    readyAt: string,
+    expirationTtl: number,
+  ): Promise<string>;
   delete(key: string): Promise<void>;
 }
 
@@ -459,8 +476,117 @@ export class CloudflareMarketSnapshotStore
     });
   }
 
+  async claimRefreshLease(
+    fixtureKey: string,
+    requestGroup: string,
+    ttlMs: number,
+  ): Promise<boolean> {
+    if (!this.namespace.putIfAbsent) return true;
+    return this.namespace.putIfAbsent(
+      this.refreshLeaseKey(fixtureKey, requestGroup),
+      JSON.stringify({ claimedAt: new Date().toISOString() }),
+      { expirationTtl: Math.max(1, Math.ceil(ttlMs / 1_000)) },
+    );
+  }
+
+  async releaseRefreshLease(
+    fixtureKey: string,
+    requestGroup: string,
+  ): Promise<void> {
+    await this.namespace.delete(
+      this.refreshLeaseKey(fixtureKey, requestGroup),
+    );
+  }
+
+  async enqueueSupplementPlayers(
+    fixtureKey: string,
+    requestGroup: string,
+    players: readonly MarketSupplementPlayer[],
+    delayMs: number,
+    ttlMs: number,
+  ): Promise<MarketSupplementBatch> {
+    const key = this.supplementBatchKey(fixtureKey, requestGroup);
+    const now = Date.now();
+    const created = mergeSupplementBatch(undefined, players, now, delayMs);
+    const ttlSeconds = Math.max(1, Math.ceil(ttlMs / 1_000));
+    if (this.namespace.mergeMarketSupplementBatch) {
+      const raw = await this.namespace.mergeMarketSupplementBatch(
+        key,
+        JSON.stringify(created.players),
+        created.queuedAt,
+        created.readyAt,
+        ttlSeconds,
+      );
+      const parsed = MarketSupplementBatchSchema.safeParse(JSON.parse(raw));
+      if (parsed.success) return parsed.data;
+    }
+    if (this.namespace.putIfAbsent) {
+      const inserted = await this.namespace.putIfAbsent(
+        key,
+        JSON.stringify(created),
+        { expirationTtl: ttlSeconds },
+      );
+      if (inserted) return created;
+    }
+
+    const raw = await this.namespace.get<unknown>(key, 'json');
+    const existing = MarketSupplementBatchSchema.safeParse(raw);
+    const merged = mergeSupplementBatch(
+      existing.success ? existing.data : undefined,
+      players,
+      now,
+      delayMs,
+    );
+    await this.namespace.put(key, JSON.stringify(merged), {
+      expirationTtl: ttlSeconds,
+    });
+    return merged;
+  }
+
+  async getSupplementBatch(
+    fixtureKey: string,
+    requestGroup: string,
+  ): Promise<MarketSupplementBatch | undefined> {
+    const key = this.supplementBatchKey(fixtureKey, requestGroup);
+    const raw = await this.namespace.get<unknown>(key, 'json');
+    if (raw === null) return undefined;
+    const parsed = MarketSupplementBatchSchema.safeParse(raw);
+    if (!parsed.success) {
+      await this.namespace.delete(key);
+      return undefined;
+    }
+    return parsed.data;
+  }
+
+  async clearSupplementBatch(
+    fixtureKey: string,
+    requestGroup: string,
+  ): Promise<void> {
+    await this.namespace.delete(
+      this.supplementBatchKey(fixtureKey, requestGroup),
+    );
+  }
+
   private key(fixtureKey: string, market: OddsMarketKey): string {
     return `market-odds:v1:${encodeURIComponent(fixtureKey)}:${market}`;
+  }
+
+  private refreshLeaseKey(
+    fixtureKey: string,
+    requestGroup: string,
+  ): string {
+    return `market-odds-refresh-lease:v1:${encodeURIComponent(
+      requestGroup,
+    )}:${encodeURIComponent(fixtureKey)}`;
+  }
+
+  private supplementBatchKey(
+    fixtureKey: string,
+    requestGroup: string,
+  ): string {
+    return `market-odds-supplement-batch:v1:${encodeURIComponent(
+      requestGroup,
+    )}:${encodeURIComponent(fixtureKey)}`;
   }
 }
 
@@ -493,6 +619,32 @@ export class CloudflareMatchOddsSnapshotStore
     await this.namespace.put(this.key(fixtureKey), JSON.stringify(parsed), {
       expiration: Math.floor(Date.parse(parsed.expiresAt) / 1_000),
     });
+  }
+
+  async claimRefreshLease(
+    fixtureKey: string,
+    requestGroup: string,
+    ttlMs: number,
+  ): Promise<boolean> {
+    if (!this.namespace.putIfAbsent) return true;
+    return this.namespace.putIfAbsent(
+      `match-odds-refresh-lease:v1:${encodeURIComponent(
+        requestGroup,
+      )}:${encodeURIComponent(fixtureKey)}`,
+      JSON.stringify({ claimedAt: new Date().toISOString() }),
+      { expirationTtl: Math.max(1, Math.ceil(ttlMs / 1_000)) },
+    );
+  }
+
+  async releaseRefreshLease(
+    fixtureKey: string,
+    requestGroup: string,
+  ): Promise<void> {
+    await this.namespace.delete(
+      `match-odds-refresh-lease:v1:${encodeURIComponent(
+        requestGroup,
+      )}:${encodeURIComponent(fixtureKey)}`,
+    );
   }
 
   private key(fixtureKey: string): string {
@@ -684,11 +836,19 @@ class CloudflarePlayerFixtureCache
     if (!Number.isFinite(kickoffMs) || kickoffMs <= this.now()) return false;
     const key = fixtureOddsCheckKey(value);
     if (!key) return false;
+    const leaseValue = JSON.stringify({
+      checkedAt: new Date(this.now()).toISOString(),
+    });
+    if (this.namespace.putIfAbsent) {
+      return this.namespace.putIfAbsent(key, leaseValue, {
+        expirationTtl: FIXTURE_ODDS_REFRESH_LEASE_SECONDS,
+      });
+    }
     const existing = await this.namespace.get<unknown>(key, 'json');
     if (existing !== null) return false;
     await this.namespace.put(
       key,
-      JSON.stringify({ checkedAt: new Date(this.now()).toISOString() }),
+      leaseValue,
       { expirationTtl: FIXTURE_ODDS_REFRESH_LEASE_SECONDS },
     );
     return true;
@@ -1137,8 +1297,9 @@ export class CloudflareNameResolutionCache
   async get(
     name: string,
     position: FootballPosition | undefined,
+    teamSlug?: string,
   ): Promise<SourcePlayerRequest | null | undefined> {
-    const cacheKey = this.key(name, position);
+    const cacheKey = this.key(name, position, teamSlug);
     const raw = await this.namespace.get<unknown>(cacheKey, 'json');
     if (raw === null) return undefined;
     const parsed = NameResolutionEnvelopeSchema.safeParse(raw);
@@ -1152,6 +1313,9 @@ export class CloudflareNameResolutionCache
       ...(parsed.data.value.position
         ? { position: parsed.data.value.position }
         : {}),
+      ...(parsed.data.value.teamSlug
+        ? { teamSlug: parsed.data.value.teamSlug }
+        : {}),
       ...(parsed.data.value.nameResolution
         ? { nameResolution: parsed.data.value.nameResolution }
         : {}),
@@ -1162,18 +1326,26 @@ export class CloudflareNameResolutionCache
     name: string,
     position: FootballPosition | undefined,
     value: SourcePlayerRequest | null,
+    teamSlug?: string,
   ): void {
     const envelope = value
       ? { found: true as const, value: SourcePlayerRequestSchema.parse(value) }
       : { found: false as const };
     this.persist(
-      this.key(name, position),
+      this.key(name, position, teamSlug),
       envelope,
       value ? this.positiveTtlSeconds : this.negativeTtlSeconds,
     );
   }
 
-  private key(name: string, position: FootballPosition | undefined): string {
-    return `player-name:v5:${encodeURIComponent(normalizeName(name))}:${position ?? 'any'}`;
+  private key(
+    name: string,
+    position: FootballPosition | undefined,
+    teamSlug?: string,
+  ): string {
+    if (!teamSlug) {
+      return `player-name:v5:${encodeURIComponent(normalizeName(name))}:${position ?? 'any'}`;
+    }
+    return `player-name:v7:${encodeURIComponent(normalizeName(name))}:${position ?? 'any'}:${encodeURIComponent(teamSlug.toLowerCase())}`;
   }
 }

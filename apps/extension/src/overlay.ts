@@ -1209,9 +1209,13 @@ function marketBracketNode(stats: PlayerStats): HTMLElement | null {
   );
   if (preview) bracket.dataset.preview = 'true';
   if (stats.position !== 'Goalkeeper') {
-    const aaCell = aaStatNode(stats, 'top');
-    aaCell.dataset.bracketSlot = 'aa';
-    bracket.append(aaCell);
+    if (stats.aaL10.value !== null) {
+      const aaCell = aaStatNode(stats, 'top');
+      aaCell.dataset.bracketSlot = 'aa';
+      bracket.append(aaCell);
+    } else {
+      bracket.append(marketBracketSlotSpacer('aa', true));
+    }
   } else {
     bracket.append(marketBracketSlotSpacer('aa', true));
   }
@@ -1277,6 +1281,7 @@ function marketBracketNode(stats: PlayerStats): HTMLElement | null {
   const visibleCells = Array.from(
     bracket.querySelectorAll<HTMLElement>('.market-cell'),
   );
+  if (visibleCells.length === 0) return null;
   visibleCells.at(-1)?.classList.add('market-fold-end');
   bracket.dataset.foldTone =
     visibleCells.at(-1)?.dataset.tone ?? 'unavailable';

@@ -437,6 +437,42 @@ describe('SportsGameOddsPlayerMarketOddsProvider', () => {
     expect(result.get(playerMarketOddsKey(missing))).toBeNull();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
+
+  it('deduplicates a concurrent fixture refresh across provider instances sharing a store', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify(eventsEnvelope()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const store = new InMemoryMarketSnapshotStore(60_000, () => now);
+    const createProvider = () =>
+      new SportsGameOddsPlayerMarketOddsProvider({
+        apiKey: 'secret-test-key',
+        baseUrl: 'https://api.sportsgameodds.com/v2',
+        leagueId: 'MLS',
+        fetchWindowMs: 24 * 60 * 60 * 1_000,
+        requestTimeoutMs: 1_000,
+        maxRetries: 0,
+        store,
+        logger,
+        fetchImpl,
+        now: () => now,
+      });
+    const stats = player();
+
+    const results = await Promise.all([
+      createProvider().load([stats]),
+      createProvider().load([stats]),
+    ]);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(
+      results.some((result) =>
+        Boolean(result.get(playerMarketOddsKey(stats))?.goal),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('SupplementingPlayerMarketOddsProvider', () => {
@@ -549,5 +585,110 @@ describe('SupplementingPlayerMarketOddsProvider', () => {
 
     expect(result.get(playerMarketOddsKey(stats))).toEqual(primaryOdds);
     expect(fallback.load).not.toHaveBeenCalled();
+  });
+
+  it('reads independent cache layers concurrently and returns the lower cached quote', async () => {
+    const stats = player();
+    const events: string[] = [];
+    const primaryOdds: PlayerMarketOdds = {
+      source: 'sports-game-odds',
+      capturedAt: '2026-07-25T10:00:00.000Z',
+      goal: null,
+      assist: { probability: 0.2, bookmakerCount: 1 },
+      decisive: null,
+    };
+    const fallbackOdds: PlayerMarketOdds = {
+      source: 'odds-api-io',
+      capturedAt: '2026-07-25T10:01:00.000Z',
+      goal: { probability: 0.35, bookmakerCount: 1 },
+      assist: null,
+      decisive: null,
+    };
+    const primary: PlayerMarketOddsProvider = {
+      load: vi.fn(async () => {
+        events.push('primary:start');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        events.push('primary:end');
+        return new Map([[playerMarketOddsKey(stats), primaryOdds]]);
+      }),
+    };
+    const fallback: PlayerMarketOddsProvider = {
+      load: vi.fn(async () => {
+        events.push('fallback:start');
+        events.push('fallback:end');
+        return new Map([[playerMarketOddsKey(stats), fallbackOdds]]);
+      }),
+      supportsMarket: (_player, market) => market === 'goal',
+    };
+    const combined = new SupplementingPlayerMarketOddsProvider(
+      primary,
+      fallback,
+      ['goal'],
+    );
+
+    const result = await combined.load([stats], { cacheOnly: true });
+
+    expect(events.indexOf('fallback:start')).toBeLessThan(
+      events.indexOf('primary:end'),
+    );
+    expect(result.get(playerMarketOddsKey(stats))).toMatchObject({
+      source: 'mixed',
+      goal: { probability: 0.35 },
+      assist: { probability: 0.2 },
+    });
+  });
+
+  it('keeps using the fallback when the primary provider fails', async () => {
+    const stats = player();
+    const fallbackOdds: PlayerMarketOdds = {
+      source: 'odds-api-io',
+      capturedAt: '2026-07-25T10:01:00.000Z',
+      goal: { probability: 0.35, bookmakerCount: 1 },
+      assist: null,
+      decisive: null,
+    };
+    const primary: PlayerMarketOddsProvider = {
+      load: vi.fn(async () => {
+        throw new Error('temporary primary outage');
+      }),
+    };
+    const fallback: PlayerMarketOddsProvider = {
+      load: vi.fn(async () =>
+        new Map([[playerMarketOddsKey(stats), fallbackOdds]]),
+      ),
+      supportsMarket: (_player, market) => market === 'goal',
+    };
+    const combined = new SupplementingPlayerMarketOddsProvider(
+      primary,
+      fallback,
+      ['goal'],
+    );
+
+    const result = await combined.load([stats]);
+
+    expect(result.get(playerMarketOddsKey(stats))).toEqual(fallbackOdds);
+    expect(fallback.load).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports goal-only fallback capability without claiming assist support', () => {
+    const stats = player();
+    const unavailable: PlayerMarketOddsProvider = {
+      supports: () => false,
+      supportsMarket: () => false,
+      load: vi.fn(async () => new Map()),
+    };
+    const goalOnly: PlayerMarketOddsProvider = {
+      supports: () => true,
+      supportsMarket: (_player, market) => market === 'goal',
+      load: vi.fn(async () => new Map()),
+    };
+    const combined = new SupplementingPlayerMarketOddsProvider(
+      unavailable,
+      goalOnly,
+      ['goal'],
+    );
+
+    expect(combined.supportsMarket(stats, 'goal')).toBe(true);
+    expect(combined.supportsMarket(stats, 'assist')).toBe(false);
   });
 });
