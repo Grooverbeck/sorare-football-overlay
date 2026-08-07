@@ -567,6 +567,12 @@ npm run dev:cloudflare   # Backend lokal in der Worker-Laufzeit mit KV
 npm run dev:extension    # Extension mit Watch-Modus
 npm run deploy:cloudflare:dry-run # Worker-Bundle und Konfiguration prüfen
 npm run benchmark:mls-aa # MLS-AA-Verteilung als JSON analysieren
+npm run analyze:player-prediction -- --player <slug>:FWD # separate lokale Prognose
 ```
 
 Die API-Integrationstests laufen vollständig gegen die injizierte Mock-Datenquelle und benötigen weder Internetzugriff noch Zugangsdaten. Ein zusätzlicher Integrationstest startet den echten Worker lokal in Miniflare und prüft Health-Endpunkt, Hono-Routing, Mock-Statistiken, KV-Bindung und den korrekten Workerd-Aufruf des globalen `fetch`.
+
+Die Spieler-Prognose ist bewusst vom Overlay getrennt. Sie läuft nur bei einem
+manuellen Aufruf des Analysebefehls und verändert weder API-Antworten noch
+Extension-Caches. Formel, Optionen und Beispiele stehen in
+[`docs/PLAYER_PREDICTION_MODEL.md`](docs/PLAYER_PREDICTION_MODEL.md).

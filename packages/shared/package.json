@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./player-prediction": {
+      "types": "./dist/player-prediction.d.ts",
+      "import": "./dist/player-prediction.js"
     }
   },
   "files": [

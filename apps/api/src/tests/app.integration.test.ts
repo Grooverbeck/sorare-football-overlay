@@ -60,6 +60,12 @@ describe('POST /api/player-stats', () => {
       goal: { bookmakerCount: 3 },
       assist: { bookmakerCount: 3 },
     });
+    expect(
+      firstBody.data.every(
+        (player: Record<string, unknown>) =>
+          !Object.hasOwn(player, 'nextGamePrediction'),
+      ),
+    ).toBe(true);
 
     const second = await request();
     expect((await second.json()).meta.cacheHits).toBe(2);

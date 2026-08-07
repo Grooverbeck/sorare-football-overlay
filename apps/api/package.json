@@ -11,6 +11,7 @@
     "benchmark:mls-win": "node scripts/analyze-mls-win-probabilities.mjs",
     "benchmark:sorare-batching": "node --experimental-strip-types --env-file-if-exists=.dev.vars scripts/benchmark-sorare-batching.mjs",
     "analyze:mls-props": "tsx --env-file-if-exists=.dev.vars scripts/analyze-mls-player-props.mjs",
+    "analyze:player-prediction": "node --env-file-if-exists=.dev.vars scripts/analyze-player-predictions.mjs",
     "prewarm:mls-props": "node scripts/prewarm-mls-market-odds.mjs",
     "cf:deploy": "wrangler deploy --config wrangler.jsonc",
     "cf:dev": "wrangler dev --config wrangler.jsonc",

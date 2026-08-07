@@ -20,6 +20,7 @@
     "benchmark:mls-win": "npm run benchmark:mls-win --workspace=@sorare-overlay/api",
     "benchmark:sorare-batching": "npm run benchmark:sorare-batching --workspace=@sorare-overlay/api --",
     "analyze:mls-props": "npm run analyze:mls-props --workspace=@sorare-overlay/api",
+    "analyze:player-prediction": "npm run build --workspace=@sorare-overlay/shared && npm run analyze:player-prediction --workspace=@sorare-overlay/api --",
     "prewarm:mls-props": "npm run prewarm:mls-props --workspace=@sorare-overlay/api",
     "codegen": "npm run codegen --workspace=@sorare-overlay/api",
     "dev:api": "npm run dev --workspace=@sorare-overlay/api",
