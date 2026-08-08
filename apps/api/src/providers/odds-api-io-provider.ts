@@ -10,6 +10,7 @@ import type { AppLogger } from '../logger.js';
 import {
   FrozenMarketSnapshotSchema,
   groupFixtures,
+  marketFixtureKey,
   missingMarketSnapshot,
   needsFrozenSnapshotSupplement,
   normalizePlayerName,
@@ -17,6 +18,7 @@ import {
   playerMarketOddsKey,
   playerProbability,
   recordFrozenSnapshotCheck,
+  settleCacheReadWithin,
   shouldRetryMarketFailure,
   supplementFrozenSnapshot,
   supportsPlayerCompetition,
@@ -84,6 +86,13 @@ interface OddsApiIoOptions {
   fetchImpl?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
   now?: () => number;
+}
+
+export function oddsApiIoFixtureStoreKey(
+  nextGame: NonNullable<PlayerStats['nextGame']>,
+): string | null {
+  const key = marketFixtureKey(nextGame);
+  return key ? fixtureStoreKey(key) : null;
 }
 
 class OddsApiIoHttpError extends Error {
@@ -386,11 +395,33 @@ export class OddsApiIoPlayerMarketOddsProvider
     const snapshots = new Map<string, MarketSnapshot | undefined>();
     const pending: FixtureGroup[] = [];
 
-    for (const fixture of fixtures) {
-      const snapshot = await this.options.store.get(
-        fixtureStoreKey(fixture.key),
-        'player_goal_scorer_anytime',
+    const cacheOnly = loadOptions?.cacheOnly === true;
+    if (cacheOnly) {
+      const loadedFixtures = await Promise.allSettled(
+        fixtures.map(async (fixture) => ({
+          fixtureKey: fixture.key,
+          snapshot: await settleCacheReadWithin(
+            this.options.store.get(
+              fixtureStoreKey(fixture.key),
+              'player_goal_scorer_anytime',
+            ),
+            true,
+          ),
+        })),
       );
+      for (const result of loadedFixtures) {
+        if (result.status !== 'fulfilled') continue;
+        snapshots.set(result.value.fixtureKey, result.value.snapshot);
+      }
+    }
+
+    for (const fixture of fixtures) {
+      const snapshot = cacheOnly
+        ? snapshots.get(fixture.key)
+        : await this.options.store.get(
+            fixtureStoreKey(fixture.key),
+            'player_goal_scorer_anytime',
+          );
       snapshots.set(fixture.key, snapshot);
       const kickoff = Date.parse(fixture.date);
       const untilKickoff = kickoff - this.now();
@@ -410,7 +441,7 @@ export class OddsApiIoPlayerMarketOddsProvider
             ));
       if (
         needsApi &&
-        !loadOptions?.cacheOnly &&
+        !cacheOnly &&
         protection.allowExternalRequests
       ) {
         const requestGroup = this.refreshRequestGroup(fixture);

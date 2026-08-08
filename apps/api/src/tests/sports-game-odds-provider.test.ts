@@ -7,6 +7,7 @@ import type { AppLogger } from '../logger.js';
 import {
   InMemoryMarketSnapshotStore,
   playerMarketOddsKey,
+  type MarketSnapshotStore,
   type PlayerMarketOddsProvider,
 } from '../providers/market-odds-provider.js';
 import {
@@ -16,6 +17,7 @@ import {
 import {
   SportsGameOddsPlayerMarketOddsProvider,
   SupplementingPlayerMarketOddsProvider,
+  sportsGameOddsFixtureStoreKey,
   sportsGameOddsQuotaUsage,
 } from '../providers/sports-game-odds-provider.js';
 
@@ -473,6 +475,158 @@ describe('SportsGameOddsPlayerMarketOddsProvider', () => {
       ),
     ).toBe(true);
   });
+
+  it('keeps a cached market when another market key fails to read', async () => {
+    const stats = player();
+    const fixtureKey = sportsGameOddsFixtureStoreKey(stats.nextGame!);
+    if (!fixtureKey) throw new Error('Expected fixture key');
+    const backingStore = new InMemoryMarketSnapshotStore(60_000, () => now);
+    backingStore.set(fixtureKey, {
+      status: 'available',
+      market: 'player_goal_scorer_anytime',
+      eventId: 'fixture-1',
+      capturedAt: new Date(now).toISOString(),
+      players: {
+        'timo werner': { probability: 0.4, bookmakerCount: 1 },
+      },
+    });
+    const store: MarketSnapshotStore = {
+      get: async (key, market) => {
+        if (market === 'player_assists') {
+          throw new Error('isolated assist cache read failure');
+        }
+        return backingStore.get(key, market);
+      },
+      set: (key, snapshot) => backingStore.set(key, snapshot),
+    };
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new SportsGameOddsPlayerMarketOddsProvider({
+      apiKey: 'secret-test-key',
+      baseUrl: 'https://api.sportsgameodds.com/v2',
+      leagueId: 'MLS',
+      fetchWindowMs: 24 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store,
+      logger,
+      fetchImpl,
+      now: () => now,
+    });
+
+    const cached = await provider.load([stats], { cacheOnly: true });
+
+    expect(cached.get(playerMarketOddsKey(stats))).toMatchObject({
+      goal: { probability: 0.4 },
+      assist: null,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('propagates a normal-path cache read failure before contacting the external API', async () => {
+    const stats = player();
+    const failure = new Error('normal SportsGameOdds cache read failure');
+    const store: MarketSnapshotStore = {
+      get: async (_key, market) => {
+        if (market === 'player_assists') throw failure;
+        return undefined;
+      },
+      set: () => undefined,
+    };
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new SportsGameOddsPlayerMarketOddsProvider({
+      apiKey: 'secret-test-key',
+      baseUrl: 'https://api.sportsgameodds.com/v2',
+      leagueId: 'MLS',
+      fetchWindowMs: 24 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store,
+      logger,
+      fetchImpl,
+      now: () => now,
+    });
+
+    await expect(provider.load([stats])).rejects.toBe(failure);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('keeps a later cached fixture when earlier fixture reads hang', async () => {
+    const earlyPlayers = [0, 1].map((offset) =>
+      player({
+        slug: `early-player-${offset}`,
+        displayName: `Early Player ${offset}`,
+        nextGame: {
+          ...player().nextGame!,
+          date: new Date(Date.parse(kickoff) + offset * 60_000).toISOString(),
+        },
+      }),
+    );
+    const healthyPlayer = player({
+      slug: 'healthy-player',
+      displayName: 'Healthy Player',
+      nextGame: {
+        ...player().nextGame!,
+        date: new Date(Date.parse(kickoff) + 2 * 60_000).toISOString(),
+      },
+    });
+    const earlyKeys = new Set(
+      earlyPlayers.map((stats) => {
+        const key = sportsGameOddsFixtureStoreKey(stats.nextGame!);
+        if (!key) throw new Error('Expected early fixture key');
+        return key;
+      }),
+    );
+    const healthyKey = sportsGameOddsFixtureStoreKey(healthyPlayer.nextGame!);
+    if (!healthyKey) throw new Error('Expected healthy fixture key');
+    const backingStore = new InMemoryMarketSnapshotStore(60_000, () => now);
+    backingStore.set(healthyKey, {
+      status: 'available',
+      market: 'player_goal_scorer_anytime',
+      eventId: 'healthy-fixture',
+      capturedAt: new Date(now).toISOString(),
+      players: {
+        'healthy player': { probability: 0.41, bookmakerCount: 1 },
+      },
+    });
+    const store: MarketSnapshotStore = {
+      get: (key, market) =>
+        earlyKeys.has(key)
+          ? new Promise(() => undefined)
+          : backingStore.get(key, market),
+      set: (key, snapshot) => backingStore.set(key, snapshot),
+    };
+    const provider = new SportsGameOddsPlayerMarketOddsProvider({
+      apiKey: 'secret-test-key',
+      baseUrl: 'https://api.sportsgameodds.com/v2',
+      leagueId: 'MLS',
+      fetchWindowMs: 24 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store,
+      logger,
+      fetchImpl: vi.fn<typeof fetch>(),
+      now: () => now,
+    });
+    const emptyFallback: PlayerMarketOddsProvider = {
+      load: async () => new Map(),
+      supportsMarket: () => false,
+    };
+    const bounded = new SupplementingPlayerMarketOddsProvider(
+      provider,
+      emptyFallback,
+      ['goal'],
+      180,
+    );
+
+    const cached = await bounded.load(
+      [...earlyPlayers, healthyPlayer],
+      { cacheOnly: true },
+    );
+
+    expect(cached.get(playerMarketOddsKey(healthyPlayer))).toMatchObject({
+      goal: { probability: 0.41 },
+    });
+  });
 });
 
 describe('SupplementingPlayerMarketOddsProvider', () => {
@@ -635,6 +789,89 @@ describe('SupplementingPlayerMarketOddsProvider', () => {
       source: 'mixed',
       goal: { probability: 0.35 },
       assist: { probability: 0.2 },
+    });
+  });
+
+  it('returns cached fallback data when the primary cache read hangs', async () => {
+    const stats = player();
+    const fallbackOdds: PlayerMarketOdds = {
+      source: 'odds-api-io',
+      capturedAt: '2026-07-25T10:01:00.000Z',
+      goal: { probability: 0.35, bookmakerCount: 1 },
+      assist: null,
+      decisive: null,
+    };
+    const primary: PlayerMarketOddsProvider = {
+      load: vi.fn(
+        () =>
+          new Promise<Map<string, PlayerMarketOdds | null>>(() => undefined),
+      ),
+    };
+    const fallback: PlayerMarketOddsProvider = {
+      load: vi.fn(async () =>
+        new Map([[playerMarketOddsKey(stats), fallbackOdds]]),
+      ),
+      supportsMarket: (_player, market) => market === 'goal',
+    };
+    const combined = new SupplementingPlayerMarketOddsProvider(
+      primary,
+      fallback,
+      ['goal'],
+      5,
+    );
+
+    const result = await combined.load([stats], { cacheOnly: true });
+
+    expect(result.get(playerMarketOddsKey(stats))).toEqual(fallbackOdds);
+  });
+
+  it('preserves an inner cached result through a nested cache-only deadline', async () => {
+    const stats = player();
+    const goalOdds: PlayerMarketOdds = {
+      source: 'odds-api-io',
+      capturedAt: '2026-07-25T10:01:00.000Z',
+      goal: { probability: 0.35, bookmakerCount: 1 },
+      assist: null,
+      decisive: null,
+    };
+    const assistOdds: PlayerMarketOdds = {
+      source: 'sports-game-odds',
+      capturedAt: '2026-07-25T10:02:00.000Z',
+      goal: null,
+      assist: { probability: 0.22, bookmakerCount: 1 },
+      decisive: null,
+    };
+    const hanging: PlayerMarketOddsProvider = {
+      load: () =>
+        new Promise<Map<string, PlayerMarketOdds | null>>(() => undefined),
+    };
+    const goalProvider: PlayerMarketOddsProvider = {
+      load: async () => new Map([[playerMarketOddsKey(stats), goalOdds]]),
+      supportsMarket: (_player, market) => market === 'goal',
+    };
+    const assistProvider: PlayerMarketOddsProvider = {
+      load: async () => new Map([[playerMarketOddsKey(stats), assistOdds]]),
+      supportsMarket: (_player, market) => market === 'assist',
+    };
+    const inner = new SupplementingPlayerMarketOddsProvider(
+      hanging,
+      goalProvider,
+      ['goal'],
+      50,
+    );
+    const outer = new SupplementingPlayerMarketOddsProvider(
+      inner,
+      assistProvider,
+      ['assist'],
+      50,
+    );
+
+    const result = await outer.load([stats], { cacheOnly: true });
+
+    expect(result.get(playerMarketOddsKey(stats))).toMatchObject({
+      source: 'mixed',
+      goal: { probability: 0.35 },
+      assist: { probability: 0.22 },
     });
   });
 

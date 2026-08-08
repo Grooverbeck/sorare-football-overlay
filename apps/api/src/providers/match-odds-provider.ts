@@ -10,6 +10,7 @@ import {
   marketFixtureKey,
   normalizeTeamName,
   playerMarketOddsKey,
+  settleCacheReadWithin,
   supportsFixtureCompetition,
   theOddsApiQuotaUsage,
   type FixtureGroup,
@@ -390,8 +391,26 @@ export class TheOddsApiFixtureMatchOddsProvider
 
     const snapshots = new Map<string, MatchOddsSnapshot>();
     const missing: FixtureGroup[] = [];
-    for (const fixture of fixtures) {
-      const storedSnapshot = await this.options.store.get(fixture.key);
+    const snapshotReads = fixtures.map(async (fixture) => ({
+      fixture,
+      storedSnapshot: await settleCacheReadWithin(
+        this.options.store.get(fixture.key),
+        loadOptions?.cacheOnly === true,
+      ),
+    }));
+    let storedSnapshots: Array<{
+      fixture: FixtureGroup;
+      storedSnapshot: MatchOddsSnapshot | undefined;
+    }>;
+    if (loadOptions?.cacheOnly === true) {
+      const settledSnapshots = await Promise.allSettled(snapshotReads);
+      storedSnapshots = settledSnapshots.flatMap((result) =>
+        result.status === 'fulfilled' ? [result.value] : [],
+      );
+    } else {
+      storedSnapshots = await Promise.all(snapshotReads);
+    }
+    for (const { fixture, storedSnapshot } of storedSnapshots) {
       const snapshot =
         storedSnapshot && this.snapshotIsReusable(storedSnapshot)
           ? storedSnapshot

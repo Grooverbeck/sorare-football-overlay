@@ -278,6 +278,34 @@ export interface PlayerMarketOddsLoadOptions {
   // Read immutable snapshots only. External bookmaker APIs must never be
   // contacted on the player-stats response path.
   cacheOnly?: boolean;
+  // Internal wall-clock deadline shared by nested cache-only provider
+  // compositions. Leaf providers may ignore it; composite providers use it
+  // to return partial snapshots before their parent budget expires.
+  cacheOnlyDeadlineMs?: number;
+}
+
+const defaultCacheOnlySnapshotReadBudgetMs = 100;
+
+export function settleCacheReadWithin<T>(
+  pending: Promise<T>,
+  cacheOnly: boolean,
+  timeoutMs = defaultCacheOnlySnapshotReadBudgetMs,
+): Promise<T | undefined> {
+  if (!cacheOnly) return pending;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: T | undefined) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(value);
+    };
+    const timeout = setTimeout(() => finish(undefined), Math.max(1, timeoutMs));
+    void pending.then(
+      (value) => finish(value),
+      () => finish(undefined),
+    );
+  });
 }
 
 export function playerMarketOddsKey(
@@ -1352,15 +1380,27 @@ export class TheOddsApiPlayerMarketOddsProvider
 
   private async loadFixtureSnapshots(
     fixtureKey: string,
+    cacheOnly: boolean,
   ): Promise<Map<OddsMarketKey, MarketSnapshot>> {
     const byMarket = new Map<OddsMarketKey, MarketSnapshot>();
-    const loaded = await Promise.all(
-      oddsMarketKeys.map(async (market) => ({
-        market,
-        snapshot: await this.options.store.get(fixtureKey, market),
-      })),
-    );
-    for (const { market, snapshot } of loaded) {
+    const reads = oddsMarketKeys.map(async (market) => ({
+      market,
+      snapshot: await settleCacheReadWithin(
+        this.options.store.get(fixtureKey, market),
+        cacheOnly,
+      ),
+    }));
+    if (!cacheOnly) {
+      const loaded = await Promise.all(reads);
+      for (const { market, snapshot } of loaded) {
+        if (snapshot) byMarket.set(market, snapshot);
+      }
+      return byMarket;
+    }
+    const loaded = await Promise.allSettled(reads);
+    for (const result of loaded) {
+      if (result.status !== 'fulfilled') continue;
+      const { market, snapshot } = result.value;
       if (snapshot) byMarket.set(market, snapshot);
     }
     return byMarket;
@@ -1445,8 +1485,32 @@ export class TheOddsApiPlayerMarketOddsProvider
       supplementOnly: boolean;
     }> = [];
 
+    const cacheOnly = loadOptions?.cacheOnly === true;
+    const cachedFixtureSnapshots = new Map<
+      string,
+      Map<OddsMarketKey, MarketSnapshot>
+    >();
+    if (cacheOnly) {
+      const loadedFixtures = await Promise.allSettled(
+        fixtures.map(async (fixture) => ({
+          fixtureKey: fixture.key,
+          snapshots: await this.loadFixtureSnapshots(fixture.key, true),
+        })),
+      );
+      for (const result of loadedFixtures) {
+        if (result.status !== 'fulfilled') continue;
+        cachedFixtureSnapshots.set(
+          result.value.fixtureKey,
+          result.value.snapshots,
+        );
+      }
+    }
+
     for (const fixture of fixtures) {
-      const byMarket = await this.loadFixtureSnapshots(fixture.key);
+      const byMarket = cacheOnly
+        ? (cachedFixtureSnapshots.get(fixture.key) ??
+          new Map<OddsMarketKey, MarketSnapshot>())
+        : await this.loadFixtureSnapshots(fixture.key, false);
       snapshots.set(fixture.key, byMarket);
 
       const kickoff = Date.parse(fixture.date);
@@ -1529,7 +1593,10 @@ export class TheOddsApiPlayerMarketOddsProvider
                 )
               : undefined;
             const fixture = this.mergeQueuedPlayers(pending.fixture, batch);
-            const byMarket = await this.loadFixtureSnapshots(fixture.key);
+            const byMarket = await this.loadFixtureSnapshots(
+              fixture.key,
+              loadOptions?.cacheOnly === true,
+            );
             snapshots.set(fixture.key, byMarket);
             const missingMarkets = this.marketsNeedingApi(
               fixture,

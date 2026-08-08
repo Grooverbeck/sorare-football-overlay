@@ -19,6 +19,7 @@ import {
   playerMarketOddsKey,
   playerProbability,
   recordFrozenSnapshotCheck,
+  settleCacheReadWithin,
   shouldRetryMarketFailure,
   supportsPlayerCompetition,
   supplementFrozenSnapshot,
@@ -229,6 +230,30 @@ class SportsGameOddsHttpError extends Error {
 const defaultSleep = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 const defaultRefreshLeaseTtlMs = 90 * 1_000;
+const defaultCacheOnlyProviderBudgetMs = 150;
+
+function settleMarketOddsWithin(
+  pending: Promise<Map<string, PlayerMarketOdds | null>>,
+  timeoutMs: number,
+): Promise<Map<string, PlayerMarketOdds | null>> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: Map<string, PlayerMarketOdds | null>) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(value);
+    };
+    const timeout = setTimeout(
+      () => finish(new Map<string, PlayerMarketOdds | null>()),
+      Math.max(1, timeoutMs),
+    );
+    void pending.then(
+      (value) => finish(value),
+      () => finish(new Map<string, PlayerMarketOdds | null>()),
+    );
+  });
+}
 
 function retryDelayMs(value: string | null, attempt: number): number {
   if (value) {
@@ -488,6 +513,35 @@ export class SportsGameOddsPlayerMarketOddsProvider
     return [usage];
   }
 
+  private async loadFixtureSnapshots(
+    fixtureKey: string,
+    cacheOnly: boolean,
+  ): Promise<Map<OddsMarketKey, MarketSnapshot>> {
+    const storeKey = fixtureStoreKey(fixtureKey);
+    const byMarket = new Map<OddsMarketKey, MarketSnapshot>();
+    const reads = sportsGameOddsMarketKeys.map(async (market) => ({
+      market,
+      snapshot: await settleCacheReadWithin(
+        this.options.store.get(storeKey, market),
+        cacheOnly,
+      ),
+    }));
+    if (!cacheOnly) {
+      const loaded = await Promise.all(reads);
+      for (const { market, snapshot } of loaded) {
+        if (snapshot) byMarket.set(market, snapshot);
+      }
+      return byMarket;
+    }
+    const loaded = await Promise.allSettled(reads);
+    for (const result of loaded) {
+      if (result.status !== 'fulfilled') continue;
+      const { market, snapshot } = result.value;
+      if (snapshot) byMarket.set(market, snapshot);
+    }
+    return byMarket;
+  }
+
   async load(
     players: readonly PlayerStats[],
     loadOptions?: PlayerMarketOddsLoadOptions,
@@ -513,18 +567,31 @@ export class SportsGameOddsPlayerMarketOddsProvider
       fixture: FixtureGroup;
       markets: OddsMarketKey[];
     }> = [];
-    for (const fixture of fixtures) {
-      const storeKey = fixtureStoreKey(fixture.key);
-      const byMarket = new Map<OddsMarketKey, MarketSnapshot>();
-      const loaded = await Promise.all(
-        sportsGameOddsMarketKeys.map(async (market) => ({
-          market,
-          snapshot: await this.options.store.get(storeKey, market),
+    const cacheOnly = loadOptions?.cacheOnly === true;
+    const cachedFixtureSnapshots = new Map<
+      string,
+      Map<OddsMarketKey, MarketSnapshot>
+    >();
+    if (cacheOnly) {
+      const loadedFixtures = await Promise.allSettled(
+        fixtures.map(async (fixture) => ({
+          fixtureKey: fixture.key,
+          snapshots: await this.loadFixtureSnapshots(fixture.key, true),
         })),
       );
-      for (const { market, snapshot } of loaded) {
-        if (snapshot) byMarket.set(market, snapshot);
+      for (const result of loadedFixtures) {
+        if (result.status !== 'fulfilled') continue;
+        cachedFixtureSnapshots.set(
+          result.value.fixtureKey,
+          result.value.snapshots,
+        );
       }
+    }
+    for (const fixture of fixtures) {
+      const byMarket = cacheOnly
+        ? (cachedFixtureSnapshots.get(fixture.key) ??
+          new Map<OddsMarketKey, MarketSnapshot>())
+        : await this.loadFixtureSnapshots(fixture.key, false);
       snapshots.set(fixture.key, byMarket);
       const kickoff = Date.parse(fixture.date);
       const untilKickoff = kickoff - this.now();
@@ -547,7 +614,7 @@ export class SportsGameOddsPlayerMarketOddsProvider
         );
       });
       if (
-        !loadOptions?.cacheOnly &&
+        !cacheOnly &&
         protection.allowExternalRequests &&
         markets.length > 0
       ) {
@@ -825,6 +892,8 @@ export class SupplementingPlayerMarketOddsProvider
       'goal',
       'assist',
     ],
+    private readonly cacheOnlyProviderBudgetMs =
+      defaultCacheOnlyProviderBudgetMs,
   ) {}
 
   supports(player: PlayerStats): boolean {
@@ -871,23 +940,42 @@ export class SupplementingPlayerMarketOddsProvider
       // Cache reads are independent. Running them concurrently keeps a deep
       // provider chain inside the response budget and avoids briefly hiding
       // a quote that is already present in a lower-priority snapshot.
+      const startedAt = Date.now();
+      const deadline =
+        loadOptions.cacheOnlyDeadlineMs ??
+        startedAt + this.cacheOnlyProviderBudgetMs;
+      const returnSlackMs = Math.min(
+        10,
+        Math.max(1, Math.floor(this.cacheOnlyProviderBudgetMs / 4)),
+      );
+      const childDeadline = Math.max(startedAt + 1, deadline - returnSlackMs);
+      const childOptions: PlayerMarketOddsLoadOptions = {
+        ...loadOptions,
+        cacheOnlyDeadlineMs: childDeadline,
+      };
+      const remainingBudgetMs = Math.max(1, deadline - Date.now());
       const fallbackPlayers = eligiblePlayers.filter(fallbackCanSupply);
-      const [primaryResult, fallbackResult] = await Promise.allSettled([
-        primaryPlayers.length > 0
-          ? this.primary.load(primaryPlayers, loadOptions)
-          : Promise.resolve(new Map<string, PlayerMarketOdds | null>()),
-        fallbackPlayers.length > 0
-          ? this.fallback.load(fallbackPlayers, loadOptions)
-          : Promise.resolve(new Map<string, PlayerMarketOdds | null>()),
-      ]);
-      primaryValues =
-        primaryResult.status === 'fulfilled'
-          ? primaryResult.value
-          : new Map<string, PlayerMarketOdds | null>();
-      fallbackValues =
-        fallbackResult.status === 'fulfilled'
-          ? fallbackResult.value
-          : new Map<string, PlayerMarketOdds | null>();
+      const [primaryValuesWithinBudget, fallbackValuesWithinBudget] =
+        await Promise.all([
+          settleMarketOddsWithin(
+            primaryPlayers.length > 0
+              ? this.primary.load(primaryPlayers, childOptions)
+              : Promise.resolve(
+                  new Map<string, PlayerMarketOdds | null>(),
+                ),
+            remainingBudgetMs,
+          ),
+          settleMarketOddsWithin(
+            fallbackPlayers.length > 0
+              ? this.fallback.load(fallbackPlayers, childOptions)
+              : Promise.resolve(
+                  new Map<string, PlayerMarketOdds | null>(),
+                ),
+            remainingBudgetMs,
+          ),
+        ]);
+      primaryValues = primaryValuesWithinBudget;
+      fallbackValues = fallbackValuesWithinBudget;
     } else {
       // Paid network fallbacks remain sequential: only contact the next
       // provider for markets the higher-priority provider could not fill.

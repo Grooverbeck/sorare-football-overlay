@@ -9,11 +9,14 @@ import {
   playerNameMatchScore,
   playerMarketOddsKey,
   supportsFixtureCompetition,
+  type MarketSnapshotStore,
+  type PlayerMarketOddsProvider,
 } from '../providers/market-odds-provider.js';
 import {
   InMemoryProviderQuotaUsageStore,
   quotaUsage,
 } from '../providers/odds-usage.js';
+import { SupplementingPlayerMarketOddsProvider } from '../providers/sports-game-odds-provider.js';
 
 const now = Date.parse('2026-07-24T12:00:00.000Z');
 const kickoff = '2026-07-24T18:00:00.000Z';
@@ -830,6 +833,164 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     const cached = await secondProvider.load([stats], { cacheOnly: true });
     expect(cached.get(playerMarketOddsKey(stats))?.goal).toBeTruthy();
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a cached market when another market key fails to read', async () => {
+    const stats = player();
+    const fixtureKey = marketFixtureKey(stats.nextGame!);
+    if (!fixtureKey) throw new Error('Expected fixture key');
+    const backingStore = new InMemoryMarketSnapshotStore(
+      30 * 60 * 1_000,
+      () => now,
+    );
+    backingStore.set(fixtureKey, {
+      status: 'available',
+      market: 'player_goal_scorer_anytime',
+      eventId: 'fixture-1',
+      capturedAt: new Date(now).toISOString(),
+      players: {
+        'timo werner': { probability: 0.4, bookmakerCount: 1 },
+      },
+    });
+    const store: MarketSnapshotStore = {
+      get: async (key, market) => {
+        if (market === 'player_assists') {
+          throw new Error('isolated assist cache read failure');
+        }
+        return backingStore.get(key, market);
+      },
+      set: (key, snapshot) => backingStore.set(key, snapshot),
+    };
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new TheOddsApiPlayerMarketOddsProvider({
+      apiKey: 'test-key',
+      baseUrl: 'https://api.the-odds-api.com/v4',
+      sportKey: 'soccer_usa_mls',
+      region: 'us',
+      fetchWindowMs: 12 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store,
+      logger,
+      fetchImpl,
+      now: () => now,
+    });
+
+    const cached = await provider.load([stats], { cacheOnly: true });
+
+    expect(cached.get(playerMarketOddsKey(stats))).toMatchObject({
+      goal: { probability: 0.4 },
+      assist: null,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('propagates a normal-path cache read failure before contacting the external API', async () => {
+    const stats = player();
+    const failure = new Error('normal market cache read failure');
+    const store: MarketSnapshotStore = {
+      get: async (_key, market) => {
+        if (market === 'player_assists') throw failure;
+        return undefined;
+      },
+      set: () => undefined,
+    };
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new TheOddsApiPlayerMarketOddsProvider({
+      apiKey: 'test-key',
+      baseUrl: 'https://api.the-odds-api.com/v4',
+      sportKey: 'soccer_usa_mls',
+      region: 'us',
+      fetchWindowMs: 12 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store,
+      logger,
+      fetchImpl,
+      now: () => now,
+    });
+
+    await expect(provider.load([stats])).rejects.toBe(failure);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('keeps a later cached fixture when earlier fixture reads hang', async () => {
+    const earlyPlayers = [0, 1].map((offset) =>
+      player({
+        slug: `early-player-${offset}`,
+        displayName: `Early Player ${offset}`,
+        nextGame: {
+          ...player().nextGame!,
+          date: new Date(Date.parse(kickoff) + offset * 60_000).toISOString(),
+        },
+      }),
+    );
+    const healthyPlayer = player({
+      slug: 'healthy-player',
+      displayName: 'Healthy Player',
+      nextGame: {
+        ...player().nextGame!,
+        date: new Date(Date.parse(kickoff) + 2 * 60_000).toISOString(),
+      },
+    });
+    const earlyKeys = new Set(
+      earlyPlayers.map((stats) => {
+        const key = marketFixtureKey(stats.nextGame!);
+        if (!key) throw new Error('Expected early fixture key');
+        return key;
+      }),
+    );
+    const healthyKey = marketFixtureKey(healthyPlayer.nextGame!);
+    if (!healthyKey) throw new Error('Expected healthy fixture key');
+    const backingStore = new InMemoryMarketSnapshotStore(60_000, () => now);
+    backingStore.set(healthyKey, {
+      status: 'available',
+      market: 'player_goal_scorer_anytime',
+      eventId: 'healthy-fixture',
+      capturedAt: new Date(now).toISOString(),
+      players: {
+        'healthy player': { probability: 0.42, bookmakerCount: 1 },
+      },
+    });
+    const store: MarketSnapshotStore = {
+      get: (key, market) =>
+        earlyKeys.has(key)
+          ? new Promise(() => undefined)
+          : backingStore.get(key, market),
+      set: (key, snapshot) => backingStore.set(key, snapshot),
+    };
+    const provider = new TheOddsApiPlayerMarketOddsProvider({
+      apiKey: 'test-key',
+      baseUrl: 'https://api.the-odds-api.com/v4',
+      sportKey: 'soccer_usa_mls',
+      region: 'us',
+      fetchWindowMs: 12 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store,
+      logger,
+      fetchImpl: vi.fn<typeof fetch>(),
+      now: () => now,
+    });
+    const emptyFallback: PlayerMarketOddsProvider = {
+      load: async () => new Map(),
+      supportsMarket: () => false,
+    };
+    const bounded = new SupplementingPlayerMarketOddsProvider(
+      provider,
+      emptyFallback,
+      ['goal'],
+      180,
+    );
+
+    const cached = await bounded.load(
+      [...earlyPlayers, healthyPlayer],
+      { cacheOnly: true },
+    );
+
+    expect(cached.get(playerMarketOddsKey(healthyPlayer))).toMatchObject({
+      goal: { probability: 0.42 },
+    });
   });
 
   it('collects progressive missing players before one supplement request', async () => {

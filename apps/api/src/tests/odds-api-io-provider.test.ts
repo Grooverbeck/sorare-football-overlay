@@ -1,13 +1,22 @@
 import type { PlayerStats } from '@sorare-overlay/shared';
 import { describe, expect, it, vi } from 'vitest';
 import type { AppLogger } from '../logger.js';
-import { InMemoryMarketSnapshotStore, playerMarketOddsKey } from '../providers/market-odds-provider.js';
-import { OddsApiIoPlayerMarketOddsProvider } from '../providers/odds-api-io-provider.js';
+import {
+  InMemoryMarketSnapshotStore,
+  playerMarketOddsKey,
+  type MarketSnapshotStore,
+  type PlayerMarketOddsProvider,
+} from '../providers/market-odds-provider.js';
+import {
+  OddsApiIoPlayerMarketOddsProvider,
+  oddsApiIoFixtureStoreKey,
+} from '../providers/odds-api-io-provider.js';
 import {
   InMemoryProviderQuotaUsageStore,
   quotaUsage,
 } from '../providers/odds-usage.js';
 import type { OddsApiIoPlayerRoute } from '../providers/competition-odds-routes.js';
+import { SupplementingPlayerMarketOddsProvider } from '../providers/sports-game-odds-provider.js';
 
 const now = Date.parse('2026-07-30T12:00:00.000Z');
 const kickoff = '2026-08-01T15:00:00.000Z';
@@ -314,6 +323,79 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
       1 / 2.3,
     );
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a later cached fixture when earlier fixture reads hang', async () => {
+    const earlyPlayers = [0, 1].map((offset) =>
+      player({
+        slug: `early-player-${offset}`,
+        displayName: `Early Player ${offset}`,
+        nextGame: {
+          ...player().nextGame!,
+          date: new Date(Date.parse(kickoff) + offset * 60_000).toISOString(),
+        },
+      }),
+    );
+    const healthyPlayer = player({
+      slug: 'healthy-player',
+      displayName: 'Healthy Player',
+      nextGame: {
+        ...player().nextGame!,
+        date: new Date(Date.parse(kickoff) + 2 * 60_000).toISOString(),
+      },
+    });
+    const earlyKeys = new Set(
+      earlyPlayers.map((stats) => {
+        const key = oddsApiIoFixtureStoreKey(stats.nextGame!);
+        if (!key) throw new Error('Expected early fixture key');
+        return key;
+      }),
+    );
+    const healthyKey = oddsApiIoFixtureStoreKey(healthyPlayer.nextGame!);
+    if (!healthyKey) throw new Error('Expected healthy fixture key');
+    const backingStore = new InMemoryMarketSnapshotStore(60_000, () => now);
+    backingStore.set(healthyKey, {
+      status: 'available',
+      market: 'player_goal_scorer_anytime',
+      eventId: 'healthy-fixture',
+      capturedAt: new Date(now).toISOString(),
+      players: {
+        'healthy player': { probability: 0.39, bookmakerCount: 1 },
+      },
+    });
+    const store: MarketSnapshotStore = {
+      get: (key, market) =>
+        earlyKeys.has(key)
+          ? new Promise(() => undefined)
+          : backingStore.get(key, market),
+      set: (key, snapshot) => backingStore.set(key, snapshot),
+    };
+    const provider = createProvider(
+      vi.fn<typeof fetch>(),
+      undefined,
+      undefined,
+      0,
+      store,
+    ).provider;
+    const emptyFallback: PlayerMarketOddsProvider = {
+      load: async () => new Map(),
+      supportsMarket: () => false,
+    };
+    const bounded = new SupplementingPlayerMarketOddsProvider(
+      provider,
+      emptyFallback,
+      ['goal'],
+      180,
+    );
+
+    const cached = await bounded.load(
+      [...earlyPlayers, healthyPlayer],
+      { cacheOnly: true },
+    );
+
+    expect(cached.get(playerMarketOddsKey(healthyPlayer))).toMatchObject({
+      goal: { probability: 0.39 },
+    });
   });
 
   it('does not spend requests on goalkeepers or unsupported competitions', async () => {

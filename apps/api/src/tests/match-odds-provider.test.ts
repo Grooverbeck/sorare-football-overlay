@@ -4,6 +4,7 @@ import type { AppLogger } from '../logger.js';
 import {
   InMemoryMatchOddsSnapshotStore,
   TheOddsApiFixtureMatchOddsProvider,
+  type MatchOddsSnapshotStore,
 } from '../providers/match-odds-provider.js';
 import {
   CONTENDER_THE_ODDS_API_ROUTES,
@@ -52,7 +53,7 @@ function player(
 
 function provider(
   fetchImpl: typeof fetch,
-  store = new InMemoryMatchOddsSnapshotStore(() => now),
+  store: MatchOddsSnapshotStore = new InMemoryMatchOddsSnapshotStore(() => now),
 ) {
   return new TheOddsApiFixtureMatchOddsProvider({
     apiKey: 'test-key',
@@ -169,6 +170,70 @@ describe('TheOddsApiFixtureMatchOddsProvider', () => {
       draw: 0.25,
       loss: 0.5,
     });
+  });
+
+  it('keeps healthy fixture cache entries when another fixture read fails', async () => {
+    const firstKickoff = new Date(now + 48 * 60 * 60 * 1_000).toISOString();
+    const secondKickoff = new Date(now + 60 * 60 * 60 * 1_000).toISOString();
+    const brokenPlayer = player(firstKickoff);
+    const healthyPlayer = { ...player(secondKickoff), slug: 'healthy-player' };
+    const brokenKey = marketFixtureKey(brokenPlayer.nextGame!);
+    const healthyKey = marketFixtureKey(healthyPlayer.nextGame!);
+    if (!brokenKey || !healthyKey) throw new Error('Expected fixture keys');
+    const backingStore = new InMemoryMatchOddsSnapshotStore(() => now);
+    const snapshot = {
+      status: 'available' as const,
+      eventId: 'event-1',
+      capturedAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 72 * 60 * 60 * 1_000).toISOString(),
+      home: 0.5,
+      draw: 0.25,
+      away: 0.25,
+      bookmakerCount: 1,
+    };
+    backingStore.set(brokenKey, snapshot);
+    backingStore.set(healthyKey, snapshot);
+    const store: MatchOddsSnapshotStore = {
+      get: async (key) => {
+        if (key === brokenKey) {
+          throw new Error('isolated fixture cache read failure');
+        }
+        return backingStore.get(key);
+      },
+      set: (key, value) => backingStore.set(key, value),
+    };
+    const fetchImpl = vi.fn<typeof fetch>();
+
+    const cached = await provider(fetchImpl, store).load(
+      [brokenPlayer, healthyPlayer],
+      { cacheOnly: true },
+    );
+
+    expect(cached.get(playerMarketOddsKey(brokenPlayer))).toBeNull();
+    expect(cached.get(playerMarketOddsKey(healthyPlayer))).toEqual({
+      win: 0.25,
+      draw: 0.25,
+      loss: 0.5,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('propagates a normal-path fixture cache read failure before contacting the external API', async () => {
+    const kickoff = new Date(now + 48 * 60 * 60 * 1_000).toISOString();
+    const testPlayer = player(kickoff);
+    const failure = new Error('normal match cache read failure');
+    const store: MatchOddsSnapshotStore = {
+      get: async () => {
+        throw failure;
+      },
+      set: () => undefined,
+    };
+    const fetchImpl = vi.fn<typeof fetch>();
+
+    await expect(provider(fetchImpl, store).load([testPlayer])).rejects.toBe(
+      failure,
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('deduplicates a concurrent H-D-A refresh across provider instances sharing a store', async () => {

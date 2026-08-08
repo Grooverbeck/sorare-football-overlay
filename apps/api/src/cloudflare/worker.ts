@@ -79,6 +79,8 @@ function createWorkerServices(
   const cacheStore = new D1JsonKeyValueStore(
     env.CACHE_DB,
     env.STATS_CACHE,
+    undefined,
+    logger,
   );
   const mlsAaBenchmarkStore = new CloudflareMlsAaBenchmarkStore(
     cacheStore,

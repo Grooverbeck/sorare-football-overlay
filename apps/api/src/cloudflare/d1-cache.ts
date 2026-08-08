@@ -1,4 +1,5 @@
 import type { JsonKeyValueStore } from './cache.js';
+import type { AppLogger } from '../logger.js';
 
 interface D1CacheRow {
   value: string;
@@ -20,18 +21,43 @@ export class D1JsonKeyValueStore implements JsonKeyValueStore {
     private readonly fallback?: JsonKeyValueStore,
     private readonly nowSeconds: () => number = () =>
       Math.floor(Date.now() / 1_000),
+    private readonly logger?: Pick<AppLogger, 'warn' | 'error'>,
   ) {}
 
   async get<T = unknown>(key: string, type: 'json'): Promise<T | null> {
-    const row = await this.database
-      .prepare(
-        `SELECT value
-         FROM cache_entries
-         WHERE cache_key = ?1
-           AND (expires_at IS NULL OR expires_at > ?2)`,
-      )
-      .bind(key, this.nowSeconds())
-      .first<D1CacheRow>();
+    let row: D1CacheRow | null;
+    try {
+      row = await this.database
+        .prepare(
+          `SELECT value
+           FROM cache_entries
+           WHERE cache_key = ?1
+             AND (expires_at IS NULL OR expires_at > ?2)`,
+        )
+        .bind(key, this.nowSeconds())
+        .first<D1CacheRow>();
+    } catch (d1Error) {
+      if (!this.fallback) {
+        this.logger?.error(
+          { cacheKey: key, d1Error },
+          'D1 cache read failed and no fallback is configured',
+        );
+        throw d1Error;
+      }
+      this.logger?.warn(
+        { cacheKey: key, error: d1Error, fallback: 'kv' },
+        'D1 cache read failed; attempting KV fallback',
+      );
+      try {
+        return await this.fallback.get<T>(key, type);
+      } catch (fallbackError) {
+        this.logger?.error(
+          { cacheKey: key, d1Error, fallbackError },
+          'D1 and KV cache reads failed',
+        );
+        throw fallbackError;
+      }
+    }
 
     if (row) {
       try {
