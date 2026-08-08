@@ -54,6 +54,129 @@ class FillMissingCache implements Cache<PlayerStats> {
   }
 }
 
+const fixtureRefreshPlayerSlug = 'fixture-refresh-player';
+const fixtureRefreshPlayerKey = `${fixtureRefreshPlayerSlug}:Midfielder:no-low`;
+const heldFixture: NonNullable<PlayerFixtureStats> = {
+  date: '2026-08-08T18:00:00.000Z',
+  homeTeamName: 'Held Home FC',
+  awayTeamName: 'Held Away FC',
+  playerTeamName: 'Held Home FC',
+  opponentTeamName: 'Held Away FC',
+  cleanSheetProbability: null,
+  matchProbabilities: { win: null, draw: null, loss: null },
+};
+const followingFixture: NonNullable<PlayerFixtureStats> = {
+  date: '2026-08-15T18:00:00.000Z',
+  homeTeamName: 'Held Home FC',
+  awayTeamName: 'Following Away FC',
+  playerTeamName: 'Held Home FC',
+  opponentTeamName: 'Following Away FC',
+  cleanSheetProbability: null,
+  matchProbabilities: { win: null, draw: null, loss: null },
+};
+
+interface FixtureRefreshScenarioOptions {
+  fetchNextGames: PlayerStatsDataSource['fetchNextGames'];
+  refreshFixture?: (
+    key: string,
+    value: PlayerFixtureStats,
+  ) => PlayerFixtureStats | Promise<PlayerFixtureStats>;
+}
+
+async function runFixtureRefreshScenario(
+  options: FixtureRefreshScenarioOptions,
+): Promise<{
+  marketRefreshes: PlayerStats[][];
+  matchRefreshes: PlayerStats[][];
+  refreshFixture: ReturnType<typeof vi.fn>;
+}> {
+  let cachedFixture: PlayerFixtureStats = heldFixture;
+  const refreshFixture = vi.fn(
+    async (key: string, value: PlayerFixtureStats) => {
+      const resolved = options.refreshFixture
+        ? await options.refreshFixture(key, value)
+        : value;
+      cachedFixture = resolved;
+      return resolved;
+    },
+  );
+  const fixtureCache: Cache<PlayerFixtureStats> & {
+    claimRefresh(value: PlayerFixtureStats): Promise<boolean>;
+    refresh(
+      key: string,
+      value: PlayerFixtureStats,
+    ): Promise<PlayerFixtureStats>;
+  } = {
+    get: () => cachedFixture,
+    set: (_key, value) => {
+      cachedFixture = value;
+    },
+    fillMissing: (_key, value) => cachedFixture ?? value,
+    claimRefresh: async () => true,
+    refresh: refreshFixture,
+  };
+  const formCache = new TtlCache<PlayerFormStats>(60_000);
+  formCache.set(fixtureRefreshPlayerKey, {
+    slug: fixtureRefreshPlayerSlug,
+    displayName: 'Fixture Refresh Player',
+    position: 'Midfielder',
+    aaL10: { value: 13, sampleSize: 10 },
+    cleanSheetL10: { value: 0.3, sampleSize: 10 },
+    goalL10: { value: 0.2, sampleSize: 10 },
+    excludedLowCoverage: 0,
+  });
+  const cache = new SplitPlayerStatsCache(formCache, fixtureCache);
+  const mock = new MockDataSource();
+  const source: PlayerStatsDataSource = {
+    source: 'sorare',
+    resolvePlayerNames: mock.resolvePlayerNames.bind(mock),
+    fetchPlayers: mock.fetchPlayers.bind(mock),
+    fetchNextGames: options.fetchNextGames,
+  };
+  const marketRefreshes: PlayerStats[][] = [];
+  const marketProvider: PlayerMarketOddsProvider = {
+    supports: () => true,
+    supportsMarket: () => true,
+    load: async (players, loadOptions) => {
+      if (!loadOptions?.cacheOnly) marketRefreshes.push([...players]);
+      return new Map(
+        players.map((player) => [playerMarketOddsKey(player), null]),
+      );
+    },
+  };
+  const matchRefreshes: PlayerStats[][] = [];
+  const matchProvider: FixtureMatchOddsProvider = {
+    supports: () => true,
+    load: async (players, loadOptions) => {
+      if (!loadOptions?.cacheOnly) matchRefreshes.push([...players]);
+      return new Map(
+        players.map((player) => [playerMarketOddsKey(player), null]),
+      );
+    },
+  };
+  const backgroundTasks: Promise<void>[] = [];
+  const service = new StatsService(
+    source,
+    new HistoricalGoalscorerProvider(),
+    cache,
+    true,
+    marketProvider,
+    (task) => backgroundTasks.push(task),
+    DEFAULT_NAME_RESOLUTION_BUDGET_MS,
+    matchProvider,
+  );
+
+  await service.getPlayerStats(
+    PlayerStatsRequestSchema.parse({
+      slugs: [fixtureRefreshPlayerSlug],
+      positions: { [fixtureRefreshPlayerSlug]: 'Midfielder' },
+    }),
+  );
+  await Promise.all(backgroundTasks);
+
+  return { marketRefreshes, matchRefreshes, refreshFixture };
+}
+
 describe('StatsService cache writes', () => {
   it('returns cached-name players while a cold name is resolved and warmed in the background', async () => {
     let finishColdResolution:
@@ -1036,6 +1159,98 @@ describe('StatsService cache writes', () => {
         matchProbabilities: { win: 0.51, draw: 0.27, loss: 0.22 },
       },
     });
+  });
+
+  it.each([
+    {
+      label: 'throws',
+      fetchNextGames: async () => {
+        throw new Error('Temporary Sorare fixture outage');
+      },
+    },
+    {
+      label: 'returns no player row',
+      fetchNextGames: async () => [],
+    },
+  ])(
+    'refreshes both bookmaker paths for the held fixture when Sorare $label',
+    async ({ fetchNextGames }) => {
+      const result = await runFixtureRefreshScenario({ fetchNextGames });
+
+      expect(result.refreshFixture).not.toHaveBeenCalled();
+      expect(result.marketRefreshes).toHaveLength(1);
+      expect(result.matchRefreshes).toHaveLength(1);
+      expect(result.marketRefreshes[0]?.[0]?.nextGame).toEqual(heldFixture);
+      expect(result.matchRefreshes[0]?.[0]?.nextGame).toEqual(heldFixture);
+    },
+  );
+
+  it.each([
+    {
+      label: 'same fixture identity',
+      fetchedFixture: {
+        ...heldFixture,
+        cleanSheetProbability: 0.4,
+      },
+    },
+    {
+      label: 'following fixture held until rollover',
+      fetchedFixture: followingFixture,
+    },
+  ])(
+    'intentionally refreshes the held fixture when the cache keeps it for $label',
+    async ({ fetchedFixture }) => {
+      const result = await runFixtureRefreshScenario({
+        fetchNextGames: async () => [
+          { slug: fixtureRefreshPlayerSlug, nextGame: fetchedFixture },
+        ],
+        refreshFixture: async () => heldFixture,
+      });
+
+      expect(result.refreshFixture).toHaveBeenCalledOnce();
+      expect(result.marketRefreshes).toHaveLength(1);
+      expect(result.matchRefreshes).toHaveLength(1);
+      expect(result.marketRefreshes[0]?.[0]?.nextGame).toEqual(heldFixture);
+      expect(result.matchRefreshes[0]?.[0]?.nextGame).toEqual(heldFixture);
+    },
+  );
+
+  it('refreshes both bookmaker paths exactly once with an accepted new fixture', async () => {
+    const result = await runFixtureRefreshScenario({
+      fetchNextGames: async () => [
+        { slug: fixtureRefreshPlayerSlug, nextGame: followingFixture },
+      ],
+      refreshFixture: async (_key, value) => value,
+    });
+
+    expect(result.refreshFixture).toHaveBeenCalledOnce();
+    expect(result.marketRefreshes).toHaveLength(1);
+    expect(result.matchRefreshes).toHaveLength(1);
+    expect(result.marketRefreshes[0]).toHaveLength(1);
+    expect(result.matchRefreshes[0]).toHaveLength(1);
+    expect(result.marketRefreshes[0]?.[0]?.nextGame).toEqual(followingFixture);
+    expect(result.matchRefreshes[0]?.[0]?.nextGame).toEqual(followingFixture);
+    expect(result.marketRefreshes.flat()).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ nextGame: heldFixture })]),
+    );
+    expect(result.matchRefreshes.flat()).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ nextGame: heldFixture })]),
+    );
+  });
+
+  it('skips bookmaker refreshes when persisting a distinct new fixture fails', async () => {
+    const result = await runFixtureRefreshScenario({
+      fetchNextGames: async () => [
+        { slug: fixtureRefreshPlayerSlug, nextGame: followingFixture },
+      ],
+      refreshFixture: async () => {
+        throw new Error('Fixture write failed');
+      },
+    });
+
+    expect(result.refreshFixture).toHaveBeenCalledOnce();
+    expect(result.marketRefreshes).toEqual([]);
+    expect(result.matchRefreshes).toEqual([]);
   });
 
   it('hydrates a missing fixture in the follow-up response without relying on the cache write', async () => {

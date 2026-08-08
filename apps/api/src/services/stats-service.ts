@@ -31,6 +31,7 @@ import type {
 } from './data-source.js';
 import {
   playerTeamFixtureIdentity,
+  sameFixtureIdentity,
 } from './fixture-identity.js';
 
 export interface StatsServiceResult {
@@ -851,6 +852,17 @@ export class StatsService {
                 : await splitCache.refreshFixture(key, nextGame);
             return { ...form, nextGame: resolvedNextGame };
           } catch {
+            const fetchedDifferentFixture =
+              existingFixture !== undefined &&
+              existingFixture !== null &&
+              nextGame !== null &&
+              !sameFixtureIdentity(existingFixture, nextGame);
+            // Once Sorare has identified a different fixture, a failed cache
+            // write must not send the previous fixture to bookmaker providers.
+            // A cache that intentionally holds the current fixture until the
+            // following morning returns that fixture successfully above, so
+            // the established rollover policy remains unchanged.
+            if (fetchedDifferentFixture) return null;
             return existingFixture === undefined
               ? null
               : { ...form, nextGame: existingFixture };
