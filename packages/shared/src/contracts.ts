@@ -151,6 +151,15 @@ export const PlayerStatsSchema = z.object({
       // They remain optional while older fixture:v1 entries migrate lazily.
       playerTeamName: z.string().trim().min(1).nullable().optional(),
       opponentTeamName: z.string().trim().min(1).nullable().optional(),
+      // Canonical identity of the player's side in this fixture. This is
+      // server-derived from Sorare team ids and never trusted from the client.
+      playerTeamSlug: z
+        .string()
+        .trim()
+        .min(1)
+        .max(180)
+        .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i)
+        .optional(),
       cleanSheetProbability: z.number().min(0).max(1).nullable(),
       matchProbabilities: MatchProbabilitiesSchema.nullable(),
       // Added after the split player/fixture caches. Optional lets old KV

@@ -551,7 +551,15 @@ export class SorareDataSource implements PlayerStatsDataSource {
       >(PLAYER_NEXT_GAMES_QUERY, variables);
       return data.players.flatMap((player): SourcePlayerFixture[] => {
         if (player.__typename !== 'Player') return [];
-        return [{ slug: player.slug, nextGame: this.nextGame(player) }];
+        return [
+          {
+            slug: player.slug,
+            ...(player.activeClub?.slug
+              ? { playerTeamSlug: player.activeClub.slug }
+              : {}),
+            nextGame: this.nextGame(player),
+          },
+        ];
       });
     });
     return (await Promise.all(calls)).flat();
@@ -1012,6 +1020,8 @@ export class SorareDataSource implements PlayerStatsDataSource {
     const clubId = player.activeClub?.id;
     const home = clubId !== undefined && game.homeTeam?.id === clubId;
     const away = clubId !== undefined && game.awayTeam?.id === clubId;
+    const playerTeamSlug =
+      home || away ? player.activeClub?.slug : undefined;
     const stats = home ? game.homeStats : away ? game.awayStats : null;
     const footballStats = stats?.__typename === 'FootballTeamGameStats' ? stats : null;
     return {
@@ -1031,6 +1041,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
         : away
           ? game.homeTeam?.shortName ?? null
           : null,
+      ...(playerTeamSlug ? { playerTeamSlug } : {}),
       cleanSheetProbability: impliedProbabilityFromDecimalOdds(footballStats?.cleanSheetOdds),
       matchProbabilities: footballStats
         ? {

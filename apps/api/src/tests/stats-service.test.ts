@@ -17,6 +17,7 @@ import { MockDataSource } from '../mock/mock-data-source.js';
 import { HistoricalGoalscorerProvider } from '../providers/goalscorer-provider.js';
 import {
   MockPlayerMarketOddsProvider,
+  UnavailablePlayerMarketOddsProvider,
   playerMarketOddsKey,
   type PlayerMarketOddsProvider,
 } from '../providers/market-odds-provider.js';
@@ -51,6 +52,24 @@ class FillMissingCache implements Cache<PlayerStats> {
   fillMissing(_key: string, value: PlayerStats): PlayerStats {
     this.fillMissingCalls += 1;
     return { ...value, displayName: `${value.displayName} (cached form)` };
+  }
+}
+
+class TeamAwareFixtureCache extends TtlCache<PlayerFixtureStats> {
+  constructor(
+    private readonly fixturesByTeam: ReadonlyMap<
+      string,
+      NonNullable<PlayerFixtureStats>
+    >,
+  ) {
+    super(60_000);
+  }
+
+  async getTeamFixture(
+    _playerCacheKey: string,
+    teamSlug: string,
+  ): Promise<PlayerFixtureStats | undefined> {
+    return this.fixturesByTeam.get(teamSlug);
   }
 }
 
@@ -1378,6 +1397,234 @@ describe('StatsService cache writes', () => {
         cleanSheetProbability: 0.19,
       });
     }
+  });
+
+  it('fills a missing player fixture from a requested teammate without copying player props', async () => {
+    const cache = new SplitPlayerStatsCache(
+      new TtlCache<PlayerFormStats>(60_000),
+      new TtlCache<PlayerFixtureStats>(60_000),
+    );
+    const sharedFixture: NonNullable<PlayerFixtureStats> = {
+      date: '2026-08-12T02:30:00.000Z',
+      homeTeamName: 'Seattle Sounders FC',
+      awayTeamName: 'Queretaro FC',
+      playerTeamName: 'Seattle Sounders FC',
+      opponentTeamName: 'Queretaro FC',
+      cleanSheetProbability: 0.32,
+      matchProbabilities: { win: 0.51, draw: 0.24, loss: 0.25 },
+    };
+    const form = (slug: string): PlayerFormStats => ({
+      slug,
+      displayName: slug,
+      position: 'Forward',
+      aaL10: { value: 8, sampleSize: 10 },
+      cleanSheetL10: { value: 0.2, sampleSize: 10 },
+      goalL10: { value: 0.3, sampleSize: 10 },
+      excludedLowCoverage: 0,
+    });
+    await cache.set('known-teammate:Forward:no-low', {
+      ...form('known-teammate'),
+      nextGame: sharedFixture,
+    });
+    await cache.setForm(
+      'missing-fixture-teammate:Forward:no-low',
+      form('missing-fixture-teammate'),
+    );
+    const source = new MockDataSource();
+    vi.spyOn(source, 'resolvePlayerNames').mockResolvedValue([
+      {
+        slug: 'known-teammate',
+        position: 'Forward',
+        resolvedFromName: 'Known Teammate',
+        teamSlug: 'seattle-sounders-renton-washington',
+      },
+      {
+        slug: 'missing-fixture-teammate',
+        position: 'Forward',
+        resolvedFromName: 'Missing Fixture Teammate',
+        teamSlug: 'seattle-sounders-renton-washington',
+      },
+    ]);
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      cache,
+      true,
+      new UnavailablePlayerMarketOddsProvider(),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        playerNames: ['Known Teammate', 'Missing Fixture Teammate'],
+        positions: {
+          'Known Teammate': 'Forward',
+          'Missing Fixture Teammate': 'Forward',
+        },
+        playerTeams: {
+          'Known Teammate': 'seattle-sounders-renton-washington',
+          'Missing Fixture Teammate':
+            'seattle-sounders-renton-washington',
+        },
+      }),
+    );
+
+    const missing = result.data.find(
+      (player) => player.slug === 'missing-fixture-teammate',
+    );
+    expect(missing?.nextGame).toMatchObject({
+      date: sharedFixture.date,
+      playerTeamName: 'Seattle Sounders FC',
+      cleanSheetProbability: 0.32,
+      matchProbabilities: { win: 0.51, draw: 0.24, loss: 0.25 },
+      marketOdds: null,
+    });
+  });
+
+  it('serves an isolated cached player from the persistent team fixture without refreshing Sorare', async () => {
+    const teamFixture: NonNullable<PlayerFixtureStats> = {
+      date: '2026-08-12T02:30:00.000Z',
+      homeTeamName: 'Seattle Sounders FC',
+      awayTeamName: 'Queretaro FC',
+      playerTeamName: 'Seattle Sounders FC',
+      opponentTeamName: 'Queretaro FC',
+      playerTeamSlug: 'seattle-sounders-renton-washington',
+      cleanSheetProbability: 0.32,
+      matchProbabilities: { win: 0.51, draw: 0.24, loss: 0.25 },
+    };
+    const fixtureCache = new TeamAwareFixtureCache(
+      new Map([[teamFixture.playerTeamSlug!, teamFixture]]),
+    );
+    const cache = new SplitPlayerStatsCache(
+      new TtlCache<PlayerFormStats>(60_000),
+      fixtureCache,
+    );
+    const key = 'isolated-team-player:Forward:no-low';
+    await cache.setForm(key, {
+      slug: 'isolated-team-player',
+      displayName: 'Isolated Team Player',
+      position: 'Forward',
+      aaL10: { value: 9, sampleSize: 10 },
+      cleanSheetL10: { value: 0.2, sampleSize: 10 },
+      goalL10: { value: 0.3, sampleSize: 10 },
+      excludedLowCoverage: 0,
+    });
+    fixtureCache.set('isolated-team-player:auto-v3:no-low', null);
+    const source = new MockDataSource();
+    const fetchPlayers = vi.spyOn(source, 'fetchPlayers');
+    const fetchNextGames = vi.spyOn(source, 'fetchNextGames');
+    const backgroundTasks: Promise<void>[] = [];
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      cache,
+      true,
+      new UnavailablePlayerMarketOddsProvider(),
+      (task) => backgroundTasks.push(task),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['isolated-team-player'],
+        positions: { 'isolated-team-player': 'Forward' },
+        playerTeams: {
+          'isolated-team-player': 'seattle-sounders-renton-washington',
+        },
+      }),
+    );
+
+    expect(result.data[0]?.nextGame).toMatchObject({
+      playerTeamSlug: 'seattle-sounders-renton-washington',
+      cleanSheetProbability: 0.32,
+      matchProbabilities: { win: 0.51, draw: 0.24, loss: 0.25 },
+      marketOdds: null,
+    });
+    expect(result.data[0]?.pendingRefreshes).toBeUndefined();
+    expect(fetchPlayers).not.toHaveBeenCalled();
+    expect(fetchNextGames).not.toHaveBeenCalled();
+    expect(backgroundTasks).toHaveLength(0);
+    expect(
+      fixtureCache.get('isolated-team-player:auto-v3:no-low'),
+    ).toBeNull();
+  });
+
+  it('never harmonizes fixtures with different Sorare-confirmed team slugs', async () => {
+    const cache = new SplitPlayerStatsCache(
+      new TtlCache<PlayerFormStats>(60_000),
+      new TtlCache<PlayerFixtureStats>(60_000),
+    );
+    const form = (slug: string): PlayerFormStats => ({
+      slug,
+      displayName: slug,
+      position: 'Defender',
+      aaL10: { value: 10, sampleSize: 10 },
+      cleanSheetL10: { value: 0.3, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      excludedLowCoverage: 0,
+    });
+    await cache.set('team-a-player:Defender:no-low', {
+      ...form('team-a-player'),
+      nextGame: {
+        date: '2026-08-12T18:00:00.000Z',
+        homeTeamName: 'Shared Display Name',
+        awayTeamName: 'Opponent A',
+        playerTeamName: 'Shared Display Name',
+        opponentTeamName: 'Opponent A',
+        playerTeamSlug: 'canonical-team-a',
+        cleanSheetProbability: 0.41,
+        matchProbabilities: { win: 0.55, draw: 0.25, loss: 0.2 },
+      },
+    });
+    await cache.set('team-b-player:Defender:no-low', {
+      ...form('team-b-player'),
+      nextGame: {
+        date: '2026-08-13T18:00:00.000Z',
+        homeTeamName: 'Shared Display Name',
+        awayTeamName: 'Opponent B',
+        playerTeamName: 'Shared Display Name',
+        opponentTeamName: 'Opponent B',
+        playerTeamSlug: 'canonical-team-b',
+        cleanSheetProbability: 0.22,
+        matchProbabilities: { win: 0.33, draw: 0.27, loss: 0.4 },
+      },
+    });
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      cache,
+      true,
+      new UnavailablePlayerMarketOddsProvider(),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['team-a-player', 'team-b-player'],
+        positions: {
+          'team-a-player': 'Defender',
+          'team-b-player': 'Defender',
+        },
+        // Deliberately misleading client hints must not override canonical
+        // identities already confirmed by Sorare.
+        playerTeams: {
+          'team-a-player': 'same-client-hint',
+          'team-b-player': 'same-client-hint',
+        },
+      }),
+    );
+
+    expect(
+      result.data.find(({ slug }) => slug === 'team-a-player')?.nextGame,
+    ).toMatchObject({
+      playerTeamSlug: 'canonical-team-a',
+      opponentTeamName: 'Opponent A',
+      cleanSheetProbability: 0.41,
+    });
+    expect(
+      result.data.find(({ slug }) => slug === 'team-b-player')?.nextGame,
+    ).toMatchObject({
+      playerTeamSlug: 'canonical-team-b',
+      opponentTeamName: 'Opponent B',
+      cleanSheetProbability: 0.22,
+    });
   });
 
   it('never sends goalkeepers to a market-odds provider', async () => {

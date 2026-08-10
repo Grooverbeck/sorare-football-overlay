@@ -12,6 +12,7 @@ export const PLAYER_STATS_BATCH_QUERY = gql`
         anyPositions
         activeClub {
           id
+          slug
         }
         nextGame {
           __typename
@@ -82,6 +83,7 @@ export const PLAYER_NEXT_GAMES_QUERY = gql`
         slug
         activeClub {
           id
+          slug
         }
         nextGame {
           __typename

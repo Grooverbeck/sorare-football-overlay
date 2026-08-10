@@ -62,6 +62,10 @@ export interface SplitPlayerStatsCacheAccess extends Cache<PlayerStats> {
   claimFormHistoryRefresh(key: string): boolean | Promise<boolean>;
   releaseFormHistoryRefresh(key: string): void | Promise<void>;
   claimFixtureRefresh(value: PlayerFixtureStats): boolean | Promise<boolean>;
+  getTeamFixture(
+    playerCacheKey: string,
+    teamSlug: string,
+  ): Promise<PlayerFixtureStats | undefined>;
   setFixture(
     key: string,
     value: PlayerFixtureStats,
@@ -82,6 +86,7 @@ export function supportsSplitPlayerStatsCache(
     typeof candidate.claimFormHistoryRefresh === 'function' &&
     typeof candidate.releaseFormHistoryRefresh === 'function' &&
     typeof candidate.claimFixtureRefresh === 'function' &&
+    typeof candidate.getTeamFixture === 'function' &&
     typeof candidate.setFixture === 'function' &&
     typeof candidate.refreshFixture === 'function'
   );
@@ -234,13 +239,40 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
     value: PlayerFixtureStats,
   ): Promise<PlayerFixtureStats> {
     const existing = await this.getFixture(key);
-    if (existing !== undefined) return existing;
     const fixtureKey = playerFixtureCacheKey(key);
+    if (existing !== undefined) {
+      // A negative fixture lookup is not authoritative forever. Once Sorare
+      // or the canonical team cache supplies a fixture, replace the cached
+      // null instead of hiding that fixture until the negative TTL expires.
+      if (existing === null && value !== null) {
+        await this.fixtureCache.set(fixtureKey, value);
+        return (await this.fixtureCache.get(fixtureKey)) ?? value;
+      }
+      return existing;
+    }
     if (this.fixtureCache.fillMissing) {
       return this.fixtureCache.fillMissing(fixtureKey, value);
     }
     await this.fixtureCache.set(fixtureKey, value);
     return value;
+  }
+
+  async getTeamFixture(
+    playerCacheKey: string,
+    teamSlug: string,
+  ): Promise<PlayerFixtureStats | undefined> {
+    const teamAware = this.fixtureCache as Cache<PlayerFixtureStats> & {
+      getTeamFixture?: (
+        cacheKey: string,
+        canonicalTeamSlug: string,
+      ) => Promise<PlayerFixtureStats | undefined>;
+    };
+    return teamAware.getTeamFixture
+      ? teamAware.getTeamFixture(
+          playerFixtureCacheKey(playerCacheKey),
+          teamSlug,
+        )
+      : undefined;
   }
 
   async refreshFixture(

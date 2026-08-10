@@ -481,18 +481,19 @@ describe('Cloudflare Worker', () => {
     );
   });
 
-  it('keeps one held fixture across different cached players on the same team', async () => {
+  it('keeps one held fixture across players using the canonical team slug', async () => {
     const nowMs = Date.parse('2026-07-28T22:30:00.000Z');
     const store = new D1JsonKeyValueStore(
       env.CACHE_DB,
       env.STATS_CACHE,
       () => Math.floor(nowMs / 1_000),
     );
-    const teamKey = 'player-team-fixture:v1:shared%20team';
+    const teamKey = 'player-team-fixture:v2:shared-team';
     const heldKey = 'held-team-player:Defender:no-low';
     const coldKey = 'cold-team-player:Defender:no-low';
     const storedKeys = [
       teamKey,
+      'player-team-fixture:v1:shared%20team',
       `player-form:v2:${heldKey}`,
       `player-form:v2:${coldKey}`,
       'player-fixture:v1:held-team-player:auto-v3:no-low',
@@ -534,6 +535,7 @@ describe('Cloudflare Worker', () => {
       awayTeamName: 'Shared Team',
       playerTeamName: 'Shared Team',
       opponentTeamName: 'Previous Opponent',
+      playerTeamSlug: 'shared-team',
       cleanSheetProbability: 0.19,
       matchProbabilities: { win: 0.26, draw: 0.22, loss: 0.52 },
       marketOdds: {
@@ -549,6 +551,7 @@ describe('Cloudflare Worker', () => {
       awayTeamName: 'Shared Team',
       playerTeamName: 'Shared Team',
       opponentTeamName: 'Next Opponent',
+      playerTeamSlug: 'shared-team',
       cleanSheetProbability: 0.35,
       matchProbabilities: { win: 0.49, draw: 0.26, loss: 0.25 },
     };
@@ -585,6 +588,17 @@ describe('Cloudflare Worker', () => {
         cleanSheetProbability: 0.19,
       },
     });
+    await expect(
+      readCache.getTeamFixture(
+        'isolated-team-player:Forward:no-low',
+        'shared-team',
+      ),
+    ).resolves.toMatchObject({
+      date: '2026-07-28T18:45:00.000Z',
+      playerTeamSlug: 'shared-team',
+      cleanSheetProbability: 0.19,
+      matchProbabilities: { win: 0.26, draw: 0.22, loss: 0.52 },
+    });
     const teamRow = await env.CACHE_DB.prepare(
       'SELECT value FROM cache_entries WHERE cache_key = ?1',
     )
@@ -592,6 +606,101 @@ describe('Cloudflare Worker', () => {
       .first<{ value: string }>();
     expect(JSON.parse(teamRow?.value ?? '{}').nextGame).not.toHaveProperty(
       'marketOdds',
+    );
+    expect(JSON.parse(teamRow?.value ?? '{}').nextGame).toMatchObject({
+      playerTeamSlug: 'shared-team',
+    });
+    const legacyTeamRow = await env.CACHE_DB.prepare(
+      'SELECT value FROM cache_entries WHERE cache_key = ?1',
+    )
+      .bind('player-team-fixture:v1:shared%20team')
+      .first<{ value: string }>();
+    expect(legacyTeamRow).toBeNull();
+  });
+
+  it('does not revive a delayed old team fixture after the morning rollover', async () => {
+    const nowMs = Date.parse('2026-07-29T09:00:00.000Z');
+    const store = new D1JsonKeyValueStore(
+      env.CACHE_DB,
+      env.STATS_CACHE,
+      () => Math.floor(nowMs / 1_000),
+    );
+    const teamKey = 'player-team-fixture:v2:rollover-team';
+    const nextKey = 'rollover-next-player:Defender:no-low';
+    const delayedKey = 'rollover-delayed-player:Defender:no-low';
+    await Promise.all(
+      [
+        teamKey,
+        `player-form:v2:${nextKey}`,
+        `player-form:v2:${delayedKey}`,
+        'player-fixture:v1:rollover-next-player:auto-v3:no-low',
+        'player-fixture:v1:rollover-delayed-player:auto-v3:no-low',
+      ].flatMap((key) => [store.delete(key), env.STATS_CACHE.delete(key)]),
+    );
+    const form = {
+      displayName: 'Rollover Player',
+      position: 'Defender' as const,
+      aaL10: { value: 12, sampleSize: 10 },
+      cleanSheetL10: { value: 0.3, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      excludedLowCoverage: 0,
+    };
+    const nextFixture = {
+      date: '2026-08-01T15:00:00.000Z',
+      homeTeamName: 'Rollover Team',
+      awayTeamName: 'Next Opponent',
+      playerTeamName: 'Rollover Team',
+      opponentTeamName: 'Next Opponent',
+      playerTeamSlug: 'rollover-team',
+      cleanSheetProbability: 0.35,
+      matchProbabilities: { win: 0.49, draw: 0.26, loss: 0.25 },
+    };
+    const delayedOldFixture = {
+      ...nextFixture,
+      date: '2026-07-28T18:45:00.000Z',
+      awayTeamName: 'Previous Opponent',
+      opponentTeamName: 'Previous Opponent',
+      cleanSheetProbability: 0.19,
+      matchProbabilities: { win: 0.26, draw: 0.22, loss: 0.52 },
+    };
+    const nextContext = createExecutionContext();
+    const nextCache = new CloudflarePlayerStatsCache(
+      store,
+      604_800,
+      14_400,
+      nextContext,
+      () => nowMs,
+    );
+    await nextCache.fillMissing(nextKey, {
+      ...form,
+      slug: 'rollover-next-player',
+      nextGame: nextFixture,
+    });
+    await waitOnExecutionContext(nextContext);
+
+    const delayedContext = createExecutionContext();
+    const delayedCache = new CloudflarePlayerStatsCache(
+      store,
+      604_800,
+      14_400,
+      delayedContext,
+      () => nowMs,
+    );
+    const delayed = await delayedCache.fillMissing(delayedKey, {
+      ...form,
+      slug: 'rollover-delayed-player',
+      nextGame: delayedOldFixture,
+    });
+    await waitOnExecutionContext(delayedContext);
+
+    expect(delayed.nextGame?.date).toBe(nextFixture.date);
+    const teamRow = await env.CACHE_DB.prepare(
+      'SELECT value FROM cache_entries WHERE cache_key = ?1',
+    )
+      .bind(teamKey)
+      .first<{ value: string }>();
+    expect(JSON.parse(teamRow?.value ?? '{}').nextGame.date).toBe(
+      nextFixture.date,
     );
   });
 

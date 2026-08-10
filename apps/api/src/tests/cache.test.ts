@@ -72,6 +72,19 @@ describe('SplitPlayerStatsCache', () => {
     await expect(cache.get('player')).resolves.toEqual(withoutFixture);
   });
 
+  it('replaces a cached null once an authoritative fixture becomes available', async () => {
+    const cache = new SplitPlayerStatsCache(
+      new TtlCache<PlayerFormStats>(24_000),
+      new TtlCache<PlayerFixtureStats>(4_000),
+    );
+    await cache.set('player', { ...stats, nextGame: null });
+
+    const resolved = await cache.setFixture('player', stats.nextGame);
+
+    expect(resolved).toEqual(stats.nextGame);
+    await expect(cache.get('player')).resolves.toEqual(stats);
+  });
+
   it('writes only the fixture when the form entry is still valid', async () => {
     let now = 0;
     const formCache = new CountingCache(

@@ -43,6 +43,7 @@ export interface SourceNextGame {
   awayTeamName: string | null;
   playerTeamName: string | null;
   opponentTeamName: string | null;
+  playerTeamSlug?: string;
   cleanSheetProbability: number | null;
   matchProbabilities: MatchProbabilities | null;
 }
@@ -62,6 +63,8 @@ export interface SourcePlayer {
 
 export interface SourcePlayerFixture {
   slug: string;
+  // Confirmed by Sorare's activeClub, even when nextGame is temporarily null.
+  playerTeamSlug?: string;
   nextGame: SourceNextGame | null;
 }
 

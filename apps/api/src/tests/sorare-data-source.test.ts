@@ -789,12 +789,20 @@ describe('SorareDataSource player-name resolution', () => {
           slug: 'angus-gunn',
           displayName: 'Angus Gunn',
           position: 'Goalkeeper',
-          activeClub: { id: 'san-jose' },
+          activeClub: { id: 'san-jose', slug: 'san-jose-earthquakes' },
           nextGame: {
             __typename: 'Game',
             date: '2026-07-23T02:30:00Z',
-            homeTeam: { id: 'san-jose', shortName: 'San Jose' },
-            awayTeam: { id: 'orlando', shortName: 'Orlando' },
+            homeTeam: {
+              id: 'san-jose',
+              slug: 'san-jose-earthquakes',
+              shortName: 'San Jose',
+            },
+            awayTeam: {
+              id: 'orlando',
+              slug: 'orlando-city',
+              shortName: 'Orlando',
+            },
             homeStats: {
               __typename: 'FootballTeamGameStats',
               cleanSheetOdds: 3.45,
@@ -826,6 +834,7 @@ describe('SorareDataSource player-name resolution', () => {
       awayTeamName: 'Orlando',
       playerTeamName: 'San Jose',
       opponentTeamName: 'Orlando',
+      playerTeamSlug: 'san-jose-earthquakes',
     });
   });
 
@@ -837,12 +846,20 @@ describe('SorareDataSource player-name resolution', () => {
           slug: 'adrian-andres-cubas',
           displayName: 'Andrés Cubas',
           position: 'Midfielder',
-          activeClub: { id: 'vancouver' },
+          activeClub: { id: 'vancouver', slug: 'vancouver-whitecaps' },
           nextGame: {
             __typename: 'Game',
             date: '2026-07-27T01:00:00Z',
-            homeTeam: { id: 'minnesota', shortName: 'Minnesota United' },
-            awayTeam: { id: 'vancouver', shortName: 'Vancouver Whitecaps' },
+            homeTeam: {
+              id: 'minnesota',
+              slug: 'minnesota-united',
+              shortName: 'Minnesota United',
+            },
+            awayTeam: {
+              id: 'vancouver',
+              slug: 'vancouver-whitecaps',
+              shortName: 'Vancouver Whitecaps',
+            },
             homeStats: null,
             awayStats: {
               __typename: 'FootballTeamGameStats',
@@ -870,6 +887,7 @@ describe('SorareDataSource player-name resolution', () => {
       awayTeamName: 'Vancouver Whitecaps',
       playerTeamName: 'Vancouver Whitecaps',
       opponentTeamName: 'Minnesota United',
+      playerTeamSlug: 'vancouver-whitecaps',
       matchProbabilities: { win: 0.49, draw: 0.25, loss: 0.26 },
     });
   });
@@ -1438,13 +1456,21 @@ describe('SorareDataSource player-name resolution', () => {
         players: variables.slugs.map((slug) => ({
           __typename: 'Player',
           slug,
-          activeClub: { id: `club-${slug}` },
+          activeClub: { id: `club-${slug}`, slug: `team-${slug}` },
           nextGame: {
             __typename: 'Game',
             date: '2026-08-01T18:00:00Z',
             competition: { slug: 'mlspa' },
-            homeTeam: { id: `club-${slug}`, shortName: 'Home' },
-            awayTeam: { id: 'away-club', shortName: 'Away' },
+            homeTeam: {
+              id: `club-${slug}`,
+              slug: `team-${slug}`,
+              shortName: 'Home',
+            },
+            awayTeam: {
+              id: 'away-club',
+              slug: 'away-club',
+              shortName: 'Away',
+            },
             homeStats: {
               __typename: 'FootballTeamGameStats',
               cleanSheetOdds: 2.5,
@@ -1476,6 +1502,7 @@ describe('SorareDataSource player-name resolution', () => {
     expect(fixtures).toHaveLength(7);
     expect(fixtures[0]).toEqual({
       slug: 'fixture-player-1',
+      playerTeamSlug: 'team-fixture-player-1',
       nextGame: {
         date: '2026-08-01T18:00:00Z',
         competitionSlug: 'mlspa',
@@ -1483,9 +1510,37 @@ describe('SorareDataSource player-name resolution', () => {
         awayTeamName: 'Away',
         playerTeamName: 'Home',
         opponentTeamName: 'Away',
+        playerTeamSlug: 'team-fixture-player-1',
         cleanSheetProbability: 0.4,
         matchProbabilities: { win: 0.55, draw: 0.25, loss: 0.2 },
       },
     });
+  });
+
+  it('returns the Sorare-confirmed team slug when the player next game is null', async () => {
+    const request = vi.fn(async () => ({
+      players: [
+        {
+          __typename: 'Player',
+          slug: 'fixture-missing-player',
+          activeClub: { id: 'confirmed-club', slug: 'confirmed-club' },
+          nextGame: null,
+        },
+      ],
+    }));
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    await expect(
+      source.fetchNextGames([{ slug: 'fixture-missing-player' }]),
+    ).resolves.toEqual([
+      {
+        slug: 'fixture-missing-player',
+        playerTeamSlug: 'confirmed-club',
+        nextGame: null,
+      },
+    ]);
   });
 });

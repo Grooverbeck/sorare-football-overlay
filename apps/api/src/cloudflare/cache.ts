@@ -168,6 +168,7 @@ const FORM_HISTORY_REFRESH_LEASE_PREFIX =
 const FIXTURE_ODDS_REFRESH_LEASE_SECONDS = 15 * 60;
 const FIXTURE_ODDS_CHECK_PREFIX = 'sorare-fixture-odds-check:v1:';
 const PLAYER_TEAM_FIXTURE_PREFIX = 'player-team-fixture:v1:';
+const PLAYER_TEAM_FIXTURE_SLUG_PREFIX = 'player-team-fixture:v2:';
 
 export function nextMondayFormExpiration(
   nowMs: number,
@@ -358,13 +359,27 @@ function samePlayerFixture(
   return leftTeams[0] === rightTeams[0] && leftTeams[1] === rightTeams[1];
 }
 
-function playerTeamFixtureKey(
+function playerTeamFixtureSlugKey(teamSlug: string): string {
+  return `${PLAYER_TEAM_FIXTURE_SLUG_PREFIX}${encodeURIComponent(
+    teamSlug.trim().toLowerCase(),
+  )}`;
+}
+
+function playerTeamFixtureLegacyKey(
   fixture: NonNullable<PlayerFixtureStats>,
 ): string | null {
   const team = playerTeamFixtureIdentity(fixture);
   return team
     ? `${PLAYER_TEAM_FIXTURE_PREFIX}${encodeURIComponent(team)}`
     : null;
+}
+
+function playerTeamFixtureKey(
+  fixture: NonNullable<PlayerFixtureStats>,
+): string | null {
+  return fixture.playerTeamSlug
+    ? playerTeamFixtureSlugKey(fixture.playerTeamSlug)
+    : playerTeamFixtureLegacyKey(fixture);
 }
 
 function teamFixtureEnvelope(
@@ -783,6 +798,21 @@ class CloudflarePlayerFixtureCache
     return this.resolvePlayerTeamFixture(key, fixture);
   }
 
+  async getTeamFixture(
+    playerCacheKey: string,
+    teamSlug: string,
+  ): Promise<PlayerFixtureStats | undefined> {
+    const normalizedTeamSlug = teamSlug.trim().toLowerCase();
+    if (!normalizedTeamSlug) return undefined;
+    const fixture = await this.readPlayerTeamFixture(
+      playerTeamFixtureSlugKey(normalizedTeamSlug),
+      normalizedTeamSlug,
+    );
+    return fixture
+      ? this.resolveFixtureTeamOdds(playerCacheKey, fixture)
+      : undefined;
+  }
+
   async set(key: string, value: PlayerFixtureStats): Promise<void> {
     const resolved =
       value === null ? null : await this.resolvePlayerTeamFixture(key, value);
@@ -862,6 +892,24 @@ class CloudflarePlayerFixtureCache
     if (existing === undefined) {
       await this.set(key, value);
       return value;
+    }
+    if (existing === null && value !== null) {
+      await this.set(key, value);
+      return (await this.get(key)) ?? value;
+    }
+    if (
+      existing !== null &&
+      value !== null &&
+      existing.playerTeamSlug &&
+      value.playerTeamSlug &&
+      existing.playerTeamSlug.toLowerCase() !==
+        value.playerTeamSlug.toLowerCase()
+    ) {
+      // A server-confirmed club change is authoritative. Holding the previous
+      // club's fixture until its rollover would attach the wrong match to a
+      // transferred player.
+      await this.set(key, value);
+      return (await this.get(key)) ?? value;
     }
     if (
       existing === null ||
@@ -987,6 +1035,25 @@ class CloudflarePlayerFixtureCache
       playerCacheKey,
       fixture,
     );
+    const expectedTeamSlug = candidate.playerTeamSlug?.trim().toLowerCase();
+    const rolloverExpiration = fixtureRolloverExpiration(candidate.date);
+    if (
+      rolloverExpiration !== null &&
+      rolloverExpiration <= Math.floor(this.now() / 1_000)
+    ) {
+      // A delayed old Sorare response must never replace the already known
+      // next fixture after the configured morning rollover.
+      const current = await this.readPlayerTeamFixture(
+        teamKey,
+        expectedTeamSlug,
+      );
+      if (current) {
+        return this.resolveFixtureTeamOdds(playerCacheKey, current);
+      }
+      const { marketOdds: _marketOdds, ...playerFixture } = candidate;
+      return playerFixture;
+    }
+
     const incomingEnvelope = teamFixtureEnvelope(candidate);
     const incomingFixture = incomingEnvelope.nextGame;
     if (!incomingFixture) return candidate;
@@ -1003,7 +1070,10 @@ class CloudflarePlayerFixtureCache
         { expiration },
       );
     } else {
-      const existing = await this.readPlayerTeamFixture(teamKey);
+      const existing = await this.readPlayerTeamFixture(
+        teamKey,
+        expectedTeamSlug,
+      );
       const selected = existing
         ? this.selectPlayerTeamFixture(existing, incomingFixture)
         : incomingFixture;
@@ -1017,7 +1087,8 @@ class CloudflarePlayerFixtureCache
     }
 
     const selected =
-      (await this.readPlayerTeamFixture(teamKey)) ?? incomingFixture;
+      (await this.readPlayerTeamFixture(teamKey, expectedTeamSlug)) ??
+      incomingFixture;
     if (sameFixtureIdentity(selected, candidate)) {
       const { marketOdds: _marketOdds, ...playerFixture } = candidate;
       return playerFixture;
@@ -1027,12 +1098,20 @@ class CloudflarePlayerFixtureCache
 
   private async readPlayerTeamFixture(
     teamKey: string,
+    expectedTeamSlug?: string,
   ): Promise<NonNullable<PlayerFixtureStats> | undefined> {
     const raw = await this.namespace.get<unknown>(teamKey, 'json');
     if (raw === null) return undefined;
     const parsed = PlayerFixtureEnvelopeSchema.safeParse(raw);
     const fixture = parsed.success ? parsed.data.nextGame : undefined;
     if (!fixture) {
+      this.removeInvalid(teamKey);
+      return undefined;
+    }
+    if (
+      expectedTeamSlug !== undefined &&
+      fixture.playerTeamSlug?.trim().toLowerCase() !== expectedTeamSlug
+    ) {
       this.removeInvalid(teamKey);
       return undefined;
     }
@@ -1224,6 +1303,13 @@ export class CloudflarePlayerStatsCache
     value: PlayerFixtureStats,
   ): boolean | Promise<boolean> {
     return this.splitCache.claimFixtureRefresh(value);
+  }
+
+  getTeamFixture(
+    playerCacheKey: string,
+    teamSlug: string,
+  ): Promise<PlayerFixtureStats | undefined> {
+    return this.splitCache.getTeamFixture(playerCacheKey, teamSlug);
   }
 
   set(key: string, value: PlayerStats): Promise<void> {

@@ -27,6 +27,7 @@ import {
 import type {
   PlayerStatsDataSource,
   SourcePlayer,
+  SourcePlayerFixture,
   SourcePlayerRequest,
 } from './data-source.js';
 import {
@@ -117,7 +118,19 @@ function needsMatchProbabilitiesFallback(stats: PlayerStats): boolean {
 
 function harmonizePlayerTeamFixtures(
   players: readonly PlayerStats[],
+  requests: readonly SourcePlayerRequest[] = [],
 ): PlayerStats[] {
+  const requestedTeamByPlayer = new Map<string, string>();
+  for (const request of requests) {
+    if (!request.teamSlug) continue;
+    requestedTeamByPlayer.set(
+      `${request.slug}:${request.position ?? 'default'}`,
+      request.teamSlug,
+    );
+  }
+  const requestedTeam = (player: PlayerStats): string | undefined =>
+    requestedTeamByPlayer.get(`${player.slug}:${player.position}`) ??
+    requestedTeamByPlayer.get(`${player.slug}:default`);
   const fixtureByTeam = new Map<
     string,
     NonNullable<PlayerStats['nextGame']>
@@ -126,7 +139,10 @@ function harmonizePlayerTeamFixtures(
     const fixture = player.nextGame;
     const teamName = fixture?.playerTeamName;
     if (!fixture || !teamName) continue;
-    const teamKey = playerTeamFixtureIdentity(fixture);
+    const teamKey =
+      fixture.playerTeamSlug ??
+      requestedTeam(player) ??
+      playerTeamFixtureIdentity(fixture);
     if (!teamKey) continue;
     const existing = fixtureByTeam.get(teamKey);
     const kickoff = Date.parse(fixture.date);
@@ -142,9 +158,12 @@ function harmonizePlayerTeamFixtures(
 
   return players.map((player) => {
     const fixture = player.nextGame;
-    const teamName = fixture?.playerTeamName;
-    if (!fixture || !teamName) return player;
-    const teamKey = playerTeamFixtureIdentity(fixture);
+    const teamKey =
+      fixture?.playerTeamSlug ??
+      requestedTeam(player) ??
+      (fixture?.playerTeamName
+        ? playerTeamFixtureIdentity(fixture)
+        : undefined);
     const shared = teamKey ? fixtureByTeam.get(teamKey) : undefined;
     if (!shared || shared === fixture) return player;
     const { marketOdds: _sharedMarketOdds, ...sharedFixture } = shared;
@@ -154,9 +173,9 @@ function harmonizePlayerTeamFixtures(
         ...sharedFixture,
         // Preserve only the player-specific prop snapshot. CS and H-D-A come
         // from the selected shared team fixture.
-        ...(fixture.marketOdds !== undefined
+        ...(fixture?.marketOdds !== undefined
           ? { marketOdds: fixture.marketOdds }
-          : {}),
+          : { marketOdds: null }),
       },
     };
   });
@@ -240,9 +259,11 @@ export class StatsService {
     const nameResolutionStartedAt = performance.now();
     const directRequests = request.slugs.map((slug): SourcePlayerRequest => {
       const position = request.positions?.[slug];
+      const teamSlug = request.playerTeams?.[slug];
       return {
         slug,
         ...(position ? { position } : {}),
+        ...(teamSlug ? { teamSlug } : {}),
         ...(request.includeHistoricalAssists
           ? { includeHistoricalAssists: true }
           : {}),
@@ -289,7 +310,26 @@ export class StatsService {
           ),
         })),
       );
-      for (const { key, playerRequest, parts } of cachedParts) {
+      const hydratedCachedParts = await Promise.all(
+        cachedParts.map(async (cached) => {
+          if (
+            cached.parts.form === undefined ||
+            (cached.parts.fixture !== undefined &&
+              cached.parts.fixture !== null) ||
+            !cached.playerRequest.teamSlug
+          ) {
+            return cached;
+          }
+          const shared = await splitCache.getTeamFixture(
+            cached.key,
+            cached.playerRequest.teamSlug,
+          );
+          return shared === undefined
+            ? cached
+            : { ...cached, parts: { ...cached.parts, fixture: shared } };
+        }),
+      );
+      for (const { key, playerRequest, parts } of hydratedCachedParts) {
         if (
           parts.form === undefined ||
           !hasRequestedHistoricalWindows(
@@ -441,9 +481,19 @@ export class StatsService {
       request.includeHistoricalAssists,
       request.supportsPartialFormHistory,
     );
+    if (splitCache) {
+      cachedOrLoaded = await this.hydrateCachedTeamFixtures(
+        cachedOrLoaded,
+        playerRequests,
+        splitCache,
+      );
+    }
     const baseAndHistoryDurationMs = elapsedMs(baseAndHistoryStartedAt);
     const resultStartedAt = performance.now();
-    cachedOrLoaded = harmonizePlayerTeamFixtures(cachedOrLoaded);
+    cachedOrLoaded = harmonizePlayerTeamFixtures(
+      cachedOrLoaded,
+      playerRequests,
+    );
     const oddsEligiblePlayers = cachedOrLoaded.filter(
       (stats) => playerMarketOddsSupported(this.marketOddsProvider, stats),
     );
@@ -772,6 +822,70 @@ export class StatsService {
     }
   }
 
+  private async hydrateCachedTeamFixtures(
+    players: readonly PlayerStats[],
+    requests: readonly SourcePlayerRequest[],
+    splitCache: SplitPlayerStatsCacheAccess,
+  ): Promise<PlayerStats[]> {
+    const requestByPlayer = new Map(
+      requests.flatMap((request) => {
+        const entries: Array<readonly [string, SourcePlayerRequest]> = [
+          [`${request.slug}:default`, request] as const,
+        ];
+        if (request.position) {
+          entries.push([`${request.slug}:${request.position}`, request]);
+        }
+        return entries;
+      }),
+    );
+    const lookups = new Map<
+      string,
+      { playerCacheKey: string; teamSlug: string }
+    >();
+    for (const player of players) {
+      if (player.nextGame !== null) continue;
+      const request =
+        requestByPlayer.get(`${player.slug}:${player.position}`) ??
+        requestByPlayer.get(`${player.slug}:default`);
+      if (!request?.teamSlug || lookups.has(request.teamSlug)) continue;
+      lookups.set(request.teamSlug, {
+        playerCacheKey: cacheKey(request, this.excludeLowCoverage),
+        teamSlug: request.teamSlug,
+      });
+    }
+    if (lookups.size === 0) return [...players];
+
+    const sharedByTeam = new Map(
+      (
+        await Promise.all(
+          [...lookups.values()].map(async ({ playerCacheKey, teamSlug }) => [
+            teamSlug,
+            await splitCache.getTeamFixture(playerCacheKey, teamSlug),
+          ] as const),
+        )
+      ).filter(
+        (entry): entry is readonly [string, NonNullable<PlayerStats['nextGame']>] =>
+          entry[1] !== undefined && entry[1] !== null,
+      ),
+    );
+
+    return players.map((player) => {
+      if (player.nextGame !== null) return player;
+      const request =
+        requestByPlayer.get(`${player.slug}:${player.position}`) ??
+        requestByPlayer.get(`${player.slug}:default`);
+      const shared = request?.teamSlug
+        ? sharedByTeam.get(request.teamSlug)
+        : undefined;
+      if (!shared) return player;
+      const { marketOdds: _marketOdds, ...teamFixture } = shared;
+      return {
+        ...player,
+        nextGame: { ...teamFixture, marketOdds: null },
+      };
+    });
+  }
+
   private async hydrateFixturesForResponse(
     entries: readonly FixtureRefreshEntry[],
     immediate: Map<string, PlayerStats>,
@@ -789,15 +903,27 @@ export class StatsService {
       const fixtures = await this.dataSource.fetchNextGames(
         requests.map(({ slug }) => ({ slug })),
       );
-      const fixtureBySlug = new Map(
-        fixtures.map(({ slug, nextGame }) => [slug, nextGame]),
-      );
+      const fixtureBySlug = new Map(fixtures.map((fixture) => [fixture.slug, fixture]));
       const refreshedKeys = new Set<string>();
       for (const { key, request, form, existingFixture } of entries) {
         if (!fixtureBySlug.has(request.slug)) continue;
-        const nextGame = fixtureBySlug.get(request.slug) ?? null;
-        const resolvedNextGame =
-          existingFixture === undefined
+        const sourceFixture = fixtureBySlug.get(request.slug);
+        let nextGame: PlayerStats['nextGame'] =
+          sourceFixture?.nextGame ?? null;
+        let borrowedTeamFixture = false;
+        if (nextGame === null && sourceFixture?.playerTeamSlug) {
+          const shared = await splitCache.getTeamFixture(
+            key,
+            sourceFixture.playerTeamSlug,
+          );
+          if (shared !== undefined && shared !== null) {
+            nextGame = shared;
+            borrowedTeamFixture = true;
+          }
+        }
+        const resolvedNextGame = borrowedTeamFixture
+          ? nextGame
+          : existingFixture === undefined || existingFixture === null
             ? await splitCache.setFixture(key, nextGame)
             : await splitCache.refreshFixture(key, nextGame);
         immediate.set(key, { ...form, nextGame: resolvedNextGame });
@@ -826,12 +952,10 @@ export class StatsService {
       ).values(),
     ];
     const fixtureRequests = requests.map(({ slug }) => ({ slug }));
-    let fixtureBySlug = new Map<string, PlayerStats['nextGame']>();
+    let fixtureBySlug = new Map<string, SourcePlayerFixture>();
     try {
       const fixtures = await this.dataSource.fetchNextGames(fixtureRequests);
-      fixtureBySlug = new Map(
-        fixtures.map(({ slug, nextGame }) => [slug, nextGame]),
-      );
+      fixtureBySlug = new Map(fixtures.map((fixture) => [fixture.slug, fixture]));
     } catch {
       // A temporary Sorare fixture error must not suppress bookmaker refreshes
       // for the last authoritative fixture already held in the cache.
@@ -844,10 +968,24 @@ export class StatsService {
               ? null
               : { ...form, nextGame: existingFixture };
           }
-          const nextGame = fixtureBySlug.get(request.slug) ?? null;
+          const sourceFixture = fixtureBySlug.get(request.slug);
+          let nextGame: PlayerStats['nextGame'] =
+            sourceFixture?.nextGame ?? null;
+          let borrowedTeamFixture = false;
+          if (nextGame === null && sourceFixture?.playerTeamSlug) {
+            const shared = await splitCache.getTeamFixture(
+              key,
+              sourceFixture.playerTeamSlug,
+            );
+            if (shared !== undefined && shared !== null) {
+              nextGame = shared;
+              borrowedTeamFixture = true;
+            }
+          }
           try {
-            const resolvedNextGame =
-              existingFixture === undefined
+            const resolvedNextGame = borrowedTeamFixture
+              ? nextGame
+              : existingFixture === undefined || existingFixture === null
                 ? await splitCache.setFixture(key, nextGame)
                 : await splitCache.refreshFixture(key, nextGame);
             return { ...form, nextGame: resolvedNextGame };
