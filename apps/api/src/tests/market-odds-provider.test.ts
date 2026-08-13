@@ -6,6 +6,7 @@ import {
   TheOddsApiPlayerMarketOddsProvider,
   marketFixtureKey,
   normalizeTeamName,
+  providerTeamNamesMatch,
   playerNameMatchScore,
   playerMarketOddsKey,
   supportsFixtureCompetition,
@@ -201,6 +202,22 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     expect(normalizeTeamName('Club América')).toBe('club america');
   });
 
+  it('matches conservative European provider aliases without accepting ambiguous names', () => {
+    expect(providerTeamNamesMatch('FC Bayern München', 'Bayern Munich')).toBe(
+      true,
+    );
+    expect(
+      providerTeamNamesMatch('Olympique de Marseille', 'Marseille'),
+    ).toBe(true);
+    expect(providerTeamNamesMatch('Olympique Lyonnais', 'Lyon')).toBe(true);
+    expect(providerTeamNamesMatch('Real Madrid', 'Real Sociedad')).toBe(
+      false,
+    );
+    expect(providerTeamNamesMatch('Manchester City', 'Leicester City')).toBe(
+      false,
+    );
+  });
+
   it('accepts Leagues Cup only through its dedicated competition route', () => {
     const leaguesCupPlayer = player({
       nextGame: {
@@ -221,6 +238,33 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     expect(supportsFixtureCompetition(leaguesCupPlayer, ['mlspa'])).toBe(
       false,
     );
+  });
+
+  it('advertises only the player markets enabled by the route capability', () => {
+    const provider = new TheOddsApiPlayerMarketOddsProvider({
+      apiKey: 'test-key',
+      baseUrl: 'https://api.the-odds-api.com/v4',
+      sportKey: 'soccer_spain_la_liga',
+      region: 'us',
+      fetchWindowMs: 24 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store: new InMemoryMarketSnapshotStore(60_000, () => now),
+      logger,
+      supportedCompetitionSlugs: ['laliga-es'],
+      supportedMarkets: ['goal'],
+      fetchImpl: vi.fn<typeof fetch>(),
+      now: () => now,
+    });
+    const laLigaPlayer = player({
+      nextGame: {
+        ...player().nextGame!,
+        competitionSlug: 'laliga-es',
+      },
+    });
+
+    expect(provider.supportsMarket(laLigaPlayer, 'goal')).toBe(true);
+    expect(provider.supportsMarket(laLigaPlayer, 'assist')).toBe(false);
   });
 
   it('does not call the MLS feed for an explicitly unsupported competition', async () => {

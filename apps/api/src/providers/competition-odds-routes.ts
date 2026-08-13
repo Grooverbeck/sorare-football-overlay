@@ -1,4 +1,7 @@
 import type { MatchOddsRoute } from './match-odds-provider.js';
+import type { PlayerMarketField } from './market-odds-provider.js';
+
+const TARGET_PLAYER_FETCH_WINDOW_MS = 24 * 60 * 60 * 1_000;
 
 /**
  * Sorare labels the MLS/Liga MX tournament as `leagues-cup-mls`, while
@@ -19,46 +22,282 @@ export const LEAGUES_CUP_THE_ODDS_API_ROUTES = [
   },
 ] as const satisfies readonly MatchOddsRoute[];
 
-/**
- * Sorare 27 Contender pool (Limited/Rare).
- *
- * The Odds API exposes Austria and Germany's second tier. Croatia's HNL and
- * France's Ligue 2 use the Odds-API.io goalscorer fallback; that provider does
- * not expose an assist market for these routes.
- */
-export const CONTENDER_COMPETITION_SLUGS = [
-  'austrian-bundesliga',
-  '1-hnl',
-  '2-bundesliga',
-  'ligue-2-fr',
-] as const;
+export interface TheOddsApiPlayerRoute {
+  sportKeys: readonly [string, ...string[]];
+  competitionSlugs: readonly string[];
+  region: string;
+  fallbackRegion: string | null;
+  markets: readonly PlayerMarketField[];
+  fetchWindowMs: number;
+}
 
-export const CONTENDER_THE_ODDS_API_ROUTES = [
-  {
-    sportKeys: ['soccer_austria_bundesliga'],
-    competitionSlugs: ['austrian-bundesliga'],
-    region: 'eu',
-    fallbackRegion: 'uk',
-  },
-  {
-    sportKeys: ['soccer_germany_bundesliga2'],
-    competitionSlugs: ['2-bundesliga'],
-    region: 'eu',
-    fallbackRegion: 'uk',
-  },
-] as const satisfies readonly MatchOddsRoute[];
-
-export interface OddsApiIoPlayerRoute {
+export interface OddsApiIoRoute {
   competitionSlugs: readonly string[];
   leagueSlugs: readonly string[];
+  playerMarkets?: readonly PlayerMarketField[];
+  matchOdds?: boolean;
+  playerFetchWindowMs?: number;
+}
+
+export interface SportsGameOddsRoute {
+  competitionSlugs: readonly string[];
+  leagueId: string;
+  playerMarkets: readonly PlayerMarketField[];
+  matchOdds: boolean;
+  playerFetchWindowMs?: number;
+  matchOddsFetchWindowMs?: number;
+}
+
+interface TheOddsApiCapability {
+  sportKeys: readonly [string, ...string[]];
+  region: string;
+  fallbackRegion: string | null;
+}
+
+export interface CompetitionOddsCapability {
+  competitionSlug: string;
+  sportsGameOdds: {
+    leagueId: string;
+    playerMarkets: readonly PlayerMarketField[];
+    matchOdds: boolean;
+  } | null;
+  theOddsApiMatch: TheOddsApiCapability | null;
+  theOddsApiPlayer: TheOddsApiCapability | null;
+  oddsApiIo: {
+    leagueSlugs: readonly string[];
+    playerMarkets: readonly PlayerMarketField[];
+    matchOdds: boolean;
+  };
 }
 
 /**
- * Odds-API.io is the last goalscorer fallback after SportsGameOdds and
- * The Odds API. Multiple provider leagues are listed for UEFA competitions
- * because qualifiers and the main competition use separate feed slugs.
+ * Market capabilities for the European competitions requested by the user.
+ *
+ * Match odds and player props deliberately have separate The Odds API routes:
+ * European H-D-A comes from EU/UK books, while supported football player props
+ * are exposed through US books. Odds-API.io supplies goalscorer markets for all
+ * seven competitions and the HNL match fallback, where The Odds API has no
+ * league feed.
  */
-export const ODDS_API_IO_PLAYER_ROUTES = [
+export const EUROPEAN_ODDS_CAPABILITIES = [
+  {
+    competitionSlug: 'laliga-es',
+    sportsGameOdds: {
+      leagueId: 'LA_LIGA',
+      playerMarkets: ['goal', 'assist'],
+      matchOdds: true,
+    },
+    theOddsApiMatch: {
+      sportKeys: ['soccer_spain_la_liga'],
+      region: 'eu',
+      fallbackRegion: 'uk',
+    },
+    theOddsApiPlayer: {
+      sportKeys: ['soccer_spain_la_liga'],
+      region: 'us',
+      fallbackRegion: null,
+    },
+    oddsApiIo: {
+      leagueSlugs: ['spain-la-liga'],
+      playerMarkets: ['goal'],
+      matchOdds: false,
+    },
+  },
+  {
+    competitionSlug: 'ligue-2-fr',
+    sportsGameOdds: {
+      leagueId: 'FR_LIGUE_2',
+      // Goal markets are the conservative request driver for Ligue 2.
+      // Assists are still captured opportunistically when returned in the
+      // same event object, but their absence never causes another request.
+      playerMarkets: ['goal'],
+      matchOdds: true,
+    },
+    theOddsApiMatch: {
+      sportKeys: ['soccer_france_ligue_two'],
+      region: 'eu',
+      fallbackRegion: 'uk',
+    },
+    theOddsApiPlayer: null,
+    oddsApiIo: {
+      leagueSlugs: ['france-ligue-2'],
+      playerMarkets: ['goal'],
+      matchOdds: false,
+    },
+  },
+  {
+    competitionSlug: 'ligue-1-fr',
+    sportsGameOdds: {
+      leagueId: 'FR_LIGUE_1',
+      playerMarkets: ['goal', 'assist'],
+      matchOdds: true,
+    },
+    theOddsApiMatch: {
+      sportKeys: ['soccer_france_ligue_one'],
+      region: 'eu',
+      fallbackRegion: 'uk',
+    },
+    theOddsApiPlayer: {
+      sportKeys: ['soccer_france_ligue_one'],
+      region: 'us',
+      fallbackRegion: null,
+    },
+    oddsApiIo: {
+      leagueSlugs: ['france-ligue-1'],
+      playerMarkets: ['goal'],
+      matchOdds: false,
+    },
+  },
+  {
+    competitionSlug: 'bundesliga-de',
+    sportsGameOdds: {
+      leagueId: 'BUNDESLIGA',
+      playerMarkets: ['goal', 'assist'],
+      matchOdds: true,
+    },
+    theOddsApiMatch: {
+      sportKeys: ['soccer_germany_bundesliga'],
+      region: 'eu',
+      fallbackRegion: 'uk',
+    },
+    theOddsApiPlayer: {
+      sportKeys: ['soccer_germany_bundesliga'],
+      region: 'us',
+      fallbackRegion: null,
+    },
+    oddsApiIo: {
+      leagueSlugs: ['germany-bundesliga'],
+      playerMarkets: ['goal'],
+      matchOdds: false,
+    },
+  },
+  {
+    competitionSlug: '2-bundesliga',
+    sportsGameOdds: null,
+    theOddsApiMatch: {
+      sportKeys: ['soccer_germany_bundesliga2'],
+      region: 'eu',
+      fallbackRegion: 'uk',
+    },
+    theOddsApiPlayer: null,
+    oddsApiIo: {
+      leagueSlugs: ['germany-2-bundesliga'],
+      playerMarkets: ['goal'],
+      matchOdds: false,
+    },
+  },
+  {
+    competitionSlug: '1-hnl',
+    sportsGameOdds: null,
+    theOddsApiMatch: null,
+    theOddsApiPlayer: null,
+    oddsApiIo: {
+      leagueSlugs: ['croatia-hnl'],
+      playerMarkets: ['goal'],
+      matchOdds: true,
+    },
+  },
+  {
+    competitionSlug: 'austrian-bundesliga',
+    sportsGameOdds: null,
+    theOddsApiMatch: {
+      sportKeys: ['soccer_austria_bundesliga'],
+      region: 'eu',
+      fallbackRegion: 'uk',
+    },
+    theOddsApiPlayer: null,
+    oddsApiIo: {
+      leagueSlugs: ['austria-bundesliga'],
+      playerMarkets: ['goal'],
+      matchOdds: false,
+    },
+  },
+] as const satisfies readonly CompetitionOddsCapability[];
+
+export const EUROPEAN_COMPETITION_SLUGS = EUROPEAN_ODDS_CAPABILITIES.map(
+  ({ competitionSlug }) => competitionSlug,
+);
+
+export const EUROPEAN_THE_ODDS_API_MATCH_ROUTES: readonly MatchOddsRoute[] =
+  EUROPEAN_ODDS_CAPABILITIES.flatMap(
+    ({ competitionSlug, theOddsApiMatch }) =>
+      theOddsApiMatch
+        ? [
+            {
+              sportKeys: theOddsApiMatch.sportKeys,
+              competitionSlugs: [competitionSlug],
+              region: theOddsApiMatch.region,
+              ...(theOddsApiMatch.fallbackRegion
+                ? { fallbackRegion: theOddsApiMatch.fallbackRegion }
+                : {}),
+            },
+          ]
+        : [],
+  );
+
+export const EUROPEAN_THE_ODDS_API_PLAYER_ROUTES: readonly TheOddsApiPlayerRoute[] =
+  EUROPEAN_ODDS_CAPABILITIES.flatMap(
+    ({ competitionSlug, theOddsApiPlayer }) =>
+      theOddsApiPlayer
+        ? [
+            {
+              sportKeys: theOddsApiPlayer.sportKeys,
+              competitionSlugs: [competitionSlug],
+              region: theOddsApiPlayer.region,
+              fallbackRegion: theOddsApiPlayer.fallbackRegion,
+              markets: ['goal', 'assist'],
+              fetchWindowMs: TARGET_PLAYER_FETCH_WINDOW_MS,
+            },
+          ]
+        : [],
+  );
+
+const BASE_SPORTS_GAME_ODDS_ROUTES = [
+  {
+    competitionSlugs: ['mlspa'],
+    leagueId: 'MLS',
+    playerMarkets: ['goal', 'assist'],
+    matchOdds: true,
+  },
+  {
+    competitionSlugs: ['uefa-champions-league'],
+    leagueId: 'UEFA_CHAMPIONS_LEAGUE',
+    playerMarkets: ['goal', 'assist'],
+    matchOdds: true,
+  },
+  {
+    competitionSlugs: ['uefa-europa-league'],
+    leagueId: 'UEFA_EUROPA_LEAGUE',
+    playerMarkets: ['goal', 'assist'],
+    matchOdds: true,
+  },
+] as const satisfies readonly SportsGameOddsRoute[];
+
+/**
+ * SportsGameOdds bills returned event objects rather than individual markets.
+ * Align the new European H-D-A and player-prop windows so one event response
+ * can populate both snapshots. Existing MLS/UEFA windows remain configurable.
+ */
+export const SPORTS_GAME_ODDS_ROUTES: readonly SportsGameOddsRoute[] = [
+  ...BASE_SPORTS_GAME_ODDS_ROUTES,
+  ...EUROPEAN_ODDS_CAPABILITIES.flatMap(
+    ({ competitionSlug, sportsGameOdds }) =>
+      sportsGameOdds
+        ? [
+            {
+              competitionSlugs: [competitionSlug],
+              leagueId: sportsGameOdds.leagueId,
+              playerMarkets: sportsGameOdds.playerMarkets,
+              matchOdds: sportsGameOdds.matchOdds,
+              playerFetchWindowMs: TARGET_PLAYER_FETCH_WINDOW_MS,
+              matchOddsFetchWindowMs: TARGET_PLAYER_FETCH_WINDOW_MS,
+            },
+          ]
+        : [],
+  ),
+];
+
+const BASE_ODDS_API_IO_ROUTES = [
   {
     competitionSlugs: ['mlspa'],
     leagueSlugs: ['usa-mls'],
@@ -88,20 +327,21 @@ export const ODDS_API_IO_PLAYER_ROUTES = [
       'international-clubs-uefa-conference-league',
     ],
   },
-  {
-    competitionSlugs: ['austrian-bundesliga'],
-    leagueSlugs: ['austria-bundesliga'],
-  },
-  {
-    competitionSlugs: ['2-bundesliga'],
-    leagueSlugs: ['germany-2-bundesliga'],
-  },
-  {
-    competitionSlugs: ['1-hnl'],
-    leagueSlugs: ['croatia-hnl'],
-  },
-  {
-    competitionSlugs: ['ligue-2-fr'],
-    leagueSlugs: ['france-ligue-2'],
-  },
-] as const satisfies readonly OddsApiIoPlayerRoute[];
+] as const satisfies readonly OddsApiIoRoute[];
+
+/**
+ * Odds-API.io is a goalscorer fallback for the existing pools and the direct
+ * goalscorer source for European leagues without supported The Odds API props.
+ */
+export const ODDS_API_IO_ROUTES: readonly OddsApiIoRoute[] = [
+  ...BASE_ODDS_API_IO_ROUTES,
+  ...EUROPEAN_ODDS_CAPABILITIES.map(
+    ({ competitionSlug, oddsApiIo }) => ({
+      competitionSlugs: [competitionSlug],
+      leagueSlugs: oddsApiIo.leagueSlugs,
+      playerMarkets: oddsApiIo.playerMarkets,
+      matchOdds: oddsApiIo.matchOdds,
+      playerFetchWindowMs: TARGET_PLAYER_FETCH_WINDOW_MS,
+    }),
+  ),
+];

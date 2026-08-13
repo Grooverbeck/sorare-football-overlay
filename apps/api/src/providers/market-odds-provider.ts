@@ -61,6 +61,9 @@ export const FrozenMarketSnapshotSchema = z.object({
 const MissingMarketSnapshotSchema = z.object({
   status: z.literal('unavailable'),
   market: OddsMarketKeySchema,
+  // Providers that bill per returned event can target a later supplement by
+  // ID even when the requested market was not listed on the first response.
+  eventId: z.string().min(1).optional(),
   checkedAt: z.string().datetime(),
   attemptCount: z.number().int().min(1).optional(),
   nextRetryAt: z.string().datetime().nullable().optional(),
@@ -484,6 +487,7 @@ interface TheOddsApiOptions {
   usageStore?: ProviderQuotaUsageStore;
   refreshUsage?: boolean;
   supportedCompetitionSlugs?: readonly string[];
+  supportedMarkets?: readonly PlayerMarketField[];
   supplementBatchDelayMs?: number;
   supplementBatchTtlMs?: number;
   refreshLeaseTtlMs?: number;
@@ -667,10 +671,29 @@ const contenderTeamAliases: Readonly<Record<string, string>> = {
   '1 nurnberg': 'nurnberg',
 };
 
+const europeanTeamAliases: Readonly<Record<string, string>> = {
+  // Provider feeds commonly translate or expand these names differently.
+  'athletic bilbao': 'athletic bilbao',
+  'athletic club': 'athletic bilbao',
+  'bayern munchen': 'bayern munich',
+  'bayern munich': 'bayern munich',
+  'borussia m gladbach': 'borussia monchengladbach',
+  'borussia monchengladbach': 'borussia monchengladbach',
+  monchengladbach: 'borussia monchengladbach',
+  cologne: 'cologne',
+  koln: 'cologne',
+  '1 koln': 'cologne',
+  lyon: 'lyon',
+  'olympique lyonnais': 'lyon',
+  'real betis': 'real betis',
+  'real betis balompie': 'real betis',
+};
+
 const teamAliases: Readonly<Record<string, string>> = {
   ...mlsTeamAliases,
   ...ligaMxTeamAliases,
   ...contenderTeamAliases,
+  ...europeanTeamAliases,
 };
 
 function normalizeWords(value: string): string {
@@ -690,6 +713,69 @@ export function normalizeTeamName(value: string): string {
     .filter((part) => !['fc', 'cf', 'sc'].includes(part))
     .join(' ');
   return teamAliases[withoutClubSuffix] ?? withoutClubSuffix;
+}
+
+const providerClubTokens = new Set([
+  'ac',
+  'afc',
+  'bsc',
+  'cf',
+  'fc',
+  'fk',
+  'gnk',
+  'hnk',
+  'nk',
+  'rb',
+  'rc',
+  'rcd',
+  'sc',
+  'sk',
+  'sl',
+  'sv',
+  'vfl',
+]);
+const ambiguousTeamTokens = new Set([
+  'athletic',
+  'city',
+  'club',
+  'real',
+  'sporting',
+  'united',
+]);
+
+function providerTeamTokens(value: string): string[] {
+  return normalizeTeamName(value)
+    .split(' ')
+    .filter(
+      (token) =>
+        !providerClubTokens.has(token) &&
+        !/^(?:18|19|20)\d{2}$/.test(token),
+    );
+}
+
+/**
+ * Accepts provider prefixes/sponsors only when both names still share a
+ * distinctive token. Ambiguous single words such as `Real` or `United` never
+ * match on their own.
+ */
+export function providerTeamNamesMatch(left: string, right: string): boolean {
+  const normalizedLeft = normalizeTeamName(left);
+  const normalizedRight = normalizeTeamName(right);
+  if (normalizedLeft === normalizedRight) return true;
+  const leftTokens = providerTeamTokens(left);
+  const rightTokens = providerTeamTokens(right);
+  if (leftTokens.join(' ') === rightTokens.join(' ')) return true;
+  const [shorter, longer] =
+    leftTokens.length <= rightTokens.length
+      ? [leftTokens, rightTokens]
+      : [rightTokens, leftTokens];
+  return (
+    shorter.length > 0 &&
+    shorter.every((token) => longer.includes(token)) &&
+    shorter.some(
+      (token) => token.length >= 4 && !ambiguousTeamTokens.has(token),
+    )
+  );
 }
 
 const defaultSupportedCompetitionSlugs = ['mlspa'] as const;
@@ -836,14 +922,12 @@ function findEvent(
   fixture: FixtureGroup<MarketSupplementPlayer>,
   events: readonly OddsEvent[],
 ): OddsEvent | null {
-  const home = normalizeTeamName(fixture.homeTeamName);
-  const away = normalizeTeamName(fixture.awayTeamName);
   const kickoff = Date.parse(fixture.date);
   const candidates = events
     .filter(
       (event) =>
-        normalizeTeamName(event.home_team) === home &&
-        normalizeTeamName(event.away_team) === away,
+        providerTeamNamesMatch(event.home_team, fixture.homeTeamName) &&
+        providerTeamNamesMatch(event.away_team, fixture.awayTeamName),
     )
     .map((event) => ({
       event,
@@ -1195,12 +1279,14 @@ export function missingMarketSnapshot(
   market: OddsMarketKey,
   previous: MarketSnapshot | undefined,
   checkedAt: number,
+  eventId?: string,
 ): MarketSnapshot {
   const kickoff = Date.parse(fixture.date);
   const retry = nextMarketRetryState(previous, checkedAt, kickoff);
   return MissingMarketSnapshotSchema.parse({
     status: 'unavailable',
     market,
+    ...(eventId ? { eventId } : {}),
     ...retry,
     expiresAt: new Date(kickoff + missingMarketRetentionMs).toISOString(),
   });
@@ -1341,8 +1427,24 @@ export class TheOddsApiPlayerMarketOddsProvider
     );
   }
 
-  supportsMarket(player: PlayerStats): boolean {
-    return this.supports(player);
+  supportsMarket(
+    player: PlayerStats,
+    market: PlayerMarketField,
+  ): boolean {
+    return this.supports(player) && this.supportedFields().includes(market);
+  }
+
+  private supportedFields(): readonly PlayerMarketField[] {
+    return this.options.supportedMarkets ?? ['goal', 'assist'];
+  }
+
+  private supportedMarketKeys(): readonly OddsMarketKey[] {
+    const fields = this.supportedFields();
+    return oddsMarketKeys.filter((market) =>
+      fields.includes(
+        market === 'player_goal_scorer_anytime' ? 'goal' : 'assist',
+      ),
+    );
   }
 
   private sportKeys(): string[] {
@@ -1383,7 +1485,7 @@ export class TheOddsApiPlayerMarketOddsProvider
     cacheOnly: boolean,
   ): Promise<Map<OddsMarketKey, MarketSnapshot>> {
     const byMarket = new Map<OddsMarketKey, MarketSnapshot>();
-    const reads = oddsMarketKeys.map(async (market) => ({
+    const reads = this.supportedMarketKeys().map(async (market) => ({
       market,
       snapshot: await settleCacheReadWithin(
         this.options.store.get(fixtureKey, market),
@@ -1412,7 +1514,7 @@ export class TheOddsApiPlayerMarketOddsProvider
     protection: OddsUsageProtection,
   ): OddsMarketKey[] {
     const kickoff = Date.parse(fixture.date);
-    return oddsMarketKeys.filter((market) => {
+    return this.supportedMarketKeys().filter((market) => {
       const snapshot = byMarket.get(market);
       return (
         !snapshot ||

@@ -10,6 +10,7 @@ import {
   marketFixtureKey,
   normalizeTeamName,
   playerMarketOddsKey,
+  providerTeamNamesMatch,
   settleCacheReadWithin,
   supportsFixtureCompetition,
   theOddsApiQuotaUsage,
@@ -34,6 +35,9 @@ const availableSnapshotSchema = z.object({
 
 const unavailableSnapshotSchema = z.object({
   status: z.literal('unavailable'),
+  // Retain a discovered provider event identity so a later market supplement
+  // can fetch that single event instead of another league-wide time window.
+  eventId: z.string().min(1).optional(),
   checkedAt: z.string().datetime(),
   expiresAt: z.string().datetime(),
 });
@@ -120,6 +124,121 @@ export class UnavailableFixtureMatchOddsProvider
   ): Promise<Map<string, MatchProbabilities | null>> {
     return new Map(
       players.map((player) => [playerMarketOddsKey(player), null]),
+    );
+  }
+}
+
+function needsMatchOddsSupplement(
+  probabilities: MatchProbabilities | null | undefined,
+): boolean {
+  return (
+    !probabilities ||
+    probabilities.win === null ||
+    probabilities.draw === null ||
+    probabilities.loss === null
+  );
+}
+
+function supplementMatchProbabilities(
+  primary: MatchProbabilities | null | undefined,
+  fallback: MatchProbabilities | null | undefined,
+): MatchProbabilities | null {
+  if (!primary) return fallback ?? null;
+  if (!fallback || !needsMatchOddsSupplement(primary)) return primary;
+  const merged = MatchProbabilitiesSchema.parse({
+    win: primary.win ?? fallback.win,
+    draw: primary.draw ?? fallback.draw,
+    loss: primary.loss ?? fallback.loss,
+  });
+  return merged.win === null && merged.draw === null && merged.loss === null
+    ? null
+    : merged;
+}
+
+/**
+ * Keeps paid match-odds fallbacks sequential on refreshes, while reading both
+ * provider caches concurrently on the response path. The fallback only sees
+ * fixtures (or individual H-D-A fields) the primary provider could not fill.
+ */
+export class SupplementingFixtureMatchOddsProvider
+  implements FixtureMatchOddsProvider
+{
+  constructor(
+    private readonly primary: FixtureMatchOddsProvider,
+    private readonly fallback: FixtureMatchOddsProvider,
+  ) {}
+
+  supports(player: PlayerStats): boolean {
+    return this.primary.supports(player) || this.fallback.supports(player);
+  }
+
+  async load(
+    players: readonly PlayerStats[],
+    loadOptions?: { cacheOnly?: boolean },
+  ): Promise<Map<string, MatchProbabilities | null>> {
+    const primaryPlayers = players.filter((player) =>
+      this.primary.supports(player),
+    );
+    let primaryValues: Map<string, MatchProbabilities | null>;
+    let fallbackValues: Map<string, MatchProbabilities | null>;
+
+    if (loadOptions?.cacheOnly) {
+      const fallbackPlayers = players.filter((player) =>
+        this.fallback.supports(player),
+      );
+      const [primaryResult, fallbackResult] = await Promise.allSettled([
+        primaryPlayers.length > 0
+          ? this.primary.load(primaryPlayers, loadOptions)
+          : Promise.resolve(new Map<string, MatchProbabilities | null>()),
+        fallbackPlayers.length > 0
+          ? this.fallback.load(fallbackPlayers, loadOptions)
+          : Promise.resolve(new Map<string, MatchProbabilities | null>()),
+      ]);
+      primaryValues =
+        primaryResult.status === 'fulfilled'
+          ? primaryResult.value
+          : new Map<string, MatchProbabilities | null>();
+      fallbackValues =
+        fallbackResult.status === 'fulfilled'
+          ? fallbackResult.value
+          : new Map<string, MatchProbabilities | null>();
+    } else {
+      try {
+        primaryValues =
+          primaryPlayers.length > 0
+            ? await this.primary.load(primaryPlayers, loadOptions)
+            : new Map<string, MatchProbabilities | null>();
+      } catch {
+        primaryValues = new Map<string, MatchProbabilities | null>();
+      }
+      const fallbackPlayers = players.filter(
+        (player) =>
+          this.fallback.supports(player) &&
+          needsMatchOddsSupplement(
+            primaryValues.get(playerMarketOddsKey(player)),
+          ),
+      );
+      try {
+        fallbackValues =
+          fallbackPlayers.length > 0
+            ? await this.fallback.load(fallbackPlayers, loadOptions)
+            : new Map<string, MatchProbabilities | null>();
+      } catch {
+        fallbackValues = new Map<string, MatchProbabilities | null>();
+      }
+    }
+
+    return new Map(
+      players.map((player) => {
+        const key = playerMarketOddsKey(player);
+        return [
+          key,
+          supplementMatchProbabilities(
+            primaryValues.get(key),
+            fallbackValues.get(key),
+          ),
+        ];
+      }),
     );
   }
 }
@@ -223,15 +342,13 @@ function findEvent(
   fixture: FixtureGroup,
   events: readonly OddsEvent[],
 ): OddsEvent | null {
-  const home = normalizeTeamName(fixture.homeTeamName);
-  const away = normalizeTeamName(fixture.awayTeamName);
   const kickoff = Date.parse(fixture.date);
   return (
     events
       .filter(
         (event) =>
-          normalizeTeamName(event.home_team) === home &&
-          normalizeTeamName(event.away_team) === away,
+          providerTeamNamesMatch(event.home_team, fixture.homeTeamName) &&
+          providerTeamNamesMatch(event.away_team, fixture.awayTeamName),
       )
       .map((event) => ({
         event,
@@ -328,7 +445,7 @@ function availableSnapshotForEvent(
   });
 }
 
-function playerProbabilities(
+export function matchProbabilitiesForPlayer(
   player: PlayerStats,
   snapshot: z.infer<typeof availableSnapshotSchema>,
 ): MatchProbabilities | null {
@@ -531,7 +648,7 @@ export class TheOddsApiFixtureMatchOddsProvider
       for (const player of fixture.players) {
         output.set(
           playerMarketOddsKey(player),
-          playerProbabilities(player, snapshot),
+          matchProbabilitiesForPlayer(player, snapshot),
         );
       }
     }

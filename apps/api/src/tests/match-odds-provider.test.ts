@@ -3,11 +3,13 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AppLogger } from '../logger.js';
 import {
   InMemoryMatchOddsSnapshotStore,
+  SupplementingFixtureMatchOddsProvider,
   TheOddsApiFixtureMatchOddsProvider,
+  type FixtureMatchOddsProvider,
   type MatchOddsSnapshotStore,
 } from '../providers/match-odds-provider.js';
 import {
-  CONTENDER_THE_ODDS_API_ROUTES,
+  EUROPEAN_THE_ODDS_API_MATCH_ROUTES,
   LEAGUES_CUP_THE_ODDS_API_ROUTES,
 } from '../providers/competition-odds-routes.js';
 import {
@@ -452,7 +454,7 @@ describe('TheOddsApiFixtureMatchOddsProvider', () => {
     const oddsProvider = new TheOddsApiFixtureMatchOddsProvider({
       apiKey: 'test-key',
       baseUrl: 'https://api.the-odds-api.test/v4',
-      routes: CONTENDER_THE_ODDS_API_ROUTES,
+      routes: EUROPEAN_THE_ODDS_API_MATCH_ROUTES,
       fallbackWindowMs: 72 * 60 * 60 * 1_000,
       missTtlMs: 6 * 60 * 60 * 1_000,
       requestTimeoutMs: 1_000,
@@ -550,5 +552,48 @@ describe('TheOddsApiFixtureMatchOddsProvider', () => {
       loss: expect.any(Number),
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('SupplementingFixtureMatchOddsProvider', () => {
+  it('contacts the fallback only for supported fields missing from the primary', async () => {
+    const kickoff = new Date(now + 48 * 60 * 60 * 1_000).toISOString();
+    const testPlayer = player(kickoff);
+    const primary: FixtureMatchOddsProvider = {
+      supports: () => true,
+      load: vi.fn(async (players) =>
+        new Map(
+          players.map((candidate) => [
+            playerMarketOddsKey(candidate),
+            { win: 0.5, draw: null, loss: 0.2 },
+          ]),
+        ),
+      ),
+    };
+    const fallback: FixtureMatchOddsProvider = {
+      supports: () => true,
+      load: vi.fn(async (players) =>
+        new Map(
+          players.map((candidate) => [
+            playerMarketOddsKey(candidate),
+            { win: 0.4, draw: 0.3, loss: 0.3 },
+          ]),
+        ),
+      ),
+    };
+    const provider = new SupplementingFixtureMatchOddsProvider(
+      primary,
+      fallback,
+    );
+
+    const result = await provider.load([testPlayer]);
+
+    expect(result.get(playerMarketOddsKey(testPlayer))).toEqual({
+      win: 0.5,
+      draw: 0.3,
+      loss: 0.2,
+    });
+    expect(primary.load).toHaveBeenCalledTimes(1);
+    expect(fallback.load).toHaveBeenCalledTimes(1);
   });
 });

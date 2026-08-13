@@ -8,6 +8,11 @@ import {
   type PlayerMarketOddsProvider,
 } from '../providers/market-odds-provider.js';
 import {
+  InMemoryMatchOddsSnapshotStore,
+  type MatchOddsSnapshotStore,
+} from '../providers/match-odds-provider.js';
+import {
+  OddsApiIoFixtureMatchOddsProvider,
   OddsApiIoPlayerMarketOddsProvider,
   oddsApiIoFixtureStoreKey,
 } from '../providers/odds-api-io-provider.js';
@@ -15,7 +20,7 @@ import {
   InMemoryProviderQuotaUsageStore,
   quotaUsage,
 } from '../providers/odds-usage.js';
-import type { OddsApiIoPlayerRoute } from '../providers/competition-odds-routes.js';
+import type { OddsApiIoRoute } from '../providers/competition-odds-routes.js';
 import { SupplementingPlayerMarketOddsProvider } from '../providers/sports-game-odds-provider.js';
 
 const now = Date.parse('2026-07-30T12:00:00.000Z');
@@ -62,7 +67,7 @@ function json(body: unknown, init: ResponseInit = {}): Response {
 function createProvider(
   fetchImpl: typeof fetch,
   usageStore = new InMemoryProviderQuotaUsageStore(() => now),
-  routes: readonly OddsApiIoPlayerRoute[] = [
+  routes: readonly OddsApiIoRoute[] = [
     {
       competitionSlugs: ['austrian-bundesliga'],
       leagueSlugs: ['austria-bundesliga'],
@@ -70,24 +75,32 @@ function createProvider(
   ],
   maxRetries = 0,
   store = new InMemoryMarketSnapshotStore(60_000, () => now),
+  matchOddsStore?: MatchOddsSnapshotStore,
 ) {
+  const provider = new OddsApiIoPlayerMarketOddsProvider({
+    apiKey: 'server-only-test-key',
+    baseUrl: 'https://api.odds-api.io/v3',
+    bookmakers: ['Bet365', 'Unibet'],
+    routes,
+    fetchWindowMs: 72 * 60 * 60 * 1_000,
+    matchOddsFallbackWindowMs: 72 * 60 * 60 * 1_000,
+    matchOddsMissTtlMs: 6 * 60 * 60 * 1_000,
+    dailyRequestLimit: 500,
+    hourlyRequestLimit: 100,
+    requestTimeoutMs: 1_000,
+    maxRetries,
+    store,
+    ...(matchOddsStore ? { matchOddsStore } : {}),
+    logger,
+    usageStore,
+    fetchImpl,
+    now: () => now,
+  });
   return {
-    provider: new OddsApiIoPlayerMarketOddsProvider({
-      apiKey: 'server-only-test-key',
-      baseUrl: 'https://api.odds-api.io/v3',
-      bookmakers: ['Bet365', 'Unibet'],
-      routes,
-      fetchWindowMs: 72 * 60 * 60 * 1_000,
-      dailyRequestLimit: 500,
-      hourlyRequestLimit: 100,
-      requestTimeoutMs: 1_000,
-      maxRetries,
-      store,
-      logger,
-      usageStore,
-      fetchImpl,
-      now: () => now,
-    }),
+    provider,
+    matchProvider: matchOddsStore
+      ? new OddsApiIoFixtureMatchOddsProvider(provider)
+      : null,
     usageStore,
   };
 }
@@ -98,6 +111,27 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
 
     expect(provider.supportsMarket(player(), 'goal')).toBe(true);
     expect(provider.supportsMarket(player(), 'assist')).toBe(false);
+  });
+
+  it('honors a league-specific 24-hour player-prop fetch window', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const { provider } = createProvider(
+      fetchImpl,
+      new InMemoryProviderQuotaUsageStore(() => now),
+      [
+        {
+          competitionSlugs: ['austrian-bundesliga'],
+          leagueSlugs: ['austria-bundesliga'],
+          playerMarkets: ['goal'],
+          playerFetchWindowMs: 24 * 60 * 60 * 1_000,
+        },
+      ],
+    );
+
+    const result = await provider.load([player()]);
+
+    expect(result.get(playerMarketOddsKey(player()))).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('maps a Leagues Cup goalscorer quote for Antoine Griezmann', async () => {
@@ -277,6 +311,121 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
       limit: 100,
       remaining: 98,
       interval: { unit: 'hour' },
+    });
+  });
+
+  it('shares one HNL fixture refresh between goalscorer and H-D-A snapshots', async () => {
+    const hnlPlayer = player({
+      slug: 'marco-pasalic',
+      displayName: 'Marco Pasalic',
+      position: 'Forward',
+      nextGame: {
+        ...player().nextGame!,
+        competitionSlug: '1-hnl',
+        homeTeamName: 'Dinamo Zagreb',
+        awayTeamName: 'Rijeka',
+        playerTeamName: 'Rijeka',
+        opponentTeamName: 'Dinamo Zagreb',
+        matchProbabilities: null,
+      },
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/events')) {
+        expect(url.searchParams.get('league')).toBe('croatia-hnl');
+        return json([
+          {
+            id: 'hnl-fixture-1',
+            date: kickoff,
+            home: 'GNK Dinamo Zagreb',
+            away: 'HNK Rijeka',
+          },
+        ]);
+      }
+      if (url.pathname.endsWith('/odds/multi')) {
+        return json([
+          {
+            id: 'hnl-fixture-1',
+            date: kickoff,
+            home: 'GNK Dinamo Zagreb',
+            away: 'HNK Rijeka',
+            bookmakers: {
+              Bet365: [
+                {
+                  name: 'ML',
+                  odds: [{ home: '2.00', draw: '3.40', away: '4.00' }],
+                },
+                {
+                  name: 'Anytime Goalscorer',
+                  odds: [{ label: 'Marco Pasalic', over: '3.20' }],
+                },
+              ],
+              Unibet: [
+                {
+                  name: 'ML',
+                  odds: [{ home: '2.20', draw: '3.20', away: '3.80' }],
+                },
+                {
+                  name: 'Anytime Goalscorer',
+                  odds: [{ label: 'Marco Pasalic', over: '3.40' }],
+                },
+              ],
+            },
+          },
+        ]);
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    const marketStore = new InMemoryMarketSnapshotStore(60_000, () => now);
+    const matchStore = new InMemoryMatchOddsSnapshotStore(() => now);
+    const { provider, matchProvider } = createProvider(
+      fetchImpl,
+      new InMemoryProviderQuotaUsageStore(() => now),
+      [
+        {
+          competitionSlugs: ['1-hnl'],
+          leagueSlugs: ['croatia-hnl'],
+          playerMarkets: ['goal'],
+          matchOdds: true,
+        },
+      ],
+      0,
+      marketStore,
+      matchStore,
+    );
+    if (!matchProvider) throw new Error('Expected HNL match provider');
+
+    await Promise.all([
+      provider.load([hnlPlayer]),
+      matchProvider.load([hnlPlayer]),
+    ]);
+    const [cachedPlayer, cachedMatch] = await Promise.all([
+      provider.load([hnlPlayer], { cacheOnly: true }),
+      matchProvider.load([hnlPlayer], { cacheOnly: true }),
+    ]);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(
+      cachedPlayer.get(playerMarketOddsKey(hnlPlayer))?.goal?.probability,
+    ).toBeCloseTo((1 / 3.2 + 1 / 3.4) / 2);
+    const probabilities = cachedMatch.get(playerMarketOddsKey(hnlPlayer));
+    expect(probabilities).toEqual({
+      win: expect.any(Number),
+      draw: expect.any(Number),
+      loss: expect.any(Number),
+    });
+    expect(
+      (probabilities?.win ?? 0) +
+        (probabilities?.draw ?? 0) +
+        (probabilities?.loss ?? 0),
+    ).toBeCloseTo(1);
+    expect(probabilities?.win ?? 1).toBeLessThan(probabilities?.loss ?? 0);
+    const fixtureKey = oddsApiIoFixtureStoreKey(hnlPlayer.nextGame!);
+    if (!fixtureKey) throw new Error('Expected HNL fixture key');
+    await expect(matchStore.get(fixtureKey)).resolves.toMatchObject({
+      status: 'available',
+      eventId: 'hnl-fixture-1',
+      bookmakerCount: 2,
     });
   });
 

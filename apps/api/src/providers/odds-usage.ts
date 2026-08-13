@@ -173,29 +173,16 @@ export function protectionForProviderUsage(
   now: number = Date.now(),
 ): OddsUsageProtection {
   const protection = protectionForUsage(usage, now);
-  if (
-    provider !== 'sports-game-odds' ||
-    protection.ratio === null ||
-    protection.ratio < oddsUsageThresholds.fallbackDisabled ||
-    protection.level === 'stopped'
-  ) {
-    return protection;
-  }
-  if (protection.ratio < oddsUsageThresholds.essentialOnly) {
-    return {
-      level: 'essential-only',
-      ratio: protection.ratio,
-      allowExternalRequests: true,
-      allowRegionalFallback: false,
-      allowSnapshotSupplements: false,
-    };
-  }
+  if (provider !== 'sports-game-odds') return protection;
+  // SportsGameOdds is currently a free allocation. Keep its object usage as
+  // telemetry, but let the provider's real HTTP 429 response be the only
+  // request limiter instead of proactively disabling useful fixture data.
   return {
-    level: 'cache-only',
+    level: 'normal',
     ratio: protection.ratio,
-    allowExternalRequests: false,
-    allowRegionalFallback: false,
-    allowSnapshotSupplements: false,
+    allowExternalRequests: true,
+    allowRegionalFallback: true,
+    allowSnapshotSupplements: true,
   };
 }
 

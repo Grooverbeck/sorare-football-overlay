@@ -2,6 +2,7 @@ import {
   MarketProbabilitySchema,
   PlayerMarketOddsSchema,
   type BookmakerMarketQuote,
+  type MatchProbabilities,
   type PlayerMarketOdds,
   type PlayerStats,
 } from '@sorare-overlay/shared';
@@ -14,13 +15,14 @@ import {
   missingMarketSnapshot,
   needsFrozenSnapshotSupplement,
   normalizePlayerName,
-  normalizeTeamName,
   playerMarketOddsKey,
   playerProbability,
+  providerTeamNamesMatch,
   recordFrozenSnapshotCheck,
   settleCacheReadWithin,
   shouldRetryMarketFailure,
   supplementFrozenSnapshot,
+  supportsFixtureCompetition,
   supportsPlayerCompetition,
   type FixtureGroup,
   type FrozenMarketSnapshot,
@@ -31,13 +33,20 @@ import {
   type PlayerMarketField,
 } from './market-odds-provider.js';
 import {
+  MatchOddsSnapshotSchema,
+  matchProbabilitiesForPlayer,
+  type FixtureMatchOddsProvider,
+  type MatchOddsSnapshot,
+  type MatchOddsSnapshotStore,
+} from './match-odds-provider.js';
+import {
   protectionForUsage,
   quotaUsage,
   type OddsUsageProtection,
   type ProviderQuotaUsage,
   type ProviderQuotaUsageStore,
 } from './odds-usage.js';
-import type { OddsApiIoPlayerRoute } from './competition-odds-routes.js';
+import type { OddsApiIoRoute } from './competition-odds-routes.js';
 
 const OddsApiIoEventSchema = z.object({
   id: z.union([z.string(), z.number()]).transform(String),
@@ -49,12 +58,17 @@ const OddsApiIoEventSchema = z.object({
 const OddsApiIoEventsSchema = z.array(OddsApiIoEventSchema);
 type OddsApiIoEvent = z.infer<typeof OddsApiIoEventSchema>;
 
+const OddsApiIoDecimalOddSchema = z.union([z.string(), z.number()]);
+
 const OddsApiIoMarketOddSchema = z.object({
   // Team and totals markets in the same response legitimately use
   // `label: null`. They are irrelevant for player props and must not make the
   // complete event response fail validation.
   label: z.string().min(1).nullable().optional(),
-  over: z.union([z.string(), z.number()]).optional(),
+  home: OddsApiIoDecimalOddSchema.optional(),
+  draw: OddsApiIoDecimalOddSchema.optional(),
+  away: OddsApiIoDecimalOddSchema.optional(),
+  over: OddsApiIoDecimalOddSchema.optional(),
 });
 
 const OddsApiIoMarketSchema = z.object({
@@ -74,13 +88,16 @@ interface OddsApiIoOptions {
   apiKey: string;
   baseUrl: string;
   bookmakers: readonly string[];
-  routes: readonly OddsApiIoPlayerRoute[];
+  routes: readonly OddsApiIoRoute[];
   fetchWindowMs: number;
   dailyRequestLimit: number;
   hourlyRequestLimit: number;
   requestTimeoutMs: number;
   maxRetries: number;
   store: MarketSnapshotStore;
+  matchOddsStore?: MatchOddsSnapshotStore;
+  matchOddsMissTtlMs?: number;
+  matchOddsFallbackWindowMs?: number;
   logger: AppLogger;
   usageStore?: ProviderQuotaUsageStore;
   fetchImpl?: typeof fetch;
@@ -104,6 +121,8 @@ class OddsApiIoHttpError extends Error {
 
 const ODDS_API_IO_REFRESH_LEASE_MS = 90 * 1_000;
 const HOUR_MS = 60 * 60 * 1_000;
+const ODDS_API_IO_MATCH_SNAPSHOT_AFTER_KICKOFF_MS = 36 * HOUR_MS;
+const DEFAULT_MATCH_ODDS_MISS_TTL_MS = 6 * HOUR_MS;
 
 const defaultSleep = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
@@ -178,61 +197,6 @@ function median(values: readonly number[]): number {
   return ((ordered[middle - 1] ?? 0) + (ordered[middle] ?? 0)) / 2;
 }
 
-const providerClubTokens = new Set([
-  'afc',
-  'bsc',
-  'cf',
-  'fc',
-  'fk',
-  'gnk',
-  'hnk',
-  'nk',
-  'rb',
-  'sc',
-  'sk',
-  'sl',
-  'sv',
-  'vfl',
-]);
-const ambiguousTeamTokens = new Set([
-  'athletic',
-  'city',
-  'club',
-  'real',
-  'sporting',
-  'united',
-]);
-
-function providerTeamTokens(value: string): string[] {
-  return normalizeTeamName(value)
-    .split(' ')
-    .filter(
-      (token) =>
-        !providerClubTokens.has(token) &&
-        !/^(?:18|19|20)\d{2}$/.test(token),
-    );
-}
-
-function providerTeamMatches(left: string, right: string): boolean {
-  const normalizedLeft = normalizeTeamName(left);
-  const normalizedRight = normalizeTeamName(right);
-  if (normalizedLeft === normalizedRight) return true;
-  const leftTokens = providerTeamTokens(left);
-  const rightTokens = providerTeamTokens(right);
-  if (leftTokens.join(' ') === rightTokens.join(' ')) return true;
-  const [shorter, longer] =
-    leftTokens.length <= rightTokens.length
-      ? [leftTokens, rightTokens]
-      : [rightTokens, leftTokens];
-  return (
-    shorter.length > 0 &&
-    shorter.every((token) => longer.includes(token)) &&
-    shorter.some(
-      (token) => token.length >= 4 && !ambiguousTeamTokens.has(token),
-    )
-  );
-}
-
 function findEvent(
   fixture: FixtureGroup,
   events: readonly OddsApiIoEvent[],
@@ -241,8 +205,8 @@ function findEvent(
   const candidates = events
     .filter(
       (event) =>
-        providerTeamMatches(event.home, fixture.homeTeamName) &&
-        providerTeamMatches(event.away, fixture.awayTeamName),
+        providerTeamNamesMatch(event.home, fixture.homeTeamName) &&
+        providerTeamNamesMatch(event.away, fixture.awayTeamName),
     )
     .map((event) => ({
       event,
@@ -297,6 +261,67 @@ function anytimeGoalscorerSnapshot(
         }),
       ]),
     ),
+  });
+}
+
+function decimalOdd(value: string | number | undefined): number | null {
+  if (value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 1 ? parsed : null;
+}
+
+function matchOddsSnapshot(
+  response: OddsApiIoEventOdds,
+  capturedAt: string,
+): MatchOddsSnapshot | null {
+  const bookmakerProbabilities: Array<{
+    home: number;
+    draw: number;
+    away: number;
+  }> = [];
+  for (const markets of Object.values(response.bookmakers)) {
+    const market = markets.find(({ name }) =>
+      ['ml', 'full time result', 'match result'].includes(
+        name.trim().toLocaleLowerCase(),
+      ),
+    );
+    const line = market?.odds.find(
+      (odd) =>
+        decimalOdd(odd.home) !== null &&
+        decimalOdd(odd.draw) !== null &&
+        decimalOdd(odd.away) !== null,
+    );
+    if (!line) continue;
+    const home = decimalOdd(line.home);
+    const draw = decimalOdd(line.draw);
+    const away = decimalOdd(line.away);
+    if (home === null || draw === null || away === null) continue;
+    const raw = { home: 1 / home, draw: 1 / draw, away: 1 / away };
+    const total = raw.home + raw.draw + raw.away;
+    bookmakerProbabilities.push({
+      home: raw.home / total,
+      draw: raw.draw / total,
+      away: raw.away / total,
+    });
+  }
+  if (bookmakerProbabilities.length === 0) return null;
+  const probabilities = {
+    home: median(bookmakerProbabilities.map(({ home }) => home)),
+    draw: median(bookmakerProbabilities.map(({ draw }) => draw)),
+    away: median(bookmakerProbabilities.map(({ away }) => away)),
+  };
+  const total = probabilities.home + probabilities.draw + probabilities.away;
+  return MatchOddsSnapshotSchema.parse({
+    status: 'available',
+    eventId: response.id,
+    capturedAt,
+    expiresAt: new Date(
+      Date.parse(response.date) + ODDS_API_IO_MATCH_SNAPSHOT_AFTER_KICKOFF_MS,
+    ).toISOString(),
+    home: probabilities.home / total,
+    draw: probabilities.draw / total,
+    away: probabilities.away / total,
+    bookmakerCount: bookmakerProbabilities.length,
   });
 }
 
@@ -358,11 +383,28 @@ export class OddsApiIoPlayerMarketOddsProvider
   }
 
   supports(player: PlayerStats): boolean {
-    return this.routeForPlayer(player) !== null;
+    return this.supportsMarket(player, 'goal');
   }
 
   supportsMarket(player: PlayerStats, market: PlayerMarketField): boolean {
-    return market === 'goal' && this.supports(player);
+    const route = this.routeForPlayer(player);
+    return (
+      market === 'goal' &&
+      route !== null &&
+      (route.playerMarkets ?? ['goal']).includes(market)
+    );
+  }
+
+  supportsMatchOdds(player: PlayerStats): boolean {
+    const route = this.routeForFixture(player);
+    return (
+      Boolean(this.options.matchOddsStore) &&
+      route?.matchOdds === true &&
+      this.insideWindow(
+        player.nextGame?.date,
+        this.options.matchOddsFallbackWindowMs ?? this.options.fetchWindowMs,
+      )
+    );
   }
 
   async refreshUsage(): Promise<ProviderQuotaUsage[]> {
@@ -425,7 +467,10 @@ export class OddsApiIoPlayerMarketOddsProvider
       snapshots.set(fixture.key, snapshot);
       const kickoff = Date.parse(fixture.date);
       const untilKickoff = kickoff - this.now();
-      if (untilKickoff < 0 || untilKickoff > this.options.fetchWindowMs) {
+      const route = this.routeForFixtureGroup(fixture);
+      const fetchWindowMs =
+        route?.playerFetchWindowMs ?? this.options.fetchWindowMs;
+      if (untilKickoff < 0 || untilKickoff > fetchWindowMs) {
         continue;
       }
       const needsApi =
@@ -493,6 +538,120 @@ export class OddsApiIoPlayerMarketOddsProvider
     return output;
   }
 
+  async loadMatchOdds(
+    players: readonly PlayerStats[],
+    loadOptions?: { cacheOnly?: boolean },
+  ): Promise<Map<string, MatchProbabilities | null>> {
+    const output = new Map<string, MatchProbabilities | null>(
+      players.map((player) => [playerMarketOddsKey(player), null]),
+    );
+    const store = this.options.matchOddsStore;
+    if (!store) return output;
+    const fixtures = groupFixtures(
+      players.filter((player) => this.routeForMatch(player) !== null),
+      { includeGoalkeepers: true },
+    );
+    if (fixtures.length === 0) return output;
+
+    const cacheOnly = loadOptions?.cacheOnly === true;
+    const matchSnapshots = new Map<string, MatchOddsSnapshot | undefined>();
+    const reads = fixtures.map(async (fixture) => ({
+      fixture,
+      snapshot: await settleCacheReadWithin(
+        store.get(fixtureStoreKey(fixture.key)),
+        cacheOnly,
+      ),
+    }));
+    const loaded = cacheOnly
+      ? (await Promise.allSettled(reads)).flatMap((result) =>
+          result.status === 'fulfilled' ? [result.value] : [],
+        )
+      : await Promise.all(reads);
+    const pending: FixtureGroup[] = [];
+    for (const { fixture, snapshot } of loaded) {
+      matchSnapshots.set(fixture.key, snapshot);
+      if (
+        !snapshot &&
+        this.insideWindow(
+          fixture.date,
+          this.options.matchOddsFallbackWindowMs ??
+            this.options.fetchWindowMs,
+        )
+      ) {
+        pending.push(fixture);
+      }
+    }
+
+    const protection = cacheOnly
+      ? protectionForUsage(undefined)
+      : await this.protection();
+    if (
+      !cacheOnly &&
+      protection.allowExternalRequests &&
+      pending.length > 0
+    ) {
+      const claimed = (
+        await Promise.all(
+          pending.map(async (fixture) => {
+            const requestGroup = this.refreshRequestGroup(fixture);
+            const ownsLease = this.options.store.claimRefreshLease
+              ? await this.options.store.claimRefreshLease(
+                  fixture.key,
+                  requestGroup,
+                  ODDS_API_IO_REFRESH_LEASE_MS,
+                )
+              : true;
+            if (!ownsLease) {
+              this.options.logger.debug(
+                {
+                  provider: 'odds-api-io',
+                  fixture: fixture.key,
+                  requestGroup,
+                },
+                'Odds-API.io fixture refresh skipped because another Worker owns the lease',
+              );
+            }
+            return ownsLease ? fixture : null;
+          }),
+        )
+      ).filter((fixture): fixture is FixtureGroup => fixture !== null);
+      if (claimed.length > 0) {
+        const playerSnapshots = new Map<
+          string,
+          MarketSnapshot | undefined
+        >();
+        await Promise.all(
+          claimed.map(async (fixture) => {
+            playerSnapshots.set(
+              fixture.key,
+              await this.options.store.get(
+                fixtureStoreKey(fixture.key),
+                'player_goal_scorer_anytime',
+              ),
+            );
+          }),
+        );
+        await this.refreshFixtures(
+          claimed,
+          playerSnapshots,
+          matchSnapshots,
+        );
+      }
+    }
+
+    for (const fixture of fixtures) {
+      const snapshot = matchSnapshots.get(fixture.key);
+      if (snapshot?.status !== 'available') continue;
+      for (const player of fixture.players) {
+        output.set(
+          playerMarketOddsKey(player),
+          matchProbabilitiesForPlayer(player, snapshot),
+        );
+      }
+    }
+    return output;
+  }
+
   private async protection(): Promise<OddsUsageProtection> {
     try {
       const now = this.now();
@@ -525,17 +684,14 @@ export class OddsApiIoPlayerMarketOddsProvider
   private async refreshFixtures(
     fixtures: readonly FixtureGroup[],
     snapshots: Map<string, MarketSnapshot | undefined>,
+    matchSnapshots: Map<string, MatchOddsSnapshot | undefined> = new Map(),
   ): Promise<void> {
     const fixturesByRoute = new Map<
-      OddsApiIoPlayerRoute,
+      OddsApiIoRoute,
       FixtureGroup[]
     >();
     for (const fixture of fixtures) {
-      const route = fixture.players
-        .map((player) => this.routeForPlayer(player))
-        .find((candidate): candidate is OddsApiIoPlayerRoute =>
-          Boolean(candidate),
-        );
+      const route = this.routeForFixtureGroup(fixture);
       if (!route) continue;
       const routedFixtures = fixturesByRoute.get(route) ?? [];
       routedFixtures.push(fixture);
@@ -543,7 +699,12 @@ export class OddsApiIoPlayerMarketOddsProvider
     }
     for (const [route, routedFixtures] of fixturesByRoute) {
       try {
-        await this.refreshRoute(route, routedFixtures, snapshots);
+        await this.refreshRoute(
+          route,
+          routedFixtures,
+          snapshots,
+          matchSnapshots,
+        );
       } catch (error) {
         await Promise.all(
           routedFixtures.map((fixture) =>
@@ -560,7 +721,7 @@ export class OddsApiIoPlayerMarketOddsProvider
             fixtures: routedFixtures.length,
             error: error instanceof Error ? error.message : String(error),
           },
-          'Odds-API.io lookup failed; retaining existing market snapshots',
+          'Odds-API.io lookup failed; retaining existing fixture snapshots',
         );
         if (error instanceof OddsApiIoHttpError && error.status === 429) {
           return;
@@ -569,7 +730,7 @@ export class OddsApiIoPlayerMarketOddsProvider
     }
   }
 
-  private routeForPlayer(player: PlayerStats): OddsApiIoPlayerRoute | null {
+  private routeForPlayer(player: PlayerStats): OddsApiIoRoute | null {
     return (
       this.options.routes.find((route) =>
         supportsPlayerCompetition(player, route.competitionSlugs),
@@ -577,23 +738,58 @@ export class OddsApiIoPlayerMarketOddsProvider
     );
   }
 
+  private routeForFixture(player: PlayerStats): OddsApiIoRoute | null {
+    return (
+      this.options.routes.find((route) =>
+        supportsFixtureCompetition(player, route.competitionSlugs),
+      ) ?? null
+    );
+  }
+
+  private routeForMatch(player: PlayerStats): OddsApiIoRoute | null {
+    const route = this.routeForFixture(player);
+    return route?.matchOdds === true ? route : null;
+  }
+
+  private routeForFixtureGroup(
+    fixture: FixtureGroup,
+  ): OddsApiIoRoute | null {
+    return (
+      fixture.players
+        .map((player) => this.routeForFixture(player))
+        .find((candidate): candidate is OddsApiIoRoute =>
+          candidate !== null,
+        ) ?? null
+    );
+  }
+
+  private insideWindow(
+    fixtureDate: string | undefined,
+    windowMs: number,
+  ): boolean {
+    const kickoff = Date.parse(fixtureDate ?? '');
+    const untilKickoff = kickoff - this.now();
+    return (
+      Number.isFinite(kickoff) &&
+      untilKickoff >= 0 &&
+      untilKickoff <= windowMs
+    );
+  }
+
   private refreshRequestGroup(fixture: FixtureGroup): string {
-    const route = fixture.players
-      .map((player) => this.routeForPlayer(player))
-      .find((candidate): candidate is OddsApiIoPlayerRoute =>
-        Boolean(candidate),
-      );
+    const route = this.routeForFixtureGroup(fixture);
     return [
       'odds-api-io',
       ...(route?.leagueSlugs ?? ['unrouted']),
-      'player-props',
+      'fixture-odds',
     ].join(':');
   }
 
   private async refreshRoute(
-    route: OddsApiIoPlayerRoute,
+    route: OddsApiIoRoute,
     fixtures: readonly FixtureGroup[],
     snapshots: Map<string, MarketSnapshot | undefined>,
+    matchSnapshots: Map<string, MatchOddsSnapshot | undefined>,
   ): Promise<void> {
     const kickoffs = fixtures
       .map(({ date }) => Date.parse(date))
@@ -668,6 +864,39 @@ export class OddsApiIoPlayerMarketOddsProvider
             );
       await this.options.store.set(fixtureStoreKey(fixture.key), snapshot);
       snapshots.set(fixture.key, snapshot);
+
+      const matchStore = this.options.matchOddsStore;
+      if (route.matchOdds === true && matchStore) {
+        const storedMatchSnapshot =
+          matchSnapshots.get(fixture.key) ??
+          (await matchStore.get(fixtureStoreKey(fixture.key)));
+        if (storedMatchSnapshot?.status === 'available') {
+          matchSnapshots.set(fixture.key, storedMatchSnapshot);
+          continue;
+        }
+        const extractedMatch = response
+          ? matchOddsSnapshot(response, capturedAt)
+          : null;
+        const nextMatchSnapshot =
+          extractedMatch ??
+          MatchOddsSnapshotSchema.parse({
+            status: 'unavailable',
+            checkedAt: capturedAt,
+            expiresAt: new Date(
+              Math.min(
+                Date.parse(fixture.date),
+                this.now() +
+                  (this.options.matchOddsMissTtlMs ??
+                    DEFAULT_MATCH_ODDS_MISS_TTL_MS),
+              ),
+            ).toISOString(),
+          });
+        await matchStore.set(
+          fixtureStoreKey(fixture.key),
+          nextMatchSnapshot,
+        );
+        matchSnapshots.set(fixture.key, nextMatchSnapshot);
+      }
     }
     this.options.logger.info(
       {
@@ -677,8 +906,9 @@ export class OddsApiIoPlayerMarketOddsProvider
         matched: matched.size,
         events: eventCount,
         bookmakers: this.options.bookmakers,
+        matchOdds: route.matchOdds === true,
       },
-      'Odds-API.io player-prop snapshot received',
+      'Odds-API.io fixture snapshot received',
     );
   }
 
@@ -838,5 +1068,22 @@ export class OddsApiIoPlayerMarketOddsProvider
         'Odds-API.io local request usage could not be persisted',
       );
     }
+  }
+}
+
+export class OddsApiIoFixtureMatchOddsProvider
+  implements FixtureMatchOddsProvider
+{
+  constructor(private readonly source: OddsApiIoPlayerMarketOddsProvider) {}
+
+  supports(player: PlayerStats): boolean {
+    return this.source.supportsMatchOdds(player);
+  }
+
+  load(
+    players: readonly PlayerStats[],
+    loadOptions?: { cacheOnly?: boolean },
+  ): Promise<Map<string, MatchProbabilities | null>> {
+    return this.source.loadMatchOdds(players, loadOptions);
   }
 }
