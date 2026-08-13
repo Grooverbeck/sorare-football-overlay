@@ -13,7 +13,11 @@ describe('SorareDataSource player-name resolution', () => {
     const cache: PlayerNameResolutionCache = {
       get: vi.fn(async (name) =>
         name === 'Cached Player'
-          ? { slug: 'cached-player', position: 'Midfielder' }
+          ? {
+              slug: 'cached-player',
+              position: 'Midfielder',
+              teamSlug: 'cached-club',
+            }
           : undefined,
       ),
       set: vi.fn(),
@@ -37,6 +41,7 @@ describe('SorareDataSource player-name resolution', () => {
     ).resolves.toEqual([
       {
         slug: 'cached-player',
+        teamSlug: 'cached-club',
         resolvedFromName: 'Cached Player',
       },
     ]);
@@ -45,7 +50,12 @@ describe('SorareDataSource player-name resolution', () => {
 
   it('resolves direct slug candidates before using individual Sorare searches and caches them', async () => {
     const players = {
-      'Tim Ream': { slug: 'tim-ream', displayName: 'Tim Ream', position: 'Defender' },
+      'Tim Ream': {
+        slug: 'tim-ream',
+        displayName: 'Tim Ream',
+        position: 'Defender',
+        activeClub: { slug: 'charlotte-fc-charlotte-north-carolina' },
+      },
       'Sam Surridge': {
         slug: 'sam-surridge',
         displayName: 'Samuel Surridge',
@@ -68,6 +78,7 @@ describe('SorareDataSource player-name resolution', () => {
     await expect(source.resolvePlayerNames(['Tim Ream', 'Sam Surridge'])).resolves.toEqual([
       {
         slug: 'tim-ream',
+        teamSlug: 'charlotte-fc-charlotte-north-carolina',
         resolvedFromName: 'Tim Ream',
         nameResolution: 'direct',
       },
@@ -413,6 +424,7 @@ describe('SorareDataSource player-name resolution', () => {
     ).resolves.toEqual([
       {
         slug: 'joaquin-nicolas-pereyra',
+        teamSlug: 'minnesota-united',
         resolvedFromName: 'Joaquín Pereyra',
         nameResolution: 'search',
       },

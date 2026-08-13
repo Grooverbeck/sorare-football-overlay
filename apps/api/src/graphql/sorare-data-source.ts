@@ -372,6 +372,10 @@ export class SorareDataSource implements PlayerStatsDataSource {
         {
           slug: resolved.slug,
           ...(expectedPosition ? { position: expectedPosition } : {}),
+          // Only forward the canonical club slug stored with the Sorare
+          // resolution. The DOM-provided expected slug remains a lookup hint
+          // and must never become persistent fixture identity by itself.
+          ...(resolved.teamSlug ? { teamSlug: resolved.teamSlug } : {}),
           resolvedFromName: name,
           ...(resolved.nameResolution
             ? { nameResolution: resolved.nameResolution }
