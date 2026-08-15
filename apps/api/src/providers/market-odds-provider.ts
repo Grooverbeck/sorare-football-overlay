@@ -97,8 +97,16 @@ export type MarketSupplementBatch = z.infer<
   typeof MarketSupplementBatchSchema
 >;
 
+export interface MarketSnapshotRead {
+  fixtureKey: string;
+  market: OddsMarketKey;
+}
+
 export interface MarketSnapshotStore {
   get(fixtureKey: string, market: OddsMarketKey): Promise<MarketSnapshot | undefined>;
+  getMany?(
+    requests: readonly MarketSnapshotRead[],
+  ): Promise<Array<MarketSnapshot | undefined>>;
   set(fixtureKey: string, snapshot: MarketSnapshot): void | Promise<void>;
   claimRefreshLease?(
     fixtureKey: string,
@@ -174,6 +182,14 @@ export class InMemoryMarketSnapshotStore implements MarketSnapshotStore {
       return undefined;
     }
     return entry.snapshot;
+  }
+
+  getMany(
+    requests: readonly MarketSnapshotRead[],
+  ): Promise<Array<MarketSnapshot | undefined>> {
+    return Promise.all(
+      requests.map(({ fixtureKey, market }) => this.get(fixtureKey, market)),
+    );
   }
 
   set(fixtureKey: string, snapshot: MarketSnapshot): void {
@@ -309,6 +325,41 @@ export function settleCacheReadWithin<T>(
       () => finish(undefined),
     );
   });
+}
+
+export function cacheOnlySnapshotReadBudgetMs(
+  loadOptions?: PlayerMarketOddsLoadOptions,
+): number | undefined {
+  if (
+    loadOptions?.cacheOnly !== true ||
+    loadOptions.cacheOnlyDeadlineMs === undefined
+  ) {
+    return undefined;
+  }
+  return Math.max(1, loadOptions.cacheOnlyDeadlineMs - Date.now());
+}
+
+export async function readMarketSnapshotsWithin(
+  store: MarketSnapshotStore,
+  requests: readonly MarketSnapshotRead[],
+  cacheOnly: boolean,
+  timeoutMs?: number,
+): Promise<Array<MarketSnapshot | undefined>> {
+  if (requests.length === 0) return [];
+  if (!store.getMany) {
+    return Promise.all(
+      requests.map(({ fixtureKey, market }) =>
+        settleCacheReadWithin(
+          store.get(fixtureKey, market),
+          cacheOnly,
+          timeoutMs,
+        ),
+      ),
+    );
+  }
+  const pending = store.getMany(requests);
+  const loaded = await settleCacheReadWithin(pending, cacheOnly, timeoutMs);
+  return loaded ?? requests.map(() => undefined);
 }
 
 export function playerMarketOddsKey(
@@ -1483,6 +1534,7 @@ export class TheOddsApiPlayerMarketOddsProvider
   private async loadFixtureSnapshots(
     fixtureKey: string,
     cacheOnly: boolean,
+    cacheOnlyReadBudgetMs?: number,
   ): Promise<Map<OddsMarketKey, MarketSnapshot>> {
     const byMarket = new Map<OddsMarketKey, MarketSnapshot>();
     const reads = this.supportedMarketKeys().map(async (market) => ({
@@ -1490,6 +1542,7 @@ export class TheOddsApiPlayerMarketOddsProvider
       snapshot: await settleCacheReadWithin(
         this.options.store.get(fixtureKey, market),
         cacheOnly,
+        cacheOnlyReadBudgetMs,
       ),
     }));
     if (!cacheOnly) {
@@ -1506,6 +1559,33 @@ export class TheOddsApiPlayerMarketOddsProvider
       if (snapshot) byMarket.set(market, snapshot);
     }
     return byMarket;
+  }
+
+  private async loadCachedFixtureSnapshots(
+    fixtures: readonly FixtureGroup[],
+    loadOptions?: PlayerMarketOddsLoadOptions,
+  ): Promise<Map<string, Map<OddsMarketKey, MarketSnapshot>>> {
+    const markets = this.supportedMarketKeys();
+    const entries = fixtures.flatMap((fixture) =>
+      markets.map((market) => ({
+        fixtureKey: fixture.key,
+        market,
+      })),
+    );
+    const loaded = await readMarketSnapshotsWithin(
+      this.options.store,
+      entries,
+      true,
+      cacheOnlySnapshotReadBudgetMs(loadOptions),
+    );
+    const snapshots = new Map<string, Map<OddsMarketKey, MarketSnapshot>>(
+      fixtures.map((fixture) => [fixture.key, new Map()]),
+    );
+    for (const [index, entry] of entries.entries()) {
+      const snapshot = loaded[index];
+      if (snapshot) snapshots.get(entry.fixtureKey)?.set(entry.market, snapshot);
+    }
+    return snapshots;
   }
 
   private marketsNeedingApi(
@@ -1593,18 +1673,12 @@ export class TheOddsApiPlayerMarketOddsProvider
       Map<OddsMarketKey, MarketSnapshot>
     >();
     if (cacheOnly) {
-      const loadedFixtures = await Promise.allSettled(
-        fixtures.map(async (fixture) => ({
-          fixtureKey: fixture.key,
-          snapshots: await this.loadFixtureSnapshots(fixture.key, true),
-        })),
+      const loadedFixtures = await this.loadCachedFixtureSnapshots(
+        fixtures,
+        loadOptions,
       );
-      for (const result of loadedFixtures) {
-        if (result.status !== 'fulfilled') continue;
-        cachedFixtureSnapshots.set(
-          result.value.fixtureKey,
-          result.value.snapshots,
-        );
+      for (const [fixtureKey, snapshots] of loadedFixtures) {
+        cachedFixtureSnapshots.set(fixtureKey, snapshots);
       }
     }
 

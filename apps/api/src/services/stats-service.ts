@@ -497,6 +497,7 @@ export class StatsService {
     const oddsEligiblePlayers = cachedOrLoaded.filter(
       (stats) => playerMarketOddsSupported(this.marketOddsProvider, stats),
     );
+    const cacheOnlyOddsDeadlineMs = Date.now() + this.cacheOnlyOddsBudgetMs;
     const [fixtureMatchOdds, marketOdds] = await Promise.all([
       this.loadCacheOnlyWithinBudget(
         this.fixtureMatchOddsProvider.load(cachedOrLoaded, {
@@ -506,6 +507,7 @@ export class StatsService {
       this.loadCacheOnlyWithinBudget(
         this.marketOddsProvider.load(oddsEligiblePlayers, {
           cacheOnly: true,
+          cacheOnlyDeadlineMs: cacheOnlyOddsDeadlineMs,
         }),
       ),
     ]);

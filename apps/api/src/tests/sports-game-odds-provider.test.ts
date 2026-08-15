@@ -716,6 +716,129 @@ describe('SportsGameOddsPlayerMarketOddsProvider', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it('keeps an existing cached market when its D1 read exceeds the legacy per-read budget', async () => {
+    const stats = player();
+    const fixtureKey = sportsGameOddsFixtureStoreKey(stats.nextGame!);
+    if (!fixtureKey) throw new Error('Expected fixture key');
+    const backingStore = new InMemoryMarketSnapshotStore(60_000, () => now);
+    backingStore.set(fixtureKey, {
+      status: 'available',
+      market: 'player_assists',
+      eventId: 'fixture-1',
+      capturedAt: new Date(now).toISOString(),
+      players: {
+        'timo werner': { probability: 0.31, bookmakerCount: 1 },
+      },
+    });
+    const store: MarketSnapshotStore = {
+      get: async (key, market) => {
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        return backingStore.get(key, market);
+      },
+      set: (key, snapshot) => backingStore.set(key, snapshot),
+    };
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new SportsGameOddsPlayerMarketOddsProvider({
+      apiKey: 'secret-test-key',
+      baseUrl: 'https://api.sportsgameodds.com/v2',
+      leagueId: 'MLS',
+      fetchWindowMs: 24 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store,
+      logger,
+      fetchImpl,
+      now: () => now,
+    });
+
+    const cached = await provider.load([stats], {
+      cacheOnly: true,
+      cacheOnlyDeadlineMs: Date.now() + 250,
+    });
+
+    expect(cached.get(playerMarketOddsKey(stats))).toMatchObject({
+      goal: null,
+      assist: { probability: 0.31 },
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('loads all fixture markets through one cache batch read', async () => {
+    const first = player();
+    const second = player({
+      slug: 'second-player',
+      displayName: 'Second Player',
+      nextGame: {
+        ...player().nextGame!,
+        date: '2026-07-26T00:30:00.000Z',
+        competitionSlug: 'mlspa',
+        awayTeamName: 'Second Away FC',
+        opponentTeamName: 'Second Away FC',
+      },
+    });
+    const firstKey = sportsGameOddsFixtureStoreKey(first.nextGame!);
+    const secondKey = sportsGameOddsFixtureStoreKey(second.nextGame!);
+    if (!firstKey || !secondKey) throw new Error('Expected fixture keys');
+    const backingStore = new InMemoryMarketSnapshotStore(60_000, () => now);
+    backingStore.set(firstKey, {
+      status: 'available',
+      market: 'player_assists',
+      eventId: 'fixture-1',
+      capturedAt: new Date(now).toISOString(),
+      players: {
+        'timo werner': { probability: 0.31, bookmakerCount: 1 },
+      },
+    });
+    backingStore.set(secondKey, {
+      status: 'available',
+      market: 'player_assists',
+      eventId: 'fixture-2',
+      capturedAt: new Date(now).toISOString(),
+      players: {
+        'second player': { probability: 0.27, bookmakerCount: 1 },
+      },
+    });
+    const get = vi.fn<MarketSnapshotStore['get']>(async () => {
+      throw new Error('Individual cache reads must not be used');
+    });
+    const getMany = vi.fn<NonNullable<MarketSnapshotStore['getMany']>>(
+      async (requests) =>
+        Promise.all(
+          requests.map(({ fixtureKey, market }) =>
+            backingStore.get(fixtureKey, market),
+          ),
+        ),
+    );
+    const store: MarketSnapshotStore = {
+      get,
+      getMany,
+      set: (key, snapshot) => backingStore.set(key, snapshot),
+    };
+    const provider = new SportsGameOddsPlayerMarketOddsProvider({
+      apiKey: 'secret-test-key',
+      baseUrl: 'https://api.sportsgameodds.com/v2',
+      leagueId: 'MLS',
+      fetchWindowMs: 24 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store,
+      logger,
+      fetchImpl: vi.fn<typeof fetch>(),
+      now: () => now,
+    });
+
+    const cached = await provider.load([first, second], {
+      cacheOnly: true,
+      cacheOnlyDeadlineMs: Date.now() + 250,
+    });
+
+    expect(getMany).toHaveBeenCalledTimes(1);
+    expect(getMany.mock.calls[0]?.[0]).toHaveLength(6);
+    expect(get).not.toHaveBeenCalled();
+    expect(cached.get(playerMarketOddsKey(first))?.assist?.probability).toBe(0.31);
+    expect(cached.get(playerMarketOddsKey(second))?.assist?.probability).toBe(0.27);
+  });
+
   it('propagates a normal-path cache read failure before contacting the external API', async () => {
     const stats = player();
     const failure = new Error('normal SportsGameOdds cache read failure');

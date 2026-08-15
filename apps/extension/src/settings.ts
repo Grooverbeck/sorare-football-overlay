@@ -1,5 +1,6 @@
 export const OVERLAY_ENABLED_KEY = 'overlayEnabled';
 export const MARKET_BRACKET_SIDE_KEY = 'marketBracketSide';
+export const MARKET_BRACKET_COMPACT_VIEW_KEY = 'marketBracketCompactView';
 export const HISTORICAL_ASSIST_FALLBACK_ENABLED_KEY =
   'historicalAssistFallbackEnabled';
 export const HISTORICAL_ASSIST_WINDOW_KEY = 'historicalAssistWindow';
@@ -34,6 +35,21 @@ export async function setMarketBracketSide(
   side: MarketBracketSide,
 ): Promise<void> {
   await chrome.storage.local.set({ [MARKET_BRACKET_SIDE_KEY]: side });
+}
+
+export async function getMarketBracketCompactView(): Promise<boolean> {
+  const stored = await chrome.storage.local.get({
+    [MARKET_BRACKET_COMPACT_VIEW_KEY]: false,
+  });
+  return stored[MARKET_BRACKET_COMPACT_VIEW_KEY] === true;
+}
+
+export async function setMarketBracketCompactView(
+  enabled: boolean,
+): Promise<void> {
+  await chrome.storage.local.set({
+    [MARKET_BRACKET_COMPACT_VIEW_KEY]: enabled,
+  });
 }
 
 export function normalizeHistoricalAssistWindow(

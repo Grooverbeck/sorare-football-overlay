@@ -148,6 +148,112 @@ describe('calculatePlayerMetrics', () => {
     expect(decisives.l15).toEqual({ value: 0.4, sampleSize: 15 });
     expect(decisives.l40).toEqual({ value: 0.4, sampleSize: 40 });
   });
+
+  it('uses only current-club appearances for historical event rates', () => {
+    const mixedClubHistory: PlayerAppearance[] = [
+      {
+        date: '2026-07-20T18:00:00.000Z',
+        allAroundScore: 20,
+        goals: 0,
+        assists: 0,
+        minsPlayed: 90,
+        cleanSheet60: 0,
+        lowCoverage: false,
+        position: 'Midfielder',
+        currentClubGame: false,
+      },
+      {
+        date: '2026-07-13T18:00:00.000Z',
+        allAroundScore: 20,
+        goals: 0,
+        assists: 0,
+        minsPlayed: 90,
+        cleanSheet60: 0,
+        lowCoverage: false,
+        position: 'Midfielder',
+        currentClubGame: false,
+      },
+      {
+        date: '2026-07-06T18:00:00.000Z',
+        allAroundScore: 20,
+        goals: 1,
+        assists: 0,
+        minsPlayed: 90,
+        cleanSheet60: 0,
+        lowCoverage: false,
+        position: 'Midfielder',
+        currentClubGame: true,
+      },
+      {
+        date: '2026-06-29T18:00:00.000Z',
+        allAroundScore: 20,
+        goals: 0,
+        assists: 1,
+        minsPlayed: 90,
+        cleanSheet60: 0,
+        lowCoverage: false,
+        position: 'Midfielder',
+        currentClubGame: true,
+      },
+    ];
+
+    expect(
+      calculateHistoricalGoalMetrics(
+        mixedClubHistory,
+        'Midfielder',
+        true,
+      ).l15,
+    ).toEqual({ value: 0.5, sampleSize: 2 });
+    expect(
+      calculateHistoricalAssistMetrics(
+        mixedClubHistory,
+        'Midfielder',
+        true,
+      ).l15,
+    ).toEqual({ value: 0.5, sampleSize: 2 });
+    expect(
+      calculateHistoricalDecisiveMetrics(
+        mixedClubHistory,
+        'Midfielder',
+        true,
+      ).l15,
+    ).toEqual({ value: 1, sampleSize: 2 });
+  });
+
+  it('keeps previous-club history until a transferred player debuts', () => {
+    const preDebutHistory: PlayerAppearance[] = [
+      {
+        date: '2026-07-20T18:00:00.000Z',
+        allAroundScore: 20,
+        goals: 1,
+        assists: 0,
+        minsPlayed: 90,
+        cleanSheet60: 0,
+        lowCoverage: false,
+        position: 'Forward',
+        currentClubGame: false,
+      },
+      {
+        date: '2026-07-13T18:00:00.000Z',
+        allAroundScore: 20,
+        goals: 0,
+        assists: 0,
+        minsPlayed: 90,
+        cleanSheet60: 0,
+        lowCoverage: false,
+        position: 'Forward',
+        currentClubGame: false,
+      },
+    ];
+
+    expect(
+      calculateHistoricalGoalMetrics(
+        preDebutHistory,
+        'Forward',
+        true,
+      ).l15,
+    ).toEqual({ value: 0.5, sampleSize: 2 });
+  });
 });
 
 describe('hasAnyDisplayData', () => {

@@ -1,10 +1,12 @@
 import {
   getHistoricalAssistFallbackSettings,
+  getMarketBracketCompactView,
   getMarketBracketSide,
   getMarketValueFormat,
   getOverlayEnabled,
   setHistoricalAssistFallbackEnabled,
   setHistoricalAssistWindow,
+  setMarketBracketCompactView,
   setMarketBracketSide,
   setMarketValueFormat,
   setOverlayEnabled,
@@ -29,6 +31,9 @@ const marketValueFormatInputs = Array.from(
   document.querySelectorAll<HTMLInputElement>(
     'input[name="market-value-format"]',
   ),
+);
+const compactViewToggle = requireElement<HTMLInputElement>(
+  '#market-bracket-compact-view',
 );
 const historicalAssistToggle = requireElement<HTMLInputElement>(
   '#historical-assist-enabled',
@@ -60,6 +65,9 @@ void getMarketValueFormat().then((format) => {
     input.checked = input.value === format;
   }
 });
+void getMarketBracketCompactView().then((enabled) => {
+  compactViewToggle.checked = enabled;
+});
 void getHistoricalAssistFallbackSettings().then(({ enabled, window }) => {
   renderHistoricalAssistSettings(enabled, window);
 });
@@ -83,6 +91,10 @@ for (const input of marketValueFormatInputs) {
     void setMarketValueFormat(input.value as MarketValueFormat);
   });
 }
+
+compactViewToggle.addEventListener('change', () => {
+  void setMarketBracketCompactView(compactViewToggle.checked);
+});
 
 function renderHistoricalAssistSettings(
   enabled: boolean,

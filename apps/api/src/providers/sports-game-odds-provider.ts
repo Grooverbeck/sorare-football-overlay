@@ -10,6 +10,7 @@ import {
 import { z } from 'zod';
 import type { AppLogger } from '../logger.js';
 import {
+  cacheOnlySnapshotReadBudgetMs,
   groupFixtures,
   marketFixtureKey,
   missingMarketSnapshot,
@@ -20,6 +21,7 @@ import {
   playerProbability,
   providerTeamNamesMatch,
   recordFrozenSnapshotCheck,
+  readMarketSnapshotsWithin,
   settleCacheReadWithin,
   shouldRetryMarketFailure,
   supportsFixtureCompetition,
@@ -659,6 +661,7 @@ export class SportsGameOddsPlayerMarketOddsProvider
   private async loadFixtureSnapshots(
     fixtureKey: string,
     cacheOnly: boolean,
+    cacheOnlyReadBudgetMs?: number,
   ): Promise<Map<OddsMarketKey, MarketSnapshot>> {
     const storeKey = fixtureStoreKey(fixtureKey);
     const byMarket = new Map<OddsMarketKey, MarketSnapshot>();
@@ -667,6 +670,7 @@ export class SportsGameOddsPlayerMarketOddsProvider
       snapshot: await settleCacheReadWithin(
         this.options.store.get(storeKey, market),
         cacheOnly,
+        cacheOnlyReadBudgetMs,
       ),
     }));
     if (!cacheOnly) {
@@ -683,6 +687,36 @@ export class SportsGameOddsPlayerMarketOddsProvider
       if (snapshot) byMarket.set(market, snapshot);
     }
     return byMarket;
+  }
+
+  private async loadCachedFixtureSnapshots(
+    fixtures: readonly FixtureGroup[],
+    loadOptions?: PlayerMarketOddsLoadOptions,
+  ): Promise<Map<string, Map<OddsMarketKey, MarketSnapshot>>> {
+    const entries = fixtures.flatMap((fixture) =>
+      sportsGameOddsMarketKeys.map((market) => ({
+        resultFixtureKey: fixture.key,
+        market,
+        request: {
+          fixtureKey: fixtureStoreKey(fixture.key),
+          market,
+        },
+      })),
+    );
+    const loaded = await readMarketSnapshotsWithin(
+      this.options.store,
+      entries.map(({ request }) => request),
+      true,
+      cacheOnlySnapshotReadBudgetMs(loadOptions),
+    );
+    const snapshots = new Map<string, Map<OddsMarketKey, MarketSnapshot>>(
+      fixtures.map((fixture) => [fixture.key, new Map()]),
+    );
+    for (const [index, entry] of entries.entries()) {
+      const snapshot = loaded[index];
+      if (snapshot) snapshots.get(entry.resultFixtureKey)?.set(entry.market, snapshot);
+    }
+    return snapshots;
   }
 
   async load(
@@ -704,18 +738,12 @@ export class SportsGameOddsPlayerMarketOddsProvider
       Map<OddsMarketKey, MarketSnapshot>
     >();
     if (cacheOnly) {
-      const loadedFixtures = await Promise.allSettled(
-        fixtures.map(async (fixture) => ({
-          fixtureKey: fixture.key,
-          snapshots: await this.loadFixtureSnapshots(fixture.key, true),
-        })),
+      const loadedFixtures = await this.loadCachedFixtureSnapshots(
+        fixtures,
+        loadOptions,
       );
-      for (const result of loadedFixtures) {
-        if (result.status !== 'fulfilled') continue;
-        cachedFixtureSnapshots.set(
-          result.value.fixtureKey,
-          result.value.snapshots,
-        );
+      for (const [fixtureKey, snapshots] of loadedFixtures) {
+        cachedFixtureSnapshots.set(fixtureKey, snapshots);
       }
     }
     for (const fixture of fixtures) {

@@ -1,5 +1,6 @@
 import type {
   FootballPosition,
+  PlayerMarketOdds,
   PlayerStats,
   PlayerStatsRequest,
   PlayerStatsSuccessResponse,
@@ -64,6 +65,7 @@ interface ScheduledTargetWork {
 
 interface PendingRefreshWork extends ScheduledTargetWork {
   refreshFixture: boolean;
+  isolateMarketOdds: boolean;
 }
 
 interface BatchJob {
@@ -176,6 +178,55 @@ function samePlayerTeamFixture(
   );
 }
 
+function samePlayerFixture(
+  left: NonNullable<PlayerStats['nextGame']>,
+  right: NonNullable<PlayerStats['nextGame']>,
+): boolean {
+  if (left.date !== right.date) return false;
+  const comparableIdentities: Array<
+    [string | null | undefined, string | null | undefined]
+  > = [
+    [left.playerTeamSlug, right.playerTeamSlug],
+    [left.homeTeamName, right.homeTeamName],
+    [left.awayTeamName, right.awayTeamName],
+    [left.playerTeamName, right.playerTeamName],
+    [left.opponentTeamName, right.opponentTeamName],
+  ];
+  return comparableIdentities.every(
+    ([leftIdentity, rightIdentity]) =>
+      !leftIdentity ||
+      !rightIdentity ||
+      normalizeName(leftIdentity) === normalizeName(rightIdentity),
+  );
+}
+
+function mergePlayerMarketOdds(
+  cached: PlayerMarketOdds | null | undefined,
+  incoming: PlayerMarketOdds | null | undefined,
+): PlayerMarketOdds | null | undefined {
+  if (!cached) return incoming;
+  if (!incoming) return cached;
+
+  const reusedCachedGoal = !incoming.goal && Boolean(cached.goal);
+  const reusedCachedAssist = !incoming.assist && Boolean(cached.assist);
+  const reusedCachedDecisive = !incoming.decisive && Boolean(cached.decisive);
+  if (!reusedCachedGoal && !reusedCachedAssist && !reusedCachedDecisive) {
+    return incoming;
+  }
+  if (!incoming.goal && !incoming.assist && !incoming.decisive) return cached;
+
+  return {
+    source: incoming.source === cached.source ? incoming.source : 'mixed',
+    capturedAt:
+      incoming.capturedAt >= cached.capturedAt
+        ? incoming.capturedAt
+        : cached.capturedAt,
+    goal: incoming.goal ?? cached.goal,
+    assist: incoming.assist ?? cached.assist,
+    decisive: incoming.decisive ?? cached.decisive ?? null,
+  };
+}
+
 function mergeSharedFixtureTeamData(
   stats: PlayerStats,
   candidates: Iterable<PlayerStats>,
@@ -238,12 +289,14 @@ export class StatsBatchCoordinator {
   private readonly afterFlightTargets = new Map<string, PendingTarget>();
   private readonly batchQueue: BatchJob[] = [];
   private readonly cache = new Map<string, PlayerStats>();
+  private readonly trackedViews = new Map<OverlayView, TargetIdentity>();
   private readonly retryAttempts = new Map<string, number>();
   private readonly retryWork = new Map<string, ScheduledTargetWork>();
   private readonly deferredRetryUsed = new Set<string>();
   private readonly refreshAttempts = new Map<string, number>();
   private readonly refreshWork = new Map<string, PendingRefreshWork>();
   private readonly fixtureRefreshTargets = new Set<string>();
+  private readonly isolatedMarketRefreshKeys = new Set<string>();
   private activeBatchCount = 0;
   private batchSequence = 0;
   private timer: number | undefined;
@@ -255,21 +308,35 @@ export class StatsBatchCoordinator {
     private readonly retryDelaysMs: readonly number[] = [5_000, 30_000],
     private readonly progressiveBatchSize = 12,
     private readonly maxConcurrentBatches = 2,
-    private readonly refreshDelaysMs: readonly number[] = [2_500, 8_000],
+    private readonly refreshDelaysMs: readonly number[] = [
+      2_500,
+      8_000,
+      25_000,
+      60_000,
+    ],
     private readonly deferredRetryDelayMs = 750,
   ) {}
 
-  setIncludeHistoricalAssists(enabled: boolean): void {
-    if (this.includeHistoricalAssists === enabled) return;
+  setIncludeHistoricalAssists(enabled: boolean): boolean {
+    if (this.includeHistoricalAssists === enabled) return false;
     this.includeHistoricalAssists = enabled;
-    if (enabled) this.cache.clear();
+    return true;
   }
 
-  enqueue(target: CardTarget, view: OverlayView, priority = 0): void {
+  enqueue(
+    target: CardTarget,
+    view: OverlayView,
+    priority = 0,
+    forceRefresh = false,
+  ): void {
     const key = targetKey(target);
+    this.trackedViews.set(view, target);
     this.clearRetry(key);
     const cached = this.cachedStatsForTarget(target);
     if (cached) {
+      const requiresHistoricalHydration =
+        this.includeHistoricalAssists && !cached.historicalAssists;
+      const shouldForceRefresh = forceRefresh || requiresHistoricalHydration;
       logStatsDiagnostic('cache-hit-render', {
         key,
         target: {
@@ -280,17 +347,20 @@ export class StatsBatchCoordinator {
         rendered: summarizeStats(cached),
       });
       view.render(cached);
-      if (cached.pendingRefreshes?.length) {
+      if (shouldForceRefresh) {
+        this.clearPendingRefresh(key);
+      } else if (cached.pendingRefreshes?.length) {
         this.schedulePendingRefresh(
           target,
           [view],
           cached.pendingRefreshes.includes('fixture'),
           priority,
+          cached.pendingRefreshes.includes('marketOdds'),
         );
       } else {
         this.clearPendingRefresh(key);
       }
-      return;
+      if (!shouldForceRefresh) return;
     }
 
     this.queueTarget(target, [view], priority);
@@ -380,10 +450,23 @@ export class StatsBatchCoordinator {
     for (const target of queued) {
       this.inFlightTargets.set(targetKey(target), target);
     }
-    const batches = conflictFreeBatches(
-      queued,
-      Math.max(1, this.progressiveBatchSize),
-    );
+    const isolatedBatches: PendingTarget[][] = [];
+    const regularTargets: PendingTarget[] = [];
+    for (const target of queued) {
+      const key = targetKey(target);
+      if (this.isolatedMarketRefreshKeys.delete(key)) {
+        isolatedBatches.push([target]);
+      } else {
+        regularTargets.push(target);
+      }
+    }
+    const batches = [
+      ...isolatedBatches,
+      ...conflictFreeBatches(
+        regularTargets,
+        Math.max(1, this.progressiveBatchSize),
+      ),
+    ];
     await Promise.all(
       batches.map((batch) => this.scheduleBatch(batch)),
     );
@@ -489,36 +572,16 @@ export class StatsBatchCoordinator {
         (response.meta.deferredPlayerNames ?? []).map(normalizeName),
       );
       const fixtureCandidates = [...response.data, ...this.cache.values()];
-      const responseData = response.data.map((stats) =>
+      const responseDataWithSharedFixtures = response.data.map((stats) =>
         mergeSharedFixtureTeamData(stats, fixtureCandidates),
       );
-      for (const stats of responseData) {
-        if (!canTrackStats(stats)) continue;
-        const mergedStats = this.mergeWithCompleteCachedForm(stats);
-        this.cache.set(
-          targetKey({ slug: mergedStats.slug, position: mergedStats.position }),
-          mergedStats,
-        );
-        this.cache.set(
-          targetKey({
-            playerName: mergedStats.displayName,
-            position: mergedStats.position,
-          }),
-          mergedStats,
-        );
-        if (
-          batch.some(
-            (target) =>
-              target.position === undefined &&
-              targetMatchesStats(target, mergedStats),
-          )
-        ) {
-          this.cache.set(targetKey({ slug: mergedStats.slug }), mergedStats);
-          this.cache.set(
-            targetKey({ playerName: mergedStats.displayName }),
-            mergedStats,
-          );
-        }
+      const responseData = responseDataWithSharedFixtures.map((stats) =>
+        this.mergeWithCachedStats(stats),
+      );
+      for (const mergedStats of responseData) {
+        if (!canTrackStats(mergedStats)) continue;
+        const changedKeys = this.cacheStatsAliases(mergedStats, batch);
+        this.renderTrackedAliases(changedKeys, mergedStats);
       }
       for (const target of batch) {
         const key = targetKey(target);
@@ -585,6 +648,7 @@ export class StatsBatchCoordinator {
             target.views,
             stats.pendingRefreshes.includes('fixture'),
             target.priority,
+            stats.pendingRefreshes.includes('marketOdds'),
           );
         } else if (stats) {
           this.clearPendingRefresh(
@@ -629,6 +693,7 @@ export class StatsBatchCoordinator {
     views: Iterable<OverlayView>,
     refreshFixture = false,
     priority = 0,
+    isolateMarketOdds = false,
   ): void {
     const key = targetKey(target);
     if (refreshFixture) this.fixtureRefreshTargets.add(key);
@@ -637,6 +702,7 @@ export class StatsBatchCoordinator {
       for (const view of views) existing.views.add(view);
       existing.priority = Math.max(existing.priority, priority);
       existing.refreshFixture ||= refreshFixture;
+      existing.isolateMarketOdds ||= isolateMarketOdds;
       this.startRefreshWork(key, existing);
       return;
     }
@@ -645,6 +711,7 @@ export class StatsBatchCoordinator {
     const delay = this.refreshDelaysMs[attempt];
     if (delay === undefined) {
       this.fixtureRefreshTargets.delete(key);
+      this.isolatedMarketRefreshKeys.delete(key);
       return;
     }
 
@@ -655,6 +722,7 @@ export class StatsBatchCoordinator {
       priority,
       remainingMs: delay,
       refreshFixture,
+      isolateMarketOdds,
     };
     this.refreshWork.set(key, work);
     this.startRefreshWork(key, work);
@@ -672,6 +740,7 @@ export class StatsBatchCoordinator {
         this.refreshWork.delete(key);
         this.refreshAttempts.delete(key);
         this.fixtureRefreshTargets.delete(key);
+        this.isolatedMarketRefreshKeys.delete(key);
         return;
       }
       const activeViews = connectedViews.filter((view) =>
@@ -679,6 +748,7 @@ export class StatsBatchCoordinator {
       );
       if (activeViews.length === 0) return;
       this.refreshWork.delete(key);
+      if (work.isolateMarketOdds) this.isolatedMarketRefreshKeys.add(key);
       this.queueTarget(work.target, connectedViews, work.priority);
     }, work.remainingMs);
   }
@@ -696,7 +766,83 @@ export class StatsBatchCoordinator {
     );
   }
 
-  private mergeWithCompleteCachedForm(incoming: PlayerStats): PlayerStats {
+  private cacheStatsAliases(
+    stats: PlayerStats,
+    batch: readonly PendingTarget[],
+  ): Set<string> {
+    const changedKeys = new Set<string>();
+    const setAlias = (target: TargetIdentity): void => {
+      const key = targetKey(target);
+      this.cache.set(key, stats);
+      changedKeys.add(key);
+    };
+
+    // Every alias already confirmed for this concrete scoring position follows
+    // the newest response. Position variants remain isolated because their
+    // cached PlayerStats.position differs.
+    for (const [key, cached] of this.cache) {
+      if (cached.slug !== stats.slug || cached.position !== stats.position) {
+        continue;
+      }
+      this.cache.set(key, stats);
+      changedKeys.add(key);
+    }
+
+    const matchingTargets = batch.filter((target) =>
+      targetMatchesStats(target, stats),
+    );
+    const names = new Set([
+      stats.displayName,
+      ...matchingTargets.flatMap(({ playerName }) =>
+        playerName ? [playerName] : [],
+      ),
+    ]);
+    const canonicalTeamSlug = stats.nextGame?.playerTeamSlug
+      ?.trim()
+      .toLocaleLowerCase();
+    const positions: Array<FootballPosition | undefined> = [stats.position];
+    if (matchingTargets.some(({ position }) => position === undefined)) {
+      positions.push(undefined);
+    }
+    const teamSlugs = canonicalTeamSlug
+      ? [undefined, canonicalTeamSlug]
+      : [undefined];
+
+    for (const position of positions) {
+      for (const teamSlug of teamSlugs) {
+        setAlias({
+          slug: stats.slug,
+          ...(position ? { position } : {}),
+          ...(teamSlug ? { teamSlug } : {}),
+        });
+        for (const playerName of names) {
+          setAlias({
+            playerName,
+            ...(position ? { position } : {}),
+            ...(teamSlug ? { teamSlug } : {}),
+          });
+        }
+      }
+    }
+
+    return changedKeys;
+  }
+
+  private renderTrackedAliases(
+    changedKeys: ReadonlySet<string>,
+    stats: PlayerStats,
+  ): void {
+    if (!hasAnyDisplayData(stats)) return;
+    for (const [view, target] of this.trackedViews) {
+      if (!view.host.isConnected) {
+        this.trackedViews.delete(view);
+        continue;
+      }
+      if (changedKeys.has(targetKey(target))) view.render(stats);
+    }
+  }
+
+  private mergeWithCachedStats(incoming: PlayerStats): PlayerStats {
     const cached = this.cachedStatsForTarget({
       slug: incoming.slug,
       position: incoming.position,
@@ -705,33 +851,48 @@ export class StatsBatchCoordinator {
       incoming.pendingRefreshes?.includes('formHistory') === true;
     const cachedIsPartialForm =
       cached?.pendingRefreshes?.includes('formHistory') === true;
-    if (
-      !cached ||
-      !isPartialFormRefresh ||
-      cachedIsPartialForm
-    ) {
-      return incoming;
+    let merged = incoming;
+    if (cached && isPartialFormRefresh && !cachedIsPartialForm) {
+      merged = {
+        ...cached,
+        ...incoming,
+        aaL10: cached.aaL10,
+        cleanSheetL10: cached.cleanSheetL10,
+        goalL10: cached.goalL10,
+        excludedLowCoverage: cached.excludedLowCoverage,
+        ...(cached.mlsAaContext
+          ? { mlsAaContext: cached.mlsAaContext }
+          : {}),
+        ...(cached.historicalGoals
+          ? { historicalGoals: cached.historicalGoals }
+          : {}),
+        ...(cached.historicalAssists
+          ? { historicalAssists: cached.historicalAssists }
+          : {}),
+        ...(cached.historicalDecisives
+          ? { historicalDecisives: cached.historicalDecisives }
+          : {}),
+      };
     }
 
+    if (
+      !cached?.nextGame ||
+      !merged.nextGame ||
+      !samePlayerFixture(cached.nextGame, merged.nextGame)
+    ) {
+      return merged;
+    }
+    const marketOdds = mergePlayerMarketOdds(
+      cached.nextGame.marketOdds,
+      merged.nextGame.marketOdds,
+    );
+    if (marketOdds === merged.nextGame.marketOdds) return merged;
     return {
-      ...cached,
-      ...incoming,
-      aaL10: cached.aaL10,
-      cleanSheetL10: cached.cleanSheetL10,
-      goalL10: cached.goalL10,
-      excludedLowCoverage: cached.excludedLowCoverage,
-      ...(cached.mlsAaContext
-        ? { mlsAaContext: cached.mlsAaContext }
-        : {}),
-      ...(cached.historicalGoals
-        ? { historicalGoals: cached.historicalGoals }
-        : {}),
-      ...(cached.historicalAssists
-        ? { historicalAssists: cached.historicalAssists }
-        : {}),
-      ...(cached.historicalDecisives
-        ? { historicalDecisives: cached.historicalDecisives }
-        : {}),
+      ...merged,
+      nextGame: {
+        ...merged.nextGame,
+        marketOdds,
+      },
     };
   }
 
@@ -743,6 +904,7 @@ export class StatsBatchCoordinator {
     if (work?.timer !== undefined) window.clearTimeout(work.timer);
     this.refreshWork.delete(key);
     this.refreshAttempts.delete(key);
+    this.isolatedMarketRefreshKeys.delete(key);
     if (!preserveFixtureRefresh) this.fixtureRefreshTargets.delete(key);
   }
 
@@ -845,14 +1007,16 @@ export class SorareCardScanner {
   ) {}
 
   configureHistoricalAssistFallback(enabled: boolean): void {
-    this.coordinator.setIncludeHistoricalAssists(enabled);
-    this.refreshAllOverlays();
+    const changed = this.coordinator.setIncludeHistoricalAssists(enabled);
+    this.refreshAllOverlays(changed && enabled);
   }
 
-  refreshAllOverlays(): void {
+  refreshAllOverlays(forceRefresh = false): void {
     for (const mounted of this.overlays.values()) {
       mounted.statsRequested = false;
-      if (mounted.viewportActive) this.requestStats(mounted);
+      if (mounted.viewportActive) {
+        this.requestStats(mounted, undefined, forceRefresh);
+      }
     }
   }
 
@@ -1118,9 +1282,15 @@ export class SorareCardScanner {
   private requestStats(
     mounted: MountedOverlay,
     priority = viewportPriorityNearby,
+    forceRefresh = false,
   ): void {
     if (mounted.statsRequested) return;
     mounted.statsRequested = true;
-    this.coordinator.enqueue(mounted.target, mounted.view, priority);
+    this.coordinator.enqueue(
+      mounted.target,
+      mounted.view,
+      priority,
+      forceRefresh,
+    );
   }
 }

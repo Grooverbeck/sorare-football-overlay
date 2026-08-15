@@ -27,6 +27,7 @@ import {
   type MarketSupplementBatch,
   type MarketSupplementPlayer,
   type MarketSnapshot,
+  type MarketSnapshotRead,
   type MarketSnapshotStore,
   type OddsMarketKey,
 } from '../providers/market-odds-provider.js';
@@ -71,6 +72,12 @@ const PlayerFormStatsSchema = PlayerStatsSchema.omit({
   pendingRefreshes: true,
   mlsAaContext: true,
 });
+const HISTORICAL_CLUB_SCOPE_VERSION = 1;
+const CachedPlayerFormStatsSchema = PlayerFormStatsSchema.extend({
+  historicalClubScopeVersion: z
+    .literal(HISTORICAL_CLUB_SCOPE_VERSION)
+    .optional(),
+});
 // v3 adds the Sorare competition slug used to route bookmaker requests only
 // to explicitly supported competitions. Older fixtures refresh lazily.
 const PLAYER_FIXTURE_CACHE_POLICY_VERSION = 3;
@@ -90,6 +97,10 @@ type FixtureTeamSide = 'home' | 'away';
 
 export interface JsonKeyValueStore {
   get<T = unknown>(key: string, type: 'json'): Promise<T | null>;
+  getMany?<T = unknown>(
+    keys: readonly string[],
+    type: 'json',
+  ): Promise<Map<string, T>>;
   put(
     key: string,
     value: string,
@@ -471,6 +482,29 @@ export class CloudflareMarketSnapshotStore
     return parsed.data;
   }
 
+  async getMany(
+    requests: readonly MarketSnapshotRead[],
+  ): Promise<Array<MarketSnapshot | undefined>> {
+    if (requests.length === 0) return [];
+    const keys = requests.map(({ fixtureKey, market }) =>
+      this.key(fixtureKey, market),
+    );
+    if (!this.namespace.getMany) {
+      return Promise.all(
+        requests.map(({ fixtureKey, market }) => this.get(fixtureKey, market)),
+      );
+    }
+    const rawByKey = await this.namespace.getMany<unknown>(keys, 'json');
+    return keys.map((key) => {
+      const raw = rawByKey.get(key);
+      if (raw === undefined) return undefined;
+      const parsed = MarketSnapshotSchema.safeParse(raw);
+      if (parsed.success) return parsed.data;
+      this.removeInvalid(key);
+      return undefined;
+    });
+  }
+
   async set(fixtureKey: string, snapshot: MarketSnapshot): Promise<void> {
     const key = this.key(fixtureKey, snapshot.market);
     const value = JSON.stringify(MarketSnapshotSchema.parse(snapshot));
@@ -729,18 +763,46 @@ class CloudflarePlayerFormCache
     const cacheKey = `player-form:v2:${key}`;
     const raw = await this.namespace.get<unknown>(cacheKey, 'json');
     if (raw === null) return undefined;
-    const parsed = PlayerFormStatsSchema.safeParse(raw);
+    const parsed = CachedPlayerFormStatsSchema.safeParse(raw);
     if (!parsed.success) {
       this.removeInvalid(cacheKey);
       return undefined;
     }
-    return parsed.data;
+    const {
+      historicalClubScopeVersion,
+      historicalGoals,
+      historicalAssists,
+      historicalDecisives,
+      ...baseForm
+    } = parsed.data;
+    const hasHistoricalMetrics =
+      historicalGoals !== undefined ||
+      historicalAssists !== undefined ||
+      historicalDecisives !== undefined;
+    if (
+      hasHistoricalMetrics &&
+      historicalClubScopeVersion !== HISTORICAL_CLUB_SCOPE_VERSION
+    ) {
+      return baseForm;
+    }
+    return {
+      ...baseForm,
+      ...(historicalGoals !== undefined ? { historicalGoals } : {}),
+      ...(historicalAssists !== undefined ? { historicalAssists } : {}),
+      ...(historicalDecisives !== undefined
+        ? { historicalDecisives }
+        : {}),
+    };
   }
 
   set(key: string, value: PlayerFormStats): void {
+    const parsed = PlayerFormStatsSchema.parse(value);
     this.persistUntil(
       `player-form:v2:${key}`,
-      PlayerFormStatsSchema.parse(value),
+      {
+        ...parsed,
+        historicalClubScopeVersion: HISTORICAL_CLUB_SCOPE_VERSION,
+      },
       nextMondayFormExpiration(this.now(), this.ttlSeconds),
     );
   }

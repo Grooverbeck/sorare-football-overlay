@@ -59,6 +59,21 @@ function validAppearancesForPosition(
     .sort((left, right) => Date.parse(right.date) - Date.parse(left.date));
 }
 
+function currentClubAppearancesOrFallback(
+  appearances: readonly PlayerAppearance[],
+): PlayerAppearance[] {
+  const currentClubAppearances = appearances.filter(
+    (appearance) => appearance.currentClubGame === true,
+  );
+
+  // A newly transferred player can have reliable club markers without having
+  // played for the new club yet. Keep the previous history available until the
+  // first current-club appearance arrives, then switch over immediately.
+  return currentClubAppearances.length > 0
+    ? currentClubAppearances
+    : [...appearances];
+}
+
 export function calculatePlayerMetrics(
   appearances: readonly PlayerAppearance[],
   position: FootballPosition,
@@ -114,10 +129,12 @@ export function calculateHistoricalAssistMetrics(
   position: FootballPosition,
   excludeLowCoverage: boolean,
 ): HistoricalAssistMetrics {
-  const validAppearances = validAppearancesForPosition(
-    appearances,
-    position,
-    excludeLowCoverage,
+  const validAppearances = currentClubAppearancesOrFallback(
+    validAppearancesForPosition(
+      appearances,
+      position,
+      excludeLowCoverage,
+    ),
   );
   const forWindow = (limit: number): Metric => {
     const selected = validAppearances.slice(0, limit);
@@ -138,10 +155,12 @@ export function calculateHistoricalGoalMetrics(
   position: FootballPosition,
   excludeLowCoverage: boolean,
 ): HistoricalAssistMetrics {
-  const validAppearances = validAppearancesForPosition(
-    appearances,
-    position,
-    excludeLowCoverage,
+  const validAppearances = currentClubAppearancesOrFallback(
+    validAppearancesForPosition(
+      appearances,
+      position,
+      excludeLowCoverage,
+    ),
   );
   const forWindow = (limit: number): Metric => {
     const selected = validAppearances.slice(0, limit);
@@ -162,10 +181,12 @@ export function calculateHistoricalDecisiveMetrics(
   position: FootballPosition,
   excludeLowCoverage: boolean,
 ): HistoricalAssistMetrics {
-  const validAppearances = validAppearancesForPosition(
-    appearances,
-    position,
-    excludeLowCoverage,
+  const validAppearances = currentClubAppearancesOrFallback(
+    validAppearancesForPosition(
+      appearances,
+      position,
+      excludeLowCoverage,
+    ),
   );
   const forWindow = (limit: number): Metric => {
     const selected = validAppearances.slice(0, limit);

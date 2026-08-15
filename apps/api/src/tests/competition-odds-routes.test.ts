@@ -88,7 +88,7 @@ describe('European competition odds capabilities', () => {
     ).not.toContain('1-hnl');
   });
 
-  it('routes only supported top-flight player props through US books', () => {
+  it('keeps monthly-credit US player props inside the 24-hour window', () => {
     expect(EUROPEAN_THE_ODDS_API_PLAYER_ROUTES).toEqual([
       {
         sportKeys: ['soccer_spain_la_liga'],
@@ -142,32 +142,32 @@ describe('European competition odds capabilities', () => {
         leagueId: 'LA_LIGA',
         playerMarkets: ['goal', 'assist'],
         matchOdds: true,
-        playerFetchWindowMs: 24 * 60 * 60 * 1_000,
-        matchOddsFetchWindowMs: 24 * 60 * 60 * 1_000,
+        playerFetchWindowMs: 72 * 60 * 60 * 1_000,
+        matchOddsFetchWindowMs: 72 * 60 * 60 * 1_000,
       },
       {
         competitionSlugs: ['ligue-2-fr'],
         leagueId: 'FR_LIGUE_2',
         playerMarkets: ['goal'],
         matchOdds: true,
-        playerFetchWindowMs: 24 * 60 * 60 * 1_000,
-        matchOddsFetchWindowMs: 24 * 60 * 60 * 1_000,
+        playerFetchWindowMs: 72 * 60 * 60 * 1_000,
+        matchOddsFetchWindowMs: 72 * 60 * 60 * 1_000,
       },
       {
         competitionSlugs: ['ligue-1-fr'],
         leagueId: 'FR_LIGUE_1',
         playerMarkets: ['goal', 'assist'],
         matchOdds: true,
-        playerFetchWindowMs: 24 * 60 * 60 * 1_000,
-        matchOddsFetchWindowMs: 24 * 60 * 60 * 1_000,
+        playerFetchWindowMs: 72 * 60 * 60 * 1_000,
+        matchOddsFetchWindowMs: 72 * 60 * 60 * 1_000,
       },
       {
         competitionSlugs: ['bundesliga-de'],
         leagueId: 'BUNDESLIGA',
         playerMarkets: ['goal', 'assist'],
         matchOdds: true,
-        playerFetchWindowMs: 24 * 60 * 60 * 1_000,
-        matchOddsFetchWindowMs: 24 * 60 * 60 * 1_000,
+        playerFetchWindowMs: 72 * 60 * 60 * 1_000,
+        matchOddsFetchWindowMs: 72 * 60 * 60 * 1_000,
       },
     ]);
     expect(
@@ -201,7 +201,7 @@ describe('European competition odds capabilities', () => {
             leagueSlugs: oddsApiIo.leagueSlugs,
             playerMarkets: ['goal'],
             matchOdds: oddsApiIo.matchOdds,
-            playerFetchWindowMs: 24 * 60 * 60 * 1_000,
+            playerFetchWindowMs: 72 * 60 * 60 * 1_000,
           }),
         ),
       ),
@@ -228,5 +228,32 @@ describe('European competition odds capabilities', () => {
       ]),
     );
     expect(new Set(competitions).size).toBe(competitions.length);
+  });
+
+  it('uses the live La Liga slug and checks current UEFA playoff feeds first', () => {
+    expect(
+      ODDS_API_IO_ROUTES.find(({ competitionSlugs }) =>
+        competitionSlugs.includes('laliga-es'),
+      )?.leagueSlugs,
+    ).toEqual(['spain-laliga']);
+    expect(
+      ODDS_API_IO_ROUTES.find(({ competitionSlugs }) =>
+        competitionSlugs.includes('uefa-champions-league'),
+      )?.leagueSlugs,
+    ).toEqual([
+      'international-clubs-uefa-champions-league-playoff-round',
+      'international-clubs-uefa-champions-league-qualification',
+      'international-clubs-uefa-champions-league',
+    ]);
+    expect(
+      ODDS_API_IO_ROUTES.find(({ competitionSlugs }) =>
+        competitionSlugs.includes('uefa-europa-league'),
+      )?.leagueSlugs[0],
+    ).toBe('international-clubs-uefa-europa-league-playoff-round');
+    expect(
+      ODDS_API_IO_ROUTES.find(({ competitionSlugs }) =>
+        competitionSlugs.includes('uefa-europa-conference-league'),
+      )?.leagueSlugs[0],
+    ).toBe('international-clubs-uefa-conference-league-playoff-round');
   });
 });

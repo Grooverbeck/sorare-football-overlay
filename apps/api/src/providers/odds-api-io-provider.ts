@@ -9,6 +9,7 @@ import {
 import { z } from 'zod';
 import type { AppLogger } from '../logger.js';
 import {
+  cacheOnlySnapshotReadBudgetMs,
   FrozenMarketSnapshotSchema,
   groupFixtures,
   marketFixtureKey,
@@ -19,6 +20,7 @@ import {
   playerProbability,
   providerTeamNamesMatch,
   recordFrozenSnapshotCheck,
+  readMarketSnapshotsWithin,
   settleCacheReadWithin,
   shouldRetryMarketFailure,
   supplementFrozenSnapshot,
@@ -28,6 +30,7 @@ import {
   type FrozenMarketSnapshot,
   type MarketSnapshot,
   type MarketSnapshotStore,
+  type OddsMarketKey,
   type PlayerMarketOddsLoadOptions,
   type PlayerMarketOddsProvider,
   type PlayerMarketField,
@@ -69,6 +72,10 @@ const OddsApiIoMarketOddSchema = z.object({
   draw: OddsApiIoDecimalOddSchema.optional(),
   away: OddsApiIoDecimalOddSchema.optional(),
   over: OddsApiIoDecimalOddSchema.optional(),
+  // Normalized labelled markets use `odds`; older Bet365 player props still
+  // expose the same one-sided price as `over`. Accept both payload shapes.
+  odds: OddsApiIoDecimalOddSchema.optional(),
+  yes: OddsApiIoDecimalOddSchema.optional(),
 });
 
 const OddsApiIoMarketSchema = z.object({
@@ -217,28 +224,36 @@ function findEvent(
   return candidates[0]?.event ?? null;
 }
 
-function anytimeGoalscorerSnapshot(
+function labelledPlayerSnapshot(
   response: OddsApiIoEventOdds,
   capturedAt: string,
+  market: OddsMarketKey,
+  providerMarketNames: readonly string[],
 ): FrozenMarketSnapshot | null {
+  const normalizedMarketNames = new Set(
+    providerMarketNames.map((name) => name.trim().toLocaleLowerCase()),
+  );
   const quotesByPlayer = new Map<string, BookmakerMarketQuote[]>();
   for (const [bookmaker, markets] of Object.entries(response.bookmakers)) {
-    const market = markets.find(
-      ({ name }) => name.trim().toLocaleLowerCase() === 'anytime goalscorer',
+    const providerMarket = markets.find(({ name }) =>
+      normalizedMarketNames.has(name.trim().toLocaleLowerCase()),
     );
-    if (!market) continue;
-    for (const odd of market.odds) {
+    if (!providerMarket) continue;
+    for (const odd of providerMarket.odds) {
       if (!odd.label) continue;
-      const decimalOdds = Number(odd.over);
-      if (!Number.isFinite(decimalOdds) || decimalOdds <= 1) continue;
+      const price =
+        decimalOdd(odd.over) ??
+        decimalOdd(odd.odds) ??
+        decimalOdd(odd.yes);
+      if (price === null) continue;
       const playerName = normalizePlayerName(odd.label);
       if (!playerName) continue;
       const playerQuotes = quotesByPlayer.get(playerName) ?? [];
       playerQuotes.push({
         key: bookmaker.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-'),
         title: bookmaker,
-        decimalOdds,
-        probability: Math.min(1, 1 / decimalOdds),
+        decimalOdds: price,
+        probability: Math.min(1, 1 / price),
       });
       quotesByPlayer.set(playerName, playerQuotes);
     }
@@ -246,7 +261,7 @@ function anytimeGoalscorerSnapshot(
   if (quotesByPlayer.size === 0) return null;
   return FrozenMarketSnapshotSchema.parse({
     status: 'available',
-    market: 'player_goal_scorer_anytime',
+    market,
     eventId: response.id,
     capturedAt,
     players: Object.fromEntries(
@@ -262,6 +277,30 @@ function anytimeGoalscorerSnapshot(
       ]),
     ),
   });
+}
+
+function anytimeGoalscorerSnapshot(
+  response: OddsApiIoEventOdds,
+  capturedAt: string,
+): FrozenMarketSnapshot | null {
+  return labelledPlayerSnapshot(
+    response,
+    capturedAt,
+    'player_goal_scorer_anytime',
+    ['Anytime Goalscorer'],
+  );
+}
+
+function playerAssistSnapshot(
+  response: OddsApiIoEventOdds,
+  capturedAt: string,
+): FrozenMarketSnapshot | null {
+  return labelledPlayerSnapshot(
+    response,
+    capturedAt,
+    'player_assists',
+    ['Player To Assist'],
+  );
 }
 
 function decimalOdd(value: string | number | undefined): number | null {
@@ -434,37 +473,48 @@ export class OddsApiIoPlayerMarketOddsProvider
     const protection = loadOptions?.cacheOnly
       ? protectionForUsage(undefined)
       : await this.protection();
-    const snapshots = new Map<string, MarketSnapshot | undefined>();
+    const goalSnapshots = new Map<string, MarketSnapshot | undefined>();
+    const assistSnapshots = new Map<string, MarketSnapshot | undefined>();
     const pending: FixtureGroup[] = [];
 
     const cacheOnly = loadOptions?.cacheOnly === true;
     if (cacheOnly) {
-      const loadedFixtures = await Promise.allSettled(
-        fixtures.map(async (fixture) => ({
-          fixtureKey: fixture.key,
-          snapshot: await settleCacheReadWithin(
-            this.options.store.get(
-              fixtureStoreKey(fixture.key),
-              'player_goal_scorer_anytime',
-            ),
-            true,
-          ),
-        })),
+      const loaded = await readMarketSnapshotsWithin(
+        this.options.store,
+        fixtures.flatMap((fixture) => [
+          {
+            fixtureKey: fixtureStoreKey(fixture.key),
+            market: 'player_goal_scorer_anytime' as const,
+          },
+          {
+            fixtureKey: fixtureStoreKey(fixture.key),
+            market: 'player_assists' as const,
+          },
+        ]),
+        true,
+        cacheOnlySnapshotReadBudgetMs(loadOptions),
       );
-      for (const result of loadedFixtures) {
-        if (result.status !== 'fulfilled') continue;
-        snapshots.set(result.value.fixtureKey, result.value.snapshot);
+      for (const [index, fixture] of fixtures.entries()) {
+        goalSnapshots.set(fixture.key, loaded[index * 2]);
+        assistSnapshots.set(fixture.key, loaded[index * 2 + 1]);
       }
     }
 
     for (const fixture of fixtures) {
-      const snapshot = cacheOnly
-        ? snapshots.get(fixture.key)
-        : await this.options.store.get(
-            fixtureStoreKey(fixture.key),
-            'player_goal_scorer_anytime',
-          );
-      snapshots.set(fixture.key, snapshot);
+      const [goalSnapshot, assistSnapshot] = cacheOnly
+        ? [goalSnapshots.get(fixture.key), assistSnapshots.get(fixture.key)]
+        : await Promise.all([
+            this.options.store.get(
+              fixtureStoreKey(fixture.key),
+              'player_goal_scorer_anytime',
+            ),
+            this.options.store.get(
+              fixtureStoreKey(fixture.key),
+              'player_assists',
+            ),
+          ]);
+      goalSnapshots.set(fixture.key, goalSnapshot);
+      assistSnapshots.set(fixture.key, assistSnapshot);
       const kickoff = Date.parse(fixture.date);
       const untilKickoff = kickoff - this.now();
       const route = this.routeForFixtureGroup(fixture);
@@ -474,12 +524,12 @@ export class OddsApiIoPlayerMarketOddsProvider
         continue;
       }
       const needsApi =
-        !snapshot ||
-        (snapshot.status === 'unavailable'
-          ? shouldRetryMarketFailure(snapshot, kickoff, this.now())
+        !goalSnapshot ||
+        (goalSnapshot.status === 'unavailable'
+          ? shouldRetryMarketFailure(goalSnapshot, kickoff, this.now())
           : protection.allowSnapshotSupplements &&
             needsFrozenSnapshotSupplement(
-              snapshot,
+              goalSnapshot,
               fixture.players,
               fixture.date,
               this.now(),
@@ -513,24 +563,47 @@ export class OddsApiIoPlayerMarketOddsProvider
     }
 
     if (pending.length > 0) {
-      await this.refreshFixtures(pending, snapshots);
+      await this.refreshFixtures(
+        pending,
+        goalSnapshots,
+        assistSnapshots,
+      );
     }
 
     for (const fixture of fixtures) {
-      const snapshot = snapshots.get(fixture.key);
-      const available =
-        snapshot?.status === 'available' ? snapshot : undefined;
-      if (!available) continue;
+      const goalSnapshot = goalSnapshots.get(fixture.key);
+      const assistSnapshot = assistSnapshots.get(fixture.key);
+      const availableGoal =
+        goalSnapshot?.status === 'available' ? goalSnapshot : undefined;
+      const availableAssist =
+        assistSnapshot?.status === 'available' ? assistSnapshot : undefined;
       for (const player of fixture.players) {
-        const goal = playerProbability(available, player, fixture.players);
-        if (!goal) continue;
+        const goal = playerProbability(
+          availableGoal,
+          player,
+          fixture.players,
+        );
+        const assist = playerProbability(
+          availableAssist,
+          player,
+          fixture.players,
+        );
+        if (!goal && !assist) continue;
+        const capturedAt = [
+          availableGoal?.capturedAt,
+          availableAssist?.capturedAt,
+        ]
+          .filter((value): value is string => Boolean(value))
+          .sort()
+          .at(-1);
+        if (!capturedAt) continue;
         output.set(
           playerMarketOddsKey(player),
           PlayerMarketOddsSchema.parse({
             source: 'odds-api-io',
-            capturedAt: available.capturedAt,
+            capturedAt,
             goal,
-            assist: null,
+            assist,
           }),
         );
       }
@@ -616,24 +689,34 @@ export class OddsApiIoPlayerMarketOddsProvider
         )
       ).filter((fixture): fixture is FixtureGroup => fixture !== null);
       if (claimed.length > 0) {
-        const playerSnapshots = new Map<
+        const goalSnapshots = new Map<
+          string,
+          MarketSnapshot | undefined
+        >();
+        const assistSnapshots = new Map<
           string,
           MarketSnapshot | undefined
         >();
         await Promise.all(
           claimed.map(async (fixture) => {
-            playerSnapshots.set(
-              fixture.key,
-              await this.options.store.get(
+            const [goalSnapshot, assistSnapshot] = await Promise.all([
+              this.options.store.get(
                 fixtureStoreKey(fixture.key),
                 'player_goal_scorer_anytime',
               ),
-            );
+              this.options.store.get(
+                fixtureStoreKey(fixture.key),
+                'player_assists',
+              ),
+            ]);
+            goalSnapshots.set(fixture.key, goalSnapshot);
+            assistSnapshots.set(fixture.key, assistSnapshot);
           }),
         );
         await this.refreshFixtures(
           claimed,
-          playerSnapshots,
+          goalSnapshots,
+          assistSnapshots,
           matchSnapshots,
         );
       }
@@ -683,7 +766,8 @@ export class OddsApiIoPlayerMarketOddsProvider
 
   private async refreshFixtures(
     fixtures: readonly FixtureGroup[],
-    snapshots: Map<string, MarketSnapshot | undefined>,
+    goalSnapshots: Map<string, MarketSnapshot | undefined>,
+    assistSnapshots: Map<string, MarketSnapshot | undefined>,
     matchSnapshots: Map<string, MatchOddsSnapshot | undefined> = new Map(),
   ): Promise<void> {
     const fixturesByRoute = new Map<
@@ -702,7 +786,8 @@ export class OddsApiIoPlayerMarketOddsProvider
         await this.refreshRoute(
           route,
           routedFixtures,
-          snapshots,
+          goalSnapshots,
+          assistSnapshots,
           matchSnapshots,
         );
       } catch (error) {
@@ -788,7 +873,8 @@ export class OddsApiIoPlayerMarketOddsProvider
   private async refreshRoute(
     route: OddsApiIoRoute,
     fixtures: readonly FixtureGroup[],
-    snapshots: Map<string, MarketSnapshot | undefined>,
+    goalSnapshots: Map<string, MarketSnapshot | undefined>,
+    assistSnapshots: Map<string, MarketSnapshot | undefined>,
     matchSnapshots: Map<string, MatchOddsSnapshot | undefined>,
   ): Promise<void> {
     const kickoffs = fixtures
@@ -838,7 +924,7 @@ export class OddsApiIoPlayerMarketOddsProvider
     for (const fixture of fixtures) {
       const match = matched.get(fixture.key);
       const response = match ? oddsByEvent.get(match.event.id) : undefined;
-      const existing = snapshots.get(fixture.key);
+      const existing = goalSnapshots.get(fixture.key);
       const extracted = response
         ? anytimeGoalscorerSnapshot(response, capturedAt)
         : null;
@@ -863,7 +949,29 @@ export class OddsApiIoPlayerMarketOddsProvider
               this.now(),
             );
       await this.options.store.set(fixtureStoreKey(fixture.key), snapshot);
-      snapshots.set(fixture.key, snapshot);
+      goalSnapshots.set(fixture.key, snapshot);
+
+      // Assists piggyback on a goalscorer or H-D-A refresh. Their absence is
+      // deliberately not persisted as a miss and can never trigger a request.
+      const extractedAssist = response
+        ? playerAssistSnapshot(response, capturedAt)
+        : null;
+      if (extractedAssist) {
+        const existingAssist = assistSnapshots.get(fixture.key);
+        const assistSnapshot = supplementFrozenSnapshot(
+          existingAssist?.status === 'available'
+            ? existingAssist
+            : undefined,
+          extractedAssist,
+          fixture.players,
+          fixture.date,
+        );
+        await this.options.store.set(
+          fixtureStoreKey(fixture.key),
+          assistSnapshot,
+        );
+        assistSnapshots.set(fixture.key, assistSnapshot);
+      }
 
       const matchStore = this.options.matchOddsStore;
       if (route.matchOdds === true && matchStore) {

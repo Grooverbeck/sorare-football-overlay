@@ -3,11 +3,13 @@ import {
   CARD_PICTURE_NAMES_KEY,
   getCardPictureNames,
   getHistoricalAssistFallbackSettings,
+  getMarketBracketCompactView,
   getMarketBracketSide,
   getMarketValueFormat,
   getOverlayEnabled,
   HISTORICAL_ASSIST_FALLBACK_ENABLED_KEY,
   HISTORICAL_ASSIST_WINDOW_KEY,
+  MARKET_BRACKET_COMPACT_VIEW_KEY,
   MARKET_BRACKET_SIDE_KEY,
   MARKET_VALUE_FORMAT_KEY,
   normalizeMarketValueFormat,
@@ -16,6 +18,7 @@ import {
   OVERLAY_ENABLED_KEY,
   setHistoricalAssistFallbackEnabled,
   setHistoricalAssistWindow,
+  setMarketBracketCompactView,
   setMarketBracketSide,
   setMarketValueFormat,
   setCardPictureNames,
@@ -58,6 +61,24 @@ describe('overlay settings', () => {
 
     await setMarketBracketSide('left');
     expect(set).toHaveBeenCalledWith({ [MARKET_BRACKET_SIDE_KEY]: 'left' });
+  });
+
+  it('defaults the compact bracket view to disabled', async () => {
+    get.mockResolvedValue({ [MARKET_BRACKET_COMPACT_VIEW_KEY]: false });
+
+    await expect(getMarketBracketCompactView()).resolves.toBe(false);
+    expect(get).toHaveBeenCalledWith({
+      [MARKET_BRACKET_COMPACT_VIEW_KEY]: false,
+    });
+  });
+
+  it('persists the compact bracket view', async () => {
+    set.mockResolvedValue(undefined);
+
+    await setMarketBracketCompactView(true);
+    expect(set).toHaveBeenCalledWith({
+      [MARKET_BRACKET_COMPACT_VIEW_KEY]: true,
+    });
   });
 
   it('normalizes unknown market bracket settings to the right side', () => {

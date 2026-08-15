@@ -36,6 +36,36 @@ function logger(): AppLogger {
 }
 
 describe('D1JsonKeyValueStore', () => {
+  it('loads multiple cache entries with one D1 query', async () => {
+    const all = vi.fn(async () => ({
+      results: [
+        { cache_key: 'market:a', value: JSON.stringify({ value: 'first' }) },
+        { cache_key: 'market:b', value: JSON.stringify({ value: 'second' }) },
+      ],
+    }));
+    const bind = vi.fn(() => ({ all }));
+    const prepare = vi.fn(() => ({ bind }));
+    const store = new D1JsonKeyValueStore(
+      { prepare } as unknown as D1Database,
+      undefined,
+      () => 123,
+    );
+
+    const values = await store.getMany<{ value: string }>(
+      ['market:a', 'market:b'],
+      'json',
+    );
+
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(bind).toHaveBeenCalledWith('market:a', 'market:b', 123);
+    expect(values).toEqual(
+      new Map([
+        ['market:a', { value: 'first' }],
+        ['market:b', { value: 'second' }],
+      ]),
+    );
+  });
+
   it('uses the KV fallback when the D1 read fails', async () => {
     const d1Error = new Error('D1 unavailable');
     const get = vi.fn(async () => ({ source: 'kv' }));

@@ -5,6 +5,12 @@ interface D1CacheRow {
   value: string;
 }
 
+interface D1CacheManyRow extends D1CacheRow {
+  cache_key: string;
+}
+
+const getManyChunkSize = 40;
+
 interface CacheWriteOptions {
   expiration?: number;
   expirationTtl?: number;
@@ -68,6 +74,88 @@ export class D1JsonKeyValueStore implements JsonKeyValueStore {
     }
 
     return this.fallback?.get<T>(key, type) ?? null;
+  }
+
+  async getMany<T = unknown>(
+    keys: readonly string[],
+    type: 'json',
+  ): Promise<Map<string, T>> {
+    const uniqueKeys = [...new Set(keys)];
+    if (uniqueKeys.length === 0) return new Map();
+
+    const rows: D1CacheManyRow[] = [];
+    try {
+      for (let offset = 0; offset < uniqueKeys.length; offset += getManyChunkSize) {
+        const chunk = uniqueKeys.slice(offset, offset + getManyChunkSize);
+        const placeholders = chunk.map((_, index) => `?${index + 1}`).join(', ');
+        const expirationParameter = `?${chunk.length + 1}`;
+        const result = await this.database
+          .prepare(
+            `SELECT cache_key, value
+             FROM cache_entries
+             WHERE cache_key IN (${placeholders})
+               AND (expires_at IS NULL OR expires_at > ${expirationParameter})`,
+          )
+          .bind(...chunk, this.nowSeconds())
+          .all<D1CacheManyRow>();
+        rows.push(...result.results);
+      }
+    } catch (d1Error) {
+      if (!this.fallback) {
+        this.logger?.error(
+          { cacheKeys: uniqueKeys, d1Error },
+          'D1 cache batch read failed and no fallback is configured',
+        );
+        throw d1Error;
+      }
+      this.logger?.warn(
+        { cacheKeys: uniqueKeys, error: d1Error, fallback: 'kv' },
+        'D1 cache batch read failed; attempting KV fallback',
+      );
+      return this.readFallbackMany<T>(uniqueKeys, type, d1Error);
+    }
+
+    const values = new Map<string, T>();
+    const invalidKeys: string[] = [];
+    for (const row of rows) {
+      try {
+        values.set(row.cache_key, JSON.parse(row.value) as T);
+      } catch {
+        invalidKeys.push(row.cache_key);
+      }
+    }
+    await Promise.all(invalidKeys.map((key) => this.delete(key)));
+
+    const missingKeys = uniqueKeys.filter((key) => !values.has(key));
+    if (missingKeys.length === 0 || !this.fallback) return values;
+    const fallbackValues = await this.readFallbackMany<T>(missingKeys, type);
+    for (const [key, value] of fallbackValues) values.set(key, value);
+    return values;
+  }
+
+  private async readFallbackMany<T>(
+    keys: readonly string[],
+    type: 'json',
+    d1Error?: unknown,
+  ): Promise<Map<string, T>> {
+    if (!this.fallback) return new Map();
+    try {
+      if (this.fallback.getMany) return this.fallback.getMany<T>(keys, type);
+      const entries = await Promise.all(
+        keys.map(async (key) => [key, await this.fallback!.get<T>(key, type)] as const),
+      );
+      return new Map(
+        entries.flatMap(([key, value]) =>
+          value === null ? [] : ([[key, value]] as const),
+        ),
+      );
+    } catch (fallbackError) {
+      this.logger?.error(
+        { cacheKeys: keys, d1Error, fallbackError },
+        'D1 and KV cache batch reads failed',
+      );
+      throw fallbackError;
+    }
   }
 
   async put(

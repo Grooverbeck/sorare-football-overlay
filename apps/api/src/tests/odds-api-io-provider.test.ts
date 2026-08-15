@@ -106,7 +106,7 @@ function createProvider(
 }
 
 describe('OddsApiIoPlayerMarketOddsProvider', () => {
-  it('advertises goalscorer support without claiming an assist market', () => {
+  it('keeps assists opportunistic instead of advertising them as a request driver', () => {
     const { provider } = createProvider(vi.fn<typeof fetch>());
 
     expect(provider.supportsMarket(player(), 'goal')).toBe(true);
@@ -314,7 +314,113 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
     });
   });
 
-  it('shares one HNL fixture refresh between goalscorer and H-D-A snapshots', async () => {
+  it('captures Player To Assist from the same response without another request', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/events')) {
+        return json([
+          {
+            id: 'austria-assist-fixture',
+            date: kickoff,
+            home: 'WSG Tirol',
+            away: 'SK Sturm Graz',
+          },
+        ]);
+      }
+      if (url.pathname.endsWith('/odds/multi')) {
+        return json([
+          {
+            id: 'austria-assist-fixture',
+            date: kickoff,
+            home: 'WSG Tirol',
+            away: 'SK Sturm Graz',
+            bookmakers: {
+              Bet365: [
+                {
+                  name: 'Anytime Goalscorer',
+                  odds: [
+                    { label: 'Otar Kiteishvili', hdp: 0.5, over: '2.30' },
+                  ],
+                },
+                {
+                  name: 'Player To Assist',
+                  odds: [
+                    { label: 'Otar Kiteishvili', odds: '4.00' },
+                  ],
+                },
+              ],
+              Unibet: [
+                {
+                  name: 'Player To Assist',
+                  odds: [
+                    { label: 'Otar Kiteishvili', over: '3.50' },
+                  ],
+                },
+              ],
+            },
+          },
+        ]);
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    const { provider } = createProvider(fetchImpl);
+
+    const first = await provider.load([player()]);
+    const cached = await provider.load([player()], { cacheOnly: true });
+
+    for (const result of [first, cached]) {
+      expect(result.get(playerMarketOddsKey(player()))).toMatchObject({
+        source: 'odds-api-io',
+        goal: { probability: 1 / 2.3, bookmakerCount: 1 },
+        assist: {
+          probability: (1 / 4 + 1 / 3.5) / 2,
+          bookmakerCount: 2,
+          bookmakerQuotes: [
+            expect.objectContaining({ title: 'Bet365', decimalOdds: 4 }),
+            expect.objectContaining({ title: 'Unibet', decimalOdds: 3.5 }),
+          ],
+        },
+      });
+    }
+    expect(provider.supportsMarket(player(), 'assist')).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not request Odds-API.io solely because an assist is missing', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const { provider } = createProvider(fetchImpl);
+    const primary: PlayerMarketOddsProvider = {
+      supports: () => true,
+      supportsMarket: (_player, market) => market === 'goal',
+      load: async (players) =>
+        new Map(
+          players.map((candidate) => [
+            playerMarketOddsKey(candidate),
+            {
+              source: 'sports-game-odds' as const,
+              capturedAt: new Date(now).toISOString(),
+              goal: { probability: 0.4, bookmakerCount: 1 },
+              assist: null,
+            },
+          ]),
+        ),
+    };
+    const combined = new SupplementingPlayerMarketOddsProvider(
+      primary,
+      provider,
+      ['goal'],
+    );
+
+    const result = await combined.load([player()]);
+
+    expect(result.get(playerMarketOddsKey(player()))).toMatchObject({
+      goal: { probability: 0.4 },
+      assist: null,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('shares one HNL fixture refresh between goal, assist, and H-D-A snapshots', async () => {
     const hnlPlayer = player({
       slug: 'marco-pasalic',
       displayName: 'Marco Pasalic',
@@ -359,6 +465,10 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
                   name: 'Anytime Goalscorer',
                   odds: [{ label: 'Marco Pasalic', over: '3.20' }],
                 },
+                {
+                  name: 'Player To Assist',
+                  odds: [{ label: 'Marco Pasalic', odds: '4.20' }],
+                },
               ],
               Unibet: [
                 {
@@ -368,6 +478,10 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
                 {
                   name: 'Anytime Goalscorer',
                   odds: [{ label: 'Marco Pasalic', over: '3.40' }],
+                },
+                {
+                  name: 'Player To Assist',
+                  odds: [{ label: 'Marco Pasalic', odds: '4.60' }],
                 },
               ],
             },
@@ -408,6 +522,9 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
     expect(
       cachedPlayer.get(playerMarketOddsKey(hnlPlayer))?.goal?.probability,
     ).toBeCloseTo((1 / 3.2 + 1 / 3.4) / 2);
+    expect(
+      cachedPlayer.get(playerMarketOddsKey(hnlPlayer))?.assist?.probability,
+    ).toBeCloseTo((1 / 4.2 + 1 / 4.6) / 2);
     const probabilities = cachedMatch.get(playerMarketOddsKey(hnlPlayer));
     expect(probabilities).toEqual({
       win: expect.any(Number),
@@ -571,7 +688,7 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('falls through from a UEFA qualification feed to the main competition feed', async () => {
+  it('falls through from UEFA playoff and qualification feeds to the main competition feed', async () => {
     const uefaPlayer = player({
       slug: 'kerem-akturkoglu',
       displayName: 'Kerem Akturkoglu',
@@ -589,7 +706,7 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
       const url = new URL(String(input));
       if (url.pathname.endsWith('/events')) {
         queriedLeagues.push(url.searchParams.get('league') ?? '');
-        return queriedLeagues.length === 1
+        return queriedLeagues.length < 3
           ? json([])
           : json([
               {
@@ -624,6 +741,7 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
         {
           competitionSlugs: ['uefa-champions-league'],
           leagueSlugs: [
+            'international-clubs-uefa-champions-league-playoff-round',
             'international-clubs-uefa-champions-league-qualification',
             'international-clubs-uefa-champions-league',
           ],
@@ -634,13 +752,14 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
     const result = await provider.load([uefaPlayer]);
 
     expect(queriedLeagues).toEqual([
+      'international-clubs-uefa-champions-league-playoff-round',
       'international-clubs-uefa-champions-league-qualification',
       'international-clubs-uefa-champions-league',
     ]);
     expect(
       result.get(playerMarketOddsKey(uefaPlayer))?.goal?.probability,
     ).toBeCloseTo(1 / 3);
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
   });
 
   it('uses only cached values after the hourly safety reserve is reached', async () => {

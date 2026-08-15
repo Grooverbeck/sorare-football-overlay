@@ -488,7 +488,13 @@ describe('StatsService cache writes', () => {
       PlayerStatsRequestSchema.parse({ slugs: ['jude-bellingham'] }),
     );
 
-    expect(load).toHaveBeenCalledWith([], { cacheOnly: true });
+    expect(load).toHaveBeenCalledWith(
+      [],
+      expect.objectContaining({
+        cacheOnly: true,
+        cacheOnlyDeadlineMs: expect.any(Number),
+      }),
+    );
     expect(scheduleBackground).not.toHaveBeenCalled();
     expect(result.data[0]?.pendingRefreshes ?? []).not.toContain('marketOdds');
   });
@@ -1767,7 +1773,10 @@ describe('StatsService cache writes', () => {
     expect(load).toHaveBeenNthCalledWith(
       1,
       expect.any(Array),
-      { cacheOnly: true },
+      expect.objectContaining({
+        cacheOnly: true,
+        cacheOnlyDeadlineMs: expect.any(Number),
+      }),
     );
     expect(load).toHaveBeenNthCalledWith(2, expect.any(Array));
     expect(scheduleBackground).toHaveBeenCalledTimes(1);

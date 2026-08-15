@@ -11,6 +11,7 @@ import {
 } from '../dom.js';
 import {
   applyHistoricalAssistFallbackSettings,
+  applyMarketBracketCompactView,
   applyMarketBracketSide,
   applyMarketValueFormat,
   OverlayView,
@@ -27,6 +28,7 @@ describe('Sorare card DOM discovery', () => {
       value: undefined,
     });
     applyMarketBracketSide('right');
+    applyMarketBracketCompactView(false);
     applyMarketValueFormat('percentage');
     applyHistoricalAssistFallbackSettings(false, 15);
     hydrateCardPictureNames({});
@@ -334,6 +336,237 @@ describe('Sorare card DOM discovery', () => {
     teamlessView.destroy();
   });
 
+  it('aliases a positionless name resolution by canonical team and concrete position', async () => {
+    const fetcher = vi.fn(
+      async (
+        request: PlayerStatsRequest,
+      ): Promise<PlayerStatsSuccessResponse> => {
+        const requestedPosition = request.positions?.['Lionel Messi'];
+        const position = requestedPosition ?? 'Forward';
+        return {
+          data: [
+            {
+              slug: 'lionel-andres-messi-cuccittini',
+              displayName: 'Lionel Messi',
+              position,
+              aaL10: {
+                value: position === 'Midfielder' ? 18.2 : 22.3,
+                sampleSize: 10,
+              },
+              cleanSheetL10: { value: null, sampleSize: 0 },
+              goalL10: { value: 0.5, sampleSize: 10 },
+              nextGame: {
+                date: '2026-08-16T00:30:00.000Z',
+                homeTeamName: 'Nashville SC',
+                awayTeamName: 'Inter Miami',
+                playerTeamName: 'Inter Miami',
+                opponentTeamName: 'Nashville SC',
+                playerTeamSlug: 'inter-miami',
+                cleanSheetProbability: null,
+                matchProbabilities: null,
+                marketOdds: null,
+              },
+              excludedLowCoverage: 0,
+            },
+          ],
+          meta: { requested: 1, returned: 1, cacheHits: 0, source: 'sorare' },
+        };
+      },
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const enqueue = (
+      position: 'Forward' | 'Midfielder' | undefined,
+      teamSlug: string,
+    ) => {
+      const card = document.createElement('button');
+      document.body.append(card);
+      const view = new OverlayView(
+        card,
+        { playerName: 'Lionel Messi' },
+        position,
+      );
+      coordinator.enqueue(
+        {
+          playerName: 'Lionel Messi',
+          ...(position ? { position } : {}),
+          teamSlug,
+          container: card,
+        },
+        view,
+      );
+      return view;
+    };
+
+    const pickerView = enqueue(undefined, 'inter-miami-miami-florida');
+    await coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    const forwardView = enqueue('Forward', 'inter-miami');
+    await coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(
+      forwardView.host.shadowRoot?.querySelector(
+        '.aa-bracket-cell .market-value',
+      )?.textContent,
+    ).toBe('22.3');
+
+    const midfielderView = enqueue('Midfielder', 'inter-miami');
+    await coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[1]?.[0].positions).toEqual({
+      'Lionel Messi': 'Midfielder',
+    });
+    expect(
+      midfielderView.host.shadowRoot?.querySelector(
+        '.aa-bracket-cell .market-value',
+      )?.textContent,
+    ).toBe('18.2');
+
+    pickerView.destroy();
+    forwardView.destroy();
+    midfielderView.destroy();
+  });
+
+  it('keeps real market odds across an empty refresh for the same fixture only', async () => {
+    applyHistoricalAssistFallbackSettings(true, 15);
+    const fixture = {
+      date: '2026-08-16T00:30:00.000Z',
+      homeTeamName: 'Nashville SC',
+      awayTeamName: 'Inter Miami',
+      playerTeamName: 'Inter Miami',
+      opponentTeamName: 'Nashville SC',
+      playerTeamSlug: 'inter-miami',
+      cleanSheetProbability: null,
+      matchProbabilities: null,
+    } as const;
+    const baseStats: PlayerStats = {
+      slug: 'lionel-andres-messi-cuccittini',
+      displayName: 'Lionel Messi',
+      position: 'Forward',
+      aaL10: { value: 22.3, sampleSize: 10 },
+      cleanSheetL10: { value: null, sampleSize: 0 },
+      goalL10: { value: 0.5, sampleSize: 10 },
+      historicalGoals: {
+        l10: { value: 0.5, sampleSize: 10 },
+        l15: { value: 0.6, sampleSize: 15 },
+        l40: { value: 0.4, sampleSize: 40 },
+      },
+      historicalAssists: {
+        l10: { value: 0.4, sampleSize: 10 },
+        l15: { value: 7 / 15, sampleSize: 15 },
+        l40: { value: 0.35, sampleSize: 40 },
+      },
+      nextGame: {
+        ...fixture,
+        marketOdds: {
+          source: 'sports-game-odds',
+          capturedAt: '2026-08-15T00:00:00.000Z',
+          goal: { probability: 0.51, bookmakerCount: 3 },
+          assist: { probability: 0.41, bookmakerCount: 1 },
+          decisive: null,
+        },
+      },
+      excludedLowCoverage: 0,
+    };
+    const responses: PlayerStats[] = [
+      baseStats,
+      {
+        ...baseStats,
+        nextGame: { ...fixture, marketOdds: null },
+        pendingRefreshes: ['marketOdds'],
+      },
+      {
+        ...baseStats,
+        nextGame: {
+          ...fixture,
+          date: '2026-08-23T00:30:00.000Z',
+          homeTeamName: 'Inter Miami',
+          awayTeamName: 'Atlanta United',
+          opponentTeamName: 'Atlanta United',
+          marketOdds: null,
+        },
+      },
+    ];
+    const fetcher = vi.fn(
+      async (): Promise<PlayerStatsSuccessResponse> => ({
+        data: [responses[Math.min(fetcher.mock.calls.length - 1, 2)]!],
+        meta: { requested: 1, returned: 1, cacheHits: 1, source: 'sorare' },
+      }),
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    coordinator.setIncludeHistoricalAssists(true);
+    const pickerCard = document.createElement('button');
+    document.body.append(pickerCard);
+    const pickerView = new OverlayView(
+      pickerCard,
+      { playerName: 'Lionel Messi' },
+      undefined,
+    );
+    const pickerTarget = {
+      playerName: 'Lionel Messi',
+      teamSlug: 'inter-miami',
+      container: pickerCard,
+    };
+
+    coordinator.enqueue(pickerTarget, pickerView);
+    await coordinator.flush();
+    expect(
+      pickerView.host.shadowRoot?.querySelector(
+        '[data-market="assist"] .market-value',
+      )?.textContent,
+    ).toBe('41%');
+
+    coordinator.enqueue(pickerTarget, pickerView, 0, true);
+    await coordinator.flush();
+    const preservedAssist = pickerView.host.shadowRoot?.querySelector<HTMLElement>(
+      '[data-market="assist"]',
+    );
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(preservedAssist?.dataset.benchmarkSource).toBe('market');
+    expect(preservedAssist?.querySelector('.market-value')?.textContent).toBe(
+      '41%',
+    );
+
+    const selectedCard = document.createElement('button');
+    document.body.append(selectedCard);
+    const selectedView = new OverlayView(
+      selectedCard,
+      { playerName: 'Lionel Messi' },
+      'Forward',
+    );
+    coordinator.enqueue(
+      {
+        playerName: 'Lionel Messi',
+        position: 'Forward',
+        teamSlug: 'inter-miami',
+        container: selectedCard,
+      },
+      selectedView,
+    );
+    await coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(
+      selectedView.host.shadowRoot?.querySelector(
+        '[data-market="assist"] .market-value',
+      )?.textContent,
+    ).toBe('41%');
+
+    coordinator.enqueue(pickerTarget, pickerView, 0, true);
+    await coordinator.flush();
+    for (const view of [pickerView, selectedView]) {
+      const historicalAssist = view.host.shadowRoot?.querySelector<HTMLElement>(
+        '[data-market="assist"]',
+      );
+      expect(historicalAssist?.dataset.benchmarkSource).toBe('historical');
+      expect(historicalAssist?.querySelector('.market-value')?.textContent).toBe(
+        '(47%)',
+      );
+    }
+
+    pickerView.destroy();
+    selectedView.destroy();
+  });
+
   it('does not inherit a distant position filter from an unrelated app area', () => {
     document.body.innerHTML = `
       <main data-testid="app-shell">
@@ -418,6 +651,7 @@ describe('Sorare card DOM discovery', () => {
   });
 
   it('keeps overlays on cards in an editable inline lineup overview', async () => {
+    window.history.replaceState({}, '', '/de/football/lineups/test-lineup');
     document.body.innerHTML = `
       <article class="isInline">
         <div class="FOOTBALL forced_inline slots5">
@@ -468,7 +702,48 @@ describe('Sorare card DOM discovery', () => {
       positions: { 'Marcel Hartel': 'Midfielder' },
       supportsPartialFormHistory: true,
     });
-    expect(document.querySelector('[data-sorare-overlay-root]')).not.toBeNull();
+    const overlay = document.querySelector<HTMLElement>(
+      '[data-sorare-overlay-root]',
+    );
+    expect(overlay).not.toBeNull();
+    expect(overlay?.dataset.compactMarketBrackets).toBe('true');
+  });
+
+  it('uses one full bracket style for selected and picker cards on selection screens', () => {
+    window.history.replaceState({}, '', '/de/football/hot-streaks/test');
+    document.body.innerHTML = `
+      <div class="FOOTBALL spread slots5 smartWidth">
+        <button type="button" data-testid="selected-card">
+          <img alt="Selected Player - common" src="/selected.png">
+        </button>
+      </div>
+      <button type="button" data-testid="picker-card">
+        <img alt="Picker Player - common" src="/picker.png">
+      </button>
+    `;
+    const selectedCard = document.querySelector<HTMLElement>(
+      '[data-testid="selected-card"]',
+    );
+    const pickerCard = document.querySelector<HTMLElement>(
+      '[data-testid="picker-card"]',
+    );
+    if (!selectedCard || !pickerCard) throw new Error('Expected both cards');
+
+    const selectedView = new OverlayView(
+      selectedCard,
+      { playerName: 'Selected Player' },
+      'Forward',
+    );
+    const pickerView = new OverlayView(
+      pickerCard,
+      { playerName: 'Picker Player' },
+      'Forward',
+    );
+
+    expect(selectedView.host.dataset.compactMarketBrackets).toBeUndefined();
+    expect(pickerView.host.dataset.compactMarketBrackets).toBeUndefined();
+    selectedView.destroy();
+    pickerView.destroy();
   });
 
   it('excludes only the miniature card inside a score-details dialog', () => {
@@ -657,6 +932,7 @@ describe('Sorare card DOM discovery', () => {
       '[data-sorare-overlay-root]',
     );
     const bar = companion?.shadowRoot?.querySelector<HTMLElement>('.lineup-odds-bar');
+    expect(overlay?.dataset.compactMarketBrackets).toBeUndefined();
     expect(companion?.hidden).toBe(false);
     expect(teamRow.nextElementSibling).toBe(companion);
     expect(
@@ -1205,7 +1481,11 @@ describe('Sorare card DOM discovery', () => {
     await coordinator.flush();
 
     const host = document.querySelector<HTMLElement>('[data-sorare-overlay-root]');
-    expect(host?.shadowRoot?.textContent).toContain('Keine L10-Daten');
+    const noDataBracket = host?.shadowRoot?.querySelector<HTMLElement>(
+      '.no-data-bracket',
+    );
+    expect(noDataBracket?.getAttribute('aria-label')).toBe('Keine L10-Daten');
+    expect(noDataBracket?.textContent).toBe('L10—');
 
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
     expect(host?.shadowRoot?.querySelector('.aa-bracket-cell')).toBeNull();
@@ -1229,7 +1509,7 @@ describe('Sorare card DOM discovery', () => {
     expect(
       host?.shadowRoot?.querySelector('.clean-sheet-probability'),
     ).toBeNull();
-    expect(host?.shadowRoot?.textContent).not.toContain('Keine L10-Daten');
+    expect(host?.shadowRoot?.querySelector('.no-data-bracket')).toBeNull();
   });
 
   it('keeps only deferred name cards loading and retries them without blocking returned players', async () => {
@@ -1300,9 +1580,9 @@ describe('Sorare card DOM discovery', () => {
       'Lade L10',
     );
     expect(cards[1]?.view.host.shadowRoot?.textContent).toContain('Lade L10');
-    expect(cards[1]?.view.host.shadowRoot?.textContent).not.toContain(
-      'Keine L10-Daten',
-    );
+    expect(
+      cards[1]?.view.host.shadowRoot?.querySelector('.no-data-bracket'),
+    ).toBeNull();
 
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
     expect(cards[1]?.view.host.shadowRoot?.textContent).not.toContain(
@@ -2176,6 +2456,226 @@ describe('Sorare card DOM discovery', () => {
     view.destroy();
   });
 
+  it('replaces a historical fallback when cached market odds appear after the initial refresh window', async () => {
+    vi.useFakeTimers();
+    try {
+      applyHistoricalAssistFallbackSettings(true, 15);
+      const partialStats: PlayerStats = {
+        slug: 'cached-assist-player',
+        displayName: 'Cached Assist Player',
+        position: 'Forward',
+        aaL10: { value: 18.2, sampleSize: 10 },
+        cleanSheetL10: { value: 0.1, sampleSize: 10 },
+        goalL10: { value: 0.4, sampleSize: 10 },
+        historicalAssists: {
+          l10: { value: 0.4, sampleSize: 10 },
+          l15: { value: 7 / 15, sampleSize: 15 },
+          l40: { value: 0.35, sampleSize: 40 },
+        },
+        nextGame: {
+          date: '2026-08-16T18:00:00.000Z',
+          homeTeamName: 'Home FC',
+          awayTeamName: 'Away FC',
+          playerTeamName: 'Home FC',
+          opponentTeamName: 'Away FC',
+          playerTeamSlug: 'home-fc',
+          cleanSheetProbability: null,
+          matchProbabilities: null,
+          marketOdds: {
+            source: 'odds-api-io',
+            capturedAt: '2026-08-15T00:00:00.000Z',
+            goal: { probability: 0.54, bookmakerCount: 2 },
+            assist: null,
+            decisive: null,
+          },
+        },
+        pendingRefreshes: ['marketOdds'],
+        excludedLowCoverage: 0,
+      };
+      const completeStats: PlayerStats = {
+        ...partialStats,
+        nextGame: {
+          ...partialStats.nextGame!,
+          marketOdds: {
+            source: 'mixed',
+            capturedAt: '2026-08-15T00:00:00.000Z',
+            goal: { probability: 0.54, bookmakerCount: 2 },
+            assist: { probability: 0.408, bookmakerCount: 1 },
+            decisive: null,
+          },
+        },
+        pendingRefreshes: undefined,
+      };
+      const fetcher = vi.fn(
+        async (): Promise<PlayerStatsSuccessResponse> => ({
+          data: [
+            fetcher.mock.calls.length < 4 ? partialStats : completeStats,
+          ],
+          meta: {
+            requested: 1,
+            returned: 1,
+            cacheHits: 1,
+            source: 'sorare',
+          },
+        }),
+      );
+      const coordinator = new StatsBatchCoordinator(
+        fetcher,
+        60_000,
+        undefined,
+        8,
+        2,
+      );
+      coordinator.setIncludeHistoricalAssists(true);
+      const card = document.createElement('article');
+      document.body.append(card);
+      const view = new OverlayView(
+        card,
+        { slug: 'cached-assist-player' },
+        'Forward',
+      );
+      coordinator.enqueue(
+        {
+          slug: 'cached-assist-player',
+          position: 'Forward',
+          container: card,
+        },
+        view,
+      );
+
+      await coordinator.flush();
+
+      let assist = view.host.shadowRoot?.querySelector<HTMLElement>(
+        '[data-market="assist"]',
+      );
+      expect(assist?.dataset.benchmarkSource).toBe('historical');
+      expect(assist?.textContent).toBe('(47%)');
+
+      for (const delay of [2_500, 8_000, 25_000]) {
+        await vi.advanceTimersByTimeAsync(delay);
+        await coordinator.flush();
+      }
+
+      expect(fetcher).toHaveBeenCalledTimes(4);
+      assist = view.host.shadowRoot?.querySelector<HTMLElement>(
+        '[data-market="assist"]',
+      );
+      expect(assist?.dataset.benchmarkSource).toBe('market');
+      expect(assist?.textContent).toBe('41%');
+      view.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries incomplete market odds as isolated player requests instead of rebuilding the failing batch', async () => {
+    vi.useFakeTimers();
+    const views: OverlayView[] = [];
+    try {
+      applyHistoricalAssistFallbackSettings(true, 15);
+      const names = ['Batch Player One', 'Lionel Messi', 'Batch Player Three'];
+      const statsFor = (name: string, complete: boolean): PlayerStats => ({
+        slug: name.toLocaleLowerCase().replaceAll(' ', '-'),
+        displayName: name,
+        position: 'Forward',
+        aaL10: { value: name === 'Lionel Messi' ? 22.3 : 11, sampleSize: 10 },
+        cleanSheetL10: { value: 0.1, sampleSize: 10 },
+        goalL10: { value: 0.3, sampleSize: 10 },
+        historicalAssists: {
+          l10: { value: 0.4, sampleSize: 10 },
+          l15: { value: 7 / 15, sampleSize: 15 },
+          l40: { value: 0.35, sampleSize: 40 },
+        },
+        nextGame: {
+          date: '2026-08-16T00:30:00.000Z',
+          homeTeamName: 'Nashville SC',
+          awayTeamName: 'Inter Miami',
+          playerTeamName: 'Inter Miami',
+          opponentTeamName: 'Nashville SC',
+          playerTeamSlug: 'inter-miami',
+          cleanSheetProbability: 0.19,
+          matchProbabilities: { win: 0.32, draw: 0.24, loss: 0.44 },
+          marketOdds: {
+            source: complete ? 'sports-game-odds' : 'odds-api-io',
+            capturedAt: '2026-08-14T05:01:11.562Z',
+            goal: { probability: complete ? 0.512 : 0.54, bookmakerCount: 3 },
+            assist: complete
+              ? { probability: 0.408, bookmakerCount: 1 }
+              : null,
+            decisive: complete
+              ? { probability: 0.655, bookmakerCount: 1 }
+              : null,
+          },
+        },
+        ...(complete ? {} : { pendingRefreshes: ['marketOdds'] }),
+        excludedLowCoverage: 0,
+      });
+      const fetcher = vi.fn(
+        async (request: PlayerStatsRequest): Promise<PlayerStatsSuccessResponse> => {
+          const requestedNames = request.playerNames ?? [];
+          return {
+            data: requestedNames.map((name) =>
+              statsFor(
+                name,
+                requestedNames.length === 1 && name === 'Lionel Messi',
+              ),
+            ),
+            meta: {
+              requested: requestedNames.length,
+              returned: requestedNames.length,
+              cacheHits: requestedNames.length,
+              source: 'sorare',
+            },
+          };
+        },
+      );
+      const coordinator = new StatsBatchCoordinator(
+        fetcher,
+        60_000,
+        undefined,
+        12,
+        2,
+        [5],
+      );
+      coordinator.setIncludeHistoricalAssists(true);
+
+      for (const name of names) {
+        const card = document.createElement('article');
+        document.body.append(card);
+        const view = new OverlayView(card, { playerName: name }, 'Forward');
+        views.push(view);
+        coordinator.enqueue(
+          { playerName: name, position: 'Forward', container: card },
+          view,
+        );
+      }
+
+      await coordinator.flush();
+      expect(fetcher.mock.calls[0]?.[0].playerNames).toHaveLength(3);
+
+      await vi.advanceTimersByTimeAsync(5);
+      await coordinator.flush();
+
+      const refreshRequests = fetcher.mock.calls.slice(1).map(([request]) => request);
+      expect(refreshRequests).toHaveLength(3);
+      expect(
+        refreshRequests.every(
+          (request) =>
+            (request.slugs?.length ?? 0) + (request.playerNames?.length ?? 0) === 1,
+        ),
+      ).toBe(true);
+      const messiView = views[1];
+      const assist = messiView?.host.shadowRoot?.querySelector<HTMLElement>(
+        '[data-market="assist"]',
+      );
+      expect(assist?.dataset.benchmarkSource).toBe('market');
+      expect(assist?.textContent).toBe('41%');
+    } finally {
+      for (const view of views) view.destroy();
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     {
       cachedSampleSize: 2,
@@ -2704,7 +3204,9 @@ describe('Sorare card DOM discovery', () => {
     expect(
       bracket?.querySelector('[data-market="goal"] .market-value')?.textContent,
     ).toBe('11%');
-    expect(view.host.shadowRoot?.textContent).not.toContain('Keine L10-Daten');
+    expect(
+      view.host.shadowRoot?.querySelector('.no-data-bracket'),
+    ).toBeNull();
     view.destroy();
   });
 
@@ -3565,7 +4067,10 @@ describe('Sorare card DOM discovery', () => {
       frameCallbacks.shift()?.((frame + 13) * 16);
     }
     expect(view.host.dataset.packSettling).toBeUndefined();
-    expect(view.host.dataset.placement).toBe('pack-status-above');
+    expect(view.host.dataset.placement).toBe('pack-card-edge');
+    expect(
+      view.host.shadowRoot?.querySelector('.no-data-bracket')?.textContent,
+    ).toBe('L10—');
 
     view.destroy();
     vi.unstubAllGlobals();
@@ -3682,7 +4187,9 @@ describe('Sorare card DOM discovery', () => {
     }
     expect(view.host.dataset.packSettling).toBeUndefined();
     expect(view.host.dataset.placement).toBe('pack-card-edge');
-    expect(view.host.shadowRoot?.textContent).toContain('Keine L10-Daten');
+    expect(
+      view.host.shadowRoot?.querySelector('.no-data-bracket')?.textContent,
+    ).toBe('L10—');
 
     view.destroy();
     vi.unstubAllGlobals();
@@ -4258,6 +4765,50 @@ describe('Sorare card DOM discovery', () => {
     secondView.destroy();
   });
 
+  it('applies Compact View to existing and newly created market brackets', () => {
+    const firstCard = document.createElement('article');
+    const secondCard = document.createElement('article');
+    document.body.append(firstCard, secondCard);
+
+    const firstView = new OverlayView(
+      firstCard,
+      { slug: 'luis-suarez' },
+      'Forward',
+    );
+    expect(firstView.host.dataset.marketBracketCompactView).toBeUndefined();
+
+    applyMarketBracketCompactView(true);
+    expect(firstView.host.dataset.marketBracketCompactView).toBe('true');
+    expect(
+      document.documentElement.hasAttribute('data-sorare-overlay-compact-view'),
+    ).toBe(true);
+
+    firstCard.dispatchEvent(new MouseEvent('mouseenter'));
+    expect(firstView.host.dataset.marketBracketCardHover).toBe('true');
+    firstCard.dispatchEvent(new MouseEvent('mouseleave'));
+    expect(firstView.host.dataset.marketBracketCardHover).toBeUndefined();
+
+    const secondView = new OverlayView(
+      secondCard,
+      { slug: 'denis-bouanga' },
+      'Forward',
+    );
+    expect(secondView.host.dataset.marketBracketCompactView).toBe('true');
+    secondCard.dispatchEvent(new MouseEvent('mouseenter'));
+    expect(secondView.host.dataset.marketBracketCardHover).toBe('true');
+
+    applyMarketBracketCompactView(false);
+    expect(firstView.host.dataset.marketBracketCompactView).toBeUndefined();
+    expect(secondView.host.dataset.marketBracketCompactView).toBeUndefined();
+    expect(secondView.host.dataset.marketBracketCardHover).toBeUndefined();
+    expect(
+      document.documentElement.hasAttribute('data-sorare-overlay-compact-view'),
+    ).toBe(false);
+
+    firstView.destroy();
+    secondView.destroy();
+  });
+
   it('marks the current MLS AA leader per concrete position with a podium rank', async () => {
     document.body.innerHTML = `
       <article data-testid="football-card" data-position="Midfielder">
@@ -4547,6 +5098,87 @@ describe('Sorare card DOM discovery', () => {
 
     scanner.stop();
     vi.unstubAllGlobals();
+  });
+
+  it('hydrates historical assists without discarding cached real market odds', async () => {
+    applyHistoricalAssistFallbackSettings(true, 15);
+    const marketStats: PlayerStats = {
+      slug: 'historical-assist-player',
+      displayName: 'Historical Assist Player',
+      position: 'Forward',
+      aaL10: { value: 12, sampleSize: 10 },
+      cleanSheetL10: { value: 0, sampleSize: 10 },
+      goalL10: { value: 0.2, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-16T18:00:00.000Z',
+        homeTeamName: 'Home FC',
+        awayTeamName: 'Away FC',
+        playerTeamName: 'Home FC',
+        opponentTeamName: 'Away FC',
+        playerTeamSlug: 'home-fc',
+        cleanSheetProbability: null,
+        matchProbabilities: null,
+        marketOdds: {
+          source: 'sports-game-odds',
+          capturedAt: '2026-08-15T00:00:00.000Z',
+          goal: { probability: 0.44, bookmakerCount: 3 },
+          assist: { probability: 0.31, bookmakerCount: 1 },
+          decisive: null,
+        },
+      },
+      excludedLowCoverage: 0,
+    };
+    const hydratedStats: PlayerStats = {
+      ...marketStats,
+      historicalGoals: {
+        l10: { value: 0.2, sampleSize: 10 },
+        l15: { value: 0.2, sampleSize: 15 },
+        l40: { value: 0.15, sampleSize: 40 },
+      },
+      historicalAssists: {
+        l10: { value: 0.2, sampleSize: 10 },
+        l15: { value: 4 / 15, sampleSize: 15 },
+        l40: { value: 0.2, sampleSize: 40 },
+      },
+      nextGame: { ...marketStats.nextGame!, marketOdds: null },
+      pendingRefreshes: ['marketOdds'],
+    };
+    const fetcher = vi.fn(
+      async (): Promise<PlayerStatsSuccessResponse> => ({
+        data: [fetcher.mock.calls.length === 1 ? marketStats : hydratedStats],
+        meta: { requested: 1, returned: 1, cacheHits: 1, source: 'sorare' },
+      }),
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const card = document.createElement('article');
+    document.body.append(card);
+    const view = new OverlayView(
+      card,
+      { slug: 'historical-assist-player' },
+      'Forward',
+    );
+    const target = {
+      slug: 'historical-assist-player',
+      position: 'Forward' as const,
+      container: card,
+    };
+
+    coordinator.enqueue(target, view);
+    await coordinator.flush();
+    coordinator.setIncludeHistoricalAssists(true);
+    coordinator.enqueue(target, view);
+    await coordinator.flush();
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[1]?.[0]).toMatchObject({
+      includeHistoricalAssists: true,
+    });
+    const assist = view.host.shadowRoot?.querySelector<HTMLElement>(
+      '[data-market="assist"]',
+    );
+    expect(assist?.dataset.benchmarkSource).toBe('market');
+    expect(assist?.querySelector('.market-value')?.textContent).toBe('31%');
+    view.destroy();
   });
 
   it('requests historical assist windows only after the fallback is enabled', async () => {

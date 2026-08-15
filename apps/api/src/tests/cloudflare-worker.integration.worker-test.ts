@@ -88,6 +88,69 @@ describe('Cloudflare Worker', () => {
     ).toBe(Date.parse('2026-08-03T10:00:00.000Z') / 1_000);
   });
 
+  it('refreshes only historical metrics cached before club scoping', async () => {
+    const nowMs = Date.parse('2026-08-15T12:00:00.000Z');
+    const key = `historical-club-scope-${nowMs}:Midfielder:no-low`;
+    const cacheKey = `player-form:v2:${key}`;
+    const store = new D1JsonKeyValueStore(
+      env.CACHE_DB,
+      env.STATS_CACHE,
+      () => Math.floor(nowMs / 1_000),
+    );
+    await Promise.all([store.delete(cacheKey), env.STATS_CACHE.delete(cacheKey)]);
+    const historical = {
+      l10: { value: 0, sampleSize: 10 },
+      l15: { value: 0, sampleSize: 15 },
+      l40: { value: 1 / 29, sampleSize: 29 },
+    };
+    const staleForm = {
+      slug: 'historical-club-scope',
+      displayName: 'Historical Club Scope',
+      position: 'Midfielder' as const,
+      aaL10: { value: 24.3, sampleSize: 10 },
+      cleanSheetL10: { value: 0, sampleSize: 10 },
+      goalL10: { value: 0, sampleSize: 10 },
+      historicalGoals: historical,
+      historicalAssists: historical,
+      historicalDecisives: historical,
+      excludedLowCoverage: 0,
+    };
+    await store.put(cacheKey, JSON.stringify(staleForm), {
+      expirationTtl: 3_600,
+    });
+
+    const context = createExecutionContext();
+    const cache = new CloudflarePlayerStatsCache(
+      store,
+      604_800,
+      14_400,
+      context,
+      () => nowMs,
+    );
+
+    await expect(cache.getParts(key)).resolves.toEqual({
+      form: {
+        slug: 'historical-club-scope',
+        displayName: 'Historical Club Scope',
+        position: 'Midfielder',
+        aaL10: { value: 24.3, sampleSize: 10 },
+        cleanSheetL10: { value: 0, sampleSize: 10 },
+        goalL10: { value: 0, sampleSize: 10 },
+        excludedLowCoverage: 0,
+      },
+    });
+
+    await cache.setForm(key, staleForm);
+    await waitOnExecutionContext(context);
+    await expect(store.get(cacheKey, 'json')).resolves.toMatchObject({
+      historicalGoals: historical,
+      historicalClubScopeVersion: 1,
+    });
+    await expect(cache.getParts(key)).resolves.toMatchObject({
+      form: { historicalGoals: historical },
+    });
+  });
+
   it('keeps the current fixture and its team odds until the following morning', () => {
     const nowMs = Date.parse('2026-07-25T12:00:00.000Z');
     const fixtureDate = '2026-07-26T00:30:00.000Z';
@@ -748,6 +811,47 @@ describe('Cloudflare Worker', () => {
     );
     expect(goalKey?.expiration).toBeUndefined();
     expect(assistKey?.expiration).toBe(missExpiration);
+  });
+
+  it('reads multiple market snapshots through the D1 batch path', async () => {
+    const probe = Date.now();
+    const firstFixture = `${probe}|batch home one|batch away one`;
+    const secondFixture = `${probe + 1}|batch home two|batch away two`;
+    const store = new CloudflareMarketSnapshotStore(
+      new D1JsonKeyValueStore(env.CACHE_DB, env.STATS_CACHE),
+      1_800,
+      createExecutionContext(),
+    );
+    await store.set(firstFixture, {
+      status: 'available',
+      market: 'player_goal_scorer_anytime',
+      eventId: 'batch-fixture-1',
+      capturedAt: '2026-07-24T12:00:00.000Z',
+      players: {
+        'first player': { probability: 0.4, bookmakerCount: 2 },
+      },
+    });
+    await store.set(secondFixture, {
+      status: 'available',
+      market: 'player_assists',
+      eventId: 'batch-fixture-2',
+      capturedAt: '2026-07-24T12:00:00.000Z',
+      players: {
+        'second player': { probability: 0.3, bookmakerCount: 1 },
+      },
+    });
+
+    await expect(
+      store.getMany([
+        { fixtureKey: firstFixture, market: 'player_goal_scorer_anytime' },
+        { fixtureKey: secondFixture, market: 'player_assists' },
+        { fixtureKey: secondFixture, market: 'player_goal_or_assist' },
+      ]),
+    ).resolves.toMatchObject([
+      { status: 'available', eventId: 'batch-fixture-1' },
+      { status: 'available', eventId: 'batch-fixture-2' },
+      undefined,
+    ]);
   });
 
   it('coordinates market refreshes and supplement batches through D1', async () => {

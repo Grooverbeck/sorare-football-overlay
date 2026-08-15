@@ -109,7 +109,7 @@ Alle Werte werden aus `apps/api/.env` oder der Prozessumgebung gelesen.
 | `SPORTS_GAME_ODDS_API_KEY` | leer | Serverseitiger Schlüssel für direkte Tor-, Assist-, Tor-oder-Assist- und H/D/A-Märkte |
 | `SPORTS_GAME_ODDS_BASE_URL` | `https://api.sportsgameodds.com/v2` | Basis-URL von SportsGameOdds |
 | `SPORTS_GAME_ODDS_LEAGUE_ID` | `MLS` | Überschreibbare SportsGameOdds-ID der MLS-Route; die europäischen IDs kommen aus der Routingmatrix |
-| `ODDS_API_IO_KEY` | leer | Serverseitiger Schlüssel für den zusätzlichen Torquoten-Fallback |
+| `ODDS_API_IO_KEY` | leer | Serverseitiger Schlüssel für den zusätzlichen Torquoten-Fallback; mitgelieferte Assistquoten werden ohne eigenen Abruf übernommen |
 | `ODDS_API_IO_BASE_URL` | `https://api.odds-api.io/v3` | Basis-URL von Odds-API.io |
 | `ODDS_API_IO_LEAGUE` | `austria-bundesliga` | Überschreibbarer Odds-API.io-Slug für die österreichische Bundesliga |
 | `ODDS_API_IO_BOOKMAKERS` | `Bet365,Unibet` | Gemeinsam und gebündelt abgefragte Buchmacher |
@@ -162,8 +162,9 @@ Tor-oder-Assist-Märkte sowie als erster externer H/D/A-Fallback verwendet. Ein
 zurückgegebenes Spielobjekt füllt beide Snapshot-Arten gleichzeitig. The Odds
 API ergänzt danach weiterhin fehlende Tor-, Assist- oder H/D/A-Werte;
 Odds-API.io ergänzt als letzte Rückfallebene eine noch fehlende Torquote und in
-der HNL auch H/D/A. Assist-Lücken allein lösen bei einem Goal-only-Feed keinen
-Abruf aus. Die Quoten mehrerer Begegnungen desselben Wettbewerbs werden in
+der HNL auch H/D/A. Enthält dieselbe Antwort `Player To Assist`, wird dieser
+Markt ebenfalls eingefroren und ausgeliefert. Assist-Lücken allein lösen weder
+einen Abruf noch einen Fehlversuch aus. Die Quoten mehrerer Begegnungen werden in
 möglichst wenigen Sammelabfragen geladen. Ist eine SportsGameOdds-Event-ID
 bekannt, wird eine spätere Ergänzungsprüfung direkt auf dieses Spiel begrenzt.
 Die Anbieter werden nicht bei jedem Kartenaufruf abgefragt. Innerhalb des
@@ -177,17 +178,21 @@ Spielerwahrscheinlichkeit. Fehlende Märkte und konkret angefragte, noch nicht
 gelistete Spieler verwenden einen spielbezogenen Retry-Zustand: nach dem ersten
 Fehlschlag frühestens nach zwölf Stunden, danach nach 24 Stunden und höchstens
 noch einmal vier Stunden vor Anpfiff. Nach der letzten Prüfung und nach
-Spielbeginn werden keine weiteren Quotenabrufe ausgelöst. Bei dem produktiven
-72-Stunden-Abruffenster ergeben sich dadurch höchstens drei Marktprüfungen pro
-Begegnung statt einer Prüfung alle sechs Stunden.
+Spielbeginn werden keine weiteren Quotenabrufe ausgelöst. Bei den
+72-Stunden-Abruffenstern von SportsGameOdds und Odds-API.io ergeben sich dadurch
+höchstens drei Marktprüfungen pro Begegnung statt einer Prüfung alle sechs
+Stunden. Der monatlich kontingentierte The-Odds-API-Fallback für europäische
+Spielermärkte beginnt dagegen erst 24 Stunden vor Anpfiff und nutzt denselben
+begrenzten Retry-Zustand.
 
 Vor einem externen Abruf prüft das Backend zusätzlich die von Sorare gelieferte
 Competition. SportsGameOdds unterstützt gezielt MLS, Champions League,
 Europa League, La Liga, Ligue 1, Ligue 2 und Bundesliga. The Odds API ergänzt
 diese Wettbewerbe und deckt zusätzlich Leagues Cup, Conference League,
-2. Bundesliga und die österreichische Bundesliga ab. Odds-API.io ist die
-Goal-only-Schlussstufe für die konfigurierten Wettbewerbe und liefert in der
-kroatischen HNL zusätzlich den externen H/D/A-Fallback. Für europäische Spiele
+2. Bundesliga und die österreichische Bundesliga ab. Odds-API.io wird über die
+Torquote angesteuert, übernimmt dabei aber opportunistisch mitgelieferte
+Assistquoten und liefert in der kroatischen HNL zusätzlich den externen
+H/D/A-Fallback. Für europäische Spiele
 bei The Odds API werden zuerst europäische und nur bei Bedarf britische
 Buchmacher abgefragt. Unbekannte oder andere Wettbewerbe lösen keinen externen
 Feed-Aufruf aus. Alte Fixture-Cacheeinträge ohne Competition werden einmalig
@@ -474,8 +479,9 @@ Das Backend lädt die Märkte erst innerhalb des je Wettbewerb konfigurierten
 Abruffensters und friert jeden erfolgreich gelieferten Markt anschließend
 dauerhaft in Cloudflare KV ein. SportsGameOdds wird als primäre Quelle
 abgefragt; The Odds API ergänzt weiterhin fehlende Tor- und Assistwerte.
-Odds-API.io ergänzt als letzte Quelle noch fehlende Torquoten. Alle API-Secrets
-bleiben ausschließlich im Worker.
+Odds-API.io ergänzt als letzte Quelle noch fehlende Torquoten und übernimmt
+`Player To Assist`, wenn der Markt bereits in derselben Antwort enthalten ist.
+Alle API-Secrets bleiben ausschließlich im Worker.
 
 ### MLS-Perzentile für AA und Next CS
 

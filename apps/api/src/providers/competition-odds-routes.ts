@@ -1,7 +1,11 @@
 import type { MatchOddsRoute } from './match-odds-provider.js';
 import type { PlayerMarketField } from './market-odds-provider.js';
 
-const TARGET_PLAYER_FETCH_WINDOW_MS = 24 * 60 * 60 * 1_000;
+// The Odds API consumes monthly credits per returned market. Keep its European
+// player-prop fallback close to kickoff, while providers with free or regularly
+// resetting allocations can start looking three days before the fixture.
+const THE_ODDS_API_PLAYER_FETCH_WINDOW_MS = 24 * 60 * 60 * 1_000;
+const EARLY_PLAYER_FETCH_WINDOW_MS = 72 * 60 * 60 * 1_000;
 
 /**
  * Sorare labels the MLS/Liga MX tournament as `leagues-cup-mls`, while
@@ -76,8 +80,8 @@ export interface CompetitionOddsCapability {
  * Match odds and player props deliberately have separate The Odds API routes:
  * European H-D-A comes from EU/UK books, while supported football player props
  * are exposed through US books. Odds-API.io supplies goalscorer markets for all
- * seven competitions and the HNL match fallback, where The Odds API has no
- * league feed.
+ * seven competitions, opportunistically keeps assists returned in the same
+ * response, and provides the HNL match fallback where The Odds API has no feed.
  */
 export const EUROPEAN_ODDS_CAPABILITIES = [
   {
@@ -98,7 +102,7 @@ export const EUROPEAN_ODDS_CAPABILITIES = [
       fallbackRegion: null,
     },
     oddsApiIo: {
-      leagueSlugs: ['spain-la-liga'],
+      leagueSlugs: ['spain-laliga'],
       playerMarkets: ['goal'],
       matchOdds: false,
     },
@@ -246,7 +250,7 @@ export const EUROPEAN_THE_ODDS_API_PLAYER_ROUTES: readonly TheOddsApiPlayerRoute
               region: theOddsApiPlayer.region,
               fallbackRegion: theOddsApiPlayer.fallbackRegion,
               markets: ['goal', 'assist'],
-              fetchWindowMs: TARGET_PLAYER_FETCH_WINDOW_MS,
+              fetchWindowMs: THE_ODDS_API_PLAYER_FETCH_WINDOW_MS,
             },
           ]
         : [],
@@ -289,8 +293,8 @@ export const SPORTS_GAME_ODDS_ROUTES: readonly SportsGameOddsRoute[] = [
               leagueId: sportsGameOdds.leagueId,
               playerMarkets: sportsGameOdds.playerMarkets,
               matchOdds: sportsGameOdds.matchOdds,
-              playerFetchWindowMs: TARGET_PLAYER_FETCH_WINDOW_MS,
-              matchOddsFetchWindowMs: TARGET_PLAYER_FETCH_WINDOW_MS,
+              playerFetchWindowMs: EARLY_PLAYER_FETCH_WINDOW_MS,
+              matchOddsFetchWindowMs: EARLY_PLAYER_FETCH_WINDOW_MS,
             },
           ]
         : [],
@@ -309,6 +313,7 @@ const BASE_ODDS_API_IO_ROUTES = [
   {
     competitionSlugs: ['uefa-champions-league'],
     leagueSlugs: [
+      'international-clubs-uefa-champions-league-playoff-round',
       'international-clubs-uefa-champions-league-qualification',
       'international-clubs-uefa-champions-league',
     ],
@@ -316,6 +321,7 @@ const BASE_ODDS_API_IO_ROUTES = [
   {
     competitionSlugs: ['uefa-europa-league'],
     leagueSlugs: [
+      'international-clubs-uefa-europa-league-playoff-round',
       'international-clubs-uefa-europa-league-qualification',
       'international-clubs-uefa-europa-league',
     ],
@@ -323,6 +329,7 @@ const BASE_ODDS_API_IO_ROUTES = [
   {
     competitionSlugs: ['uefa-europa-conference-league'],
     leagueSlugs: [
+      'international-clubs-uefa-conference-league-playoff-round',
       'international-clubs-uefa-conference-league-qualification',
       'international-clubs-uefa-conference-league',
     ],
@@ -332,6 +339,8 @@ const BASE_ODDS_API_IO_ROUTES = [
 /**
  * Odds-API.io is a goalscorer fallback for the existing pools and the direct
  * goalscorer source for European leagues without supported The Odds API props.
+ * Player To Assist is captured from the same response, but never drives routing
+ * or a provider request of its own.
  */
 export const ODDS_API_IO_ROUTES: readonly OddsApiIoRoute[] = [
   ...BASE_ODDS_API_IO_ROUTES,
@@ -341,7 +350,7 @@ export const ODDS_API_IO_ROUTES: readonly OddsApiIoRoute[] = [
       leagueSlugs: oddsApiIo.leagueSlugs,
       playerMarkets: oddsApiIo.playerMarkets,
       matchOdds: oddsApiIo.matchOdds,
-      playerFetchWindowMs: TARGET_PLAYER_FETCH_WINDOW_MS,
+      playerFetchWindowMs: EARLY_PLAYER_FETCH_WINDOW_MS,
     }),
   ),
 ];
