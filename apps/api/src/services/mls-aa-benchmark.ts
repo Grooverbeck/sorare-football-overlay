@@ -1,4 +1,5 @@
 import {
+  AA_MINIMUM_MINUTES,
   FootballPositionSchema,
   MLS_AA_BENCHMARKS,
   getMlsAaPercentileBandFromSnapshot,
@@ -43,6 +44,7 @@ export const MlsAaBenchmarkSnapshotSchema = z.object({
   competition: z.string().trim().min(1),
   competitionSlug: z.literal('mlspa'),
   asOf: z.string().date(),
+  minimumMinutes: z.literal(AA_MINIMUM_MINUTES),
   minimumAppearances: z.number().int().min(1).max(10),
   populationSize: z.number().int().nonnegative(),
   positions: z.record(FootballPositionSchema, MlsAaPositionBenchmarkSchema),
@@ -273,7 +275,8 @@ export class MlsAaBenchmarkRefresher {
                 score.positionTyped === position &&
                 score.allAroundScore !== undefined &&
                 score.footballPlayerGameStats?.playedInGame === true &&
-                (score.footballPlayerGameStats.minsPlayed ?? 0) > 0 &&
+                (score.footballPlayerGameStats.minsPlayed ?? 0) >=
+                  AA_MINIMUM_MINUTES &&
                 score.footballGame?.lowCoverage === false &&
                 (!activeClubId ||
                   score.footballPlayerGameStats.anyTeam?.id === activeClubId),
@@ -305,6 +308,7 @@ export class MlsAaBenchmarkRefresher {
       competition,
       competitionSlug: 'mlspa',
       asOf: new Date(this.now()).toISOString().slice(0, 10),
+      minimumMinutes: AA_MINIMUM_MINUTES,
       minimumAppearances: this.minimumAppearances,
       populationSize: eligible.length,
       positions: Object.fromEntries(

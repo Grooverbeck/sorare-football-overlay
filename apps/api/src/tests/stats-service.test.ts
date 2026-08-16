@@ -341,7 +341,7 @@ describe('StatsService cache writes', () => {
                     allAroundScore: 4.76,
                     goals: 0,
                     assists: 0,
-                    minsPlayed: 20,
+                    minsPlayed: 60,
                     cleanSheet60: 0,
                     lowCoverage: false,
                     position: 'Midfielder',

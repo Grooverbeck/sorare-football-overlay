@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "benchmark:mls-aa": "node scripts/analyze-mls-aa.mjs",
+    "benchmark:mls-aa": "node --env-file-if-exists=.dev.vars scripts/analyze-mls-aa.mjs",
     "benchmark:mls-cs": "node scripts/analyze-mls-clean-sheets.mjs",
     "benchmark:mls-market": "tsx scripts/derive-mls-market-benchmarks.mjs",
     "benchmark:mls-win": "node scripts/analyze-mls-win-probabilities.mjs",

@@ -59,6 +59,8 @@ function validAppearancesForPosition(
     .sort((left, right) => Date.parse(right.date) - Date.parse(left.date));
 }
 
+export const AA_MINIMUM_MINUTES = 60;
+
 function currentClubAppearancesOrFallback(
   appearances: readonly PlayerAppearance[],
 ): PlayerAppearance[] {
@@ -94,15 +96,20 @@ export function calculatePlayerMetrics(
   const hasCurrentClubMarkers = allValidAppearances.some(
     (appearance) => appearance.currentClubGame !== undefined,
   );
-  const currentClubAppearances = (
+  const aaEligibleAppearances = (
     hasCurrentClubMarkers
       ? allValidAppearances.filter(
           (appearance) => appearance.currentClubGame === true,
         )
       : allValidAppearances
-  ).slice(0, limit);
+  )
+    .filter(
+      (appearance) =>
+        (appearance.minsPlayed ?? 0) >= AA_MINIMUM_MINUTES,
+    )
+    .slice(0, limit);
 
-  const allAroundScores = currentClubAppearances.flatMap((appearance) =>
+  const allAroundScores = aaEligibleAppearances.flatMap((appearance) =>
     appearance.allAroundScore === null ? [] : [appearance.allAroundScore],
   );
   const cleanSheetEligible = validAppearances.filter(

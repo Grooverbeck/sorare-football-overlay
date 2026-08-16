@@ -1564,7 +1564,8 @@ function aaStatNode(
   if (limitedClubSample) {
     const sampleWarningReason =
       `AA ${score(stats.aaL10)} · Datenbasis: ${stats.aaL10.sampleSize}/10 gültige ` +
-      `Spiele beim aktuellen Verein. Andere Vereine/Nationalteam ausgeschlossen.`;
+      `Spiele mit mindestens 60 Minuten beim aktuellen Verein. ` +
+      `Andere Vereine/Nationalteam ausgeschlossen.`;
     stat.dataset.limitedSample = 'true';
     stat.dataset.clubSampleSize = String(stats.aaL10.sampleSize);
     const warning = document.createElement('span');
@@ -1630,7 +1631,7 @@ function aaStatNode(
       'aria-label',
       `AA L10 ${score(stats.aaL10)}: keine belastbare MLS-Perzentileinstufung${
         limitedClubSample
-          ? `; Warnung: nur ${stats.aaL10.sampleSize} Vereinsspiele des aktuellen Clubs`
+          ? `; Warnung: nur ${stats.aaL10.sampleSize} Vereinsspiele mit mindestens 60 Minuten`
           : ''
       }`,
     );
@@ -1644,7 +1645,7 @@ function aaStatNode(
       topRank ? `, Rang ${topRank}` : ''
     }${stats.mlsAaContext ? `, Stand ${stats.mlsAaContext.asOf}` : ''}${
       limitedClubSample
-        ? `; Warnung: nur ${stats.aaL10.sampleSize} Vereinsspiele des aktuellen Clubs`
+        ? `; Warnung: nur ${stats.aaL10.sampleSize} Vereinsspiele mit mindestens 60 Minuten`
         : ''
     }`,
   );

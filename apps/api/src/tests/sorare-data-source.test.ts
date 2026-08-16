@@ -1165,6 +1165,80 @@ describe('SorareDataSource player-name resolution', () => {
     expect(metrics.goalL10).toEqual({ value: 0.3, sampleSize: 10 });
   });
 
+  it('loads older history until AA has ten 60-minute appearances', async () => {
+    const recentScores = Array.from({ length: 15 }, (_, index) => ({
+      __typename: 'PlayerGameScore',
+      positionTyped: 'Midfielder',
+      allAroundScore: 99,
+      footballGame: {
+        date: new Date(Date.UTC(2026, 6, 24 - index)).toISOString(),
+        lowCoverage: false,
+      },
+      footballPlayerGameStats: {
+        goals: 0,
+        minsPlayed: 59,
+        cleanSheet60: 0,
+        playedInGame: true,
+      },
+    }));
+    const historyNodes = Array.from({ length: 15 }, (_, index) => ({
+      date: new Date(Date.UTC(2026, 6, 24 - index)).toISOString(),
+      lowCoverage: false,
+      playerGameScore: {
+        __typename: 'PlayerGameScore',
+        positionTyped: 'Midfielder',
+        allAroundScore: index < 5 ? 99 : 10,
+        footballPlayerGameStats: {
+          goals: 0,
+          minsPlayed: index < 5 ? 59 : 60,
+          cleanSheet60: 0,
+          playedInGame: true,
+        },
+      },
+    }));
+    const request = vi.fn(
+      async (_document: unknown, variables: { slug?: string }) =>
+        variables.slug
+          ? {
+              anyPlayer: {
+                __typename: 'Player',
+                slug: 'sixty-minute-player',
+                pastGames: { nodes: historyNodes },
+              },
+            }
+          : {
+              players: [
+                {
+                  __typename: 'Player',
+                  slug: 'sixty-minute-player',
+                  displayName: 'Sixty Minute Player',
+                  position: 'Midfielder',
+                  activeClub: null,
+                  nextGame: null,
+                  playerGameScores: recentScores,
+                },
+              ],
+            },
+    );
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    const [player] = await source.fetchPlayers([
+      { slug: 'sixty-minute-player', position: 'Midfielder' },
+    ]);
+    const metrics = calculatePlayerMetrics(
+      player?.appearances ?? [],
+      'Midfielder',
+      { excludeLowCoverage: true },
+    );
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(player?.appearances).toHaveLength(15);
+    expect(metrics.aaL10).toEqual({ value: 10, sampleSize: 10 });
+  });
+
   it('loads up to forty assist appearances only when explicitly requested', async () => {
     const historyNodes = Array.from({ length: 40 }, (_, index) => ({
       id: `history-${index}`,

@@ -797,7 +797,7 @@ class CloudflarePlayerFormCache
   }
 
   async get(key: string): Promise<PlayerFormStats | undefined> {
-    const cacheKey = `player-form:v2:${key}`;
+    const cacheKey = `player-form:v3:${key}`;
     const raw = await this.namespace.get<unknown>(cacheKey, 'json');
     if (raw === null) return undefined;
     const parsed = CachedPlayerFormStatsSchema.safeParse(raw);
@@ -835,7 +835,7 @@ class CloudflarePlayerFormCache
   set(key: string, value: PlayerFormStats): void {
     const parsed = PlayerFormStatsSchema.parse(value);
     this.persistUntil(
-      `player-form:v2:${key}`,
+      `player-form:v3:${key}`,
       {
         ...parsed,
         historicalClubScopeVersion: HISTORICAL_CLUB_SCOPE_VERSION,
@@ -1437,7 +1437,7 @@ export class CloudflarePlayerStatsCache
 export class CloudflareMlsAaBenchmarkStore
   implements MlsAaBenchmarkStore
 {
-  private static readonly key = 'mls-aa-benchmark:v1';
+  private static readonly key = 'mls-aa-benchmark:v2';
   private readonly fallback = MlsAaBenchmarkSnapshotSchema.parse(
     MLS_AA_BENCHMARKS,
   );

@@ -4407,7 +4407,7 @@ describe('Sorare card DOM discovery', () => {
       marketBracket?.querySelector<HTMLElement>('.aa-bracket-cell');
     expect(compactAa?.querySelector('.aa-market-icon')?.textContent).toBe('AA');
     expect(compactAa?.querySelector('.market-value')?.textContent).toBe('14.2');
-    expect(compactAa?.dataset.tone).toBe('strong');
+    expect(compactAa?.dataset.tone).toBe('good');
     expect(compactAa?.dataset.clubSampleSize).toBe('9');
     const aaWarning =
       compactAa?.querySelector<HTMLElement>('.aa-sample-warning');
@@ -4415,7 +4415,7 @@ describe('Sorare card DOM discovery', () => {
     expect(aaWarning?.tabIndex).toBe(0);
     expect(aaWarning?.getAttribute('role')).toBe('note');
     expect(aaWarning?.getAttribute('aria-label')).toContain(
-      'AA 14.2 · Datenbasis: 9/10 gültige Spiele beim aktuellen Verein',
+      'AA 14.2 · Datenbasis: 9/10 gültige Spiele mit mindestens 60 Minuten beim aktuellen Verein',
     );
     expect(
       aaWarning?.querySelector('.aa-sample-warning-title')?.textContent,
@@ -4425,12 +4425,12 @@ describe('Sorare card DOM discovery', () => {
     ).toContain('Andere Vereine/Nationalteam ausgeschlossen');
     expect(compactAa?.title).toBe('');
     expect(compactAa?.getAttribute('aria-label')).toContain(
-      'nur 9 Vereinsspiele des aktuellen Clubs',
+      'nur 9 Vereinsspiele mit mindestens 60 Minuten',
     );
-    expect(compactAa?.dataset.percentileBand).toBe('P80–90');
+    expect(compactAa?.dataset.percentileBand).toBe('P60–80');
     expect(compactAa?.querySelector('.performance-scale')).toBeNull();
     expect(marketBracket?.textContent).toBe(
-      'AA14.2!Begrenzte AA-DatenbasisAA 14.2 · Datenbasis: 9/10 gültige Spiele beim aktuellen Verein. Andere Vereine/Nationalteam ausgeschlossen.CS47%18%11%',
+      'AA14.2!Begrenzte AA-DatenbasisAA 14.2 · Datenbasis: 9/10 gültige Spiele mit mindestens 60 Minuten beim aktuellen Verein. Andere Vereine/Nationalteam ausgeschlossen.CS47%18%11%',
     );
     expect(marketBracket?.firstElementChild).toBe(compactAa);
     expect(compactAa?.classList.contains('aa-bracket-top')).toBe(true);
@@ -4812,16 +4812,16 @@ describe('Sorare card DOM discovery', () => {
   it('marks the current MLS AA leader per concrete position with a podium rank', async () => {
     document.body.innerHTML = `
       <article data-testid="football-card" data-position="Midfielder">
-        <a href="/football/players/alonso-coello-camarero">Player</a>
+        <a href="/football/players/adrian-andres-cubas">Player</a>
       </article>
     `;
     const response: PlayerStatsSuccessResponse = {
       data: [
         {
-          slug: 'alonso-coello-camarero',
-          displayName: 'Alonso Coello',
+          slug: 'adrian-andres-cubas',
+          displayName: 'Andrés Cubas',
           position: 'Midfielder',
-          aaL10: { value: 24.09, sampleSize: 10 },
+          aaL10: { value: 27.62, sampleSize: 5 },
           cleanSheetL10: { value: 0.1, sampleSize: 10 },
           goalL10: { value: 0.2, sampleSize: 10 },
           nextGame: null,
@@ -4847,29 +4847,29 @@ describe('Sorare card DOM discovery', () => {
   it('renders distinct silver and bronze rank badges for places two and three', async () => {
     document.body.innerHTML = `
       <article data-testid="football-card" data-position="Midfielder">
-        <a href="/football/players/carles-gil-de-pareja-vicent">Carles Gil</a>
+        <a href="/football/players/alonso-coello-camarero">Alonso Coello</a>
       </article>
       <article data-testid="football-card" data-position="Defender">
-        <a href="/football/players/nouhou-tolo">Nouhou Tolo</a>
+        <a href="/football/players/jaziel-orozco">Jaziel Orozco</a>
       </article>
     `;
     const response: PlayerStatsSuccessResponse = {
       data: [
         {
-          slug: 'carles-gil-de-pareja-vicent',
-          displayName: 'Carles Gil',
+          slug: 'alonso-coello-camarero',
+          displayName: 'Alonso Coello',
           position: 'Midfielder',
-          aaL10: { value: 19.4, sampleSize: 10 },
+          aaL10: { value: 24.09, sampleSize: 10 },
           cleanSheetL10: { value: 0.3, sampleSize: 10 },
           goalL10: { value: 0.1, sampleSize: 10 },
           nextGame: null,
           excludedLowCoverage: 0,
         },
         {
-          slug: 'nouhou-tolo',
-          displayName: 'Nouhou Tolo',
+          slug: 'jaziel-orozco',
+          displayName: 'Jaziel Orozco',
           position: 'Defender',
-          aaL10: { value: 20.86, sampleSize: 10 },
+          aaL10: { value: 25.6, sampleSize: 5 },
           cleanSheetL10: { value: 0.4, sampleSize: 10 },
           goalL10: { value: 0, sampleSize: 10 },
           nextGame: null,
@@ -4883,10 +4883,10 @@ describe('Sorare card DOM discovery', () => {
     await coordinator.flush();
 
     const silver = document.querySelector<HTMLElement>(
-      '[data-sorare-overlay-root][data-player-slug="carles-gil-de-pareja-vicent"]',
+      '[data-sorare-overlay-root][data-player-slug="alonso-coello-camarero"]',
     );
     const bronze = document.querySelector<HTMLElement>(
-      '[data-sorare-overlay-root][data-player-slug="nouhou-tolo"]',
+      '[data-sorare-overlay-root][data-player-slug="jaziel-orozco"]',
     );
     expect(silver?.shadowRoot?.querySelector('.aa-percentile')?.getAttribute('data-top-rank')).toBe('2');
     expect(

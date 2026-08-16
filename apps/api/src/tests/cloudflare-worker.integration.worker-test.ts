@@ -91,7 +91,7 @@ describe('Cloudflare Worker', () => {
   it('refreshes only historical metrics cached before club scoping', async () => {
     const nowMs = Date.parse('2026-08-15T12:00:00.000Z');
     const key = `historical-club-scope-${nowMs}:Midfielder:no-low`;
-    const cacheKey = `player-form:v2:${key}`;
+    const cacheKey = `player-form:v3:${key}`;
     const store = new D1JsonKeyValueStore(
       env.CACHE_DB,
       env.STATS_CACHE,
@@ -557,8 +557,8 @@ describe('Cloudflare Worker', () => {
     const storedKeys = [
       teamKey,
       'player-team-fixture:v1:shared%20team',
-      `player-form:v2:${heldKey}`,
-      `player-form:v2:${coldKey}`,
+      `player-form:v3:${heldKey}`,
+      `player-form:v3:${coldKey}`,
       'player-fixture:v1:held-team-player:auto-v3:no-low',
       'player-fixture:v1:cold-team-player:auto-v3:no-low',
     ];
@@ -694,8 +694,8 @@ describe('Cloudflare Worker', () => {
     await Promise.all(
       [
         teamKey,
-        `player-form:v2:${nextKey}`,
-        `player-form:v2:${delayedKey}`,
+        `player-form:v3:${nextKey}`,
+        `player-form:v3:${delayedKey}`,
         'player-fixture:v1:rollover-next-player:auto-v3:no-low',
         'player-fixture:v1:rollover-delayed-player:auto-v3:no-low',
       ].flatMap((key) => [store.delete(key), env.STATS_CACHE.delete(key)]),
@@ -1080,7 +1080,7 @@ describe('Cloudflare Worker', () => {
     await waitOnExecutionContext(nameContext);
 
     const [formKeys, fixtureKeys, positiveNameKeys, negativeNameKeys] = await Promise.all([
-      env.STATS_CACHE.list({ prefix: 'player-form:v2:ttl-probe:' }),
+      env.STATS_CACHE.list({ prefix: 'player-form:v3:ttl-probe:' }),
       env.STATS_CACHE.list({ prefix: 'player-fixture:v1:ttl-probe:' }),
       env.STATS_CACHE.list({ prefix: 'player-name:v5:ttl%20positive%20probe:' }),
       env.STATS_CACHE.list({ prefix: 'player-name:v5:ttl%20negative%20probe:' }),

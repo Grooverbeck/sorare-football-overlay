@@ -58,7 +58,7 @@ describe('calculatePlayerMetrics', () => {
       excludeLowCoverage: true,
     });
 
-    expect(result.aaL10).toEqual({ value: 10, sampleSize: 2 });
+    expect(result.aaL10).toEqual({ value: 12, sampleSize: 1 });
     expect(result.cleanSheetL10).toEqual({ value: 1, sampleSize: 1 });
     expect(result.goalL10).toEqual({ value: 0.5, sampleSize: 2 });
     expect(result.excludedLowCoverage).toBe(1);
@@ -69,8 +69,8 @@ describe('calculatePlayerMetrics', () => {
       excludeLowCoverage: false,
     });
 
-    expect(result.aaL10.value).toBeCloseTo(39.666_666);
-    expect(result.aaL10.sampleSize).toBe(3);
+    expect(result.aaL10.value).toBeCloseTo(55.5);
+    expect(result.aaL10.sampleSize).toBe(2);
     expect(result.cleanSheetL10).toEqual({ value: 1, sampleSize: 2 });
   });
 
@@ -100,6 +100,31 @@ describe('calculatePlayerMetrics', () => {
 
     const result = calculatePlayerMetrics(
       mixedTeamAppearances,
+      'Midfielder',
+      { excludeLowCoverage: true },
+    );
+
+    expect(result.aaL10).toEqual({ value: 10, sampleSize: 10 });
+    expect(result.goalL10).toEqual({ value: 0, sampleSize: 10 });
+  });
+
+  it('uses the newest ten appearances with at least 60 minutes for AA', () => {
+    const withShortAppearances: PlayerAppearance[] = Array.from(
+      { length: 12 },
+      (_, index) => ({
+        date: new Date(Date.UTC(2026, 6, 24 - index)).toISOString(),
+        allAroundScore: index < 2 ? 50 : 10,
+        goals: 0,
+        minsPlayed: index < 2 ? 59 : 60,
+        cleanSheet60: 0,
+        lowCoverage: false,
+        position: 'Midfielder',
+        currentClubGame: true,
+      }),
+    );
+
+    const result = calculatePlayerMetrics(
+      withShortAppearances,
       'Midfielder',
       { excludeLowCoverage: true },
     );

@@ -1,4 +1,8 @@
-import type { FootballPosition, PlayerAppearance } from '@sorare-overlay/shared';
+import {
+  AA_MINIMUM_MINUTES,
+  type FootballPosition,
+  type PlayerAppearance,
+} from '@sorare-overlay/shared';
 import { parse } from 'graphql';
 import { AppError } from '../errors.js';
 import type {
@@ -836,7 +840,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
 
     return Promise.all(
       candidates.map(async ({ player, scoreWindowWasFull }) => {
-        const validForSelectedPosition = this.validAppearanceCount(
+        const validForSelectedPosition = this.validAaAppearanceCount(
           player.appearances,
           player.position,
         );
@@ -889,7 +893,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
     );
   }
 
-  private validAppearanceCount(
+  private validAaAppearanceCount(
     appearances: readonly PlayerAppearance[],
     position: FootballPosition,
   ): number {
@@ -897,7 +901,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
       (appearance) =>
         appearance.position === position &&
         appearance.currentClubGame !== false &&
-        (appearance.minsPlayed ?? 0) > 0 &&
+        (appearance.minsPlayed ?? 0) >= AA_MINIMUM_MINUTES &&
         (!this.excludeLowCoverage || !appearance.lowCoverage),
     ).length;
   }
@@ -919,6 +923,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
       selected.push(appearance);
       if (
         (!hasCurrentClubMarkers || appearance.currentClubGame === true) &&
+        (appearance.minsPlayed ?? 0) >= AA_MINIMUM_MINUTES &&
         (!this.excludeLowCoverage || !appearance.lowCoverage)
       ) {
         valid += 1;
@@ -991,7 +996,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
 
       if (
         !fullHistory &&
-        this.validAppearanceCount(appearances, position) >= 10
+        this.validAaAppearanceCount(appearances, position) >= 10
       ) {
         break;
       }
