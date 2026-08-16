@@ -883,6 +883,13 @@ const canonicalPlayerNameParts: Readonly<Record<string, string>> = {
   markhiyev: 'markhiev',
 };
 
+const canonicalPlayerNames: Readonly<Record<string, string>> = {
+  // Sorare uses Tah D'Avilla while Bet365/Odds-API.io lists the same player
+  // as Djé D'Avilla. Canonicalize only this full identity so other players
+  // named Djé cannot be merged with unrelated Tah names.
+  'dje d avilla': 'tah d avilla',
+};
+
 export function normalizePlayerName(value: string): string {
   // NFKD removes accents, but letters such as Icelandic thorn/eth are not
   // decomposed. Odds feeds commonly transliterate them while Sorare keeps the
@@ -899,7 +906,8 @@ export function normalizePlayerName(value: string): string {
   ) {
     parts.pop();
   }
-  return parts.join(' ');
+  const normalized = parts.join(' ');
+  return canonicalPlayerNames[normalized] ?? normalized;
 }
 
 export function marketFixtureKey(

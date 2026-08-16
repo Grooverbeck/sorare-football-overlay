@@ -1564,6 +1564,11 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     expect(playerNameMatchScore('Adam Markhiev', 'Adam Markhiyev')).toBe(100);
   });
 
+  it("matches Tah D'Avilla to his Djé D'Avilla bookmaker identity only", () => {
+    expect(playerNameMatchScore("Tah D'Avilla", "Djé D'Avilla")).toBe(100);
+    expect(playerNameMatchScore('Tah Traoré', 'Djé Traoré')).toBe(0);
+  });
+
   it('rejects an abbreviated market name that fits two fixture players', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

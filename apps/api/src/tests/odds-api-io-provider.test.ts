@@ -386,6 +386,136 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it("maps Djé D'Avilla goal and assist quotes to Sorare's Tah D'Avilla identity", async () => {
+    const dAvilla = player({
+      slug: 'tah-ange-innocent-d-avilla-dje',
+      displayName: "Tah D'Avilla",
+      nextGame: {
+        ...player().nextGame!,
+        competitionSlug: 'mlspa',
+        homeTeamName: 'Chicago Fire',
+        awayTeamName: 'Portland Timbers',
+        playerTeamName: 'Chicago Fire',
+        opponentTeamName: 'Portland Timbers',
+      },
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/events')) {
+        return json([
+          {
+            id: 'chicago-portland-fixture',
+            date: kickoff,
+            home: 'Chicago Fire',
+            away: 'Portland Timbers',
+          },
+        ]);
+      }
+      if (url.pathname.endsWith('/odds/multi')) {
+        return json([
+          {
+            id: 'chicago-portland-fixture',
+            date: kickoff,
+            home: 'Chicago Fire',
+            away: 'Portland Timbers',
+            bookmakers: {
+              Bet365: [
+                {
+                  name: 'Anytime Goalscorer',
+                  odds: [{ label: "Djé D'Avilla", over: '6.50' }],
+                },
+                {
+                  name: 'Player To Assist',
+                  odds: [{ label: "Djé D'Avilla", odds: '8.00' }],
+                },
+              ],
+            },
+          },
+        ]);
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    const { provider } = createProvider(
+      fetchImpl,
+      new InMemoryProviderQuotaUsageStore(() => now),
+      [
+        {
+          competitionSlugs: ['mlspa'],
+          leagueSlugs: ['usa-mls'],
+          playerMarkets: ['goal'],
+          matchOdds: false,
+        },
+      ],
+    );
+
+    const result = await provider.load([dAvilla]);
+
+    expect(result.get(playerMarketOddsKey(dAvilla))).toMatchObject({
+      goal: { probability: 1 / 6.5 },
+      assist: { probability: 1 / 8 },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads D'Avilla's existing pre-alias snapshot without another request", async () => {
+    const dAvilla = player({
+      slug: 'tah-ange-innocent-d-avilla-dje',
+      displayName: "Tah D'Avilla",
+      nextGame: {
+        ...player().nextGame!,
+        competitionSlug: 'mlspa',
+        homeTeamName: 'Chicago Fire',
+        awayTeamName: 'Portland Timbers',
+        playerTeamName: 'Chicago Fire',
+        opponentTeamName: 'Portland Timbers',
+      },
+    });
+    const fixtureKey = oddsApiIoFixtureStoreKey(dAvilla.nextGame!);
+    if (!fixtureKey) throw new Error('Expected D’Avilla fixture key');
+    const store = new InMemoryMarketSnapshotStore(60_000, () => now);
+    await store.set(fixtureKey, {
+      status: 'available',
+      market: 'player_goal_scorer_anytime',
+      eventId: 'chicago-portland-fixture',
+      capturedAt: new Date(now).toISOString(),
+      players: {
+        'dje d avilla': { probability: 1 / 6.5, bookmakerCount: 1 },
+      },
+    });
+    await store.set(fixtureKey, {
+      status: 'available',
+      market: 'player_assists',
+      eventId: 'chicago-portland-fixture',
+      capturedAt: new Date(now).toISOString(),
+      players: {
+        'dje d avilla': { probability: 1 / 8, bookmakerCount: 1 },
+      },
+    });
+    const fetchImpl = vi.fn<typeof fetch>();
+    const { provider } = createProvider(
+      fetchImpl,
+      new InMemoryProviderQuotaUsageStore(() => now),
+      [
+        {
+          competitionSlugs: ['mlspa'],
+          leagueSlugs: ['usa-mls'],
+          playerMarkets: ['goal'],
+          matchOdds: false,
+        },
+      ],
+      0,
+      store,
+    );
+
+    const result = await provider.load([dAvilla], { cacheOnly: true });
+
+    expect(result.get(playerMarketOddsKey(dAvilla))).toMatchObject({
+      goal: { probability: 1 / 6.5 },
+      assist: { probability: 1 / 8 },
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('does not request Odds-API.io solely because an assist is missing', async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const { provider } = createProvider(fetchImpl);
