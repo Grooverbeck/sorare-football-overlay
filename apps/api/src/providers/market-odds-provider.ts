@@ -48,6 +48,9 @@ export const FrozenMarketSnapshotSchema = z.object({
   market: OddsMarketKeySchema,
   eventId: z.string().min(1),
   capturedAt: z.string().datetime(),
+  // Provider adapters can replay short-lived evidence after parser upgrades.
+  // Optional keeps every legacy snapshot readable.
+  parserVersion: z.number().int().positive().optional(),
   // A successful market remains frozen. One optional supplement pass may add
   // late-listed players and bookmaker detail without changing captured values.
   supplementedAt: z.string().datetime().optional(),
@@ -61,6 +64,7 @@ export const FrozenMarketSnapshotSchema = z.object({
 const MissingMarketSnapshotSchema = z.object({
   status: z.literal('unavailable'),
   market: OddsMarketKeySchema,
+  parserVersion: z.number().int().positive().optional(),
   // Providers that bill per returned event can target a later supplement by
   // ID even when the requested market was not listed on the first response.
   eventId: z.string().min(1).optional(),
@@ -108,6 +112,16 @@ export interface MarketSnapshotStore {
     requests: readonly MarketSnapshotRead[],
   ): Promise<Array<MarketSnapshot | undefined>>;
   set(fixtureKey: string, snapshot: MarketSnapshot): void | Promise<void>;
+  getEvidence?(
+    fixtureKey: string,
+    provider: string,
+  ): Promise<unknown | undefined>;
+  setEvidence?(
+    fixtureKey: string,
+    provider: string,
+    evidence: unknown,
+    expiresAt: string,
+  ): void | Promise<void>;
   claimRefreshLease?(
     fixtureKey: string,
     requestGroup: string,
@@ -139,6 +153,11 @@ interface MemoryEntry {
   expiresAt: number | null;
 }
 
+interface MemoryEvidenceEntry {
+  evidence: unknown;
+  expiresAt: number;
+}
+
 export function mergeSupplementBatch(
   existing: MarketSupplementBatch | undefined,
   players: readonly MarketSupplementPlayer[],
@@ -159,6 +178,7 @@ export function mergeSupplementBatch(
 
 export class InMemoryMarketSnapshotStore implements MarketSnapshotStore {
   private readonly entries = new Map<string, MemoryEntry>();
+  private readonly evidenceEntries = new Map<string, MemoryEvidenceEntry>();
   private readonly refreshLeases = new Map<string, number>();
   private readonly supplementBatches = new Map<
     string,
@@ -201,6 +221,34 @@ export class InMemoryMarketSnapshotStore implements MarketSnapshotStore {
           : snapshot.expiresAt
             ? Date.parse(snapshot.expiresAt)
             : this.now() + this.missTtlMs,
+    });
+  }
+
+  async getEvidence(
+    fixtureKey: string,
+    provider: string,
+  ): Promise<unknown | undefined> {
+    const key = this.evidenceKey(fixtureKey, provider);
+    const entry = this.evidenceEntries.get(key);
+    if (!entry) return undefined;
+    if (entry.expiresAt <= this.now()) {
+      this.evidenceEntries.delete(key);
+      return undefined;
+    }
+    return entry.evidence;
+  }
+
+  setEvidence(
+    fixtureKey: string,
+    provider: string,
+    evidence: unknown,
+    expiresAt: string,
+  ): void {
+    const expiration = Date.parse(expiresAt);
+    if (!Number.isFinite(expiration) || expiration <= this.now()) return;
+    this.evidenceEntries.set(this.evidenceKey(fixtureKey, provider), {
+      evidence,
+      expiresAt: expiration,
     });
   }
 
@@ -276,6 +324,10 @@ export class InMemoryMarketSnapshotStore implements MarketSnapshotStore {
   private coordinationKey(fixtureKey: string, requestGroup: string): string {
     return `${requestGroup}:${fixtureKey}`;
   }
+
+  private evidenceKey(fixtureKey: string, provider: string): string {
+    return `${provider}:${fixtureKey}`;
+  }
 }
 
 export interface PlayerMarketOddsProvider {
@@ -288,10 +340,17 @@ export interface PlayerMarketOddsProvider {
     player: PlayerStats,
     market: PlayerMarketField,
   ): boolean;
+  // A provider may extract and merge a field without letting its absence spend
+  // another external request. This keeps opportunistic props distinct from
+  // request-driving markets.
+  drivesMarketRequest?(
+    player: PlayerStats,
+    market: PlayerMarketField,
+  ): boolean;
   refreshUsage?(): Promise<ProviderQuotaUsage[]>;
 }
 
-export type PlayerMarketField = 'goal' | 'assist';
+export type PlayerMarketField = 'goal' | 'assist' | 'decisive';
 
 export interface PlayerMarketOddsLoadOptions {
   // Read immutable snapshots only. External bookmaker APIs must never be
@@ -389,6 +448,17 @@ export function playerMarketFieldSupported(
   );
 }
 
+export function playerMarketFieldDrivesRequest(
+  provider: PlayerMarketOddsProvider,
+  player: PlayerStats,
+  market: PlayerMarketField,
+): boolean {
+  return (
+    provider.drivesMarketRequest?.(player, market) ??
+    playerMarketFieldSupported(provider, player, market)
+  );
+}
+
 export class UnavailablePlayerMarketOddsProvider
   implements PlayerMarketOddsProvider
 {
@@ -397,6 +467,10 @@ export class UnavailablePlayerMarketOddsProvider
   }
 
   supportsMarket(): boolean {
+    return false;
+  }
+
+  drivesMarketRequest(): boolean {
     return false;
   }
 
@@ -416,6 +490,10 @@ export class MockPlayerMarketOddsProvider implements PlayerMarketOddsProvider {
   }
 
   supportsMarket(player: PlayerStats): boolean {
+    return this.supports(player);
+  }
+
+  drivesMarketRequest(player: PlayerStats): boolean {
     return this.supports(player);
   }
 
@@ -1097,26 +1175,132 @@ function extractMarketSnapshot(
   });
 }
 
-export function playerProbability(
+const playerIdentityNoiseTokens = new Set([
+  'al',
+  'bin',
+  'da',
+  'de',
+  'del',
+  'di',
+  'dos',
+  'jr',
+  'la',
+  'le',
+  'sr',
+  'van',
+  'von',
+]);
+
+function significantPlayerTokens(value: string): string[] {
+  return normalizePlayerName(value)
+    .split(' ')
+    .filter(
+      (token) =>
+        token.length >= 3 && !playerIdentityNoiseTokens.has(token),
+    );
+}
+
+function slugIdentityMatchScore(
+  player: MarketSupplementPlayer,
+  oddsName: string,
+): number {
+  const oddsTokens = significantPlayerTokens(oddsName);
+  if (oddsTokens.length < 2) return 0;
+  const slugTokens = new Set(
+    significantPlayerTokens(player.slug.replace(/-+/g, ' ')),
+  );
+  return oddsTokens.every((token) => slugTokens.has(token)) ? 90 : 0;
+}
+
+export function playerIdentityMatchScore(
+  player: MarketSupplementPlayer,
+  oddsName: string,
+): number {
+  return Math.max(
+    playerNameMatchScore(player.displayName, oddsName),
+    slugIdentityMatchScore(player, oddsName),
+  );
+}
+
+export interface PlayerMarketMatchCandidate {
+  marketName: string;
+  score: number;
+}
+
+export type PlayerProbabilityResolution =
+  | { status: 'snapshot_unavailable' }
+  | {
+      status: 'player_not_listed';
+      candidates: readonly PlayerMarketMatchCandidate[];
+    }
+  | {
+      status: 'market_ambiguous';
+      candidates: readonly PlayerMarketMatchCandidate[];
+    }
+  | {
+      status: 'roster_ambiguous';
+      matchedMarketName: string;
+      candidates: readonly PlayerMarketMatchCandidate[];
+    }
+  | {
+      status: 'available';
+      probability: MarketProbability;
+      matchedMarketName: string;
+      score: number;
+      matchedBy: 'display_name' | 'sorare_slug';
+    };
+
+function diagnosticCandidateScore(
+  player: MarketSupplementPlayer,
+  marketName: string,
+): number {
+  const playerTokens = new Set([
+    ...significantPlayerTokens(player.displayName),
+    ...significantPlayerTokens(player.slug.replace(/-+/g, ' ')),
+  ]);
+  const marketTokens = significantPlayerTokens(marketName);
+  const shared = marketTokens.filter((token) => playerTokens.has(token)).length;
+  if (shared === 0) return 0;
+  return Math.min(49, shared * 15 + (shared === marketTokens.length ? 4 : 0));
+}
+
+export function resolvePlayerProbability(
   snapshot: FrozenMarketSnapshot | undefined,
   player: MarketSupplementPlayer,
   fixturePlayers: readonly MarketSupplementPlayer[],
-): MarketProbability | null {
-  if (!snapshot) return null;
+): PlayerProbabilityResolution {
+  if (!snapshot) return { status: 'snapshot_unavailable' };
   const marketCandidates = Object.entries(snapshot.players)
     .map(([marketName, probability]) => ({
       marketName,
       probability,
-      score: playerNameMatchScore(player.displayName, marketName),
+      score: playerIdentityMatchScore(player, marketName),
     }))
     .filter(({ score }) => score > 0)
     .sort((left, right) => right.score - left.score);
   const selected = marketCandidates[0];
-  if (
-    !selected ||
-    marketCandidates.filter(({ score }) => score === selected.score).length !== 1
-  ) {
-    return null;
+  if (!selected) {
+    const candidates = Object.keys(snapshot.players)
+      .map((marketName) => ({
+        marketName,
+        score: diagnosticCandidateScore(player, marketName),
+      }))
+      .filter(({ score }) => score > 0)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 3);
+    return { status: 'player_not_listed', candidates };
+  }
+  const equallyRankedMarketCandidates = marketCandidates.filter(
+    ({ score }) => score === selected.score,
+  );
+  if (equallyRankedMarketCandidates.length !== 1) {
+    return {
+      status: 'market_ambiguous',
+      candidates: equallyRankedMarketCandidates.map(({ marketName, score }) => ({
+        marketName,
+        score,
+      })),
+    };
   }
 
   const logicalPlayers = [
@@ -1127,7 +1311,7 @@ export function playerProbability(
   const rosterCandidates = logicalPlayers
     .map((candidate) => ({
       slug: candidate.slug,
-      score: playerNameMatchScore(candidate.displayName, selected.marketName),
+      score: playerIdentityMatchScore(candidate, selected.marketName),
     }))
     .filter(({ score }) => score > 0)
     .sort((left, right) => right.score - left.score);
@@ -1138,9 +1322,36 @@ export function playerProbability(
     rosterCandidates.filter(({ score }) => score === bestRoster.score).length !==
       1
   ) {
-    return null;
+    return {
+      status: 'roster_ambiguous',
+      matchedMarketName: selected.marketName,
+      candidates: rosterCandidates.slice(0, 3).map(({ slug, score }) => ({
+        marketName: slug,
+        score,
+      })),
+    };
   }
-  return selected.probability;
+  const displayScore = playerNameMatchScore(
+    player.displayName,
+    selected.marketName,
+  );
+  const slugScore = slugIdentityMatchScore(player, selected.marketName);
+  return {
+    status: 'available',
+    probability: selected.probability,
+    matchedMarketName: selected.marketName,
+    score: selected.score,
+    matchedBy: slugScore > displayScore ? 'sorare_slug' : 'display_name',
+  };
+}
+
+export function playerProbability(
+  snapshot: FrozenMarketSnapshot | undefined,
+  player: MarketSupplementPlayer,
+  fixturePlayers: readonly MarketSupplementPlayer[],
+): MarketProbability | null {
+  const resolution = resolvePlayerProbability(snapshot, player, fixturePlayers);
+  return resolution.status === 'available' ? resolution.probability : null;
 }
 
 export function needsFrozenSnapshotSupplement(
@@ -1207,6 +1418,9 @@ export function supplementFrozenSnapshot(
   const supplemented = FrozenMarketSnapshotSchema.parse({
     ...(existing ?? incoming),
     ...(existing ? { supplementedAt: incoming.capturedAt } : {}),
+    ...(incoming.parserVersion !== undefined
+      ? { parserVersion: incoming.parserVersion }
+      : {}),
     players,
   });
   const missingPlayerChecks = {
@@ -1491,6 +1705,13 @@ export class TheOddsApiPlayerMarketOddsProvider
     market: PlayerMarketField,
   ): boolean {
     return this.supports(player) && this.supportedFields().includes(market);
+  }
+
+  drivesMarketRequest(
+    player: PlayerStats,
+    market: PlayerMarketField,
+  ): boolean {
+    return this.supportsMarket(player, market);
   }
 
   private supportedFields(): readonly PlayerMarketField[] {

@@ -21,6 +21,7 @@ import {
   providerTeamNamesMatch,
   recordFrozenSnapshotCheck,
   readMarketSnapshotsWithin,
+  resolvePlayerProbability,
   settleCacheReadWithin,
   shouldRetryMarketFailure,
   supplementFrozenSnapshot,
@@ -90,6 +91,19 @@ const OddsApiIoEventOddsSchema = OddsApiIoEventSchema.extend({
 
 const OddsApiIoMultiOddsSchema = z.array(OddsApiIoEventOddsSchema);
 type OddsApiIoEventOdds = z.infer<typeof OddsApiIoEventOddsSchema>;
+
+const ODDS_API_IO_PLAYER_MARKET_PARSER_VERSION = 2;
+const ODDS_API_IO_EVIDENCE_AFTER_KICKOFF_MS = 48 * 60 * 60 * 1_000;
+
+const OddsApiIoMarketEvidenceSchema = z.object({
+  provider: z.literal('odds-api-io'),
+  parserVersion: z.number().int().positive(),
+  eventId: z.string().min(1),
+  capturedAt: z.string().datetime(),
+  expiresAt: z.string().datetime(),
+  bookmakers: z.record(z.string(), z.array(OddsApiIoMarketSchema)),
+});
+type OddsApiIoMarketEvidence = z.infer<typeof OddsApiIoMarketEvidenceSchema>;
 
 interface OddsApiIoOptions {
   apiKey: string;
@@ -224,83 +238,191 @@ function findEvent(
   return candidates[0]?.event ?? null;
 }
 
-function labelledPlayerSnapshot(
-  response: OddsApiIoEventOdds,
-  capturedAt: string,
-  market: OddsMarketKey,
-  providerMarketNames: readonly string[],
-): FrozenMarketSnapshot | null {
-  const normalizedMarketNames = new Set(
-    providerMarketNames.map((name) => name.trim().toLocaleLowerCase()),
+interface RankedPlayerQuote {
+  rank: number;
+  quote: BookmakerMarketQuote;
+}
+
+interface ClassifiedPlayerSelection {
+  market: OddsMarketKey;
+  playerName: string;
+  rank: number;
+}
+
+interface ExtractedPlayerMarkets {
+  snapshots: ReadonlyMap<OddsMarketKey, FrozenMarketSnapshot>;
+  observedPlayerMarkets: readonly string[];
+  unhandledPlayerMarkets: readonly string[];
+}
+
+function normalizedProviderMarketName(value: string): string {
+  return value.trim().toLocaleLowerCase().replace(/\s+/g, ' ');
+}
+
+function looksLikePlayerMarket(name: string): boolean {
+  return /(?:player|goalscorer|assist)/i.test(name);
+}
+
+function classifyPlayerSelection(
+  providerMarketName: string,
+  label: string,
+): ClassifiedPlayerSelection | null {
+  const marketName = normalizedProviderMarketName(providerMarketName);
+  if (marketName === 'anytime goalscorer') {
+    return { market: 'player_goal_scorer_anytime', playerName: label, rank: 3 };
+  }
+  if (marketName === 'player to assist') {
+    return { market: 'player_assists', playerName: label, rank: 3 };
+  }
+  if (marketName !== 'player to score or assist') return null;
+
+  const combined = /^(.*?)\s+\((score or assist|assist|score)\)\s*(?:\((\d+)\))?\s*$/i.exec(
+    label,
   );
-  const quotesByPlayer = new Map<string, BookmakerMarketQuote[]>();
+  const playerName = combined?.[1]?.trim();
+  const selection = combined?.[2]?.toLocaleLowerCase();
+  const threshold = combined?.[3];
+  if (!playerName || !selection || (threshold && threshold !== '1')) {
+    return null;
+  }
+  if (selection === 'score') {
+    return { market: 'player_goal_scorer_anytime', playerName, rank: 2 };
+  }
+  if (selection === 'assist') {
+    return { market: 'player_assists', playerName, rank: 2 };
+  }
+  return { market: 'player_goal_or_assist', playerName, rank: 3 };
+}
+
+function extractPlayerMarketSnapshots(
+  response: Pick<OddsApiIoEventOdds, 'id' | 'bookmakers'>,
+  capturedAt: string,
+): ExtractedPlayerMarkets {
+  const quotes = new Map<
+    OddsMarketKey,
+    Map<string, Map<string, RankedPlayerQuote>>
+  >();
+  const observedPlayerMarkets = new Set<string>();
+  const unhandledPlayerMarkets = new Set<string>();
+
   for (const [bookmaker, markets] of Object.entries(response.bookmakers)) {
-    const providerMarket = markets.find(({ name }) =>
-      normalizedMarketNames.has(name.trim().toLocaleLowerCase()),
-    );
-    if (!providerMarket) continue;
-    for (const odd of providerMarket.odds) {
-      if (!odd.label) continue;
-      const price =
-        decimalOdd(odd.over) ??
-        decimalOdd(odd.odds) ??
-        decimalOdd(odd.yes);
-      if (price === null) continue;
-      const playerName = normalizePlayerName(odd.label);
-      if (!playerName) continue;
-      const playerQuotes = quotesByPlayer.get(playerName) ?? [];
-      playerQuotes.push({
-        key: bookmaker.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-'),
-        title: bookmaker,
-        decimalOdds: price,
-        probability: Math.min(1, 1 / price),
-      });
-      quotesByPlayer.set(playerName, playerQuotes);
+    const bookmakerKey = bookmaker
+      .toLocaleLowerCase()
+      .replace(/[^a-z0-9]+/g, '-');
+    for (const providerMarket of markets) {
+      const labelledOdds = providerMarket.odds.filter(({ label }) =>
+        Boolean(label),
+      );
+      if (
+        labelledOdds.length === 0 ||
+        !looksLikePlayerMarket(providerMarket.name)
+      ) {
+        continue;
+      }
+      observedPlayerMarkets.add(providerMarket.name);
+      let consumed = false;
+      for (const odd of labelledOdds) {
+        if (!odd.label) continue;
+        const classified = classifyPlayerSelection(
+          providerMarket.name,
+          odd.label,
+        );
+        if (!classified) continue;
+        const price =
+          decimalOdd(odd.over) ??
+          decimalOdd(odd.odds) ??
+          decimalOdd(odd.yes);
+        if (price === null) continue;
+        const playerName = normalizePlayerName(classified.playerName);
+        if (!playerName) continue;
+        consumed = true;
+        const byPlayer = quotes.get(classified.market) ?? new Map();
+        const byBookmaker = byPlayer.get(playerName) ?? new Map();
+        const ranked: RankedPlayerQuote = {
+          rank: classified.rank,
+          quote: {
+            key: bookmakerKey,
+            title: bookmaker,
+            decimalOdds: price,
+            probability: Math.min(1, 1 / price),
+            providerMarketName: providerMarket.name.slice(0, 200),
+            providerSelectionLabel: odd.label.slice(0, 300),
+          },
+        };
+        const previous = byBookmaker.get(bookmakerKey);
+        if (!previous || ranked.rank > previous.rank) {
+          byBookmaker.set(bookmakerKey, ranked);
+        }
+        byPlayer.set(playerName, byBookmaker);
+        quotes.set(classified.market, byPlayer);
+      }
+      if (!consumed) unhandledPlayerMarkets.add(providerMarket.name);
     }
   }
-  if (quotesByPlayer.size === 0) return null;
-  return FrozenMarketSnapshotSchema.parse({
-    status: 'available',
-    market,
+
+  const snapshots = new Map<OddsMarketKey, FrozenMarketSnapshot>();
+  for (const [market, byPlayer] of quotes) {
+    if (byPlayer.size === 0) continue;
+    snapshots.set(
+      market,
+      FrozenMarketSnapshotSchema.parse({
+        status: 'available',
+        market,
+        eventId: response.id,
+        capturedAt,
+        parserVersion: ODDS_API_IO_PLAYER_MARKET_PARSER_VERSION,
+        players: Object.fromEntries(
+          [...byPlayer].map(([playerName, byBookmaker]) => {
+            const bookmakerQuotes = [...byBookmaker.values()]
+              .map(({ quote }) => quote)
+              .sort((left, right) => left.title.localeCompare(right.title));
+            return [
+              playerName,
+              MarketProbabilitySchema.parse({
+                probability: median(
+                  bookmakerQuotes.map(({ probability }) => probability),
+                ),
+                bookmakerCount: bookmakerQuotes.length,
+                bookmakerQuotes,
+              }),
+            ];
+          }),
+        ),
+      }),
+    );
+  }
+  return {
+    snapshots,
+    observedPlayerMarkets: [...observedPlayerMarkets].sort(),
+    unhandledPlayerMarkets: [...unhandledPlayerMarkets].sort(),
+  };
+}
+
+function playerMarketEvidence(
+  response: OddsApiIoEventOdds,
+  capturedAt: string,
+): OddsApiIoMarketEvidence | null {
+  const bookmakers = Object.fromEntries(
+    Object.entries(response.bookmakers).flatMap(([bookmaker, markets]) => {
+      const playerMarkets = markets.filter(
+        (market) =>
+          looksLikePlayerMarket(market.name) &&
+          market.odds.some(({ label }) => Boolean(label)),
+      );
+      return playerMarkets.length > 0 ? [[bookmaker, playerMarkets]] : [];
+    }),
+  );
+  if (Object.keys(bookmakers).length === 0) return null;
+  return OddsApiIoMarketEvidenceSchema.parse({
+    provider: 'odds-api-io',
+    parserVersion: ODDS_API_IO_PLAYER_MARKET_PARSER_VERSION,
     eventId: response.id,
     capturedAt,
-    players: Object.fromEntries(
-      [...quotesByPlayer].map(([playerName, quotes]) => [
-        playerName,
-        MarketProbabilitySchema.parse({
-          probability: median(quotes.map(({ probability }) => probability)),
-          bookmakerCount: quotes.length,
-          bookmakerQuotes: [...quotes].sort((left, right) =>
-            left.title.localeCompare(right.title),
-          ),
-        }),
-      ]),
-    ),
+    expiresAt: new Date(
+      Date.parse(response.date) + ODDS_API_IO_EVIDENCE_AFTER_KICKOFF_MS,
+    ).toISOString(),
+    bookmakers,
   });
-}
-
-function anytimeGoalscorerSnapshot(
-  response: OddsApiIoEventOdds,
-  capturedAt: string,
-): FrozenMarketSnapshot | null {
-  return labelledPlayerSnapshot(
-    response,
-    capturedAt,
-    'player_goal_scorer_anytime',
-    ['Anytime Goalscorer'],
-  );
-}
-
-function playerAssistSnapshot(
-  response: OddsApiIoEventOdds,
-  capturedAt: string,
-): FrozenMarketSnapshot | null {
-  return labelledPlayerSnapshot(
-    response,
-    capturedAt,
-    'player_assists',
-    ['Player To Assist'],
-  );
 }
 
 function decimalOdd(value: string | number | undefined): number | null {
@@ -427,9 +549,17 @@ export class OddsApiIoPlayerMarketOddsProvider
 
   supportsMarket(player: PlayerStats, market: PlayerMarketField): boolean {
     const route = this.routeForPlayer(player);
+    return route !== null && ['goal', 'assist', 'decisive'].includes(market);
+  }
+
+  drivesMarketRequest(
+    player: PlayerStats,
+    market: PlayerMarketField,
+  ): boolean {
+    const route = this.routeForPlayer(player);
     return (
-      market === 'goal' &&
       route !== null &&
+      market !== 'decisive' &&
       (route.playerMarkets ?? ['goal']).includes(market)
     );
   }
@@ -475,6 +605,7 @@ export class OddsApiIoPlayerMarketOddsProvider
       : await this.protection();
     const goalSnapshots = new Map<string, MarketSnapshot | undefined>();
     const assistSnapshots = new Map<string, MarketSnapshot | undefined>();
+    const decisiveSnapshots = new Map<string, MarketSnapshot | undefined>();
     const pending: FixtureGroup[] = [];
 
     const cacheOnly = loadOptions?.cacheOnly === true;
@@ -490,19 +621,28 @@ export class OddsApiIoPlayerMarketOddsProvider
             fixtureKey: fixtureStoreKey(fixture.key),
             market: 'player_assists' as const,
           },
+          {
+            fixtureKey: fixtureStoreKey(fixture.key),
+            market: 'player_goal_or_assist' as const,
+          },
         ]),
         true,
         cacheOnlySnapshotReadBudgetMs(loadOptions),
       );
       for (const [index, fixture] of fixtures.entries()) {
-        goalSnapshots.set(fixture.key, loaded[index * 2]);
-        assistSnapshots.set(fixture.key, loaded[index * 2 + 1]);
+        goalSnapshots.set(fixture.key, loaded[index * 3]);
+        assistSnapshots.set(fixture.key, loaded[index * 3 + 1]);
+        decisiveSnapshots.set(fixture.key, loaded[index * 3 + 2]);
       }
     }
 
     for (const fixture of fixtures) {
-      const [goalSnapshot, assistSnapshot] = cacheOnly
-        ? [goalSnapshots.get(fixture.key), assistSnapshots.get(fixture.key)]
+      const [loadedGoal, loadedAssist, loadedDecisive] = cacheOnly
+        ? [
+            goalSnapshots.get(fixture.key),
+            assistSnapshots.get(fixture.key),
+            decisiveSnapshots.get(fixture.key),
+          ]
         : await Promise.all([
             this.options.store.get(
               fixtureStoreKey(fixture.key),
@@ -512,9 +652,22 @@ export class OddsApiIoPlayerMarketOddsProvider
               fixtureStoreKey(fixture.key),
               'player_assists',
             ),
+            this.options.store.get(
+              fixtureStoreKey(fixture.key),
+              'player_goal_or_assist',
+            ),
           ]);
-      goalSnapshots.set(fixture.key, goalSnapshot);
-      assistSnapshots.set(fixture.key, assistSnapshot);
+      goalSnapshots.set(fixture.key, loadedGoal);
+      assistSnapshots.set(fixture.key, loadedAssist);
+      decisiveSnapshots.set(fixture.key, loadedDecisive);
+      await this.replayMarketEvidence(
+        fixture,
+        goalSnapshots,
+        assistSnapshots,
+        decisiveSnapshots,
+        loadOptions,
+      );
+      const goalSnapshot = goalSnapshots.get(fixture.key);
       const kickoff = Date.parse(fixture.date);
       const untilKickoff = kickoff - this.now();
       const route = this.routeForFixtureGroup(fixture);
@@ -567,16 +720,22 @@ export class OddsApiIoPlayerMarketOddsProvider
         pending,
         goalSnapshots,
         assistSnapshots,
+        decisiveSnapshots,
       );
     }
 
     for (const fixture of fixtures) {
       const goalSnapshot = goalSnapshots.get(fixture.key);
       const assistSnapshot = assistSnapshots.get(fixture.key);
+      const decisiveSnapshot = decisiveSnapshots.get(fixture.key);
       const availableGoal =
         goalSnapshot?.status === 'available' ? goalSnapshot : undefined;
       const availableAssist =
         assistSnapshot?.status === 'available' ? assistSnapshot : undefined;
+      const availableDecisive =
+        decisiveSnapshot?.status === 'available'
+          ? decisiveSnapshot
+          : undefined;
       for (const player of fixture.players) {
         const goal = playerProbability(
           availableGoal,
@@ -588,10 +747,16 @@ export class OddsApiIoPlayerMarketOddsProvider
           player,
           fixture.players,
         );
-        if (!goal && !assist) continue;
+        const decisive = playerProbability(
+          availableDecisive,
+          player,
+          fixture.players,
+        );
+        if (!goal && !assist && !decisive) continue;
         const capturedAt = [
           availableGoal?.capturedAt,
           availableAssist?.capturedAt,
+          availableDecisive?.capturedAt,
         ]
           .filter((value): value is string => Boolean(value))
           .sort()
@@ -604,6 +769,7 @@ export class OddsApiIoPlayerMarketOddsProvider
             capturedAt,
             goal,
             assist,
+            decisive,
           }),
         );
       }
@@ -697,26 +863,37 @@ export class OddsApiIoPlayerMarketOddsProvider
           string,
           MarketSnapshot | undefined
         >();
+        const decisiveSnapshots = new Map<
+          string,
+          MarketSnapshot | undefined
+        >();
         await Promise.all(
           claimed.map(async (fixture) => {
-            const [goalSnapshot, assistSnapshot] = await Promise.all([
-              this.options.store.get(
-                fixtureStoreKey(fixture.key),
-                'player_goal_scorer_anytime',
-              ),
-              this.options.store.get(
-                fixtureStoreKey(fixture.key),
-                'player_assists',
-              ),
-            ]);
+            const [goalSnapshot, assistSnapshot, decisiveSnapshot] =
+              await Promise.all([
+                this.options.store.get(
+                  fixtureStoreKey(fixture.key),
+                  'player_goal_scorer_anytime',
+                ),
+                this.options.store.get(
+                  fixtureStoreKey(fixture.key),
+                  'player_assists',
+                ),
+                this.options.store.get(
+                  fixtureStoreKey(fixture.key),
+                  'player_goal_or_assist',
+                ),
+              ]);
             goalSnapshots.set(fixture.key, goalSnapshot);
             assistSnapshots.set(fixture.key, assistSnapshot);
+            decisiveSnapshots.set(fixture.key, decisiveSnapshot);
           }),
         );
         await this.refreshFixtures(
           claimed,
           goalSnapshots,
           assistSnapshots,
+          decisiveSnapshots,
           matchSnapshots,
         );
       }
@@ -764,10 +941,104 @@ export class OddsApiIoPlayerMarketOddsProvider
     }
   }
 
+  private async replayMarketEvidence(
+    fixture: FixtureGroup,
+    goalSnapshots: Map<string, MarketSnapshot | undefined>,
+    assistSnapshots: Map<string, MarketSnapshot | undefined>,
+    decisiveSnapshots: Map<string, MarketSnapshot | undefined>,
+    loadOptions?: PlayerMarketOddsLoadOptions,
+  ): Promise<void> {
+    const getEvidence = this.options.store.getEvidence;
+    if (!getEvidence) return;
+    const parserCheckpoint = goalSnapshots.get(fixture.key)?.parserVersion;
+    if (
+      parserCheckpoint !== undefined &&
+      parserCheckpoint >= ODDS_API_IO_PLAYER_MARKET_PARSER_VERSION
+    ) {
+      return;
+    }
+
+    const raw = await settleCacheReadWithin(
+      getEvidence.call(
+        this.options.store,
+        fixtureStoreKey(fixture.key),
+        'odds-api-io',
+      ),
+      loadOptions?.cacheOnly === true,
+      cacheOnlySnapshotReadBudgetMs(loadOptions),
+    );
+    if (raw === undefined) return;
+    const evidence = OddsApiIoMarketEvidenceSchema.safeParse(raw);
+    if (!evidence.success) {
+      this.options.logger.warn(
+        {
+          event: 'market_evidence_invalid',
+          provider: 'odds-api-io',
+          fixture: fixture.key,
+        },
+        'Odds-API.io market evidence could not be replayed',
+      );
+      return;
+    }
+    const extracted = extractPlayerMarketSnapshots(
+      {
+        id: evidence.data.eventId,
+        bookmakers: evidence.data.bookmakers,
+      },
+      evidence.data.capturedAt,
+    );
+    const maps = new Map<
+      OddsMarketKey,
+      Map<string, MarketSnapshot | undefined>
+    >([
+      ['player_goal_scorer_anytime', goalSnapshots],
+      ['player_assists', assistSnapshots],
+      ['player_goal_or_assist', decisiveSnapshots],
+    ]);
+    const persist: Promise<void>[] = [];
+    for (const [market, incoming] of extracted.snapshots) {
+      const snapshots = maps.get(market);
+      if (!snapshots) continue;
+      const existing = snapshots.get(fixture.key);
+      const replayed = supplementFrozenSnapshot(
+        existing?.status === 'available' ? existing : undefined,
+        incoming,
+        fixture.players,
+        fixture.date,
+      );
+      snapshots.set(fixture.key, replayed);
+      if (loadOptions?.cacheOnly !== true) {
+        persist.push(
+          Promise.resolve(
+            this.options.store.set(fixtureStoreKey(fixture.key), replayed),
+          ),
+        );
+      }
+    }
+    await Promise.all(persist);
+    if (
+      loadOptions?.cacheOnly !== true &&
+      extracted.snapshots.size > 0
+    ) {
+      this.options.logger.info(
+        {
+          event: 'market_evidence_replayed',
+          provider: 'odds-api-io',
+          fixture: fixture.key,
+          fromParserVersion: evidence.data.parserVersion,
+          toParserVersion: ODDS_API_IO_PLAYER_MARKET_PARSER_VERSION,
+          markets: [...extracted.snapshots.keys()],
+        },
+        'Odds-API.io cached market evidence was reprocessed',
+      );
+    }
+  }
+
   private async refreshFixtures(
     fixtures: readonly FixtureGroup[],
     goalSnapshots: Map<string, MarketSnapshot | undefined>,
     assistSnapshots: Map<string, MarketSnapshot | undefined>,
+    decisiveSnapshots: Map<string, MarketSnapshot | undefined>,
     matchSnapshots: Map<string, MatchOddsSnapshot | undefined> = new Map(),
   ): Promise<void> {
     const fixturesByRoute = new Map<
@@ -788,6 +1059,7 @@ export class OddsApiIoPlayerMarketOddsProvider
           routedFixtures,
           goalSnapshots,
           assistSnapshots,
+          decisiveSnapshots,
           matchSnapshots,
         );
       } catch (error) {
@@ -870,11 +1142,48 @@ export class OddsApiIoPlayerMarketOddsProvider
     ].join(':');
   }
 
+  private logIdentityDiagnostics(
+    fixture: FixtureGroup,
+    snapshot: FrozenMarketSnapshot,
+  ): void {
+    for (const player of fixture.players) {
+      const resolution = resolvePlayerProbability(
+        snapshot,
+        player,
+        fixture.players,
+      );
+      if (
+        resolution.status === 'available' ||
+        resolution.status === 'snapshot_unavailable' ||
+        (resolution.status === 'player_not_listed' &&
+          resolution.candidates.length === 0)
+      ) {
+        continue;
+      }
+      const { candidates } = resolution;
+      this.options.logger.warn(
+        {
+          event: 'player_market_identity_unresolved',
+          provider: 'odds-api-io',
+          fixture: fixture.key,
+          eventId: snapshot.eventId,
+          market: snapshot.market,
+          playerSlug: player.slug,
+          playerDisplayName: player.displayName,
+          reason: resolution.status,
+          candidates,
+        },
+        'Odds-API.io player quote could not be assigned safely',
+      );
+    }
+  }
+
   private async refreshRoute(
     route: OddsApiIoRoute,
     fixtures: readonly FixtureGroup[],
     goalSnapshots: Map<string, MarketSnapshot | undefined>,
     assistSnapshots: Map<string, MarketSnapshot | undefined>,
+    decisiveSnapshots: Map<string, MarketSnapshot | undefined>,
     matchSnapshots: Map<string, MatchOddsSnapshot | undefined>,
   ): Promise<void> {
     const kickoffs = fixtures
@@ -921,13 +1230,51 @@ export class OddsApiIoPlayerMarketOddsProvider
     }
 
     const capturedAt = new Date(this.now()).toISOString();
+    const observedPlayerMarkets = new Set<string>();
+    const unhandledPlayerMarkets = new Set<string>();
     for (const fixture of fixtures) {
       const match = matched.get(fixture.key);
       const response = match ? oddsByEvent.get(match.event.id) : undefined;
+      const extractedMarkets = response
+        ? extractPlayerMarketSnapshots(response, capturedAt)
+        : {
+            snapshots: new Map<OddsMarketKey, FrozenMarketSnapshot>(),
+            observedPlayerMarkets: [],
+            unhandledPlayerMarkets: [],
+          };
+      for (const market of extractedMarkets.observedPlayerMarkets) {
+        observedPlayerMarkets.add(market);
+      }
+      for (const market of extractedMarkets.unhandledPlayerMarkets) {
+        unhandledPlayerMarkets.add(market);
+      }
+      if (response && this.options.store.setEvidence) {
+        const evidence = playerMarketEvidence(response, capturedAt);
+        if (evidence) {
+          try {
+            await this.options.store.setEvidence(
+              fixtureStoreKey(fixture.key),
+              'odds-api-io',
+              evidence,
+              evidence.expiresAt,
+            );
+          } catch (error) {
+            this.options.logger.warn(
+              {
+                event: 'market_evidence_write_failed',
+                provider: 'odds-api-io',
+                fixture: fixture.key,
+                error: error instanceof Error ? error.message : String(error),
+              },
+              'Odds-API.io market evidence could not be persisted',
+            );
+          }
+        }
+      }
       const existing = goalSnapshots.get(fixture.key);
-      const extracted = response
-        ? anytimeGoalscorerSnapshot(response, capturedAt)
-        : null;
+      const extracted = extractedMarkets.snapshots.get(
+        'player_goal_scorer_anytime',
+      );
       const snapshot = extracted
         ? supplementFrozenSnapshot(
             existing?.status === 'available' ? existing : undefined,
@@ -936,41 +1283,61 @@ export class OddsApiIoPlayerMarketOddsProvider
             fixture.date,
           )
         : existing?.status === 'available'
-          ? recordFrozenSnapshotCheck(
-              existing,
-              fixture.players,
-              fixture.date,
-              this.now(),
-            )
-          : missingMarketSnapshot(
-              fixture,
-              'player_goal_scorer_anytime',
-              existing,
-              this.now(),
-            );
-      await this.options.store.set(fixtureStoreKey(fixture.key), snapshot);
-      goalSnapshots.set(fixture.key, snapshot);
-
-      // Assists piggyback on a goalscorer or H-D-A refresh. Their absence is
-      // deliberately not persisted as a miss and can never trigger a request.
-      const extractedAssist = response
-        ? playerAssistSnapshot(response, capturedAt)
-        : null;
-      if (extractedAssist) {
-        const existingAssist = assistSnapshots.get(fixture.key);
-        const assistSnapshot = supplementFrozenSnapshot(
-          existingAssist?.status === 'available'
-            ? existingAssist
-            : undefined,
-          extractedAssist,
+          ? {
+              ...recordFrozenSnapshotCheck(
+                existing,
+                fixture.players,
+                fixture.date,
+                this.now(),
+              ),
+              parserVersion: ODDS_API_IO_PLAYER_MARKET_PARSER_VERSION,
+            }
+          : {
+              ...missingMarketSnapshot(
+                fixture,
+                'player_goal_scorer_anytime',
+                existing,
+                this.now(),
+              ),
+              parserVersion: ODDS_API_IO_PLAYER_MARKET_PARSER_VERSION,
+            };
+      // Assists and goals+assists piggyback on a goalscorer or H-D-A refresh.
+      // Their absence is deliberately not persisted as a miss and can never
+      // trigger a provider request.
+      const opportunistic = [
+        {
+          market: 'player_assists' as const,
+          snapshots: assistSnapshots,
+        },
+        {
+          market: 'player_goal_or_assist' as const,
+          snapshots: decisiveSnapshots,
+        },
+      ];
+      for (const { market, snapshots } of opportunistic) {
+        const incoming = extractedMarkets.snapshots.get(market);
+        if (!incoming) continue;
+        const previous = snapshots.get(fixture.key);
+        const supplemented = supplementFrozenSnapshot(
+          previous?.status === 'available' ? previous : undefined,
+          incoming,
           fixture.players,
           fixture.date,
         );
         await this.options.store.set(
           fixtureStoreKey(fixture.key),
-          assistSnapshot,
+          supplemented,
         );
-        assistSnapshots.set(fixture.key, assistSnapshot);
+        snapshots.set(fixture.key, supplemented);
+        this.logIdentityDiagnostics(fixture, supplemented);
+      }
+      // Store the request-driving goal snapshot last. Its parser version is
+      // the fixture-level replay checkpoint, so a failed opportunistic write
+      // must not make the evidence look fully consumed.
+      await this.options.store.set(fixtureStoreKey(fixture.key), snapshot);
+      goalSnapshots.set(fixture.key, snapshot);
+      if (snapshot.status === 'available') {
+        this.logIdentityDiagnostics(fixture, snapshot);
       }
 
       const matchStore = this.options.matchOddsStore;
@@ -1015,9 +1382,22 @@ export class OddsApiIoPlayerMarketOddsProvider
         events: eventCount,
         bookmakers: this.options.bookmakers,
         matchOdds: route.matchOdds === true,
+        observedPlayerMarkets: [...observedPlayerMarkets].sort(),
       },
       'Odds-API.io fixture snapshot received',
     );
+    if (unhandledPlayerMarkets.size > 0) {
+      this.options.logger.warn(
+        {
+          event: 'player_market_unhandled',
+          provider: 'odds-api-io',
+          competitions: route.competitionSlugs,
+          leagues: queriedLeagues,
+          markets: [...unhandledPlayerMarkets].sort(),
+        },
+        'Odds-API.io returned labelled player markets that no parser consumed',
+      );
+    }
   }
 
   private async requestJson(

@@ -14,6 +14,7 @@ import {
   type SplitPlayerStatsCacheAccess,
 } from '../cache.js';
 import {
+  playerMarketFieldDrivesRequest,
   playerMarketFieldSupported,
   playerMarketOddsKey,
   playerMarketOddsSupported,
@@ -534,7 +535,7 @@ export class StatsService {
         supportsMarketOdds ? marketOdds.get(key) ?? null : null;
       const needsMarketOddsRefresh = (['goal', 'assist'] as const).some(
         (market) =>
-          playerMarketFieldSupported(
+          playerMarketFieldDrivesRequest(
             this.marketOddsProvider,
             stats,
             market,

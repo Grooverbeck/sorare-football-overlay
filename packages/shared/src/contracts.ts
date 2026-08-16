@@ -94,6 +94,10 @@ export const BookmakerMarketQuoteSchema = z.object({
   title: z.string().trim().min(1),
   decimalOdds: z.number().finite().gt(1),
   probability: z.number().min(0).max(1),
+  // Optional provider provenance keeps parser decisions auditable without
+  // invalidating snapshots captured before the fields existed.
+  providerMarketName: z.string().trim().min(1).max(200).optional(),
+  providerSelectionLabel: z.string().trim().min(1).max(300).optional(),
 });
 
 export const MarketProbabilitySchema = z.object({

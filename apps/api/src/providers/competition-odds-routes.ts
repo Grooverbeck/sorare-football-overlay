@@ -339,8 +339,8 @@ const BASE_ODDS_API_IO_ROUTES = [
 /**
  * Odds-API.io is a goalscorer fallback for the existing pools and the direct
  * goalscorer source for European leagues without supported The Odds API props.
- * Player To Assist is captured from the same response, but never drives routing
- * or a provider request of its own.
+ * Assist and goals-or-assists selections are captured from the same response,
+ * but never drive routing or a provider request of their own.
  */
 export const ODDS_API_IO_ROUTES: readonly OddsApiIoRoute[] = [
   ...BASE_ODDS_API_IO_ROUTES,

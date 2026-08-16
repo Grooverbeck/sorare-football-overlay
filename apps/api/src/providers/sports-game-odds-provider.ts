@@ -16,6 +16,7 @@ import {
   missingMarketSnapshot,
   needsFrozenSnapshotSupplement,
   normalizePlayerName,
+  playerMarketFieldDrivesRequest,
   playerMarketFieldSupported,
   playerMarketOddsKey,
   playerProbability,
@@ -268,6 +269,31 @@ function settleMarketOddsWithin(
       (value) => finish(value),
       () => finish(new Map<string, PlayerMarketOdds | null>()),
     );
+  });
+}
+
+function supplementPlayerMarketOdds(
+  primary: PlayerMarketOdds | null,
+  fallback: PlayerMarketOdds | null,
+  markets: readonly PlayerMarketField[],
+): PlayerMarketOdds | null {
+  if (!primary) return fallback;
+  if (!fallback) return primary;
+  const usedFallback = markets.some(
+    (market) => !primary[market] && Boolean(fallback[market]),
+  );
+  if (!usedFallback) return primary;
+  const supplemented = (market: PlayerMarketField) =>
+    markets.includes(market)
+      ? primary[market] ?? fallback[market]
+      : primary[market];
+  return PlayerMarketOddsSchema.parse({
+    source:
+      primary.source === fallback.source ? primary.source : 'mixed',
+    capturedAt: [primary.capturedAt, fallback.capturedAt].sort().at(-1),
+    goal: supplemented('goal'),
+    assist: supplemented('assist'),
+    decisive: supplemented('decisive') ?? null,
   });
 }
 
@@ -609,6 +635,13 @@ export class SportsGameOddsPlayerMarketOddsProvider
   }
 
   supportsMarket(
+    player: PlayerStats,
+    _market: PlayerMarketField,
+  ): boolean {
+    return this.supports(player);
+  }
+
+  drivesMarketRequest(
     player: PlayerStats,
     market: PlayerMarketField,
   ): boolean {
@@ -1395,12 +1428,14 @@ export class SupplementingPlayerMarketOddsProvider
   constructor(
     private readonly primary: PlayerMarketOddsProvider,
     private readonly fallback: PlayerMarketOddsProvider,
-    private readonly supplementMarkets: readonly ('goal' | 'assist')[] = [
+    private readonly supplementMarkets: readonly PlayerMarketField[] = [
       'goal',
       'assist',
     ],
     private readonly cacheOnlyProviderBudgetMs =
       defaultCacheOnlyProviderBudgetMs,
+    private readonly requestMarkets: readonly PlayerMarketField[] =
+      supplementMarkets,
   ) {}
 
   supports(player: PlayerStats): boolean {
@@ -1415,6 +1450,17 @@ export class SupplementingPlayerMarketOddsProvider
       playerMarketFieldSupported(this.primary, player, market) ||
       (this.supplementMarkets.includes(market) &&
         playerMarketFieldSupported(this.fallback, player, market))
+    );
+  }
+
+  drivesMarketRequest(
+    player: PlayerStats,
+    market: PlayerMarketField,
+  ): boolean {
+    return (
+      playerMarketFieldDrivesRequest(this.primary, player, market) ||
+      (this.requestMarkets.includes(market) &&
+        playerMarketFieldDrivesRequest(this.fallback, player, market))
     );
   }
 
@@ -1486,6 +1532,29 @@ export class SupplementingPlayerMarketOddsProvider
     } else {
       // Paid network fallbacks remain sequential: only contact the next
       // provider for markets the higher-priority provider could not fill.
+      // Non-request-driving markets still get one bounded cache read so an
+      // already captured assist cannot disappear behind a primary goal quote.
+      const opportunisticMarkets = this.supplementMarkets.filter(
+        (market) => !this.requestMarkets.includes(market),
+      );
+      const opportunisticPlayers = eligiblePlayers.filter((player) =>
+        opportunisticMarkets.some((market) =>
+          playerMarketFieldSupported(this.fallback, player, market),
+        ),
+      );
+      const cacheOnlyDeadlineMs =
+        Date.now() + this.cacheOnlyProviderBudgetMs;
+      const cachedFallbackPending =
+        opportunisticPlayers.length > 0
+          ? settleMarketOddsWithin(
+              this.fallback.load(opportunisticPlayers, {
+                ...loadOptions,
+                cacheOnly: true,
+                cacheOnlyDeadlineMs,
+              }),
+              this.cacheOnlyProviderBudgetMs,
+            )
+          : Promise.resolve(new Map<string, PlayerMarketOdds | null>());
       try {
         primaryValues =
           primaryPlayers.length > 0
@@ -1494,22 +1563,40 @@ export class SupplementingPlayerMarketOddsProvider
       } catch {
         primaryValues = new Map<string, PlayerMarketOdds | null>();
       }
+      const cachedFallbackValues = await cachedFallbackPending;
       const fallbackPlayers = eligiblePlayers.filter((player) => {
         if (!fallbackCanSupply(player)) return false;
-        const odds = primaryValues.get(playerMarketOddsKey(player));
-        return this.supplementMarkets.some(
+        const key = playerMarketOddsKey(player);
+        const odds = supplementPlayerMarketOdds(
+          primaryValues.get(key) ?? null,
+          cachedFallbackValues.get(key) ?? null,
+          this.supplementMarkets,
+        );
+        return this.requestMarkets.some(
           (market) =>
-            playerMarketFieldSupported(this.fallback, player, market) &&
+            playerMarketFieldDrivesRequest(this.fallback, player, market) &&
             !odds?.[market],
         );
       });
       try {
-        fallbackValues =
+        const refreshedFallbackValues =
           fallbackPlayers.length > 0
             ? await this.fallback.load(fallbackPlayers, loadOptions)
             : new Map<string, PlayerMarketOdds | null>();
+        fallbackValues = new Map(cachedFallbackValues);
+        for (const player of fallbackPlayers) {
+          const key = playerMarketOddsKey(player);
+          fallbackValues.set(
+            key,
+            supplementPlayerMarketOdds(
+              refreshedFallbackValues.get(key) ?? null,
+              cachedFallbackValues.get(key) ?? null,
+              this.supplementMarkets,
+            ),
+          );
+        }
       } catch {
-        fallbackValues = new Map<string, PlayerMarketOdds | null>();
+        fallbackValues = cachedFallbackValues;
       }
     }
     return new Map(
@@ -1517,26 +1604,13 @@ export class SupplementingPlayerMarketOddsProvider
         const key = playerMarketOddsKey(player);
         const primary = primaryValues.get(key) ?? null;
         const fallback = fallbackValues.get(key) ?? null;
-        if (!primary && !fallback) return [key, null];
-        if (!primary) return [key, fallback];
-        if (!fallback) return [key, primary];
-        const usedFallback =
-          (this.supplementMarkets.includes('goal') &&
-            !primary.goal &&
-            Boolean(fallback.goal)) ||
-          (this.supplementMarkets.includes('assist') &&
-            !primary.assist &&
-            Boolean(fallback.assist));
-        if (!usedFallback) return [key, primary];
         return [
           key,
-          PlayerMarketOddsSchema.parse({
-            source: 'mixed',
-            capturedAt: [primary.capturedAt, fallback.capturedAt].sort().at(-1),
-            goal: primary.goal ?? fallback.goal,
-            assist: primary.assist ?? fallback.assist,
-            decisive: primary.decisive ?? fallback.decisive ?? null,
-          }),
+          supplementPlayerMarketOdds(
+            primary,
+            fallback,
+            this.supplementMarkets,
+          ),
         ];
       }),
     );

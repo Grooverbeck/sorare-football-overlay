@@ -312,6 +312,8 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
       ? new SupplementingPlayerMarketOddsProvider(
           configuredMarketOddsProvider,
           oddsApiIoProvider,
+          ['goal', 'assist', 'decisive'],
+          undefined,
           ['goal'],
         )
       : configuredMarketOddsProvider;

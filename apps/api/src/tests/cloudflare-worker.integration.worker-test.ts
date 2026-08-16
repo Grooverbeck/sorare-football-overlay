@@ -813,6 +813,41 @@ describe('Cloudflare Worker', () => {
     expect(assistKey?.expiration).toBe(missExpiration);
   });
 
+  it('stores replayable provider evidence with an absolute expiration', async () => {
+    const store = new CloudflareMarketSnapshotStore(
+      env.STATS_CACHE,
+      1_800,
+      createExecutionContext(),
+    );
+    const fixtureKey = `${Date.now()}|evidence home|evidence away`;
+    const expiration = Math.floor(
+      (Date.now() + 24 * 60 * 60 * 1_000) / 1_000,
+    );
+    const evidence = {
+      provider: 'odds-api-io',
+      parserVersion: 2,
+      markets: ['Player To Score or Assist'],
+    };
+
+    await store.setEvidence(
+      fixtureKey,
+      'odds-api-io',
+      evidence,
+      new Date(expiration * 1_000).toISOString(),
+    );
+
+    await expect(
+      store.getEvidence(fixtureKey, 'odds-api-io'),
+    ).resolves.toEqual(evidence);
+    const listed = await env.STATS_CACHE.list({
+      prefix: `market-evidence:v1:odds-api-io:${encodeURIComponent(
+        fixtureKey,
+      )}`,
+    });
+    expect(listed.keys).toHaveLength(1);
+    expect(listed.keys[0]?.expiration).toBe(expiration);
+  });
+
   it('reads multiple market snapshots through the D1 batch path', async () => {
     const probe = Date.now();
     const firstFixture = `${probe}|batch home one|batch away one`;

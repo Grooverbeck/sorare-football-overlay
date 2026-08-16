@@ -525,6 +525,37 @@ export class CloudflareMarketSnapshotStore
     });
   }
 
+  async getEvidence(
+    fixtureKey: string,
+    provider: string,
+  ): Promise<unknown | undefined> {
+    const raw = await this.namespace.get<unknown>(
+      this.evidenceKey(fixtureKey, provider),
+      'json',
+    );
+    return raw === null ? undefined : raw;
+  }
+
+  async setEvidence(
+    fixtureKey: string,
+    provider: string,
+    evidence: unknown,
+    expiresAt: string,
+  ): Promise<void> {
+    const expiration = Math.floor(Date.parse(expiresAt) / 1_000);
+    if (
+      !Number.isFinite(expiration) ||
+      expiration <= Math.floor(Date.now() / 1_000)
+    ) {
+      return;
+    }
+    await this.namespace.put(
+      this.evidenceKey(fixtureKey, provider),
+      JSON.stringify(evidence),
+      { expiration },
+    );
+  }
+
   async claimRefreshLease(
     fixtureKey: string,
     requestGroup: string,
@@ -626,6 +657,12 @@ export class CloudflareMarketSnapshotStore
   ): string {
     return `market-odds-refresh-lease:v1:${encodeURIComponent(
       requestGroup,
+    )}:${encodeURIComponent(fixtureKey)}`;
+  }
+
+  private evidenceKey(fixtureKey: string, provider: string): string {
+    return `market-evidence:v1:${encodeURIComponent(
+      provider,
     )}:${encodeURIComponent(fixtureKey)}`;
   }
 

@@ -6,9 +6,12 @@ import {
   TheOddsApiPlayerMarketOddsProvider,
   marketFixtureKey,
   normalizeTeamName,
+  playerIdentityMatchScore,
   providerTeamNamesMatch,
   playerNameMatchScore,
   playerMarketOddsKey,
+  resolvePlayerProbability,
+  supplementFrozenSnapshot,
   supportsFixtureCompetition,
   type MarketSnapshotStore,
   type PlayerMarketOddsProvider,
@@ -1569,6 +1572,87 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     expect(playerNameMatchScore('Tah Traoré', 'Djé Traoré')).toBe(0);
   });
 
+  it('uses a unique Sorare-slug alias without broad fuzzy matching', () => {
+    const jose = player({
+      slug: 'jose-pepe-martinez',
+      displayName: 'José Martínez',
+    });
+    const pedro = player({
+      slug: 'pedro-martinez',
+      displayName: 'Pedro Martínez',
+    });
+    const snapshot = {
+      status: 'available' as const,
+      market: 'player_goal_scorer_anytime' as const,
+      eventId: 'slug-alias-fixture',
+      capturedAt: new Date(now).toISOString(),
+      players: {
+        'pepe martinez': { probability: 0.25, bookmakerCount: 1 },
+      },
+    };
+
+    expect(playerNameMatchScore(jose.displayName, 'Pepe Martinez')).toBe(0);
+    expect(playerIdentityMatchScore(jose, 'Pepe Martinez')).toBe(90);
+    expect(resolvePlayerProbability(snapshot, jose, [jose, pedro])).toMatchObject(
+      {
+        status: 'available',
+        matchedBy: 'sorare_slug',
+        probability: { probability: 0.25 },
+      },
+    );
+  });
+
+  it('fails closed when the same slug alias fits two fixture players', () => {
+    const first = player({
+      slug: 'jose-pepe-martinez',
+      displayName: 'José Martínez',
+    });
+    const second = player({
+      slug: 'pedro-pepe-martinez',
+      displayName: 'Pedro Martínez',
+    });
+    const snapshot = {
+      status: 'available' as const,
+      market: 'player_goal_scorer_anytime' as const,
+      eventId: 'ambiguous-slug-alias-fixture',
+      capturedAt: new Date(now).toISOString(),
+      players: {
+        'pepe martinez': { probability: 0.25, bookmakerCount: 1 },
+      },
+    };
+
+    expect(resolvePlayerProbability(snapshot, first, [first, second])).toMatchObject(
+      { status: 'roster_ambiguous' },
+    );
+  });
+
+  it('records a newer parser version when supplementing a legacy snapshot', () => {
+    const stats = player();
+    const legacy = {
+      status: 'available' as const,
+      market: 'player_assists' as const,
+      eventId: 'parser-upgrade-fixture',
+      capturedAt: new Date(now - 1_000).toISOString(),
+      players: {
+        'timo werner': { probability: 0.2, bookmakerCount: 1 },
+      },
+    };
+    const reparsed = {
+      ...legacy,
+      capturedAt: new Date(now).toISOString(),
+      parserVersion: 2,
+    };
+
+    expect(
+      supplementFrozenSnapshot(
+        legacy,
+        reparsed,
+        [stats],
+        stats.nextGame!.date,
+      ),
+    ).toMatchObject({ parserVersion: 2 });
+  });
+
   it('rejects an abbreviated market name that fits two fixture players', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
@@ -1652,5 +1736,25 @@ describe('InMemoryMarketSnapshotStore', () => {
     await expect(
       store.get(fixtureKey, 'player_goal_scorer_anytime'),
     ).resolves.toMatchObject({ status: 'available' });
+  });
+
+  it('expires compact provider evidence independently from frozen snapshots', async () => {
+    let clock = now;
+    const store = new InMemoryMarketSnapshotStore(1_000, () => clock);
+    const fixtureKey = 'provider-evidence-fixture';
+    store.setEvidence(
+      fixtureKey,
+      'odds-api-io',
+      { parserVersion: 1, markets: ['Player To Assist'] },
+      new Date(clock + 1_000).toISOString(),
+    );
+
+    await expect(
+      store.getEvidence(fixtureKey, 'odds-api-io'),
+    ).resolves.toMatchObject({ parserVersion: 1 });
+    clock += 1_001;
+    await expect(
+      store.getEvidence(fixtureKey, 'odds-api-io'),
+    ).resolves.toBeUndefined();
   });
 });

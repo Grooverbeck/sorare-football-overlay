@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AppLogger } from '../logger.js';
 import {
   InMemoryMarketSnapshotStore,
+  playerMarketFieldDrivesRequest,
   playerMarketOddsKey,
   type MarketSnapshotStore,
   type PlayerMarketOddsProvider,
@@ -76,6 +77,7 @@ function createProvider(
   maxRetries = 0,
   store = new InMemoryMarketSnapshotStore(60_000, () => now),
   matchOddsStore?: MatchOddsSnapshotStore,
+  appLogger: AppLogger = logger,
 ) {
   const provider = new OddsApiIoPlayerMarketOddsProvider({
     apiKey: 'server-only-test-key',
@@ -91,7 +93,7 @@ function createProvider(
     maxRetries,
     store,
     ...(matchOddsStore ? { matchOddsStore } : {}),
-    logger,
+    logger: appLogger,
     usageStore,
     fetchImpl,
     now: () => now,
@@ -106,11 +108,15 @@ function createProvider(
 }
 
 describe('OddsApiIoPlayerMarketOddsProvider', () => {
-  it('keeps assists opportunistic instead of advertising them as a request driver', () => {
+  it('advertises opportunistic assists without letting them drive requests', () => {
     const { provider } = createProvider(vi.fn<typeof fetch>());
 
     expect(provider.supportsMarket(player(), 'goal')).toBe(true);
-    expect(provider.supportsMarket(player(), 'assist')).toBe(false);
+    expect(provider.supportsMarket(player(), 'assist')).toBe(true);
+    expect(playerMarketFieldDrivesRequest(provider, player(), 'goal')).toBe(true);
+    expect(playerMarketFieldDrivesRequest(provider, player(), 'assist')).toBe(
+      false,
+    );
   });
 
   it('honors a league-specific 24-hour player-prop fetch window', async () => {
@@ -132,6 +138,59 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
 
     expect(result.get(playerMarketOddsKey(player()))).toBeNull();
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('reports labelled player markets that no parser consumed', async () => {
+    const warn = vi.fn<AppLogger['warn']>();
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/events')) {
+        return json([
+          {
+            id: 'unknown-player-market-fixture',
+            date: kickoff,
+            home: 'WSG Tirol',
+            away: 'SK Sturm Graz',
+          },
+        ]);
+      }
+      return json([
+        {
+          id: 'unknown-player-market-fixture',
+          date: kickoff,
+          home: 'WSG Tirol',
+          away: 'SK Sturm Graz',
+          bookmakers: {
+            Bet365: [
+              {
+                name: 'Player Creative Assist',
+                odds: [{ label: 'Otar Kiteishvili', odds: '4.00' }],
+              },
+            ],
+          },
+        },
+      ]);
+    });
+    const { provider } = createProvider(
+      fetchImpl,
+      new InMemoryProviderQuotaUsageStore(() => now),
+      undefined,
+      0,
+      new InMemoryMarketSnapshotStore(60_000, () => now),
+      undefined,
+      { ...logger, warn },
+    );
+
+    await provider.load([player()]);
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'player_market_unhandled',
+        provider: 'odds-api-io',
+        markets: ['Player Creative Assist'],
+      }),
+      expect.any(String),
+    );
   });
 
   it('maps a Leagues Cup goalscorer quote for Antoine Griezmann', async () => {
@@ -382,11 +441,14 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
         },
       });
     }
-    expect(provider.supportsMarket(player(), 'assist')).toBe(false);
+    expect(provider.supportsMarket(player(), 'assist')).toBe(true);
+    expect(playerMarketFieldDrivesRequest(provider, player(), 'assist')).toBe(
+      false,
+    );
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("maps Djé D'Avilla goal and assist quotes to Sorare's Tah D'Avilla identity", async () => {
+  it("maps Bet365's combined D'Avilla score, assist and decisive selections", async () => {
     const dAvilla = player({
       slug: 'tah-ange-innocent-d-avilla-dje',
       displayName: "Tah D'Avilla",
@@ -425,8 +487,16 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
                   odds: [{ label: "Djé D'Avilla", over: '6.50' }],
                 },
                 {
-                  name: 'Player To Assist',
-                  odds: [{ label: "Djé D'Avilla", odds: '8.00' }],
+                  name: 'Player To Score or Assist',
+                  odds: [
+                    { label: "Djé D'Avilla (Score) (1)", over: '6.500' },
+                    { label: "Djé D'Avilla (Assist) (2)", over: '20.000' },
+                    { label: "Djé D'Avilla (Assist) (1)", over: '7.000' },
+                    {
+                      label: "Djé D'Avilla (Score or Assist) (1)",
+                      over: '3.750',
+                    },
+                  ],
                 },
               ],
             },
@@ -451,8 +521,25 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
     const result = await provider.load([dAvilla]);
 
     expect(result.get(playerMarketOddsKey(dAvilla))).toMatchObject({
-      goal: { probability: 1 / 6.5 },
-      assist: { probability: 1 / 8 },
+      goal: {
+        probability: 1 / 6.5,
+        bookmakerQuotes: [
+          expect.objectContaining({
+            providerMarketName: 'Anytime Goalscorer',
+            providerSelectionLabel: "Djé D'Avilla",
+          }),
+        ],
+      },
+      assist: {
+        probability: 1 / 7,
+        bookmakerQuotes: [
+          expect.objectContaining({
+            providerMarketName: 'Player To Score or Assist',
+            providerSelectionLabel: "Djé D'Avilla (Assist) (1)",
+          }),
+        ],
+      },
+      decisive: { probability: 1 / 3.75 },
     });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
@@ -512,6 +599,67 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
     expect(result.get(playerMarketOddsKey(dAvilla))).toMatchObject({
       goal: { probability: 1 / 6.5 },
       assist: { probability: 1 / 8 },
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('reprocesses short-lived pre-upgrade market evidence without another request', async () => {
+    const store = new InMemoryMarketSnapshotStore(60_000, () => now);
+    const stats = player();
+    const fixtureKey = oddsApiIoFixtureStoreKey(stats.nextGame!);
+    if (!fixtureKey) throw new Error('Expected Odds-API.io fixture key');
+    store.set(fixtureKey, {
+      status: 'available',
+      market: 'player_assists',
+      eventId: 'evidence-fixture',
+      capturedAt: new Date(now).toISOString(),
+      parserVersion: 2,
+      players: {
+        'otar kiteishvili': { probability: 0.25, bookmakerCount: 1 },
+      },
+    });
+    store.setEvidence(
+      fixtureKey,
+      'odds-api-io',
+      {
+        provider: 'odds-api-io',
+        parserVersion: 1,
+        eventId: 'evidence-fixture',
+        capturedAt: new Date(now).toISOString(),
+        expiresAt: new Date(
+          Date.parse(kickoff) + 48 * 60 * 60 * 1_000,
+        ).toISOString(),
+        bookmakers: {
+          Bet365: [
+            {
+              name: 'Player To Score or Assist',
+              odds: [
+                { label: 'Otar Kiteishvili (Assist) (1)', over: '4.00' },
+                {
+                  label: 'Otar Kiteishvili (Score or Assist) (1)',
+                  over: '2.25',
+                },
+              ],
+            },
+          ],
+        },
+      },
+      new Date(Date.parse(kickoff) + 48 * 60 * 60 * 1_000).toISOString(),
+    );
+    const fetchImpl = vi.fn<typeof fetch>();
+    const { provider } = createProvider(
+      fetchImpl,
+      new InMemoryProviderQuotaUsageStore(() => now),
+      undefined,
+      0,
+      store,
+    );
+
+    const result = await provider.load([stats], { cacheOnly: true });
+
+    expect(result.get(playerMarketOddsKey(stats))).toMatchObject({
+      assist: { probability: 0.25 },
+      decisive: { probability: 1 / 2.25 },
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });

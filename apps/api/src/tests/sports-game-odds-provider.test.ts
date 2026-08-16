@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AppLogger } from '../logger.js';
 import {
   InMemoryMarketSnapshotStore,
+  playerMarketFieldDrivesRequest,
   playerMarketOddsKey,
   type MarketSnapshotStore,
   type PlayerMarketOddsProvider,
@@ -510,7 +511,7 @@ describe('SportsGameOddsPlayerMarketOddsProvider', () => {
     expect(requestUrl).not.toContain('leagueID=');
   });
 
-  it('uses configured markets as request drivers without claiming assist support', () => {
+  it('separates configured request drivers from opportunistic assist support', () => {
     const stats = player({
       nextGame: {
         ...player().nextGame!,
@@ -533,7 +534,11 @@ describe('SportsGameOddsPlayerMarketOddsProvider', () => {
     });
 
     expect(provider.supportsMarket(stats, 'goal')).toBe(true);
-    expect(provider.supportsMarket(stats, 'assist')).toBe(false);
+    expect(provider.supportsMarket(stats, 'assist')).toBe(true);
+    expect(playerMarketFieldDrivesRequest(provider, stats, 'goal')).toBe(true);
+    expect(playerMarketFieldDrivesRequest(provider, stats, 'assist')).toBe(
+      false,
+    );
   });
 
   it('routes an explicitly supported Champions League fixture to its league feed', async () => {
@@ -1056,6 +1061,63 @@ describe('SupplementingPlayerMarketOddsProvider', () => {
 
     expect(result.get(playerMarketOddsKey(stats))).toEqual(primaryOdds);
     expect(fallback.load).not.toHaveBeenCalled();
+  });
+
+  it('merges a cached opportunistic assist without requesting it separately', async () => {
+    const stats = player();
+    const primaryOdds: PlayerMarketOdds = {
+      source: 'the-odds-api',
+      capturedAt: '2026-07-25T10:00:00.000Z',
+      goal: { probability: 0.35, bookmakerCount: 1 },
+      assist: null,
+      decisive: null,
+    };
+    const fallbackOdds: PlayerMarketOdds = {
+      source: 'odds-api-io',
+      capturedAt: '2026-07-25T10:05:00.000Z',
+      goal: { probability: 0.34, bookmakerCount: 1 },
+      assist: { probability: 0.2, bookmakerCount: 1 },
+      decisive: null,
+    };
+    const primary: PlayerMarketOddsProvider = {
+      load: vi.fn(async () =>
+        new Map([[playerMarketOddsKey(stats), primaryOdds]]),
+      ),
+    };
+    const fallback: PlayerMarketOddsProvider = {
+      load: vi.fn(async () =>
+        new Map([[playerMarketOddsKey(stats), fallbackOdds]]),
+      ),
+      supportsMarket: () => true,
+      drivesMarketRequest: (_player, market) => market === 'goal',
+    };
+    const combined = new SupplementingPlayerMarketOddsProvider(
+      primary,
+      fallback,
+      ['goal', 'assist', 'decisive'],
+      150,
+      ['goal'],
+    );
+
+    const cached = await combined.load([stats], { cacheOnly: true });
+    expect(cached.get(playerMarketOddsKey(stats))).toMatchObject({
+      source: 'mixed',
+      goal: { probability: 0.35 },
+      assist: { probability: 0.2 },
+    });
+
+    vi.mocked(fallback.load).mockClear();
+    const refreshed = await combined.load([stats]);
+    expect(refreshed.get(playerMarketOddsKey(stats))).toMatchObject({
+      source: 'mixed',
+      goal: { probability: 0.35 },
+      assist: { probability: 0.2 },
+    });
+    expect(fallback.load).toHaveBeenCalledTimes(1);
+    expect(fallback.load).toHaveBeenCalledWith(
+      [stats],
+      expect.objectContaining({ cacheOnly: true }),
+    );
   });
 
   it('reads independent cache layers concurrently and returns the lower cached quote', async () => {

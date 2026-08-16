@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { TtlCache } from '../cache.js';
 import { loadConfig } from '../config.js';
 import type { AppLogger } from '../logger.js';
-import { playerMarketFieldSupported } from '../providers/market-odds-provider.js';
+import {
+  playerMarketFieldDrivesRequest,
+  playerMarketFieldSupported,
+} from '../providers/market-odds-provider.js';
 import { createStatsRuntime } from '../service-factory.js';
 
 const logger: AppLogger = {
@@ -36,7 +39,7 @@ function player(competitionSlug: string): PlayerStats {
 }
 
 describe('createStatsRuntime European market routing', () => {
-  it('exposes goal and assist only where the configured providers support them', () => {
+  it('exposes opportunistic assists without letting them drive lower-league requests', () => {
     const runtime = createStatsRuntime({
       config: loadConfig({
         MOCK_MODE: 'false',
@@ -86,11 +89,17 @@ describe('createStatsRuntime European market routing', () => {
           player(competitionSlug),
           'assist',
         ),
+        drivesAssistRequest: playerMarketFieldDrivesRequest(
+          runtime.marketOddsProvider,
+          player(competitionSlug),
+          'assist',
+        ),
       })),
     ).toEqual(
       lowerLeagues.map((competitionSlug) => ({
         competitionSlug,
-        supportsAssist: false,
+        supportsAssist: true,
+        drivesAssistRequest: false,
       })),
     );
 
@@ -106,6 +115,13 @@ describe('createStatsRuntime European market routing', () => {
       playerMarketFieldSupported(
         runtime.marketOddsProvider,
         unsupported,
+        'assist',
+      ),
+    ).toBe(false);
+    expect(
+      playerMarketFieldDrivesRequest(
+        runtime.marketOddsProvider,
+        player('ligue-2-fr'),
         'assist',
       ),
     ).toBe(false);
@@ -139,6 +155,13 @@ describe('createStatsRuntime European market routing', () => {
 
     expect(
       playerMarketFieldSupported(
+        runtime.marketOddsProvider,
+        player('ligue-2-fr'),
+        'assist',
+      ),
+    ).toBe(true);
+    expect(
+      playerMarketFieldDrivesRequest(
         runtime.marketOddsProvider,
         player('ligue-2-fr'),
         'assist',
