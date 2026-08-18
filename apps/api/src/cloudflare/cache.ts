@@ -19,6 +19,7 @@ import {
   type SplitPlayerStatsCacheAccess,
 } from '../cache.js';
 import {
+  FIXTURE_IDENTITY_VERSION,
   MarketSupplementBatchSchema,
   MarketSnapshotSchema,
   marketFixtureKey,
@@ -29,7 +30,9 @@ import {
   type MarketSnapshot,
   type MarketSnapshotRead,
   type MarketSnapshotStore,
+  type MarketIdentityProvider,
   type OddsMarketKey,
+  type ProviderTeamAlias,
 } from '../providers/market-odds-provider.js';
 import {
   MatchOddsSnapshotSchema,
@@ -66,6 +69,16 @@ const NameResolutionEnvelopeSchema = z.discriminatedUnion('found', [
   z.object({ found: z.literal(true), value: SourcePlayerRequestSchema }),
   z.object({ found: z.literal(false) }),
 ]);
+
+const ProviderTeamAliasEnvelopeSchema = z.object({
+  canonicalTeamSlug: z
+    .string()
+    .trim()
+    .min(1)
+    .max(180)
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i),
+  learnedAt: z.string().datetime(),
+});
 
 const PlayerFormStatsSchema = PlayerStatsSchema.omit({
   nextGame: true,
@@ -647,6 +660,60 @@ export class CloudflareMarketSnapshotStore
     );
   }
 
+  async getProviderTeamAliases(
+    provider: MarketIdentityProvider,
+    providerTeamNames: readonly string[],
+  ): Promise<ReadonlyMap<string, string>> {
+    const normalizedNames = [
+      ...new Set(providerTeamNames.map(normalizeTeamName)),
+    ];
+    const keys = normalizedNames.map((name) =>
+      this.providerTeamAliasKey(provider, name),
+    );
+    const rawByKey = this.namespace.getMany
+      ? await this.namespace.getMany<unknown>(keys, 'json')
+      : new Map(
+          await Promise.all(
+            keys.map(async (key) => [
+              key,
+              (await this.namespace.get<unknown>(key, 'json')) ?? undefined,
+            ] as const),
+          ),
+        );
+    return new Map(
+      normalizedNames.flatMap((name, index) => {
+        const parsed = ProviderTeamAliasEnvelopeSchema.safeParse(
+          rawByKey.get(keys[index] ?? ''),
+        );
+        return parsed.success
+          ? [[name, parsed.data.canonicalTeamSlug] as const]
+          : [];
+      }),
+    );
+  }
+
+  async setProviderTeamAliases(
+    provider: MarketIdentityProvider,
+    aliases: readonly ProviderTeamAlias[],
+  ): Promise<void> {
+    await Promise.all(
+      aliases.map((alias) =>
+        this.namespace.put(
+          this.providerTeamAliasKey(
+            provider,
+            normalizeTeamName(alias.providerTeamName),
+          ),
+          JSON.stringify(
+            ProviderTeamAliasEnvelopeSchema.parse({
+              canonicalTeamSlug: alias.canonicalTeamSlug,
+              learnedAt: new Date().toISOString(),
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+
   private key(fixtureKey: string, market: OddsMarketKey): string {
     return `market-odds:v1:${encodeURIComponent(fixtureKey)}:${market}`;
   }
@@ -674,6 +741,15 @@ export class CloudflareMarketSnapshotStore
       requestGroup,
     )}:${encodeURIComponent(fixtureKey)}`;
   }
+
+  private providerTeamAliasKey(
+    provider: MarketIdentityProvider,
+    normalizedProviderTeamName: string,
+  ): string {
+    return `provider-team-alias:v1:${encodeURIComponent(
+      provider,
+    )}:${encodeURIComponent(normalizedProviderTeamName)}`;
+  }
 }
 
 export class CloudflareMatchOddsSnapshotStore
@@ -691,6 +767,13 @@ export class CloudflareMatchOddsSnapshotStore
       return undefined;
     }
     if (Date.parse(parsed.data.expiresAt) <= Date.now()) {
+      await this.namespace.delete(key);
+      return undefined;
+    }
+    if (
+      parsed.data.status === 'unavailable' &&
+      parsed.data.fixtureIdentityVersion !== FIXTURE_IDENTITY_VERSION
+    ) {
       await this.namespace.delete(key);
       return undefined;
     }

@@ -64,6 +64,11 @@ export const FrozenMarketSnapshotSchema = z.object({
 const MissingMarketSnapshotSchema = z.object({
   status: z.literal('unavailable'),
   market: OddsMarketKeySchema,
+  // Negative snapshots are safe only for the fixture resolver version that
+  // produced them. A resolver upgrade lazily retries old misses while keeping
+  // immutable positive snapshots intact.
+  fixtureIdentityVersion: z.number().int().positive().optional(),
+  reason: z.enum(['market_not_offered', 'player_not_listed']).optional(),
   parserVersion: z.number().int().positive().optional(),
   // Providers that bill per returned event can target a later supplement by
   // ID even when the requested market was not listed on the first response.
@@ -81,6 +86,8 @@ export const MarketSnapshotSchema = z.discriminatedUnion('status', [
 
 export type FrozenMarketSnapshot = z.infer<typeof FrozenMarketSnapshotSchema>;
 export type MarketSnapshot = z.infer<typeof MarketSnapshotSchema>;
+
+export const FIXTURE_IDENTITY_VERSION = 2;
 
 export const MarketSupplementPlayerSchema = z.object({
   slug: z.string().trim().min(1).max(160),
@@ -146,6 +153,24 @@ export interface MarketSnapshotStore {
     fixtureKey: string,
     requestGroup: string,
   ): Promise<void>;
+  getProviderTeamAliases?(
+    provider: MarketIdentityProvider,
+    providerTeamNames: readonly string[],
+  ): Promise<ReadonlyMap<string, string>>;
+  setProviderTeamAliases?(
+    provider: MarketIdentityProvider,
+    aliases: readonly ProviderTeamAlias[],
+  ): void | Promise<void>;
+}
+
+export type MarketIdentityProvider =
+  | 'the-odds-api'
+  | 'odds-api-io'
+  | 'sports-game-odds';
+
+export interface ProviderTeamAlias {
+  providerTeamName: string;
+  canonicalTeamSlug: string;
 }
 
 interface MemoryEntry {
@@ -180,6 +205,7 @@ export class InMemoryMarketSnapshotStore implements MarketSnapshotStore {
   private readonly entries = new Map<string, MemoryEntry>();
   private readonly evidenceEntries = new Map<string, MemoryEvidenceEntry>();
   private readonly refreshLeases = new Map<string, number>();
+  private readonly providerTeamAliases = new Map<string, string>();
   private readonly supplementBatches = new Map<
     string,
     { batch: MarketSupplementBatch; expiresAt: number }
@@ -315,6 +341,33 @@ export class InMemoryMarketSnapshotStore implements MarketSnapshotStore {
     this.supplementBatches.delete(
       this.coordinationKey(fixtureKey, requestGroup),
     );
+  }
+
+  async getProviderTeamAliases(
+    provider: MarketIdentityProvider,
+    providerTeamNames: readonly string[],
+  ): Promise<ReadonlyMap<string, string>> {
+    return new Map(
+      providerTeamNames.flatMap((providerTeamName) => {
+        const normalized = normalizeTeamName(providerTeamName);
+        const canonicalTeamSlug = this.providerTeamAliases.get(
+          `${provider}:${normalized}`,
+        );
+        return canonicalTeamSlug ? [[normalized, canonicalTeamSlug]] : [];
+      }),
+    );
+  }
+
+  setProviderTeamAliases(
+    provider: MarketIdentityProvider,
+    aliases: readonly ProviderTeamAlias[],
+  ): void {
+    for (const alias of aliases) {
+      this.providerTeamAliases.set(
+        `${provider}:${normalizeTeamName(alias.providerTeamName)}`,
+        alias.canonicalTeamSlug,
+      );
+    }
   }
 
   private key(fixtureKey: string, market: OddsMarketKey): string {
@@ -598,6 +651,8 @@ export interface FixtureGroup<
   date: string;
   homeTeamName: string;
   awayTeamName: string;
+  homeTeamSlug?: string;
+  awayTeamSlug?: string;
   players: TPlayer[];
 }
 
@@ -816,6 +871,14 @@ const europeanTeamAliases: Readonly<Record<string, string>> = {
   'olympique lyonnais': 'lyon',
   'real betis': 'real betis',
   'real betis balompie': 'real betis',
+  // UEFA feeds expand NEC and transliterate Bodø in several incompatible
+  // ways. Collapse every observed form before fixture matching and keying.
+  nec: 'nec nijmegen',
+  'nec nijmegen': 'nec nijmegen',
+  'bod glimt': 'bodo glimt',
+  'bodo glimt': 'bodo glimt',
+  'bodoe glimt': 'bodo glimt',
+  'bodo glimt bodo': 'bodo glimt',
 };
 
 const teamAliases: Readonly<Record<string, string>> = {
@@ -827,6 +890,12 @@ const teamAliases: Readonly<Record<string, string>> = {
 
 function normalizeWords(value: string): string {
   return value
+    .replace(/[Øø]/g, 'o')
+    .replace(/[Ææ]/g, 'ae')
+    .replace(/[Ðð]/g, 'd')
+    .replace(/[Þþ]/g, 'th')
+    .replace(/[Łł]/g, 'l')
+    .replace(/ß/g, 'ss')
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLocaleLowerCase()
@@ -905,6 +974,256 @@ export function providerTeamNamesMatch(left: string, right: string): boolean {
       (token) => token.length >= 4 && !ambiguousTeamTokens.has(token),
     )
   );
+}
+
+function normalizedTeamSlug(value: string | undefined): string | null {
+  return value ? normalizeTeamName(value.replaceAll('-', ' ')) : null;
+}
+
+function editDistance(left: string, right: string): number {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      current[rightIndex] = Math.min(
+        (current[rightIndex - 1] ?? 0) + 1,
+        (previous[rightIndex] ?? 0) + 1,
+        (previous[rightIndex - 1] ?? 0) +
+          (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1),
+      );
+    }
+    previous.splice(0, previous.length, ...current);
+  }
+  return previous[right.length] ?? Math.max(left.length, right.length);
+}
+
+function teamIdentityScore(
+  providerTeamName: string,
+  fixtureTeamName: string,
+  fixtureTeamSlug: string | undefined,
+  learnedAliases: ReadonlyMap<string, string>,
+): number {
+  const providerName = normalizeTeamName(providerTeamName);
+  const fixtureName = normalizeTeamName(fixtureTeamName);
+  const fixtureSlug = normalizedTeamSlug(fixtureTeamSlug);
+  const learnedSlug = learnedAliases.get(providerName);
+  if (
+    learnedSlug &&
+    fixtureTeamSlug &&
+    learnedSlug.toLocaleLowerCase() === fixtureTeamSlug.toLocaleLowerCase()
+  ) {
+    return 120;
+  }
+  if (providerName === fixtureName) return 110;
+  if (fixtureSlug && providerName === fixtureSlug) return 105;
+  if (providerTeamNamesMatch(providerName, fixtureName)) return 90;
+  if (fixtureSlug && providerTeamNamesMatch(providerName, fixtureSlug)) {
+    return 85;
+  }
+
+  const providerTokens = new Set(providerTeamTokens(providerTeamName));
+  const fixtureTokens = new Set([
+    ...providerTeamTokens(fixtureTeamName),
+    ...(fixtureSlug ? fixtureSlug.split(' ') : []),
+  ]);
+  const sharedDistinctive = [...providerTokens].filter(
+    (token) =>
+      fixtureTokens.has(token) &&
+      token.length >= 4 &&
+      !ambiguousTeamTokens.has(token),
+  );
+  const union = new Set([...providerTokens, ...fixtureTokens]);
+  if (
+    sharedDistinctive.length > 0 &&
+    union.size > 0 &&
+    sharedDistinctive.length / union.size >= 0.34
+  ) {
+    return 70;
+  }
+
+  const providerCompact = providerName.replaceAll(' ', '');
+  const fixtureCompacts = [fixtureName, fixtureSlug]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.replaceAll(' ', ''));
+  if (
+    providerCompact.length >= 5 &&
+    fixtureCompacts.some(
+      (candidate) =>
+        candidate.length >= 5 && editDistance(providerCompact, candidate) <= 2,
+    )
+  ) {
+    return 68;
+  }
+  return 0;
+}
+
+export interface ProviderFixtureCandidate<TEvent> {
+  event: TEvent;
+  eventId: string;
+  date: string;
+  homeTeamName: string;
+  awayTeamName: string;
+}
+
+export interface ProviderFixtureCandidateScore {
+  eventId: string;
+  homeTeamName: string;
+  awayTeamName: string;
+  homeScore: number;
+  awayScore: number;
+  kickoffDifferenceMs: number;
+  score: number;
+}
+
+export type ProviderFixtureResolution<TEvent> =
+  | {
+      status: 'matched';
+      event: TEvent;
+      eventId: string;
+      highConfidence: boolean;
+      candidates: readonly ProviderFixtureCandidateScore[];
+    }
+  | {
+      status: 'unmatched' | 'ambiguous';
+      candidates: readonly ProviderFixtureCandidateScore[];
+    };
+
+export function resolveProviderFixtureCandidates<TEvent>(
+  fixture: FixtureGroup<MarketSupplementPlayer>,
+  candidates: readonly ProviderFixtureCandidate<TEvent>[],
+  learnedAliases: ReadonlyMap<string, string> = new Map(),
+): ProviderFixtureResolution<TEvent> {
+  const kickoff = Date.parse(fixture.date);
+  const scored = candidates
+    .map((candidate) => {
+      const kickoffDifferenceMs = Math.abs(Date.parse(candidate.date) - kickoff);
+      const homeScore = teamIdentityScore(
+        candidate.homeTeamName,
+        fixture.homeTeamName,
+        fixture.homeTeamSlug,
+        learnedAliases,
+      );
+      const awayScore = teamIdentityScore(
+        candidate.awayTeamName,
+        fixture.awayTeamName,
+        fixture.awayTeamSlug,
+        learnedAliases,
+      );
+      const timeScore = Math.max(
+        0,
+        20 - Math.floor(kickoffDifferenceMs / (60 * 60 * 1_000)),
+      );
+      return {
+        candidate,
+        diagnostic: {
+          eventId: candidate.eventId,
+          homeTeamName: candidate.homeTeamName,
+          awayTeamName: candidate.awayTeamName,
+          homeScore,
+          awayScore,
+          kickoffDifferenceMs,
+          score: homeScore + awayScore + timeScore,
+        },
+      };
+    })
+    .filter(
+      ({ diagnostic }) =>
+        diagnostic.kickoffDifferenceMs <= 36 * 60 * 60 * 1_000,
+    )
+    .sort(
+      (left, right) =>
+        right.diagnostic.score - left.diagnostic.score ||
+        left.diagnostic.kickoffDifferenceMs -
+          right.diagnostic.kickoffDifferenceMs,
+    );
+  const diagnostics = scored.slice(0, 3).map(({ diagnostic }) => diagnostic);
+  const best = scored[0];
+  if (
+    !best ||
+    best.diagnostic.homeScore < 60 ||
+    best.diagnostic.awayScore < 60 ||
+    best.diagnostic.homeScore + best.diagnostic.awayScore < 150
+  ) {
+    return { status: 'unmatched', candidates: diagnostics };
+  }
+  const second = scored[1];
+  const margin = second
+    ? best.diagnostic.score - second.diagnostic.score
+    : Number.POSITIVE_INFINITY;
+  if (margin < 8) {
+    return { status: 'ambiguous', candidates: diagnostics };
+  }
+  return {
+    status: 'matched',
+    event: best.candidate.event,
+    eventId: best.candidate.eventId,
+    highConfidence:
+      best.diagnostic.homeScore >= 85 &&
+      best.diagnostic.awayScore >= 85 &&
+      best.diagnostic.kickoffDifferenceMs <= 3 * 60 * 60 * 1_000,
+    candidates: diagnostics,
+  };
+}
+
+export async function resolveProviderFixture<TEvent>(
+  store: MarketSnapshotStore,
+  provider: MarketIdentityProvider,
+  fixture: FixtureGroup<MarketSupplementPlayer>,
+  candidates: readonly ProviderFixtureCandidate<TEvent>[],
+): Promise<ProviderFixtureResolution<TEvent>> {
+  const providerTeamNames = candidates.flatMap((candidate) => [
+    candidate.homeTeamName,
+    candidate.awayTeamName,
+  ]);
+  let learnedAliases: ReadonlyMap<string, string> = new Map();
+  try {
+    learnedAliases =
+      (await store.getProviderTeamAliases?.(provider, providerTeamNames)) ??
+      learnedAliases;
+  } catch {
+    // Alias storage is an optimization. Static and contextual matching remain
+    // available if the cache is temporarily unavailable.
+  }
+  const resolution = resolveProviderFixtureCandidates(
+    fixture,
+    candidates,
+    learnedAliases,
+  );
+  if (
+    resolution.status === 'matched' &&
+    resolution.highConfidence &&
+    fixture.homeTeamSlug &&
+    fixture.awayTeamSlug &&
+    store.setProviderTeamAliases
+  ) {
+    const selected = candidates.find(
+      (candidate) => candidate.eventId === resolution.eventId,
+    );
+    if (selected) {
+      const aliases = [
+        {
+          providerTeamName: selected.homeTeamName,
+          canonicalTeamSlug: fixture.homeTeamSlug,
+        },
+        {
+          providerTeamName: selected.awayTeamName,
+          canonicalTeamSlug: fixture.awayTeamSlug,
+        },
+      ].filter(
+        (alias) =>
+          learnedAliases.get(normalizeTeamName(alias.providerTeamName)) ===
+          undefined,
+      );
+      if (aliases.length === 0) return resolution;
+      try {
+        await store.setProviderTeamAliases(provider, aliases);
+      } catch {
+        // The current fixture is already resolved. A failed learning write must
+        // never suppress its market response.
+      }
+    }
+  }
+  return resolution;
 }
 
 const defaultSupportedCompetitionSlugs = ['mlspa'] as const;
@@ -1042,6 +1361,12 @@ export function groupFixtures(
     const existing = groups.get(key);
     if (existing) {
       existing.players.push(player);
+      if (!existing.homeTeamSlug && player.nextGame.homeTeamSlug) {
+        existing.homeTeamSlug = player.nextGame.homeTeamSlug;
+      }
+      if (!existing.awayTeamSlug && player.nextGame.awayTeamSlug) {
+        existing.awayTeamSlug = player.nextGame.awayTeamSlug;
+      }
       continue;
     }
     groups.set(key, {
@@ -1049,30 +1374,16 @@ export function groupFixtures(
       date: player.nextGame.date,
       homeTeamName: player.nextGame.homeTeamName,
       awayTeamName: player.nextGame.awayTeamName,
+      ...(player.nextGame.homeTeamSlug
+        ? { homeTeamSlug: player.nextGame.homeTeamSlug }
+        : {}),
+      ...(player.nextGame.awayTeamSlug
+        ? { awayTeamSlug: player.nextGame.awayTeamSlug }
+        : {}),
       players: [player],
     });
   }
   return [...groups.values()];
-}
-
-function findEvent(
-  fixture: FixtureGroup<MarketSupplementPlayer>,
-  events: readonly OddsEvent[],
-): OddsEvent | null {
-  const kickoff = Date.parse(fixture.date);
-  const candidates = events
-    .filter(
-      (event) =>
-        providerTeamNamesMatch(event.home_team, fixture.homeTeamName) &&
-        providerTeamNamesMatch(event.away_team, fixture.awayTeamName),
-    )
-    .map((event) => ({
-      event,
-      difference: Math.abs(Date.parse(event.commence_time) - kickoff),
-    }))
-    .filter(({ difference }) => difference <= 36 * 60 * 60 * 1_000)
-    .sort((left, right) => left.difference - right.difference);
-  return candidates[0]?.event ?? null;
 }
 
 interface MarketOutcomeQuote {
@@ -1537,6 +1848,9 @@ export function shouldRetryMarketFailure(
   }
   if ('status' in failure) {
     if (failure.status === 'available') return false;
+    if (failure.fixtureIdentityVersion !== FIXTURE_IDENTITY_VERSION) {
+      return true;
+    }
     if (failure.nextRetryAt === null) return false;
     if (failure.nextRetryAt === undefined) {
       return Date.parse(failure.checkedAt) + firstMarketRetryDelayMs <= now;
@@ -1559,6 +1873,8 @@ export function missingMarketSnapshot(
   return MissingMarketSnapshotSchema.parse({
     status: 'unavailable',
     market,
+    fixtureIdentityVersion: FIXTURE_IDENTITY_VERSION,
+    reason: 'market_not_offered',
     ...(eventId ? { eventId } : {}),
     ...retry,
     expiresAt: new Date(kickoff + missingMarketRetentionMs).toISOString(),
@@ -2059,39 +2375,42 @@ export class TheOddsApiPlayerMarketOddsProvider
       });
 
       if (eventCatalogs.length > 0) {
-        const allEventLookupsSucceeded =
-          eventCatalogs.length === sportKeys.length;
         await mapWithConcurrency(coordinated, 4, async (pending) => {
-          const match = eventCatalogs
-            .map((catalog) => ({
-              sportKey: catalog.sportKey,
-              event: findEvent(pending.fixture, catalog.events),
-            }))
-            .find(
-              (
-                candidate,
-              ): candidate is { sportKey: string; event: OddsEvent } =>
-                candidate.event !== null,
+          const resolution = await resolveProviderFixture(
+            this.options.store,
+            'the-odds-api',
+            pending.fixture,
+            eventCatalogs.flatMap((catalog) =>
+              catalog.events.map((event) => ({
+                event: { sportKey: catalog.sportKey, event },
+                eventId: event.id,
+                date: event.commence_time,
+                homeTeamName: event.home_team,
+                awayTeamName: event.away_team,
+              })),
+            ),
+          );
+          if (resolution.status !== 'matched') {
+            this.options.logger.warn(
+              {
+                event: 'fixture_identity_unresolved',
+                provider: 'the-odds-api',
+                fixture: pending.fixture.key,
+                reason: resolution.status,
+                candidates: resolution.candidates,
+              },
+              'The Odds API fixture identity could not be resolved; no market miss stored',
             );
-          if (!match) {
-            if (allEventLookupsSucceeded) {
-              const unavailableMarkets = pending.missingMarkets.filter(
-                (market) =>
-                  snapshots.get(pending.fixture.key)?.get(market)?.status !==
-                  'available',
-              );
-              await this.storeMissing(pending.fixture, unavailableMarkets);
-            }
             return;
           }
           await this.fetchFixtureMarkets(
             pending.fixture,
-            match.event,
+            resolution.event.event,
             pending.missingMarkets,
             snapshots.get(pending.fixture.key) ??
               new Map<OddsMarketKey, MarketSnapshot>(),
             protection,
-            match.sportKey,
+            resolution.event.sportKey,
           );
         });
       }
@@ -2208,6 +2527,7 @@ export class TheOddsApiPlayerMarketOddsProvider
             market,
             existing,
             Date.parse(capturedAt),
+            event.id,
           );
         await this.options.store.set(fixture.key, snapshot);
         snapshots.set(market, snapshot);
@@ -2516,6 +2836,7 @@ export class TheOddsApiPlayerMarketOddsProvider
           market,
           existing,
           Date.parse(capturedAt),
+          event.id,
         );
       await this.options.store.set(fixture.key, snapshot);
       snapshots.set(market, snapshot);
@@ -2554,6 +2875,7 @@ export class TheOddsApiPlayerMarketOddsProvider
           market,
           existing,
           this.now(),
+          event.id,
         );
         await this.options.store.set(fixture.key, snapshot);
         snapshots.set(market, snapshot);
@@ -2577,22 +2899,6 @@ export class TheOddsApiPlayerMarketOddsProvider
         'The Odds API market request failed; returning stats without new market odds',
       );
     }
-  }
-
-  private async storeMissing(
-    fixture: FixtureGroup<MarketSupplementPlayer>,
-    markets: readonly OddsMarketKey[],
-  ): Promise<void> {
-    const checkedAt = this.now();
-    await Promise.all(
-      markets.map(async (market) => {
-        const previous = await this.options.store.get(fixture.key, market);
-        await this.options.store.set(
-          fixture.key,
-          missingMarketSnapshot(fixture, market, previous, checkedAt),
-        );
-      }),
-    );
   }
 
   private async requestJson(

@@ -25,10 +25,12 @@ export const PLAYER_STATS_BATCH_QUERY = gql`
             homeTeam {
               id
               shortName
+              slug
             }
             awayTeam {
               id
               shortName
+              slug
             }
             homeStats {
               __typename
@@ -96,10 +98,12 @@ export const PLAYER_NEXT_GAMES_QUERY = gql`
             homeTeam {
               id
               shortName
+              slug
             }
             awayTeam {
               id
               shortName
+              slug
             }
             homeStats {
               __typename

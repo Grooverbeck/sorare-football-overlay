@@ -38,4 +38,24 @@ describe('fixture cache identity', () => {
       ),
     ).toBe(false);
   });
+
+  it('prefers canonical Sorare slugs over changing display names', () => {
+    const canonical = {
+      ...fixture('Bodø / Glimt'),
+      homeTeamSlug: 'bodo-glimt-bodo',
+      awayTeamSlug: 'nec-nijmegen',
+      playerTeamSlug: 'bodo-glimt-bodo',
+    };
+    const renamed = {
+      ...fixture('Bodo Glimt'),
+      homeTeamName: 'Bodo Glimt',
+      awayTeamName: 'NEC Nijmegen',
+      homeTeamSlug: 'bodo-glimt-bodo',
+      awayTeamSlug: 'nec-nijmegen',
+      playerTeamSlug: 'bodo-glimt-bodo',
+    };
+
+    expect(playerTeamFixtureIdentity(canonical)).toBe('bodo-glimt-bodo');
+    expect(sameFixtureIdentity(canonical, renamed)).toBe(true);
+  });
 });

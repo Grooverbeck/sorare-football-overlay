@@ -1040,6 +1040,8 @@ export class SorareDataSource implements PlayerStatsDataSource {
         : {}),
       homeTeamName: game.homeTeam?.shortName ?? null,
       awayTeamName: game.awayTeam?.shortName ?? null,
+      ...(game.homeTeam?.slug ? { homeTeamSlug: game.homeTeam.slug } : {}),
+      ...(game.awayTeam?.slug ? { awayTeamSlug: game.awayTeam.slug } : {}),
       playerTeamName: home
         ? game.homeTeam?.shortName ?? null
         : away

@@ -41,6 +41,8 @@ export interface SourceNextGame {
   competitionSlug?: string | null;
   homeTeamName: string | null;
   awayTeamName: string | null;
+  homeTeamSlug?: string;
+  awayTeamSlug?: string;
   playerTeamName: string | null;
   opponentTeamName: string | null;
   playerTeamSlug?: string;

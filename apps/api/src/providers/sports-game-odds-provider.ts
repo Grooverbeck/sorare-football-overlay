@@ -10,6 +10,7 @@ import {
 import { z } from 'zod';
 import type { AppLogger } from '../logger.js';
 import {
+  FIXTURE_IDENTITY_VERSION,
   cacheOnlySnapshotReadBudgetMs,
   groupFixtures,
   marketFixtureKey,
@@ -20,9 +21,9 @@ import {
   playerMarketFieldSupported,
   playerMarketOddsKey,
   playerProbability,
-  providerTeamNamesMatch,
   recordFrozenSnapshotCheck,
   readMarketSnapshotsWithin,
+  resolveProviderFixture,
   settleCacheReadWithin,
   shouldRetryMarketFailure,
   supportsFixtureCompetition,
@@ -315,34 +316,6 @@ function teamName(
   team: SportsGameOddsEvent['teams']['home'],
 ): string {
   return team.names.long ?? team.names.medium ?? team.names.short ?? team.teamID;
-}
-
-function findEvent(
-  fixture: FixtureGroup,
-  events: readonly SportsGameOddsEvent[],
-): SportsGameOddsEvent | null {
-  const kickoff = Date.parse(fixture.date);
-  return (
-    events
-      .filter(
-        (event) =>
-          providerTeamNamesMatch(
-            teamName(event.teams.home),
-            fixture.homeTeamName,
-          ) &&
-          providerTeamNamesMatch(
-            teamName(event.teams.away),
-            fixture.awayTeamName,
-          ),
-      )
-      .map((event) => ({
-        event,
-        difference: Math.abs(Date.parse(event.status.startsAt) - kickoff),
-      }))
-      .filter(({ difference }) => difference <= 36 * 60 * 60 * 1_000)
-      .sort((left, right) => left.difference - right.difference)[0]?.event ??
-    null
-  );
 }
 
 function marketStatId(market: OddsMarketKey): string {
@@ -1145,7 +1118,32 @@ export class SportsGameOddsPlayerMarketOddsProvider
         snapshots.get(fixture.key) ??
         new Map<OddsMarketKey, MarketSnapshot>();
       const requestedMarkets = new Set(markets);
-      const event = findEvent(fixture, events);
+      const resolution = await resolveProviderFixture(
+        this.options.store,
+        'sports-game-odds',
+        fixture,
+        events.map((event) => ({
+          event,
+          eventId: event.eventID,
+          date: event.status.startsAt,
+          homeTeamName: teamName(event.teams.home),
+          awayTeamName: teamName(event.teams.away),
+        })),
+      );
+      if (resolution.status !== 'matched') {
+        this.options.logger.warn(
+          {
+            event: 'fixture_identity_unresolved',
+            provider: 'sports-game-odds',
+            fixture: fixture.key,
+            reason: resolution.status,
+            candidates: resolution.candidates,
+          },
+          'SportsGameOdds fixture identity could not be resolved; no market miss stored',
+        );
+        continue;
+      }
+      const event = resolution.event;
       for (const market of sportsGameOddsMarketKeys) {
         const existing = byMarket.get(market);
         const extracted = event
@@ -1171,7 +1169,7 @@ export class SportsGameOddsPlayerMarketOddsProvider
                   market,
                   existing,
                   this.now(),
-                  event?.eventID,
+                  event.eventID,
                 )
             : null;
         if (!snapshot) continue;
@@ -1208,7 +1206,9 @@ export class SportsGameOddsPlayerMarketOddsProvider
           extractedMatch ??
           MatchOddsSnapshotSchema.parse({
             status: 'unavailable',
-            ...(event ? { eventId: event.eventID } : {}),
+            fixtureIdentityVersion: FIXTURE_IDENTITY_VERSION,
+            reason: 'market_not_offered',
+            eventId: event.eventID,
             checkedAt: capturedAt,
             expiresAt: new Date(
               Math.min(

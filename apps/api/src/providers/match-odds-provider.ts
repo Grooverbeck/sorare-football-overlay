@@ -6,11 +6,12 @@ import {
 import { z } from 'zod';
 import type { AppLogger } from '../logger.js';
 import {
+  FIXTURE_IDENTITY_VERSION,
   groupFixtures,
   marketFixtureKey,
   normalizeTeamName,
   playerMarketOddsKey,
-  providerTeamNamesMatch,
+  resolveProviderFixtureCandidates,
   settleCacheReadWithin,
   supportsFixtureCompetition,
   theOddsApiQuotaUsage,
@@ -35,6 +36,8 @@ const availableSnapshotSchema = z.object({
 
 const unavailableSnapshotSchema = z.object({
   status: z.literal('unavailable'),
+  fixtureIdentityVersion: z.number().int().positive().optional(),
+  reason: z.literal('market_not_offered').optional(),
   // Retain a discovered provider event identity so a later market supplement
   // can fetch that single event instead of another league-wide time window.
   eventId: z.string().min(1).optional(),
@@ -74,6 +77,13 @@ export class InMemoryMatchOddsSnapshotStore
     const snapshot = this.entries.get(fixtureKey);
     if (!snapshot) return undefined;
     if (Date.parse(snapshot.expiresAt) <= this.now()) {
+      this.entries.delete(fixtureKey);
+      return undefined;
+    }
+    if (
+      snapshot.status === 'unavailable' &&
+      snapshot.fixtureIdentityVersion !== FIXTURE_IDENTITY_VERSION
+    ) {
       this.entries.delete(fixtureKey);
       return undefined;
     }
@@ -302,6 +312,7 @@ interface JsonResponse {
 interface RouteFetchResult {
   unresolved: FixtureGroup[];
   complete: boolean;
+  identityMatchedKeys: ReadonlySet<string>;
 }
 
 class OddsApiHttpError extends Error {
@@ -336,28 +347,6 @@ function retryDelayMs(value: string | null, attempt: number): number {
     if (Number.isFinite(at)) return Math.max(0, at - Date.now());
   }
   return Math.min(8_000, 500 * 2 ** attempt);
-}
-
-function findEvent(
-  fixture: FixtureGroup,
-  events: readonly OddsEvent[],
-): OddsEvent | null {
-  const kickoff = Date.parse(fixture.date);
-  return (
-    events
-      .filter(
-        (event) =>
-          providerTeamNamesMatch(event.home_team, fixture.homeTeamName) &&
-          providerTeamNamesMatch(event.away_team, fixture.awayTeamName),
-      )
-      .map((event) => ({
-        event,
-        difference: Math.abs(Date.parse(event.commence_time) - kickoff),
-      }))
-      .filter(({ difference }) => difference <= MATCH_TOLERANCE_MS)
-      .sort((left, right) => left.difference - right.difference)[0]?.event ??
-    null
-  );
 }
 
 function eventProbabilities(
@@ -597,6 +586,7 @@ export class TheOddsApiFixtureMatchOddsProvider
         );
         let unresolved = primary.unresolved;
         let missCheckComplete = primary.complete;
+        const identityMatchedKeys = new Set(primary.identityMatchedKeys);
         if (
           unresolved.length > 0 &&
           route.fallbackRegion &&
@@ -611,6 +601,9 @@ export class TheOddsApiFixtureMatchOddsProvider
           );
           unresolved = fallback.unresolved;
           missCheckComplete = missCheckComplete && fallback.complete;
+          for (const key of fallback.identityMatchedKeys) {
+            identityMatchedKeys.add(key);
+          }
         }
         if (!missCheckComplete) {
           await Promise.all(
@@ -625,8 +618,25 @@ export class TheOddsApiFixtureMatchOddsProvider
         if (missCheckComplete) {
           for (const fixture of unresolved) {
             if (snapshots.has(fixture.key)) continue;
+            if (!identityMatchedKeys.has(fixture.key)) {
+              await this.options.store.releaseRefreshLease?.(
+                fixture.key,
+                requestGroup,
+              );
+              this.options.logger.warn(
+                {
+                  event: 'fixture_identity_unresolved',
+                  provider: 'the-odds-api',
+                  fixture: fixture.key,
+                },
+                'External H-D-A fixture identity could not be resolved; no match-odds miss stored',
+              );
+              continue;
+            }
             const snapshot = MatchOddsSnapshotSchema.parse({
               status: 'unavailable',
+              fixtureIdentityVersion: FIXTURE_IDENTITY_VERSION,
+              reason: 'market_not_offered',
               checkedAt: new Date(this.now()).toISOString(),
               expiresAt: new Date(
                 Math.min(
@@ -657,6 +667,9 @@ export class TheOddsApiFixtureMatchOddsProvider
 
   private snapshotIsReusable(snapshot: MatchOddsSnapshot): boolean {
     if (snapshot.status === 'available') return true;
+    if (snapshot.fixtureIdentityVersion !== FIXTURE_IDENTITY_VERSION) {
+      return false;
+    }
     const checkedAt = Date.parse(snapshot.checkedAt);
     return (
       Number.isFinite(checkedAt) &&
@@ -694,6 +707,7 @@ export class TheOddsApiFixtureMatchOddsProvider
   ): Promise<RouteFetchResult> {
     let unresolved = [...fixtures];
     let complete = true;
+    const identityMatchedKeys = new Set<string>();
     for (const sportKey of route.sportKeys) {
       if (unresolved.length === 0) break;
       try {
@@ -738,7 +752,19 @@ export class TheOddsApiFixtureMatchOddsProvider
           snapshotWrites.set(eventKey, snapshot);
         }
         for (const fixture of unresolved) {
-          const event = findEvent(fixture, events);
+          const resolution = resolveProviderFixtureCandidates(
+            fixture,
+            events.map((event) => ({
+              event,
+              eventId: event.id,
+              date: event.commence_time,
+              homeTeamName: event.home_team,
+              awayTeamName: event.away_team,
+            })),
+          );
+          const event =
+            resolution.status === 'matched' ? resolution.event : null;
+          if (event) identityMatchedKeys.add(fixture.key);
           const snapshot = event ? eventSnapshots.get(event.id) : undefined;
           if (!snapshot) continue;
           snapshotWrites.set(fixture.key, snapshot);
@@ -772,7 +798,7 @@ export class TheOddsApiFixtureMatchOddsProvider
         );
       }
     }
-    return { unresolved, complete };
+    return { unresolved, complete, identityMatchedKeys };
   }
 
   private async requestJson(

@@ -9,6 +9,7 @@ import {
 import { z } from 'zod';
 import type { AppLogger } from '../logger.js';
 import {
+  FIXTURE_IDENTITY_VERSION,
   cacheOnlySnapshotReadBudgetMs,
   FrozenMarketSnapshotSchema,
   groupFixtures,
@@ -18,9 +19,9 @@ import {
   normalizePlayerName,
   playerMarketOddsKey,
   playerProbability,
-  providerTeamNamesMatch,
   recordFrozenSnapshotCheck,
   readMarketSnapshotsWithin,
+  resolveProviderFixture,
   resolvePlayerProbability,
   settleCacheReadWithin,
   shouldRetryMarketFailure,
@@ -216,26 +217,6 @@ function median(values: readonly number[]): number {
   const middle = Math.floor(ordered.length / 2);
   if (ordered.length % 2 === 1) return ordered[middle] ?? 0;
   return ((ordered[middle - 1] ?? 0) + (ordered[middle] ?? 0)) / 2;
-}
-
-function findEvent(
-  fixture: FixtureGroup,
-  events: readonly OddsApiIoEvent[],
-): OddsApiIoEvent | null {
-  const kickoff = Date.parse(fixture.date);
-  const candidates = events
-    .filter(
-      (event) =>
-        providerTeamNamesMatch(event.home, fixture.homeTeamName) &&
-        providerTeamNamesMatch(event.away, fixture.awayTeamName),
-    )
-    .map((event) => ({
-      event,
-      difference: Math.abs(Date.parse(event.date) - kickoff),
-    }))
-    .filter(({ difference }) => difference <= 36 * 60 * 60 * 1_000)
-    .sort((left, right) => left.difference - right.difference);
-  return candidates[0]?.event ?? null;
 }
 
 interface RankedPlayerQuote {
@@ -1202,6 +1183,13 @@ export class OddsApiIoPlayerMarketOddsProvider
     >();
     let eventCount = 0;
     const queriedLeagues: string[] = [];
+    const eventCandidates: Array<{
+      event: OddsApiIoEvent;
+      eventId: string;
+      date: string;
+      homeTeamName: string;
+      awayTeamName: string;
+    }> = [];
     for (const league of route.leagueSlugs) {
       if (matched.size === fixtures.length) break;
       queriedLeagues.push(league);
@@ -1218,11 +1206,47 @@ export class OddsApiIoPlayerMarketOddsProvider
       });
       const events = OddsApiIoEventsSchema.parse(eventsResponse);
       eventCount += events.length;
+      eventCandidates.push(
+        ...events.map((event) => ({
+          event,
+          eventId: event.id,
+          date: event.date,
+          homeTeamName: event.home,
+          awayTeamName: event.away,
+        })),
+      );
       for (const fixture of fixtures) {
         if (matched.has(fixture.key)) continue;
-        const event = findEvent(fixture, events);
-        if (event) matched.set(fixture.key, { fixture, event });
+        const resolution = await resolveProviderFixture(
+          this.options.store,
+          'odds-api-io',
+          fixture,
+          eventCandidates,
+        );
+        if (resolution.status === 'matched') {
+          matched.set(fixture.key, { fixture, event: resolution.event });
+        }
       }
+    }
+
+    for (const fixture of fixtures) {
+      if (matched.has(fixture.key)) continue;
+      const resolution = await resolveProviderFixture(
+        this.options.store,
+        'odds-api-io',
+        fixture,
+        eventCandidates,
+      );
+      this.options.logger.warn(
+        {
+          event: 'fixture_identity_unresolved',
+          provider: 'odds-api-io',
+          fixture: fixture.key,
+          reason: resolution.status,
+          candidates: resolution.candidates,
+        },
+        'Odds-API.io fixture identity could not be resolved; no market miss stored',
+      );
     }
 
     const oddsByEvent = new Map<string, OddsApiIoEventOdds>();
@@ -1241,7 +1265,20 @@ export class OddsApiIoPlayerMarketOddsProvider
     const unhandledPlayerMarkets = new Set<string>();
     for (const fixture of fixtures) {
       const match = matched.get(fixture.key);
+      if (!match) continue;
       const response = match ? oddsByEvent.get(match.event.id) : undefined;
+      if (!response) {
+        this.options.logger.warn(
+          {
+            event: 'fixture_odds_missing',
+            provider: 'odds-api-io',
+            fixture: fixture.key,
+            eventId: match.event.id,
+          },
+          'Odds-API.io matched fixture had no odds payload; no market miss stored',
+        );
+        continue;
+      }
       const extractedMarkets = response
         ? extractPlayerMarketSnapshots(response, capturedAt)
         : {
@@ -1305,6 +1342,7 @@ export class OddsApiIoPlayerMarketOddsProvider
                 'player_goal_scorer_anytime',
                 existing,
                 this.now(),
+                match.event.id,
               ),
               parserVersion: ODDS_API_IO_PLAYER_MARKET_PARSER_VERSION,
             };
@@ -1363,6 +1401,9 @@ export class OddsApiIoPlayerMarketOddsProvider
           extractedMatch ??
           MatchOddsSnapshotSchema.parse({
             status: 'unavailable',
+            fixtureIdentityVersion: FIXTURE_IDENTITY_VERSION,
+            reason: 'market_not_offered',
+            eventId: match.event.id,
             checkedAt: capturedAt,
             expiresAt: new Date(
               Math.min(

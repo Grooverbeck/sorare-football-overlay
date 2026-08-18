@@ -22,6 +22,7 @@ export function strictTeamIdentity(value: string): string {
 export function playerTeamFixtureIdentity(
   fixture: PlayerFixture,
 ): string | null {
+  if (fixture.playerTeamSlug) return fixture.playerTeamSlug.toLocaleLowerCase();
   if (!fixture.playerTeamName) return null;
   const identity = strictTeamIdentity(fixture.playerTeamName);
   return identity || null;
@@ -32,6 +33,20 @@ export function sameFixtureIdentity(
   right: PlayerFixture,
 ): boolean {
   if (left.date !== right.date) return false;
+
+  if (
+    left.homeTeamSlug &&
+    left.awayTeamSlug &&
+    right.homeTeamSlug &&
+    right.awayTeamSlug
+  ) {
+    return (
+      left.homeTeamSlug.toLocaleLowerCase() ===
+        right.homeTeamSlug.toLocaleLowerCase() &&
+      left.awayTeamSlug.toLocaleLowerCase() ===
+        right.awayTeamSlug.toLocaleLowerCase()
+    );
+  }
 
   if (
     left.homeTeamName &&

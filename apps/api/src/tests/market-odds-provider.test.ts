@@ -2,18 +2,25 @@ import type { PlayerStats } from '@sorare-overlay/shared';
 import { describe, expect, it, vi } from 'vitest';
 import type { AppLogger } from '../logger.js';
 import {
+  FIXTURE_IDENTITY_VERSION,
   InMemoryMarketSnapshotStore,
   TheOddsApiPlayerMarketOddsProvider,
   marketFixtureKey,
+  missingMarketSnapshot,
   normalizeTeamName,
   playerIdentityMatchScore,
   providerTeamNamesMatch,
   playerNameMatchScore,
   playerMarketOddsKey,
+  resolveProviderFixture,
+  resolveProviderFixtureCandidates,
   resolvePlayerProbability,
+  shouldRetryMarketFailure,
   supplementFrozenSnapshot,
   supportsFixtureCompetition,
   type MarketSnapshotStore,
+  type FixtureGroup,
+  type MarketSnapshot,
   type PlayerMarketOddsProvider,
 } from '../providers/market-odds-provider.js';
 import {
@@ -219,6 +226,244 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     expect(providerTeamNamesMatch('Manchester City', 'Leicester City')).toBe(
       false,
     );
+    expect(normalizeTeamName('NEC')).toBe('nec nijmegen');
+    expect(normalizeTeamName('NEC Nijmegen')).toBe('nec nijmegen');
+    expect(normalizeTeamName('Bodø / Glimt')).toBe('bodo glimt');
+    expect(normalizeTeamName('Bodoe/Glimt')).toBe('bodo glimt');
+  });
+
+  it('resolves a fixture jointly and rejects an equally plausible duplicate', () => {
+    const fixture: FixtureGroup = {
+      key: 'nec-bodo',
+      date: kickoff,
+      homeTeamName: 'NEC',
+      awayTeamName: 'Bodø / Glimt',
+      homeTeamSlug: 'nec-nijmegen',
+      awayTeamSlug: 'bodo-glimt-bodo',
+      players: [],
+    };
+    const candidate = {
+      event: { id: 'provider-event' },
+      eventId: 'provider-event',
+      date: kickoff,
+      homeTeamName: 'NEC Nijmegen',
+      awayTeamName: 'Bodoe/Glimt',
+    };
+
+    expect(
+      resolveProviderFixtureCandidates(fixture, [candidate]),
+    ).toMatchObject({
+      status: 'matched',
+      eventId: 'provider-event',
+      highConfidence: true,
+    });
+    expect(
+      resolveProviderFixtureCandidates(fixture, [
+        candidate,
+        {
+          ...candidate,
+          event: { id: 'duplicate-event' },
+          eventId: 'duplicate-event',
+        },
+      ]),
+    ).toMatchObject({ status: 'ambiguous' });
+  });
+
+  it('learns only high-confidence provider aliases from Sorare team slugs', async () => {
+    const store = new InMemoryMarketSnapshotStore(60_000, () => now);
+    const providerCandidate = {
+      event: { id: 'learned-event' },
+      eventId: 'learned-event',
+      date: kickoff,
+      homeTeamName: 'Home Sponsor',
+      awayTeamName: 'Away Sponsor',
+    };
+    const initialFixture: FixtureGroup = {
+      key: 'initial',
+      date: kickoff,
+      homeTeamName: 'Home Sponsor',
+      awayTeamName: 'Away Sponsor',
+      homeTeamSlug: 'home-club',
+      awayTeamSlug: 'away-club',
+      players: [],
+    };
+    await expect(
+      resolveProviderFixture(
+        store,
+        'the-odds-api',
+        initialFixture,
+        [providerCandidate],
+      ),
+    ).resolves.toMatchObject({ status: 'matched', highConfidence: true });
+
+    const renamedFixture: FixtureGroup = {
+      ...initialFixture,
+      key: 'renamed',
+      homeTeamName: 'Canonical Home',
+      awayTeamName: 'Canonical Away',
+    };
+    await expect(
+      resolveProviderFixture(
+        store,
+        'the-odds-api',
+        renamedFixture,
+        [providerCandidate],
+      ),
+    ).resolves.toMatchObject({ status: 'matched', eventId: 'learned-event' });
+
+    await resolveProviderFixture(
+      store,
+      'the-odds-api',
+      {
+        ...initialFixture,
+        key: 'conflicting',
+        homeTeamSlug: 'different-home-club',
+        awayTeamSlug: 'different-away-club',
+      },
+      [providerCandidate],
+    );
+    await expect(
+      store.getProviderTeamAliases('the-odds-api', [
+        'Home Sponsor',
+        'Away Sponsor',
+      ]),
+    ).resolves.toEqual(
+      new Map([
+        ['home sponsor', 'home-club'],
+        ['away sponsor', 'away-club'],
+      ]),
+    );
+  });
+
+  it('lazily retries negative snapshots from an older fixture resolver', () => {
+    const fixture: FixtureGroup = {
+      key: 'resolver-upgrade',
+      date: kickoff,
+      homeTeamName: 'NEC',
+      awayTeamName: 'Bodø / Glimt',
+      players: [],
+    };
+    const legacyMiss: MarketSnapshot = {
+      status: 'unavailable',
+      market: 'player_goal_scorer_anytime',
+      checkedAt: new Date(now).toISOString(),
+      attemptCount: 2,
+      nextRetryAt: new Date(now + 60 * 60 * 1_000).toISOString(),
+      expiresAt: new Date(Date.parse(kickoff) + 24 * 60 * 60 * 1_000).toISOString(),
+    };
+
+    expect(shouldRetryMarketFailure(legacyMiss, Date.parse(kickoff), now)).toBe(
+      true,
+    );
+    const currentMiss = missingMarketSnapshot(
+      fixture,
+      'player_goal_scorer_anytime',
+      undefined,
+      now,
+      'provider-event',
+    );
+    expect(currentMiss).toMatchObject({
+      fixtureIdentityVersion: FIXTURE_IDENTITY_VERSION,
+      reason: 'market_not_offered',
+      eventId: 'provider-event',
+    });
+  });
+
+  it('maps NEC Nijmegen and Bodoe/Glimt to the canonical Sorare fixture', async () => {
+    const patrick = player({
+      slug: 'patrick-berg',
+      displayName: 'Patrick Berg',
+      position: 'Midfielder',
+      nextGame: {
+        ...player().nextGame!,
+        competitionSlug: 'uefa-champions-league',
+        homeTeamName: 'NEC',
+        awayTeamName: 'Bodø / Glimt',
+        homeTeamSlug: 'nec-nijmegen',
+        awayTeamSlug: 'bodo-glimt-bodo',
+        playerTeamName: 'Bodø / Glimt',
+        opponentTeamName: 'NEC',
+      },
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/events')) {
+        return json([
+          {
+            id: 'nec-bodo-event',
+            commence_time: kickoff,
+            home_team: 'NEC Nijmegen',
+            away_team: 'Bodoe/Glimt',
+          },
+        ]);
+      }
+      return json({
+        ...marketResponse('Patrick Berg'),
+        id: 'nec-bodo-event',
+        home_team: 'NEC Nijmegen',
+        away_team: 'Bodoe/Glimt',
+      });
+    });
+    const provider = new TheOddsApiPlayerMarketOddsProvider({
+      apiKey: 'test-key',
+      baseUrl: 'https://api.the-odds-api.com/v4',
+      sportKey: 'soccer_uefa_champs_league_qualification',
+      region: 'eu',
+      fetchWindowMs: 24 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store: new InMemoryMarketSnapshotStore(60_000, () => now),
+      logger,
+      supportedCompetitionSlugs: ['uefa-champions-league'],
+      fetchImpl,
+      now: () => now,
+    });
+
+    const result = await provider.load([patrick]);
+
+    expect(result.get(playerMarketOddsKey(patrick))).toMatchObject({
+      goal: { probability: expect.any(Number) },
+      assist: { probability: expect.any(Number) },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not persist a market miss when fixture identity is unresolved', async () => {
+    const store = new InMemoryMarketSnapshotStore(60_000, () => now);
+    const stats = player();
+    const fixtureKey = marketFixtureKey(stats.nextGame!);
+    if (!fixtureKey) throw new Error('Expected fixture key');
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      json([
+        {
+          id: 'unrelated-event',
+          commence_time: kickoff,
+          home_team: 'Real Madrid',
+          away_team: 'Real Sociedad',
+        },
+      ]),
+    );
+    const provider = new TheOddsApiPlayerMarketOddsProvider({
+      apiKey: 'test-key',
+      baseUrl: 'https://api.the-odds-api.com/v4',
+      sportKey: 'soccer_usa_mls',
+      region: 'us',
+      fetchWindowMs: 24 * 60 * 60 * 1_000,
+      requestTimeoutMs: 1_000,
+      maxRetries: 0,
+      store,
+      logger,
+      fetchImpl,
+      now: () => now,
+    });
+
+    await provider.load([stats]);
+
+    await expect(
+      store.get(fixtureKey, 'player_goal_scorer_anytime'),
+    ).resolves.toBeUndefined();
+    await expect(store.get(fixtureKey, 'player_assists')).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
   it('accepts Leagues Cup only through its dedicated competition route', () => {

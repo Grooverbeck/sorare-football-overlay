@@ -151,6 +151,22 @@ export const PlayerStatsSchema = z.object({
       // written before team names were added to the response contract.
       homeTeamName: z.string().trim().min(1).nullable().optional(),
       awayTeamName: z.string().trim().min(1).nullable().optional(),
+      // Canonical Sorare identities used internally for provider-fixture
+      // resolution. Optional keeps legacy fixture cache entries readable.
+      homeTeamSlug: z
+        .string()
+        .trim()
+        .min(1)
+        .max(180)
+        .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i)
+        .optional(),
+      awayTeamSlug: z
+        .string()
+        .trim()
+        .min(1)
+        .max(180)
+        .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i)
+        .optional(),
       // Player-relative names keep W/D/L labels unambiguous for away players.
       // They remain optional while older fixture:v1 entries migrate lazily.
       playerTeamName: z.string().trim().min(1).nullable().optional(),

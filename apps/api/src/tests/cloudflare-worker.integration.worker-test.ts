@@ -20,6 +20,7 @@ import {
 import { D1JsonKeyValueStore } from '../cloudflare/d1-cache.js';
 import { SorareGraphqlClient } from '../graphql/client.js';
 import type { AppLogger } from '../logger.js';
+import { normalizeTeamName } from '../providers/market-odds-provider.js';
 
 const silentLogger: AppLogger = {
   debug: () => undefined,
@@ -846,6 +847,38 @@ describe('Cloudflare Worker', () => {
     });
     expect(listed.keys).toHaveLength(1);
     expect(listed.keys[0]?.expiration).toBe(expiration);
+  });
+
+  it('persists provider team aliases by provider and normalized name', async () => {
+    const probe = Date.now();
+    const namespace = new D1JsonKeyValueStore(env.CACHE_DB, env.STATS_CACHE);
+    const writer = new CloudflareMarketSnapshotStore(
+      namespace,
+      1_800,
+      createExecutionContext(),
+    );
+    const reader = new CloudflareMarketSnapshotStore(
+      namespace,
+      1_800,
+      createExecutionContext(),
+    );
+    const providerName = `NEC Nijmegen ${probe}`;
+
+    await writer.setProviderTeamAliases('the-odds-api', [
+      {
+        providerTeamName: providerName,
+        canonicalTeamSlug: 'nec-nijmegen',
+      },
+    ]);
+
+    await expect(
+      reader.getProviderTeamAliases('the-odds-api', [providerName]),
+    ).resolves.toEqual(
+      new Map([[normalizeTeamName(providerName), 'nec-nijmegen']]),
+    );
+    await expect(
+      reader.getProviderTeamAliases('odds-api-io', [providerName]),
+    ).resolves.toEqual(new Map());
   });
 
   it('reads multiple market snapshots through the D1 batch path', async () => {

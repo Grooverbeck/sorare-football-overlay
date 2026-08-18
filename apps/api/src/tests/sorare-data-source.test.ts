@@ -844,6 +844,8 @@ describe('SorareDataSource player-name resolution', () => {
     expect(stats?.nextGame).toMatchObject({
       homeTeamName: 'San Jose',
       awayTeamName: 'Orlando',
+      homeTeamSlug: 'san-jose-earthquakes',
+      awayTeamSlug: 'orlando-city',
       playerTeamName: 'San Jose',
       opponentTeamName: 'Orlando',
       playerTeamSlug: 'san-jose-earthquakes',
@@ -897,6 +899,8 @@ describe('SorareDataSource player-name resolution', () => {
     expect(stats?.nextGame).toMatchObject({
       homeTeamName: 'Minnesota United',
       awayTeamName: 'Vancouver Whitecaps',
+      homeTeamSlug: 'minnesota-united',
+      awayTeamSlug: 'vancouver-whitecaps',
       playerTeamName: 'Vancouver Whitecaps',
       opponentTeamName: 'Minnesota United',
       playerTeamSlug: 'vancouver-whitecaps',
@@ -1594,6 +1598,8 @@ describe('SorareDataSource player-name resolution', () => {
         competitionSlug: 'mlspa',
         homeTeamName: 'Home',
         awayTeamName: 'Away',
+        homeTeamSlug: 'team-fixture-player-1',
+        awayTeamSlug: 'away-club',
         playerTeamName: 'Home',
         opponentTeamName: 'Away',
         playerTeamSlug: 'team-fixture-player-1',
