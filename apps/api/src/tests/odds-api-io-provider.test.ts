@@ -448,7 +448,7 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("maps Bet365's combined D'Avilla score, assist and decisive selections", async () => {
+  it("maps Bet365's combined home- and away-side player selections", async () => {
     const dAvilla = player({
       slug: 'tah-ange-innocent-d-avilla-dje',
       displayName: "Tah D'Avilla",
@@ -459,6 +459,16 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
         awayTeamName: 'Portland Timbers',
         playerTeamName: 'Chicago Fire',
         opponentTeamName: 'Portland Timbers',
+      },
+    });
+    const messi = player({
+      slug: 'lionel-andres-messi-cuccittini',
+      displayName: 'Lionel Messi',
+      position: 'Forward',
+      nextGame: {
+        ...dAvilla.nextGame!,
+        playerTeamName: 'Portland Timbers',
+        opponentTeamName: 'Chicago Fire',
       },
     });
     const fetchImpl = vi.fn<typeof fetch>(async (input) => {
@@ -490,12 +500,12 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
                   name: 'Player To Score or Assist',
                   odds: [
                     { label: "Djé D'Avilla (Score) (1)", over: '6.500' },
-                    { label: "Djé D'Avilla (Assist) (2)", over: '20.000' },
                     { label: "Djé D'Avilla (Assist) (1)", over: '7.000' },
                     {
                       label: "Djé D'Avilla (Score or Assist) (1)",
                       over: '3.750',
                     },
+                    { label: 'Lionel Messi (Assist) (2)', over: '2.750' },
                   ],
                 },
               ],
@@ -518,7 +528,7 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
       ],
     );
 
-    const result = await provider.load([dAvilla]);
+    const result = await provider.load([dAvilla, messi]);
 
     expect(result.get(playerMarketOddsKey(dAvilla))).toMatchObject({
       goal: {
@@ -540,6 +550,17 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
         ],
       },
       decisive: { probability: 1 / 3.75 },
+    });
+    expect(result.get(playerMarketOddsKey(messi))).toMatchObject({
+      assist: {
+        probability: 1 / 2.75,
+        bookmakerQuotes: [
+          expect.objectContaining({
+            providerMarketName: 'Player To Score or Assist',
+            providerSelectionLabel: 'Lionel Messi (Assist) (2)',
+          }),
+        ],
+      },
     });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
@@ -603,27 +624,39 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('reprocesses short-lived pre-upgrade market evidence without another request', async () => {
+  it('replays an away-side assist from v2 evidence without another request', async () => {
     const store = new InMemoryMarketSnapshotStore(60_000, () => now);
-    const stats = player();
-    const fixtureKey = oddsApiIoFixtureStoreKey(stats.nextGame!);
+    const messi = player({
+      slug: 'lionel-andres-messi-cuccittini',
+      displayName: 'Lionel Messi',
+      position: 'Forward',
+      nextGame: {
+        ...player().nextGame!,
+        competitionSlug: 'mlspa',
+        homeTeamName: 'Philadelphia Union',
+        awayTeamName: 'Inter Miami',
+        playerTeamName: 'Inter Miami',
+        opponentTeamName: 'Philadelphia Union',
+      },
+    });
+    const fixtureKey = oddsApiIoFixtureStoreKey(messi.nextGame!);
     if (!fixtureKey) throw new Error('Expected Odds-API.io fixture key');
-    store.set(fixtureKey, {
+    await store.set(fixtureKey, {
       status: 'available',
-      market: 'player_assists',
+      market: 'player_goal_scorer_anytime',
       eventId: 'evidence-fixture',
       capturedAt: new Date(now).toISOString(),
       parserVersion: 2,
       players: {
-        'otar kiteishvili': { probability: 0.25, bookmakerCount: 1 },
+        'lionel messi': { probability: 0.55, bookmakerCount: 1 },
       },
     });
-    store.setEvidence(
+    await store.setEvidence(
       fixtureKey,
       'odds-api-io',
       {
         provider: 'odds-api-io',
-        parserVersion: 1,
+        parserVersion: 2,
         eventId: 'evidence-fixture',
         capturedAt: new Date(now).toISOString(),
         expiresAt: new Date(
@@ -634,11 +667,7 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
             {
               name: 'Player To Score or Assist',
               odds: [
-                { label: 'Otar Kiteishvili (Assist) (1)', over: '4.00' },
-                {
-                  label: 'Otar Kiteishvili (Score or Assist) (1)',
-                  over: '2.25',
-                },
+                { label: 'Lionel Messi (Assist) (2)', over: '2.75' },
               ],
             },
           ],
@@ -650,16 +679,30 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
     const { provider } = createProvider(
       fetchImpl,
       new InMemoryProviderQuotaUsageStore(() => now),
-      undefined,
+      [
+        {
+          competitionSlugs: ['mlspa'],
+          leagueSlugs: ['usa-mls'],
+          playerMarkets: ['goal'],
+          matchOdds: false,
+        },
+      ],
       0,
       store,
     );
 
-    const result = await provider.load([stats], { cacheOnly: true });
+    const result = await provider.load([messi], { cacheOnly: true });
 
-    expect(result.get(playerMarketOddsKey(stats))).toMatchObject({
-      assist: { probability: 0.25 },
-      decisive: { probability: 1 / 2.25 },
+    expect(result.get(playerMarketOddsKey(messi))).toMatchObject({
+      goal: { probability: 0.55 },
+      assist: {
+        probability: 1 / 2.75,
+        bookmakerQuotes: [
+          expect.objectContaining({
+            providerSelectionLabel: 'Lionel Messi (Assist) (2)',
+          }),
+        ],
+      },
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });

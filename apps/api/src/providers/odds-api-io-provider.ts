@@ -92,7 +92,7 @@ const OddsApiIoEventOddsSchema = OddsApiIoEventSchema.extend({
 const OddsApiIoMultiOddsSchema = z.array(OddsApiIoEventOddsSchema);
 type OddsApiIoEventOdds = z.infer<typeof OddsApiIoEventOddsSchema>;
 
-const ODDS_API_IO_PLAYER_MARKET_PARSER_VERSION = 2;
+const ODDS_API_IO_PLAYER_MARKET_PARSER_VERSION = 3;
 const ODDS_API_IO_EVIDENCE_AFTER_KICKOFF_MS = 48 * 60 * 60 * 1_000;
 
 const OddsApiIoMarketEvidenceSchema = z.object({
@@ -281,8 +281,15 @@ function classifyPlayerSelection(
   );
   const playerName = combined?.[1]?.trim();
   const selection = combined?.[2]?.toLocaleLowerCase();
-  const threshold = combined?.[3];
-  if (!playerName || !selection || (threshold && threshold !== '1')) {
+  const teamSide = combined?.[3];
+  // Odds-API.io appends `(1)` / `(2)` to combined-market selections to
+  // identify the home or away side. It is not a goal/assist threshold, so
+  // rejecting `(2)` would silently discard every away-team selection.
+  if (
+    !playerName ||
+    !selection ||
+    (teamSide !== undefined && !['1', '2'].includes(teamSide))
+  ) {
     return null;
   }
   if (selection === 'score') {
