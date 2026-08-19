@@ -965,9 +965,7 @@ export class StatsService {
           ]),
         ).values(),
       ];
-      const fixtures = await this.dataSource.fetchNextGames(
-        requests.map(({ slug }) => ({ slug })),
-      );
+      const fixtures = await this.dataSource.fetchNextGames(requests);
       const fixtureBySlug = new Map(fixtures.map((fixture) => [fixture.slug, fixture]));
       const refreshedKeys = new Set<string>();
       for (const { key, request, form, existingFixture } of entries) {
@@ -1016,10 +1014,9 @@ export class StatsService {
         ]),
       ).values(),
     ];
-    const fixtureRequests = requests.map(({ slug }) => ({ slug }));
     let fixtureBySlug = new Map<string, SourcePlayerFixture>();
     try {
-      const fixtures = await this.dataSource.fetchNextGames(fixtureRequests);
+      const fixtures = await this.dataSource.fetchNextGames(requests);
       fixtureBySlug = new Map(fixtures.map((fixture) => [fixture.slug, fixture]));
     } catch {
       // A temporary Sorare fixture error must not suppress bookmaker refreshes

@@ -227,6 +227,60 @@ describe('Cloudflare Worker', () => {
     await expect(cache.claimFixtureRefresh(fixture)).resolves.toBe(false);
   });
 
+  it('hydrates a missing cached player-team identity from a refreshed fixture', async () => {
+    const nowMs = Date.parse('2026-08-19T18:00:00.000Z');
+    const playerKey = 'stale-active-club-player:Midfielder:no-low';
+    const store = new D1JsonKeyValueStore(
+      env.CACHE_DB,
+      env.STATS_CACHE,
+      () => Math.floor(nowMs / 1_000),
+    );
+    const context = createExecutionContext();
+    const cache = new CloudflarePlayerStatsCache(
+      store,
+      604_800,
+      14_400,
+      context,
+      () => nowMs,
+    );
+    const unresolvedFixture = {
+      date: '2026-08-19T23:30:00.000Z',
+      homeTeamName: 'Philadelphia Union',
+      awayTeamName: 'Inter Miami',
+      homeTeamSlug: 'philadelphia-union-chester-pennsylvania',
+      awayTeamSlug: 'inter-miami',
+      playerTeamName: null,
+      opponentTeamName: null,
+      cleanSheetProbability: null,
+      matchProbabilities: null,
+    };
+    await cache.setFixture(playerKey, unresolvedFixture);
+    await waitOnExecutionContext(context);
+
+    const refreshed = await cache.refreshFixture(playerKey, {
+      ...unresolvedFixture,
+      playerTeamName: 'Inter Miami',
+      opponentTeamName: 'Philadelphia Union',
+      playerTeamSlug: 'inter-miami',
+      cleanSheetProbability: 0.31,
+      matchProbabilities: { win: 0.52, draw: 0.24, loss: 0.24 },
+    });
+
+    expect(refreshed).toMatchObject({
+      playerTeamName: 'Inter Miami',
+      opponentTeamName: 'Philadelphia Union',
+      playerTeamSlug: 'inter-miami',
+      cleanSheetProbability: 0.31,
+      matchProbabilities: { win: 0.52, draw: 0.24, loss: 0.24 },
+    });
+    await expect(cache.getParts(playerKey)).resolves.toMatchObject({
+      fixture: {
+        playerTeamName: 'Inter Miami',
+        playerTeamSlug: 'inter-miami',
+      },
+    });
+  });
+
   it('shares the form-history refresh lease across cache instances', async () => {
     const nowMs = Date.now();
     const key = `form-history-lease-${nowMs}:Midfielder:no-low`;

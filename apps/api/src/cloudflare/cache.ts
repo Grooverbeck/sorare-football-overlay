@@ -1214,7 +1214,8 @@ class CloudflarePlayerFixtureCache
     if (
       existing === null ||
       value === null ||
-      !samePlayerFixture(existing, value)
+      (!samePlayerFixture(existing, value) &&
+        !sameFixtureIdentity(existing, value))
     ) {
       if (existing) await this.rememberFixtureRefreshAttempt(existing);
       return existing;
@@ -1224,9 +1225,23 @@ class CloudflarePlayerFixtureCache
       fixtureTeamOddsFrom(value),
       fixtureTeamOddsFrom(existing),
     );
-    const refreshed = withFixtureTeamOdds(existing, mergedOdds);
+    const identityHydrated =
+      value.playerTeamSlug &&
+      value.playerTeamName &&
+      value.opponentTeamName &&
+      (!existing.playerTeamSlug ||
+        !existing.playerTeamName ||
+        !existing.opponentTeamName)
+        ? {
+            ...value,
+            ...(existing.marketOdds !== undefined
+              ? { marketOdds: existing.marketOdds }
+              : {}),
+          }
+        : existing;
+    const refreshed = withFixtureTeamOdds(identityHydrated, mergedOdds);
     if (hasFixtureTeamOdds(mergedOdds)) {
-      await this.rememberFixtureTeamOdds(existing, mergedOdds);
+      await this.rememberFixtureTeamOdds(refreshed, mergedOdds);
     }
     this.persistUntil(
       `player-fixture:v1:${key}`,
