@@ -41,6 +41,7 @@ export interface StatsServiceResult {
   cacheHits: number;
   source: 'sorare' | 'mock';
   deferredPlayerNames: string[];
+  deferredPlayerSlugs: string[];
   diagnostics: {
     requestedPlayers: number;
     resolvedPlayers: number;
@@ -48,6 +49,7 @@ export interface StatsServiceResult {
     cacheHits: number;
     deferredNames: number;
     partialHistories: number;
+    responseBudgetExceeded: boolean;
     durationsMs: {
       nameResolution: number;
       cache: number;
@@ -207,7 +209,7 @@ function elapsedMs(startedAt: number): number {
 
 type TimedResult<T> =
   | { status: 'fulfilled'; value: T }
-  | { status: 'rejected' }
+  | { status: 'rejected'; reason: unknown }
   | { status: 'timed-out' };
 
 function settleWithin<T>(
@@ -228,11 +230,11 @@ function settleWithin<T>(
         clearTimeout(timeout);
         resolve({ status: 'fulfilled', value });
       },
-      () => {
+      (reason) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
-        resolve({ status: 'rejected' });
+        resolve({ status: 'rejected', reason });
       },
     );
   });
@@ -253,9 +255,54 @@ export class StatsService {
     private readonly fixtureMatchOddsProvider: FixtureMatchOddsProvider =
       new UnavailableFixtureMatchOddsProvider(),
     private readonly cacheOnlyOddsBudgetMs = 350,
+    private readonly responseBudgetMs = 9_000,
   ) {}
 
-  async getPlayerStats(request: ValidatedPlayerStatsRequest): Promise<StatsServiceResult> {
+  async getPlayerStats(
+    request: ValidatedPlayerStatsRequest,
+  ): Promise<StatsServiceResult> {
+    if (!this.scheduleBackground) return this.loadPlayerStats(request);
+    const pending = this.loadPlayerStats(request);
+    const settled = await settleWithin(pending, this.responseBudgetMs);
+    if (settled.status === 'fulfilled') return settled.value;
+    if (settled.status === 'rejected') throw settled.reason;
+
+    // Keep the cache-warming request alive after returning a bounded partial
+    // response. The extension retries only the identities listed below.
+    this.scheduleBackground(
+      pending.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return {
+      data: [],
+      cacheHits: 0,
+      source: this.dataSource.source,
+      deferredPlayerNames: [...request.playerNames],
+      deferredPlayerSlugs: [...request.slugs],
+      diagnostics: {
+        requestedPlayers: request.slugs.length + request.playerNames.length,
+        resolvedPlayers: 0,
+        returnedPlayers: 0,
+        cacheHits: 0,
+        deferredNames: request.playerNames.length,
+        partialHistories: 0,
+        responseBudgetExceeded: true,
+        durationsMs: {
+          nameResolution: 0,
+          cache: 0,
+          baseAndHistory: 0,
+          result: 0,
+          total: this.responseBudgetMs,
+        },
+      },
+    };
+  }
+
+  private async loadPlayerStats(
+    request: ValidatedPlayerStatsRequest,
+  ): Promise<StatsServiceResult> {
     const requestStartedAt = performance.now();
     const nameResolutionStartedAt = performance.now();
     const directRequests = request.slugs.map((slug): SourcePlayerRequest => {
@@ -302,15 +349,18 @@ export class StatsService {
       : undefined;
 
     if (splitCache) {
-      const cachedParts = await Promise.all(
-        playerRequests.map(async (playerRequest) => ({
-          key: cacheKey(playerRequest, this.excludeLowCoverage),
-          playerRequest,
-          parts: await splitCache.getParts(
-            cacheKey(playerRequest, this.excludeLowCoverage),
-          ),
-        })),
+      const keyedRequests = playerRequests.map((playerRequest) => ({
+        key: cacheKey(playerRequest, this.excludeLowCoverage),
+        playerRequest,
+      }));
+      const partsByKey = await splitCache.getPartsMany(
+        keyedRequests.map(({ key }) => key),
       );
+      const cachedParts = keyedRequests.map(({ key, playerRequest }) => ({
+        key,
+        playerRequest,
+        parts: partsByKey.get(key) ?? {},
+      }));
       const hydratedCachedParts = await Promise.all(
         cachedParts.map(async (cached) => {
           if (
@@ -498,6 +548,8 @@ export class StatsService {
     const oddsEligiblePlayers = cachedOrLoaded.filter(
       (stats) => playerMarketOddsSupported(this.marketOddsProvider, stats),
     );
+    const marketRefreshDuePlayerKeys = new Set<string>();
+    const marketRefreshDueState = { complete: false };
     const cacheOnlyOddsDeadlineMs = Date.now() + this.cacheOnlyOddsBudgetMs;
     const [fixtureMatchOdds, marketOdds] = await Promise.all([
       this.loadCacheOnlyWithinBudget(
@@ -509,6 +561,8 @@ export class StatsService {
         this.marketOddsProvider.load(oddsEligiblePlayers, {
           cacheOnly: true,
           cacheOnlyDeadlineMs: cacheOnlyOddsDeadlineMs,
+          refreshDuePlayerKeys: marketRefreshDuePlayerKeys,
+          refreshDueState: marketRefreshDueState,
         }),
       ),
     ]);
@@ -533,7 +587,7 @@ export class StatsService {
       );
       const odds =
         supportsMarketOdds ? marketOdds.get(key) ?? null : null;
-      const needsMarketOddsRefresh = (['goal', 'assist'] as const).some(
+      const missingRequestDrivingMarket = (['goal', 'assist'] as const).some(
         (market) =>
           playerMarketFieldDrivesRequest(
             this.marketOddsProvider,
@@ -541,6 +595,12 @@ export class StatsService {
             market,
           ) && !odds?.[market],
       );
+      const needsMarketOddsRefresh =
+        missingRequestDrivingMarket &&
+        (this.marketOddsProvider.reportsRefreshDue === true &&
+          marketRefreshDueState.complete
+          ? marketRefreshDuePlayerKeys.has(key)
+          : true);
       const fallbackMatchProbabilities =
         fixtureMatchOdds.get(key) ?? null;
       const nextGame = stats.nextGame
@@ -618,6 +678,7 @@ export class StatsService {
       cacheHits,
       source: this.dataSource.source,
       deferredPlayerNames: nameResolution.deferred,
+      deferredPlayerSlugs: [],
       diagnostics: {
         requestedPlayers:
           request.slugs.length + request.playerNames.length,
@@ -626,6 +687,7 @@ export class StatsService {
         cacheHits,
         deferredNames: nameResolution.deferred.length,
         partialHistories,
+        responseBudgetExceeded: false,
         durationsMs: {
           nameResolution: nameResolutionDurationMs,
           cache: cacheDurationMs,

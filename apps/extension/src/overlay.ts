@@ -2624,6 +2624,16 @@ export class OverlayView {
     this.state('Lade L10 …', 'pulse');
   }
 
+  retrying(): void {
+    this.clearLineupOdds();
+    this.clearPlayerMarketTooltip();
+    this.state(
+      'Lade L10 erneut …',
+      'pulse',
+      'Die letzte Anfrage ist fehlgeschlagen oder läuft im Hintergrund weiter. Die Extension versucht es automatisch erneut.',
+    );
+  }
+
   error(): void {
     this.clearLineupOdds();
     this.clearPlayerMarketTooltip();

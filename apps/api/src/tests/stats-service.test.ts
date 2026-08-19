@@ -499,6 +499,75 @@ describe('StatsService cache writes', () => {
     expect(result.data[0]?.pendingRefreshes ?? []).not.toContain('marketOdds');
   });
 
+  it('does not expose market refreshes for a fresh negative provider cache', async () => {
+    const load = vi.fn<PlayerMarketOddsProvider['load']>(
+      async (players, options) => {
+        if (options?.refreshDueState) {
+          options.refreshDueState.complete = true;
+        }
+        return new Map(
+          players.map((player) => [playerMarketOddsKey(player), null]),
+        );
+      },
+    );
+    const marketOddsProvider: PlayerMarketOddsProvider = {
+      reportsRefreshDue: true,
+      supports: () => true,
+      supportsMarket: () => true,
+      drivesMarketRequest: () => true,
+      load,
+    };
+    const scheduleBackground = vi.fn();
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      marketOddsProvider,
+      scheduleBackground,
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({ slugs: ['jude-bellingham'] }),
+    );
+
+    expect(result.data[0]?.pendingRefreshes ?? []).not.toContain('marketOdds');
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(scheduleBackground).not.toHaveBeenCalled();
+  });
+
+  it('returns a bounded deferred response while a cold slug warms in background', async () => {
+    const never = new Promise<never>(() => undefined);
+    const source: PlayerStatsDataSource = {
+      source: 'sorare',
+      resolvePlayerNames: async () => [],
+      fetchPlayers: async () => never,
+      fetchNextGames: async () => [],
+    };
+    const backgroundTasks: Promise<void>[] = [];
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      new UnavailablePlayerMarketOddsProvider(),
+      (task) => backgroundTasks.push(task),
+      DEFAULT_NAME_RESOLUTION_BUDGET_MS,
+      new UnavailableFixtureMatchOddsProvider(),
+      50,
+      20,
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({ slugs: ['cold-player'] }),
+    );
+
+    expect(result.data).toEqual([]);
+    expect(result.deferredPlayerSlugs).toEqual(['cold-player']);
+    expect(result.diagnostics.responseBudgetExceeded).toBe(true);
+    expect(backgroundTasks).toHaveLength(1);
+  });
+
   it('uses the cache result when filling a partial cache miss', async () => {
     const cache = new FillMissingCache();
     const service = new StatsService(

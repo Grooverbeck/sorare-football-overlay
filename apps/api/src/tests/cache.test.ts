@@ -38,7 +38,75 @@ class CountingCache<T> implements Cache<T> {
   }
 }
 
+class BatchOnlyCache<T> implements Cache<T> {
+  getManyCalls = 0;
+
+  constructor(private readonly values: Map<string, T>) {}
+
+  get(): T | undefined {
+    throw new Error('Individual reads must not be used');
+  }
+
+  getMany(keys: readonly string[]): Map<string, T> {
+    this.getManyCalls += 1;
+    return new Map(
+      keys.flatMap((key) =>
+        this.values.has(key) ? [[key, this.values.get(key)!] as const] : [],
+      ),
+    );
+  }
+
+  set(key: string, value: T): void {
+    this.values.set(key, value);
+  }
+}
+
 describe('SplitPlayerStatsCache', () => {
+  it('loads form and canonical fixture entries in two batch reads', async () => {
+    const firstKey = 'first-player:Midfielder:no-low';
+    const secondKey = 'second-player:Forward:no-low';
+    const firstForm = { ...stats, slug: 'first-player', nextGame: undefined };
+    const secondForm = { ...stats, slug: 'second-player', nextGame: undefined };
+    const {
+      nextGame: _firstNextGame,
+      pendingRefreshes: _firstPending,
+      mlsAaContext: _firstContext,
+      ...firstFormStats
+    } = firstForm;
+    const {
+      nextGame: _secondNextGame,
+      pendingRefreshes: _secondPending,
+      mlsAaContext: _secondContext,
+      ...secondFormStats
+    } = secondForm;
+    const formCache = new BatchOnlyCache<PlayerFormStats>(
+      new Map([
+        [firstKey, firstFormStats],
+        [secondKey, secondFormStats],
+      ]),
+    );
+    const fixtureCache = new BatchOnlyCache<PlayerFixtureStats>(
+      new Map([
+        ['first-player:auto-v3:no-low', stats.nextGame],
+        ['second-player:auto-v3:no-low', stats.nextGame],
+      ]),
+    );
+    const cache = new SplitPlayerStatsCache(formCache, fixtureCache);
+
+    const values = await cache.getPartsMany([firstKey, secondKey]);
+
+    expect(values.get(firstKey)).toEqual({
+      form: firstFormStats,
+      fixture: stats.nextGame,
+    });
+    expect(values.get(secondKey)).toEqual({
+      form: secondFormStats,
+      fixture: stats.nextGame,
+    });
+    expect(formCache.getManyCalls).toBe(1);
+    expect(fixtureCache.getManyCalls).toBe(1);
+  });
+
   it('expires fixture data independently from longer-lived form data', async () => {
     let now = 0;
     const formCache = new TtlCache<PlayerFormStats>(24_000, () => now);

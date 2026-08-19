@@ -571,6 +571,9 @@ export class StatsBatchCoordinator {
       const deferredPlayerNames = new Set(
         (response.meta.deferredPlayerNames ?? []).map(normalizeName),
       );
+      const deferredPlayerSlugs = new Set(
+        response.meta.deferredPlayerSlugs ?? [],
+      );
       const fixtureCandidates = [...response.data, ...this.cache.values()];
       const responseDataWithSharedFixtures = response.data.map((stats) =>
         mergeSharedFixtureTeamData(stats, fixtureCandidates),
@@ -594,6 +597,11 @@ export class StatsBatchCoordinator {
               (target.position === undefined || candidate.position === target.position) &&
               targetMatchesStats(target, candidate),
           );
+        const isDeferred = Boolean(
+          (target.slug && deferredPlayerSlugs.has(target.slug)) ||
+            (target.playerName &&
+              deferredPlayerNames.has(normalizeName(target.playerName))),
+        );
         logStatsDiagnostic('target-resolution', {
           requestId: diagnosticRequestId ?? null,
           target: {
@@ -616,11 +624,8 @@ export class StatsBatchCoordinator {
               rendered: summarizeStats(stats),
             });
             view.render(stats);
-          } else if (
-            target.playerName &&
-            deferredPlayerNames.has(normalizeName(target.playerName))
-          ) {
-            view.loading();
+          } else if (isDeferred) {
+            view.retrying();
           } else {
             view.noData();
           }
@@ -636,10 +641,7 @@ export class StatsBatchCoordinator {
         } else {
           this.scheduleRetry(
             target,
-            Boolean(
-              target.playerName &&
-                deferredPlayerNames.has(normalizeName(target.playerName)),
-            ),
+            isDeferred,
           );
         }
         if (stats?.pendingRefreshes?.length) {
@@ -681,7 +683,7 @@ export class StatsBatchCoordinator {
         });
         for (const view of target.views) {
           if (cached) view.render(cached);
-          else if (isFirstTransientFailure && retryScheduled) view.loading();
+          else if (retryScheduled) view.retrying();
           else view.error();
         }
       }

@@ -68,6 +68,7 @@ export class SorareGraphqlClient {
             { attempt: attempt + 1, status: response.status, waitMs },
             'Sorare request throttled or temporarily unavailable; retrying',
           );
+          await response.body?.cancel();
           await this.sleep(waitMs);
           continue;
         }

@@ -22,12 +22,21 @@ export interface PlayerNameResolutionOptions {
   teamSlugs?: Readonly<Record<string, string>>;
 }
 
+export interface PlayerNameResolutionCacheRead {
+  name: string;
+  position: FootballPosition | undefined;
+  teamSlug?: string;
+}
+
 export interface PlayerNameResolutionCache {
   get(
     name: string,
     position: FootballPosition | undefined,
     teamSlug?: string,
   ): Promise<SourcePlayerRequest | null | undefined>;
+  getMany?(
+    requests: readonly PlayerNameResolutionCacheRead[],
+  ): Promise<Array<SourcePlayerRequest | null | undefined>>;
   set(
     name: string,
     position: FootballPosition | undefined,

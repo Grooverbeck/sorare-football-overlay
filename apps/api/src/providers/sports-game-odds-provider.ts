@@ -12,8 +12,10 @@ import type { AppLogger } from '../logger.js';
 import {
   FIXTURE_IDENTITY_VERSION,
   cacheOnlySnapshotReadBudgetMs,
+  fixtureIdentityCooldownActive,
   groupFixtures,
   marketFixtureKey,
+  markRefreshDueStateComplete,
   missingMarketSnapshot,
   needsFrozenSnapshotSupplement,
   normalizePlayerName,
@@ -23,6 +25,7 @@ import {
   playerProbability,
   recordFrozenSnapshotCheck,
   readMarketSnapshotsWithin,
+  rememberFixtureIdentityCooldown,
   resolveProviderFixture,
   settleCacheReadWithin,
   shouldRetryMarketFailure,
@@ -247,6 +250,7 @@ const defaultSleep = (milliseconds: number) =>
 const defaultRefreshLeaseTtlMs = 90 * 1_000;
 const defaultCacheOnlyProviderBudgetMs = 150;
 const defaultMatchOddsMissTtlMs = 60 * 60 * 1_000;
+const defaultRateLimitCooldownMs = 15 * 60 * 1_000;
 const matchSnapshotAfterKickoffMs = 36 * 60 * 60 * 1_000;
 const directEventBatchSize = 25;
 
@@ -490,6 +494,16 @@ function extractMarketSnapshot(
   };
 }
 
+function rateLimitCooldownMs(value: string | null, now: number): number {
+  if (value) {
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds > 0) return seconds * 1_000;
+    const at = Date.parse(value);
+    if (!Number.isNaN(at) && at > now) return at - now;
+  }
+  return defaultRateLimitCooldownMs;
+}
+
 type MatchOutcome = 'home' | 'draw' | 'away';
 
 function matchOutcome(
@@ -589,10 +603,12 @@ interface PendingSportsGameOddsFixture {
 export class SportsGameOddsPlayerMarketOddsProvider
   implements PlayerMarketOddsProvider
 {
+  readonly reportsRefreshDue = true;
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly now: () => number;
   private readonly inFlightRefreshes = new Map<string, Promise<void>>();
+  private knownRequestBlockedUntil: number | null | undefined;
 
   constructor(private readonly options: SportsGameOddsOptions) {
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -735,7 +751,10 @@ export class SportsGameOddsPlayerMarketOddsProvider
     const fixtures = groupFixtures(
       players.filter((player) => this.supports(player)),
     );
-    if (fixtures.length === 0) return output;
+    if (fixtures.length === 0) {
+      markRefreshDueStateComplete(loadOptions);
+      return output;
+    }
     const snapshots = new Map<string, Map<OddsMarketKey, MarketSnapshot>>();
     const pending: PendingSportsGameOddsFixture[] = [];
     const cacheOnly = loadOptions?.cacheOnly === true;
@@ -764,6 +783,26 @@ export class SportsGameOddsPlayerMarketOddsProvider
       ) {
         const markets = this.playerMarketsNeedingRefresh(fixture, byMarket);
         if (markets.length > 0) pending.push({ fixture, markets });
+      }
+      if (
+        cacheOnly &&
+        loadOptions?.refreshDuePlayerKeys &&
+        this.insideWindow(fixture.date, this.options.fetchWindowMs)
+      ) {
+        const markets = this.playerMarketsNeedingRefresh(fixture, byMarket);
+        if (
+          markets.length > 0 &&
+          !(await this.requestIsBlocked()) &&
+          !(await fixtureIdentityCooldownActive(
+            this.options.store,
+            'sports-game-odds',
+            fixture.key,
+          ))
+        ) {
+          for (const player of fixture.players) {
+            loadOptions.refreshDuePlayerKeys.add(playerMarketOddsKey(player));
+          }
+        }
       }
     }
 
@@ -820,6 +859,7 @@ export class SportsGameOddsPlayerMarketOddsProvider
         );
       }
     }
+    markRefreshDueStateComplete(loadOptions);
     return output;
   }
 
@@ -1110,9 +1150,34 @@ export class SportsGameOddsPlayerMarketOddsProvider
     snapshots: Map<string, Map<OddsMarketKey, MarketSnapshot>>,
     matchSnapshots: Map<string, MatchOddsSnapshot>,
   ): Promise<void> {
-    const events = await this.loadEvents(pending, snapshots, matchSnapshots);
+    const eligible = (
+      await Promise.all(
+        pending.map(async (candidate) => {
+          const coolingDown = await fixtureIdentityCooldownActive(
+            this.options.store,
+            'sports-game-odds',
+            candidate.fixture.key,
+          );
+          if (!coolingDown) return candidate;
+          this.options.logger.debug(
+            {
+              provider: 'sports-game-odds',
+              fixture: candidate.fixture.key,
+            },
+            'SportsGameOdds fixture lookup skipped during identity cooldown',
+          );
+          return null;
+        }),
+      )
+    ).filter(
+      (candidate): candidate is PendingSportsGameOddsFixture =>
+        candidate !== null,
+    );
+    if (eligible.length === 0) return;
+
+    const events = await this.loadEvents(eligible, snapshots, matchSnapshots);
     const capturedAt = new Date(this.now()).toISOString();
-    for (const { fixture, markets } of pending) {
+    for (const { fixture, markets } of eligible) {
       const storeKey = fixtureStoreKey(fixture.key);
       const byMarket =
         snapshots.get(fixture.key) ??
@@ -1131,6 +1196,13 @@ export class SportsGameOddsPlayerMarketOddsProvider
         })),
       );
       if (resolution.status !== 'matched') {
+        await rememberFixtureIdentityCooldown(
+          this.options.store,
+          'sports-game-odds',
+          fixture.key,
+          resolution.status,
+          this.now(),
+        );
         this.options.logger.warn(
           {
             event: 'fixture_identity_unresolved',
@@ -1351,6 +1423,7 @@ export class SportsGameOddsPlayerMarketOddsProvider
     path: string,
     query: Readonly<Record<string, string>>,
   ): Promise<unknown> {
+    await this.assertRequestAllowed();
     const url = new URL(
       `${this.options.baseUrl.replace(/\/$/, '')}/${path.replace(/^\//, '')}`,
     );
@@ -1371,8 +1444,18 @@ export class SportsGameOddsPlayerMarketOddsProvider
           },
           signal: controller.signal,
         });
-        const retryable =
-          response.status === 429 || [502, 503, 504].includes(response.status);
+        if (response.status === 429) {
+          const blockedUntil =
+            this.now() +
+            rateLimitCooldownMs(
+              response.headers.get('retry-after'),
+              this.now(),
+            );
+          await response.body?.cancel();
+          await this.rememberRequestBlock(blockedUntil);
+          throw new SportsGameOddsHttpError(429);
+        }
+        const retryable = [502, 503, 504].includes(response.status);
         if (retryable && attempt < this.options.maxRetries) {
           const waitMs = retryDelayMs(
             response.headers.get('retry-after'),
@@ -1403,6 +1486,59 @@ export class SportsGameOddsPlayerMarketOddsProvider
     }
     throw new Error('SportsGameOdds retry budget exhausted');
   }
+
+  private async assertRequestAllowed(): Promise<void> {
+    if (await this.requestIsBlocked()) {
+      throw new SportsGameOddsHttpError(429);
+    }
+  }
+
+  private async requestIsBlocked(): Promise<boolean> {
+    if (this.knownRequestBlockedUntil === undefined) {
+      try {
+        this.knownRequestBlockedUntil =
+          (await this.options.usageStore?.getRequestBlockedUntil?.(
+            'sports-game-odds',
+          )) ?? null;
+      } catch (error) {
+        this.knownRequestBlockedUntil = null;
+        this.options.logger.warn(
+          {
+            provider: 'sports-game-odds',
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'SportsGameOdds circuit-breaker state could not be read',
+        );
+      }
+    }
+    if (
+      this.knownRequestBlockedUntil !== null &&
+      this.knownRequestBlockedUntil > this.now()
+    ) {
+      return true;
+    }
+    this.knownRequestBlockedUntil = null;
+    return false;
+  }
+
+  private async rememberRequestBlock(blockedUntil: number): Promise<void> {
+    this.knownRequestBlockedUntil = blockedUntil;
+    try {
+      await this.options.usageStore?.setRequestBlockedUntil?.(
+        'sports-game-odds',
+        blockedUntil,
+      );
+    } catch (error) {
+      this.options.logger.warn(
+        {
+          provider: 'sports-game-odds',
+          blockedUntil: new Date(blockedUntil).toISOString(),
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'SportsGameOdds circuit-breaker state could not be persisted',
+      );
+    }
+  }
 }
 
 export class SportsGameOddsFixtureMatchOddsProvider
@@ -1425,6 +1561,12 @@ export class SportsGameOddsFixtureMatchOddsProvider
 export class SupplementingPlayerMarketOddsProvider
   implements PlayerMarketOddsProvider
 {
+  get reportsRefreshDue(): boolean {
+    return (
+      this.primary.reportsRefreshDue === true &&
+      this.fallback.reportsRefreshDue === true
+    );
+  }
   constructor(
     private readonly primary: PlayerMarketOddsProvider,
     private readonly fallback: PlayerMarketOddsProvider,
@@ -1489,6 +1631,10 @@ export class SupplementingPlayerMarketOddsProvider
 
     let primaryValues: Map<string, PlayerMarketOdds | null>;
     let fallbackValues: Map<string, PlayerMarketOdds | null>;
+    const primaryRefreshDue = new Set<string>();
+    const fallbackRefreshDue = new Set<string>();
+    const primaryRefreshState = { complete: primaryPlayers.length === 0 };
+    const fallbackRefreshState = { complete: false };
     if (loadOptions?.cacheOnly) {
       // Cache reads are independent. Running them concurrently keeps a deep
       // provider chain inside the response budget and avoids briefly hiding
@@ -1506,13 +1652,32 @@ export class SupplementingPlayerMarketOddsProvider
         ...loadOptions,
         cacheOnlyDeadlineMs: childDeadline,
       };
+      const primaryOptions: PlayerMarketOddsLoadOptions = {
+        ...childOptions,
+        ...(loadOptions.refreshDuePlayerKeys
+          ? { refreshDuePlayerKeys: primaryRefreshDue }
+          : {}),
+        ...(loadOptions.refreshDueState
+          ? { refreshDueState: primaryRefreshState }
+          : {}),
+      };
+      const fallbackOptions: PlayerMarketOddsLoadOptions = {
+        ...childOptions,
+        ...(loadOptions.refreshDuePlayerKeys
+          ? { refreshDuePlayerKeys: fallbackRefreshDue }
+          : {}),
+        ...(loadOptions.refreshDueState
+          ? { refreshDueState: fallbackRefreshState }
+          : {}),
+      };
       const remainingBudgetMs = Math.max(1, deadline - Date.now());
       const fallbackPlayers = eligiblePlayers.filter(fallbackCanSupply);
+      if (fallbackPlayers.length === 0) fallbackRefreshState.complete = true;
       const [primaryValuesWithinBudget, fallbackValuesWithinBudget] =
         await Promise.all([
           settleMarketOddsWithin(
             primaryPlayers.length > 0
-              ? this.primary.load(primaryPlayers, childOptions)
+              ? this.primary.load(primaryPlayers, primaryOptions)
               : Promise.resolve(
                   new Map<string, PlayerMarketOdds | null>(),
                 ),
@@ -1520,7 +1685,7 @@ export class SupplementingPlayerMarketOddsProvider
           ),
           settleMarketOddsWithin(
             fallbackPlayers.length > 0
-              ? this.fallback.load(fallbackPlayers, childOptions)
+              ? this.fallback.load(fallbackPlayers, fallbackOptions)
               : Promise.resolve(
                   new Map<string, PlayerMarketOdds | null>(),
                 ),
@@ -1599,7 +1764,7 @@ export class SupplementingPlayerMarketOddsProvider
         fallbackValues = cachedFallbackValues;
       }
     }
-    return new Map(
+    const combined = new Map(
       players.map((player) => {
         const key = playerMarketOddsKey(player);
         const primary = primaryValues.get(key) ?? null;
@@ -1614,6 +1779,32 @@ export class SupplementingPlayerMarketOddsProvider
         ];
       }),
     );
+    if (loadOptions?.refreshDuePlayerKeys) {
+      for (const player of eligiblePlayers) {
+        const key = playerMarketOddsKey(player);
+        if (primaryRefreshDue.has(key)) {
+          loadOptions.refreshDuePlayerKeys.add(key);
+          continue;
+        }
+        if (!fallbackRefreshDue.has(key)) continue;
+        const odds = combined.get(key) ?? null;
+        if (
+          this.requestMarkets.some(
+            (market) =>
+              playerMarketFieldDrivesRequest(this.fallback, player, market) &&
+              !odds?.[market],
+          )
+        ) {
+          loadOptions.refreshDuePlayerKeys.add(key);
+        }
+      }
+    }
+    if (loadOptions?.refreshDueState) {
+      loadOptions.refreshDueState.complete = loadOptions.cacheOnly
+        ? primaryRefreshState.complete && fallbackRefreshState.complete
+        : true;
+    }
+    return combined;
   }
 }
 

@@ -129,6 +129,9 @@ export function createApp(options: CreateAppOptions): Hono<AppEnv> {
         ...(result.deferredPlayerNames.length > 0
           ? { deferredPlayerNames: result.deferredPlayerNames }
           : {}),
+        ...(result.deferredPlayerSlugs.length > 0
+          ? { deferredPlayerSlugs: result.deferredPlayerSlugs }
+          : {}),
       },
     });
     return context.json(response);

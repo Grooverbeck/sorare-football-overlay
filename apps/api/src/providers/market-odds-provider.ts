@@ -168,6 +168,59 @@ export type MarketIdentityProvider =
   | 'odds-api-io'
   | 'sports-game-odds';
 
+const fixtureIdentityCooldownMs = 10 * 60 * 1_000;
+const fixtureIdentityCooldownVersion = 1;
+
+function fixtureIdentityCooldownProvider(
+  provider: MarketIdentityProvider,
+): string {
+  return `${provider}:fixture-identity-unresolved:v${fixtureIdentityCooldownVersion}`;
+}
+
+export async function fixtureIdentityCooldownActive(
+  store: MarketSnapshotStore,
+  provider: MarketIdentityProvider,
+  fixtureKey: string,
+): Promise<boolean> {
+  if (!store.getEvidence) return false;
+  try {
+    return Boolean(
+      await store.getEvidence(
+        fixtureKey,
+        fixtureIdentityCooldownProvider(provider),
+      ),
+    );
+  } catch {
+    // Coordination storage is an optimization. A cache outage must not make
+    // an otherwise healthy provider unavailable.
+    return false;
+  }
+}
+
+export async function rememberFixtureIdentityCooldown(
+  store: MarketSnapshotStore,
+  provider: MarketIdentityProvider,
+  fixtureKey: string,
+  reason: 'unmatched' | 'ambiguous',
+  now: number = Date.now(),
+): Promise<void> {
+  if (!store.setEvidence) return;
+  try {
+    await store.setEvidence(
+      fixtureKey,
+      fixtureIdentityCooldownProvider(provider),
+      {
+        reason,
+        checkedAt: new Date(now).toISOString(),
+      },
+      new Date(now + fixtureIdentityCooldownMs).toISOString(),
+    );
+  } catch {
+    // Failing to persist the cooldown must not replace a provider result with
+    // an application error.
+  }
+}
+
 export interface ProviderTeamAlias {
   providerTeamName: string;
   canonicalTeamSlug: string;
@@ -400,6 +453,9 @@ export interface PlayerMarketOddsProvider {
     player: PlayerStats,
     market: PlayerMarketField,
   ): boolean;
+  // True when cache-only loads populate `refreshDuePlayerKeys` from the same
+  // freshness rules used by the provider's normal network path.
+  readonly reportsRefreshDue?: boolean;
   refreshUsage?(): Promise<ProviderQuotaUsage[]>;
 }
 
@@ -413,6 +469,17 @@ export interface PlayerMarketOddsLoadOptions {
   // compositions. Leaf providers may ignore it; composite providers use it
   // to return partial snapshots before their parent budget expires.
   cacheOnlyDeadlineMs?: number;
+  // Internal response-path metadata. Providers add only players for which a
+  // normal load would currently attempt an external refresh. This prevents a
+  // fresh negative market snapshot from causing blind extension polling.
+  refreshDuePlayerKeys?: Set<string>;
+  refreshDueState?: { complete: boolean };
+}
+
+export function markRefreshDueStateComplete(
+  loadOptions?: PlayerMarketOddsLoadOptions,
+): void {
+  if (loadOptions?.refreshDueState) loadOptions.refreshDueState.complete = true;
 }
 
 const defaultCacheOnlySnapshotReadBudgetMs = 100;
@@ -515,6 +582,7 @@ export function playerMarketFieldDrivesRequest(
 export class UnavailablePlayerMarketOddsProvider
   implements PlayerMarketOddsProvider
 {
+  readonly reportsRefreshDue = true;
   supports(): boolean {
     return false;
   }
@@ -529,13 +597,15 @@ export class UnavailablePlayerMarketOddsProvider
 
   async load(
     players: readonly PlayerStats[],
-    _options?: PlayerMarketOddsLoadOptions,
+    options?: PlayerMarketOddsLoadOptions,
   ): Promise<Map<string, PlayerMarketOdds | null>> {
+    markRefreshDueStateComplete(options);
     return new Map(players.map((player) => [playerMarketOddsKey(player), null]));
   }
 }
 
 export class MockPlayerMarketOddsProvider implements PlayerMarketOddsProvider {
+  readonly reportsRefreshDue = true;
   constructor(private readonly now: () => number = Date.now) {}
 
   supports(player: PlayerStats): boolean {
@@ -552,10 +622,10 @@ export class MockPlayerMarketOddsProvider implements PlayerMarketOddsProvider {
 
   async load(
     players: readonly PlayerStats[],
-    _options?: PlayerMarketOddsLoadOptions,
+    options?: PlayerMarketOddsLoadOptions,
   ): Promise<Map<string, PlayerMarketOdds | null>> {
     const capturedAt = new Date(this.now()).toISOString();
-    return new Map(
+    const output = new Map(
       players.map((player) => {
         if (player.position === 'Goalkeeper' || !player.nextGame) {
           return [playerMarketOddsKey(player), null];
@@ -605,6 +675,8 @@ export class MockPlayerMarketOddsProvider implements PlayerMarketOddsProvider {
         ];
       }),
     );
+    markRefreshDueStateComplete(options);
+    return output;
   }
 }
 
@@ -1998,6 +2070,7 @@ async function mapWithConcurrency<T>(
 export class TheOddsApiPlayerMarketOddsProvider
   implements PlayerMarketOddsProvider
 {
+  readonly reportsRefreshDue = true;
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly now: () => number;
@@ -2195,9 +2268,20 @@ export class TheOddsApiPlayerMarketOddsProvider
     const fixtures = groupFixtures(
       players.filter((player) => this.supports(player)),
     );
-    if (fixtures.length === 0) return output;
+    if (fixtures.length === 0) {
+      markRefreshDueStateComplete(loadOptions);
+      return output;
+    }
     const protection = loadOptions?.cacheOnly
-      ? protectionForUsage(undefined)
+      ? loadOptions.refreshDuePlayerKeys
+        ? await providerProtection(
+            this.options.usageStore,
+            'the-odds-api',
+            this.options.logger,
+            this.now(),
+            false,
+          )
+        : protectionForUsage(undefined)
       : await providerProtection(
           this.options.usageStore,
           'the-odds-api',
@@ -2246,6 +2330,21 @@ export class TheOddsApiPlayerMarketOddsProvider
         protection,
       );
       if (
+        cacheOnly &&
+        loadOptions?.refreshDuePlayerKeys &&
+        protection.allowExternalRequests &&
+        missingMarkets.length > 0 &&
+        !(await fixtureIdentityCooldownActive(
+          this.options.store,
+          'the-odds-api',
+          fixture.key,
+        ))
+      ) {
+        for (const player of fixture.players) {
+          loadOptions.refreshDuePlayerKeys.add(playerMarketOddsKey(player));
+        }
+      }
+      if (
         !loadOptions?.cacheOnly &&
         protection.allowExternalRequests &&
         missingMarkets.length > 0
@@ -2268,9 +2367,25 @@ export class TheOddsApiPlayerMarketOddsProvider
         this.options.supplementBatchTtlMs ?? defaultSupplementBatchTtlMs;
       const leaseTtlMs =
         this.options.refreshLeaseTtlMs ?? defaultRefreshLeaseTtlMs;
+      const identityEligible = (
+        await Promise.all(
+          fixturesNeedingApi.map(async (pending) =>
+            (await fixtureIdentityCooldownActive(
+              this.options.store,
+              'the-odds-api',
+              pending.fixture.key,
+            ))
+              ? null
+              : pending,
+          ),
+        )
+      ).filter(
+        (pending): pending is (typeof fixturesNeedingApi)[number] =>
+          pending !== null,
+      );
       const coordinated = (
         await Promise.all(
-          fixturesNeedingApi.map(async (pending) => {
+          identityEligible.map(async (pending) => {
             if (
               pending.supplementOnly &&
               this.options.store.enqueueSupplementPlayers
@@ -2345,6 +2460,7 @@ export class TheOddsApiPlayerMarketOddsProvider
       );
 
       if (coordinated.length === 0) {
+        markRefreshDueStateComplete(loadOptions);
         return this.resultsFromSnapshots(output, fixtures, snapshots);
       }
       const sportKeys = this.sportKeys();
@@ -2391,6 +2507,13 @@ export class TheOddsApiPlayerMarketOddsProvider
             ),
           );
           if (resolution.status !== 'matched') {
+            await rememberFixtureIdentityCooldown(
+              this.options.store,
+              'the-odds-api',
+              pending.fixture.key,
+              resolution.status,
+              this.now(),
+            );
             this.options.logger.warn(
               {
                 event: 'fixture_identity_unresolved',
@@ -2421,7 +2544,9 @@ export class TheOddsApiPlayerMarketOddsProvider
       // transient provider failures retryable.
     }
 
-    return this.resultsFromSnapshots(output, fixtures, snapshots);
+    const results = this.resultsFromSnapshots(output, fixtures, snapshots);
+    markRefreshDueStateComplete(loadOptions);
+    return results;
   }
 
   private resultsFromSnapshots(

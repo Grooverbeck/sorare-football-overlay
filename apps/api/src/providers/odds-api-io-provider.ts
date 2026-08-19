@@ -11,9 +11,11 @@ import type { AppLogger } from '../logger.js';
 import {
   FIXTURE_IDENTITY_VERSION,
   cacheOnlySnapshotReadBudgetMs,
+  fixtureIdentityCooldownActive,
   FrozenMarketSnapshotSchema,
   groupFixtures,
   marketFixtureKey,
+  markRefreshDueStateComplete,
   missingMarketSnapshot,
   needsFrozenSnapshotSupplement,
   normalizePlayerName,
@@ -21,6 +23,7 @@ import {
   playerProbability,
   recordFrozenSnapshotCheck,
   readMarketSnapshotsWithin,
+  rememberFixtureIdentityCooldown,
   resolveProviderFixture,
   resolvePlayerProbability,
   settleCacheReadWithin,
@@ -521,6 +524,7 @@ function stricterProtection(
 export class OddsApiIoPlayerMarketOddsProvider
   implements PlayerMarketOddsProvider
 {
+  readonly reportsRefreshDue = true;
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly now: () => number;
@@ -586,10 +590,15 @@ export class OddsApiIoPlayerMarketOddsProvider
     const fixtures = groupFixtures(
       players.filter((player) => this.supports(player)),
     );
-    if (fixtures.length === 0) return output;
+    if (fixtures.length === 0) {
+      markRefreshDueStateComplete(loadOptions);
+      return output;
+    }
 
     const protection = loadOptions?.cacheOnly
-      ? protectionForUsage(undefined)
+      ? loadOptions.refreshDuePlayerKeys
+        ? await this.protection()
+        : protectionForUsage(undefined)
       : await this.protection();
     const goalSnapshots = new Map<string, MarketSnapshot | undefined>();
     const assistSnapshots = new Map<string, MarketSnapshot | undefined>();
@@ -675,6 +684,21 @@ export class OddsApiIoPlayerMarketOddsProvider
               fixture.date,
               this.now(),
             ));
+      if (
+        cacheOnly &&
+        loadOptions?.refreshDuePlayerKeys &&
+        needsApi &&
+        protection.allowExternalRequests &&
+        !(await fixtureIdentityCooldownActive(
+          this.options.store,
+          'odds-api-io',
+          fixture.key,
+        ))
+      ) {
+        for (const player of fixture.players) {
+          loadOptions.refreshDuePlayerKeys.add(playerMarketOddsKey(player));
+        }
+      }
       if (
         needsApi &&
         !cacheOnly &&
@@ -762,6 +786,7 @@ export class OddsApiIoPlayerMarketOddsProvider
         );
       }
     }
+    markRefreshDueStateComplete(loadOptions);
     return output;
   }
 
@@ -1034,6 +1059,19 @@ export class OddsApiIoPlayerMarketOddsProvider
       FixtureGroup[]
     >();
     for (const fixture of fixtures) {
+      if (
+        await fixtureIdentityCooldownActive(
+          this.options.store,
+          'odds-api-io',
+          fixture.key,
+        )
+      ) {
+        this.options.logger.debug(
+          { provider: 'odds-api-io', fixture: fixture.key },
+          'Odds-API.io fixture lookup skipped during identity cooldown',
+        );
+        continue;
+      }
       const route = this.routeForFixtureGroup(fixture);
       if (!route) continue;
       const routedFixtures = fixturesByRoute.get(route) ?? [];
@@ -1236,6 +1274,17 @@ export class OddsApiIoPlayerMarketOddsProvider
         'odds-api-io',
         fixture,
         eventCandidates,
+      );
+      if (resolution.status === 'matched') {
+        matched.set(fixture.key, { fixture, event: resolution.event });
+        continue;
+      }
+      await rememberFixtureIdentityCooldown(
+        this.options.store,
+        'odds-api-io',
+        fixture.key,
+        resolution.status,
+        this.now(),
       );
       this.options.logger.warn(
         {

@@ -9,6 +9,64 @@ import type {
 } from '../services/data-source.js';
 
 describe('SorareDataSource player-name resolution', () => {
+  it('loads position-specific and generic name aliases in one cache batch', async () => {
+    const get = vi.fn(async () => {
+      throw new Error('Individual cache reads must not be used');
+    });
+    const getMany = vi.fn<
+      NonNullable<PlayerNameResolutionCache['getMany']>
+    >(async (reads) =>
+      reads.map(({ name, position }) =>
+        position
+          ? {
+              slug: `${name.toLowerCase().replace(/\s+/g, '-')}`,
+              position,
+            }
+          : undefined,
+      ),
+    );
+    const cache: PlayerNameResolutionCache = {
+      get,
+      getMany,
+      set: vi.fn(),
+    };
+    const request = vi.fn();
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+      false,
+      86_400_000,
+      true,
+      cache,
+    );
+
+    const resolved = await source.resolvePlayerNames(
+      ['First Player', 'Second Player'],
+      {
+        'First Player': 'Midfielder',
+        'Second Player': 'Forward',
+      },
+      { cacheOnly: true },
+    );
+
+    expect(resolved).toEqual([
+      {
+        slug: 'first-player',
+        position: 'Midfielder',
+        resolvedFromName: 'First Player',
+      },
+      {
+        slug: 'second-player',
+        position: 'Forward',
+        resolvedFromName: 'Second Player',
+      },
+    ]);
+    expect(getMany).toHaveBeenCalledTimes(1);
+    expect(getMany.mock.calls[0]?.[0]).toHaveLength(4);
+    expect(get).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it('returns persistent name mappings without contacting Sorare in cache-only mode', async () => {
     const cache: PlayerNameResolutionCache = {
       get: vi.fn(async (name) =>

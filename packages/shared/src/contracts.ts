@@ -221,6 +221,16 @@ export const PlayerStatsSuccessResponseSchema = z.object({
     // Cold gallery names may be resolved and warmed after the response. The
     // extension keeps only these cards in loading state and retries them.
     deferredPlayerNames: z.array(z.string().trim().min(2).max(120)).optional(),
+    deferredPlayerSlugs: z
+      .array(
+        z
+          .string()
+          .trim()
+          .min(1)
+          .max(160)
+          .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i),
+      )
+      .optional(),
   }),
 });
 

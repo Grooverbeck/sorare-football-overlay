@@ -38,6 +38,13 @@ export type ProviderQuotaUsage = z.infer<typeof ProviderQuotaUsageSchema>;
 export interface ProviderQuotaUsageStore {
   get(provider: OddsProviderName): Promise<ProviderQuotaUsage | undefined>;
   set(usage: ProviderQuotaUsage): void | Promise<void>;
+  getRequestBlockedUntil?(
+    provider: OddsProviderName,
+  ): Promise<number | undefined>;
+  setRequestBlockedUntil?(
+    provider: OddsProviderName,
+    blockedUntil: number,
+  ): void | Promise<void>;
   claimRefreshLease?(
     provider: OddsProviderName,
     lease: string,
@@ -50,6 +57,7 @@ export class InMemoryProviderQuotaUsageStore
 {
   private readonly entries = new Map<OddsProviderName, ProviderQuotaUsage>();
   private readonly refreshLeases = new Map<string, number>();
+  private readonly requestBlocks = new Map<OddsProviderName, number>();
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -61,6 +69,26 @@ export class InMemoryProviderQuotaUsageStore
 
   set(usage: ProviderQuotaUsage): void {
     this.entries.set(usage.provider, ProviderQuotaUsageSchema.parse(usage));
+  }
+
+  async getRequestBlockedUntil(
+    provider: OddsProviderName,
+  ): Promise<number | undefined> {
+    const blockedUntil = this.requestBlocks.get(provider);
+    if (blockedUntil === undefined) return undefined;
+    if (blockedUntil <= this.now()) {
+      this.requestBlocks.delete(provider);
+      return undefined;
+    }
+    return blockedUntil;
+  }
+
+  setRequestBlockedUntil(
+    provider: OddsProviderName,
+    blockedUntil: number,
+  ): void {
+    if (!Number.isFinite(blockedUntil) || blockedUntil <= this.now()) return;
+    this.requestBlocks.set(provider, blockedUntil);
   }
 
   async claimRefreshLease(
@@ -191,6 +219,7 @@ export async function providerProtection(
   provider: OddsProviderName,
   logger: AppLogger,
   now: number = Date.now(),
+  logActive = true,
 ): Promise<OddsUsageProtection> {
   let usage: ProviderQuotaUsage | undefined;
   try {
@@ -205,7 +234,7 @@ export async function providerProtection(
     );
   }
   const protection = protectionForProviderUsage(provider, usage, now);
-  if (protection.level !== 'normal') {
+  if (logActive && protection.level !== 'normal') {
     logger.warn(
       {
         provider,

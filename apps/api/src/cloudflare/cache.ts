@@ -46,6 +46,7 @@ import {
   type ProviderQuotaUsageStore,
 } from '../providers/odds-usage.js';
 import type {
+  PlayerNameResolutionCacheRead,
   PlayerNameResolutionCache,
   SourcePlayerRequest,
 } from '../services/data-source.js';
@@ -78,6 +79,10 @@ const ProviderTeamAliasEnvelopeSchema = z.object({
     .max(180)
     .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i),
   learnedAt: z.string().datetime(),
+});
+
+const ProviderRequestBlockSchema = z.object({
+  blockedUntil: z.string().datetime(),
 });
 
 const PlayerFormStatsSchema = PlayerStatsSchema.omit({
@@ -177,6 +182,27 @@ abstract class CloudflareKvCache {
   ): void {
     this.context.waitUntil(
       this.namespace.put(key, JSON.stringify(value), { expiration }),
+    );
+  }
+
+  protected async readMany<T = unknown>(
+    keys: readonly string[],
+  ): Promise<Map<string, T>> {
+    const uniqueKeys = [...new Set(keys)];
+    if (uniqueKeys.length === 0) return new Map();
+    if (this.namespace.getMany) {
+      return this.namespace.getMany<T>(uniqueKeys, 'json');
+    }
+    const entries = await Promise.all(
+      uniqueKeys.map(async (key) => [
+        key,
+        await this.namespace.get<T>(key, 'json'),
+      ] as const),
+    );
+    return new Map(
+      entries.flatMap(([key, value]) =>
+        value === null ? [] : ([[key, value]] as const),
+      ),
     );
   }
 }
@@ -848,6 +874,47 @@ export class CloudflareProviderQuotaUsageStore
     );
   }
 
+  async getRequestBlockedUntil(
+    provider: OddsProviderName,
+  ): Promise<number | undefined> {
+    const key = this.requestBlockKey(provider);
+    const raw = await this.namespace.get<unknown>(key, 'json');
+    if (raw === null) return undefined;
+    const parsed = ProviderRequestBlockSchema.safeParse(raw);
+    if (!parsed.success) {
+      await this.namespace.delete(key);
+      return undefined;
+    }
+    const blockedUntil = Date.parse(parsed.data.blockedUntil);
+    if (!Number.isFinite(blockedUntil) || blockedUntil <= Date.now()) {
+      await this.namespace.delete(key);
+      return undefined;
+    }
+    return blockedUntil;
+  }
+
+  async setRequestBlockedUntil(
+    provider: OddsProviderName,
+    blockedUntil: number,
+  ): Promise<void> {
+    const expiration = Math.ceil(blockedUntil / 1_000);
+    if (
+      !Number.isFinite(expiration) ||
+      expiration <= Math.floor(Date.now() / 1_000)
+    ) {
+      return;
+    }
+    await this.namespace.put(
+      this.requestBlockKey(provider),
+      JSON.stringify(
+        ProviderRequestBlockSchema.parse({
+          blockedUntil: new Date(blockedUntil).toISOString(),
+        }),
+      ),
+      { expiration },
+    );
+  }
+
   async claimRefreshLease(
     provider: OddsProviderName,
     lease: string,
@@ -863,6 +930,10 @@ export class CloudflareProviderQuotaUsageStore
 
   private key(provider: OddsProviderName): string {
     return `odds-provider-usage:v1:${provider}`;
+  }
+
+  private requestBlockKey(provider: OddsProviderName): string {
+    return `odds-provider-request-block:v1:${provider}`;
   }
 }
 
@@ -883,6 +954,29 @@ class CloudflarePlayerFormCache
     const cacheKey = `player-form:v3:${key}`;
     const raw = await this.namespace.get<unknown>(cacheKey, 'json');
     if (raw === null) return undefined;
+    return this.parse(cacheKey, raw);
+  }
+
+  async getMany(
+    keys: readonly string[],
+  ): Promise<Map<string, PlayerFormStats>> {
+    const cacheKeyByPlayer = new Map(
+      [...new Set(keys)].map((key) => [key, `player-form:v3:${key}`]),
+    );
+    const raw = await this.readMany<unknown>([...cacheKeyByPlayer.values()]);
+    const values = new Map<string, PlayerFormStats>();
+    for (const [key, cacheKey] of cacheKeyByPlayer) {
+      if (!raw.has(cacheKey)) continue;
+      const parsed = this.parse(cacheKey, raw.get(cacheKey));
+      if (parsed) values.set(key, parsed);
+    }
+    return values;
+  }
+
+  private parse(
+    cacheKey: string,
+    raw: unknown,
+  ): PlayerFormStats | undefined {
     const parsed = CachedPlayerFormStatsSchema.safeParse(raw);
     if (!parsed.success) {
       this.removeInvalid(cacheKey);
@@ -978,6 +1072,30 @@ class CloudflarePlayerFixtureCache
     const fixture = await this.readPlayerFixture(key);
     if (fixture === undefined || fixture === null) return fixture;
     return this.resolvePlayerTeamFixture(key, fixture);
+  }
+
+  async getMany(
+    keys: readonly string[],
+  ): Promise<Map<string, PlayerFixtureStats>> {
+    const cacheKeyByPlayer = new Map(
+      [...new Set(keys)].map((key) => [key, `player-fixture:v1:${key}`]),
+    );
+    const raw = await this.readMany<unknown>([...cacheKeyByPlayer.values()]);
+    const loaded = await Promise.all(
+      [...cacheKeyByPlayer].map(async ([key, cacheKey]) => {
+        if (!raw.has(cacheKey)) return [key, undefined] as const;
+        const fixture = this.parsePlayerFixture(cacheKey, raw.get(cacheKey));
+        if (fixture === undefined || fixture === null) {
+          return [key, fixture] as const;
+        }
+        return [key, await this.resolvePlayerTeamFixture(key, fixture)] as const;
+      }),
+    );
+    return new Map(
+      loaded.flatMap(([key, fixture]) =>
+        fixture === undefined ? [] : ([[key, fixture]] as const),
+      ),
+    );
   }
 
   async getTeamFixture(
@@ -1132,6 +1250,13 @@ class CloudflarePlayerFixtureCache
     const cacheKey = `player-fixture:v1:${key}`;
     const raw = await this.namespace.get<unknown>(cacheKey, 'json');
     if (raw === null) return undefined;
+    return this.parsePlayerFixture(cacheKey, raw);
+  }
+
+  private parsePlayerFixture(
+    cacheKey: string,
+    raw: unknown,
+  ): PlayerFixtureStats | undefined {
     const parsed = PlayerFixtureEnvelopeSchema.safeParse(raw);
     if (!parsed.success) {
       this.removeInvalid(cacheKey);
@@ -1435,6 +1560,24 @@ class CloudflareLegacyPlayerStatsCache
     }
     return parsed.data;
   }
+
+  async getMany(keys: readonly string[]): Promise<Map<string, PlayerStats>> {
+    const cacheKeyByPlayer = new Map(
+      [...new Set(keys)].map((key) => [key, `player-stats:v1:${key}`]),
+    );
+    const raw = await this.readMany<unknown>([...cacheKeyByPlayer.values()]);
+    const values = new Map<string, PlayerStats>();
+    for (const [key, cacheKey] of cacheKeyByPlayer) {
+      if (!raw.has(cacheKey)) continue;
+      const parsed = PlayerStatsSchema.safeParse(raw.get(cacheKey));
+      if (!parsed.success) {
+        this.removeInvalid(cacheKey);
+        continue;
+      }
+      values.set(key, parsed.data);
+    }
+    return values;
+  }
 }
 
 export class CloudflarePlayerStatsCache
@@ -1467,6 +1610,12 @@ export class CloudflarePlayerStatsCache
 
   getParts(key: string): Promise<PlayerStatsCacheParts> {
     return this.splitCache.getParts(key);
+  }
+
+  getPartsMany(
+    keys: readonly string[],
+  ): Promise<Map<string, PlayerStatsCacheParts>> {
+    return this.splitCache.getPartsMany(keys);
   }
 
   setForm(key: string, value: PlayerFormStats): Promise<void> {
@@ -1588,6 +1737,36 @@ export class CloudflareNameResolutionCache
         ? { nameResolution: parsed.data.value.nameResolution }
         : {}),
     };
+  }
+
+  async getMany(
+    requests: readonly PlayerNameResolutionCacheRead[],
+  ): Promise<Array<SourcePlayerRequest | null | undefined>> {
+    const keys = requests.map(({ name, position, teamSlug }) =>
+      this.key(name, position, teamSlug),
+    );
+    const raw = await this.readMany<unknown>(keys);
+    return keys.map((cacheKey) => {
+      if (!raw.has(cacheKey)) return undefined;
+      const parsed = NameResolutionEnvelopeSchema.safeParse(raw.get(cacheKey));
+      if (!parsed.success) {
+        this.removeInvalid(cacheKey);
+        return undefined;
+      }
+      if (!parsed.data.found) return null;
+      return {
+        slug: parsed.data.value.slug,
+        ...(parsed.data.value.position
+          ? { position: parsed.data.value.position }
+          : {}),
+        ...(parsed.data.value.teamSlug
+          ? { teamSlug: parsed.data.value.teamSlug }
+          : {}),
+        ...(parsed.data.value.nameResolution
+          ? { nameResolution: parsed.data.value.nameResolution }
+          : {}),
+      };
+    });
   }
 
   set(

@@ -2998,7 +2998,7 @@ describe('Sorare card DOM discovery', () => {
     }
   });
 
-  it('shows a short user-facing message when the quick retry also fails', async () => {
+  it('keeps showing an active retry until the full retry budget is exhausted', async () => {
     vi.useFakeTimers();
     try {
       const fetcher = vi.fn(async () => {
@@ -3006,7 +3006,7 @@ describe('Sorare card DOM discovery', () => {
           'BACKEND_UNAVAILABLE: Statistikdienst ist nicht erreichbar',
         );
       });
-      const coordinator = new StatsBatchCoordinator(fetcher, 0, []);
+      const coordinator = new StatsBatchCoordinator(fetcher, 0, [5_000]);
       const card = document.createElement('article');
       document.body.append(card);
       const view = new OverlayView(
@@ -3029,8 +3029,17 @@ describe('Sorare card DOM discovery', () => {
       await vi.advanceTimersByTimeAsync(750);
       await coordinator.flush();
 
-      const state = view.host.shadowRoot?.querySelector<HTMLElement>('.state');
       expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(view.host.shadowRoot?.textContent).toContain('Lade L10 erneut');
+      expect(view.host.shadowRoot?.textContent).not.toContain(
+        'Kurz nicht verfügbar',
+      );
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await coordinator.flush();
+
+      const state = view.host.shadowRoot?.querySelector<HTMLElement>('.state');
+      expect(fetcher).toHaveBeenCalledTimes(3);
       expect(state?.textContent).toBe('Kurz nicht verfügbar');
       expect(state?.textContent).not.toContain('BACKEND_UNAVAILABLE');
       expect(state?.title).toContain('automatisch erneut');

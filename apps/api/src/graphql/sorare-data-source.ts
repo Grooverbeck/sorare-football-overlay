@@ -709,42 +709,60 @@ export class SorareDataSource implements PlayerStatsDataSource {
       ).values(),
     ];
 
-    await Promise.all(
-      unique.map(async ({ name, position, teamSlug }) => {
-        if (this.hasCachedResolution(name, position, teamSlug)) return;
-        const positionCached = await this.nameResolutionCache?.get(
-          name,
-          position,
-          teamSlug,
-        );
-        const genericCached =
-          position && !positionCached
-            ? await this.nameResolutionCache?.get(name, undefined, teamSlug)
-            : undefined;
-        const compatibleGeneric =
-          genericCached &&
-          (!position || genericCached.position === position) &&
-          teamSlugsLikelyMatch(genericCached.teamSlug, teamSlug)
-            ? genericCached
-            : undefined;
-        const cached =
-          positionCached === null
-            ? compatibleGeneric ?? null
-            : positionCached ?? compatibleGeneric;
-        const key = resolutionKey(name, position, teamSlug);
-        if (cached === null) {
-          if (genericCached === undefined) {
-            this.unresolvedNamesUntil.set(
-              key,
-              Date.now() + this.unresolvedNameTtlMs,
-            );
-          }
-        } else if (cached) {
-          this.resolvedNames.set(key, cached);
-          this.unresolvedNamesUntil.delete(key);
-        }
-      }),
+    const uncached = unique.filter(
+      ({ name, position, teamSlug }) =>
+        !this.hasCachedResolution(name, position, teamSlug),
     );
+    const reads = uncached.flatMap(({ name, position, teamSlug }) => [
+      { name, position, ...(teamSlug ? { teamSlug } : {}) },
+      ...(position
+        ? [{ name, position: undefined, ...(teamSlug ? { teamSlug } : {}) }]
+        : []),
+    ]);
+    const values = this.nameResolutionCache.getMany
+      ? await this.nameResolutionCache.getMany(reads)
+      : await Promise.all(
+          reads.map(({ name, position, teamSlug }) =>
+            this.nameResolutionCache!.get(name, position, teamSlug),
+          ),
+        );
+    const cachedByKey = new Map(
+      reads.map((read, index) => [
+        resolutionKey(read.name, read.position, read.teamSlug),
+        values[index],
+      ]),
+    );
+
+    for (const { name, position, teamSlug } of uncached) {
+      const positionCached = cachedByKey.get(
+        resolutionKey(name, position, teamSlug),
+      );
+      const genericCached = position
+        ? cachedByKey.get(resolutionKey(name, undefined, teamSlug))
+        : undefined;
+      const compatibleGeneric =
+        genericCached &&
+        (!position || genericCached.position === position) &&
+        teamSlugsLikelyMatch(genericCached.teamSlug, teamSlug)
+          ? genericCached
+          : undefined;
+      const cached =
+        positionCached === null
+          ? compatibleGeneric ?? null
+          : positionCached ?? compatibleGeneric;
+      const key = resolutionKey(name, position, teamSlug);
+      if (cached === null) {
+        if (genericCached === undefined) {
+          this.unresolvedNamesUntil.set(
+            key,
+            Date.now() + this.unresolvedNameTtlMs,
+          );
+        }
+      } else if (cached) {
+        this.resolvedNames.set(key, cached);
+        this.unresolvedNamesUntil.delete(key);
+      }
+    }
   }
 
   private async persistResolution(
