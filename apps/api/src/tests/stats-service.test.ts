@@ -1622,6 +1622,77 @@ describe('StatsService cache writes', () => {
     ).toBeNull();
   });
 
+  it('repairs a cached fixture side from a server-confirmed name resolution', async () => {
+    const cache = new SplitPlayerStatsCache(
+      new TtlCache<PlayerFormStats>(60_000),
+      new TtlCache<PlayerFixtureStats>(60_000),
+    );
+    const playerKey = 'carlos-henrique-casimiro:Midfielder:no-low';
+    await cache.set(playerKey, {
+      slug: 'carlos-henrique-casimiro',
+      displayName: 'Casemiro',
+      position: 'Midfielder',
+      aaL10: { value: 15.12, sampleSize: 10 },
+      cleanSheetL10: { value: 0.3, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-19T23:30:00.000Z',
+        homeTeamName: 'Philadelphia Union',
+        awayTeamName: 'Inter Miami',
+        homeTeamSlug: 'philadelphia-union-chester-pennsylvania',
+        awayTeamSlug: 'inter-miami',
+        playerTeamName: null,
+        opponentTeamName: null,
+        cleanSheetProbability: null,
+        matchProbabilities: null,
+      },
+      excludedLowCoverage: 0,
+    });
+    const fetchPlayers = vi.fn<PlayerStatsDataSource['fetchPlayers']>();
+    const source: PlayerStatsDataSource = {
+      source: 'sorare',
+      resolvePlayerNames: async () => [
+        {
+          slug: 'carlos-henrique-casimiro',
+          position: 'Midfielder',
+          teamSlug: 'inter-miami',
+          resolvedFromName: 'Casemiro',
+          nameResolution: 'search',
+        },
+      ],
+      fetchPlayers,
+      fetchNextGames: async () => [],
+    };
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      cache,
+      true,
+      new UnavailablePlayerMarketOddsProvider(),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        playerNames: ['Casemiro'],
+        positions: { Casemiro: 'Midfielder' },
+        playerTeams: { Casemiro: 'inter-miami' },
+      }),
+    );
+
+    expect(result.data[0]?.nextGame).toMatchObject({
+      playerTeamName: 'Inter Miami',
+      opponentTeamName: 'Philadelphia Union',
+      playerTeamSlug: 'inter-miami',
+    });
+    expect(fetchPlayers).not.toHaveBeenCalled();
+    await expect(cache.get(playerKey)).resolves.toMatchObject({
+      nextGame: {
+        playerTeamName: 'Inter Miami',
+        playerTeamSlug: 'inter-miami',
+      },
+    });
+  });
+
   it('never harmonizes fixtures with different Sorare-confirmed team slugs', async () => {
     const cache = new SplitPlayerStatsCache(
       new TtlCache<PlayerFormStats>(60_000),

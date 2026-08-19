@@ -1239,6 +1239,7 @@ class CloudflarePlayerFixtureCache
               : {}),
           }
         : existing;
+    const identityWasHydrated = identityHydrated !== existing;
     const refreshed = withFixtureTeamOdds(identityHydrated, mergedOdds);
     if (hasFixtureTeamOdds(mergedOdds)) {
       await this.rememberFixtureTeamOdds(refreshed, mergedOdds);
@@ -1255,7 +1256,9 @@ class CloudflarePlayerFixtureCache
         this.now(),
       ),
     );
-    await this.rememberFixtureRefreshAttempt(refreshed);
+    if (!identityWasHydrated || hasFixtureTeamOdds(mergedOdds)) {
+      await this.rememberFixtureRefreshAttempt(refreshed);
+    }
     return refreshed;
   }
 

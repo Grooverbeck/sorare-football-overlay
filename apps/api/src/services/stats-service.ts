@@ -119,6 +119,59 @@ function needsMatchProbabilitiesFallback(stats: PlayerStats): boolean {
   );
 }
 
+function teamSlugsLikelyMatch(
+  candidateSlug: string | undefined,
+  expectedSlug: string | undefined,
+): boolean {
+  if (!candidateSlug || !expectedSlug) return false;
+  const candidate = candidateSlug.trim().toLowerCase();
+  const expected = expectedSlug.trim().toLowerCase();
+  return (
+    candidate === expected ||
+    candidate.startsWith(`${expected}-`) ||
+    expected.startsWith(`${candidate}-`)
+  );
+}
+
+function hydrateConfirmedFixtureTeamIdentity(
+  fixture: PlayerStats['nextGame'],
+  request: SourcePlayerRequest | undefined,
+): PlayerStats['nextGame'] {
+  if (
+    !fixture ||
+    !request?.resolvedFromName ||
+    !request.teamSlug ||
+    fixture.playerTeamSlug
+  ) {
+    return fixture;
+  }
+  const home = teamSlugsLikelyMatch(
+    fixture.homeTeamSlug,
+    request.teamSlug,
+  );
+  const away = teamSlugsLikelyMatch(
+    fixture.awayTeamSlug,
+    request.teamSlug,
+  );
+  if (home === away) return fixture;
+  const playerTeamName = home
+    ? fixture.homeTeamName
+    : fixture.awayTeamName;
+  const opponentTeamName = home
+    ? fixture.awayTeamName
+    : fixture.homeTeamName;
+  const playerTeamSlug = home
+    ? fixture.homeTeamSlug
+    : fixture.awayTeamSlug;
+  if (!playerTeamName || !opponentTeamName || !playerTeamSlug) return fixture;
+  return {
+    ...fixture,
+    playerTeamName,
+    opponentTeamName,
+    playerTeamSlug,
+  };
+}
+
 function harmonizePlayerTeamFixtures(
   players: readonly PlayerStats[],
   requests: readonly SourcePlayerRequest[] = [],
@@ -365,11 +418,41 @@ export class StatsService {
         cachedParts.map(async (cached) => {
           if (
             cached.parts.form === undefined ||
-            (cached.parts.fixture !== undefined &&
-              cached.parts.fixture !== null) ||
             !cached.playerRequest.teamSlug
           ) {
             return cached;
+          }
+          if (
+            cached.parts.fixture !== undefined &&
+            cached.parts.fixture !== null
+          ) {
+            const identityHydrated = hydrateConfirmedFixtureTeamIdentity(
+              cached.parts.fixture,
+              cached.playerRequest,
+            );
+            if (identityHydrated === cached.parts.fixture) return cached;
+            const canonicalTeamSlug = identityHydrated?.playerTeamSlug;
+            if (!canonicalTeamSlug) return cached;
+            const shared = await splitCache.getTeamFixture(
+              cached.key,
+              canonicalTeamSlug,
+            );
+            const candidate =
+              shared && sameFixtureIdentity(shared, identityHydrated)
+                ? {
+                    ...shared,
+                    ...(cached.parts.fixture.marketOdds !== undefined
+                      ? {
+                          marketOdds: cached.parts.fixture.marketOdds,
+                        }
+                      : {}),
+                  }
+                : identityHydrated;
+            const fixture = await splitCache.refreshFixture(
+              cached.key,
+              candidate,
+            );
+            return { ...cached, parts: { ...cached.parts, fixture } };
           }
           const shared = await splitCache.getTeamFixture(
             cached.key,
