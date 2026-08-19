@@ -1718,25 +1718,20 @@ export class CloudflareNameResolutionCache
   ): Promise<SourcePlayerRequest | null | undefined> {
     const cacheKey = this.key(name, position, teamSlug);
     const raw = await this.namespace.get<unknown>(cacheKey, 'json');
-    if (raw === null) return undefined;
-    const parsed = NameResolutionEnvelopeSchema.safeParse(raw);
-    if (!parsed.success) {
-      this.removeInvalid(cacheKey);
-      return undefined;
+    if (raw !== null) return this.parse(cacheKey, raw);
+
+    const legacyKey = this.legacyTeamKey(name, position, teamSlug);
+    if (!legacyKey) return undefined;
+    const legacyRaw = await this.namespace.get<unknown>(legacyKey, 'json');
+    if (legacyRaw === null) return undefined;
+    const legacy = this.parse(legacyKey, legacyRaw);
+    // Preserve old positive mappings without reviving v7 negatives created by
+    // the stale-activeClub bug. The positive is lazily migrated to v8.
+    if (legacy && typeof legacy === 'object') {
+      this.persist(cacheKey, { found: true, value: legacy }, this.positiveTtlSeconds);
+      return legacy;
     }
-    if (!parsed.data.found) return null;
-    return {
-      slug: parsed.data.value.slug,
-      ...(parsed.data.value.position
-        ? { position: parsed.data.value.position }
-        : {}),
-      ...(parsed.data.value.teamSlug
-        ? { teamSlug: parsed.data.value.teamSlug }
-        : {}),
-      ...(parsed.data.value.nameResolution
-        ? { nameResolution: parsed.data.value.nameResolution }
-        : {}),
-    };
+    return undefined;
   }
 
   async getMany(
@@ -1746,26 +1741,29 @@ export class CloudflareNameResolutionCache
       this.key(name, position, teamSlug),
     );
     const raw = await this.readMany<unknown>(keys);
-    return keys.map((cacheKey) => {
-      if (!raw.has(cacheKey)) return undefined;
-      const parsed = NameResolutionEnvelopeSchema.safeParse(raw.get(cacheKey));
-      if (!parsed.success) {
-        this.removeInvalid(cacheKey);
-        return undefined;
+    const legacyKeyByIndex = requests.map(
+      ({ name, position, teamSlug }, index) =>
+        raw.has(keys[index]!)
+          ? undefined
+          : this.legacyTeamKey(name, position, teamSlug),
+    );
+    const legacyRaw = await this.readMany<unknown>(
+      legacyKeyByIndex.filter((key): key is string => Boolean(key)),
+    );
+    return keys.map((cacheKey, index) => {
+      if (raw.has(cacheKey)) return this.parse(cacheKey, raw.get(cacheKey));
+      const legacyKey = legacyKeyByIndex[index];
+      if (!legacyKey || !legacyRaw.has(legacyKey)) return undefined;
+      const legacy = this.parse(legacyKey, legacyRaw.get(legacyKey));
+      if (legacy && typeof legacy === 'object') {
+        this.persist(
+          cacheKey,
+          { found: true, value: legacy },
+          this.positiveTtlSeconds,
+        );
+        return legacy;
       }
-      if (!parsed.data.found) return null;
-      return {
-        slug: parsed.data.value.slug,
-        ...(parsed.data.value.position
-          ? { position: parsed.data.value.position }
-          : {}),
-        ...(parsed.data.value.teamSlug
-          ? { teamSlug: parsed.data.value.teamSlug }
-          : {}),
-        ...(parsed.data.value.nameResolution
-          ? { nameResolution: parsed.data.value.nameResolution }
-          : {}),
-      };
+      return undefined;
     });
   }
 
@@ -1793,6 +1791,39 @@ export class CloudflareNameResolutionCache
     if (!teamSlug) {
       return `player-name:v5:${encodeURIComponent(normalizeName(name))}:${position ?? 'any'}`;
     }
+    return `player-name:v8:${encodeURIComponent(normalizeName(name))}:${position ?? 'any'}:${encodeURIComponent(teamSlug.toLowerCase())}`;
+  }
+
+  private legacyTeamKey(
+    name: string,
+    position: FootballPosition | undefined,
+    teamSlug?: string,
+  ): string | undefined {
+    if (!teamSlug) return undefined;
     return `player-name:v7:${encodeURIComponent(normalizeName(name))}:${position ?? 'any'}:${encodeURIComponent(teamSlug.toLowerCase())}`;
+  }
+
+  private parse(
+    cacheKey: string,
+    raw: unknown,
+  ): SourcePlayerRequest | null | undefined {
+    const parsed = NameResolutionEnvelopeSchema.safeParse(raw);
+    if (!parsed.success) {
+      this.removeInvalid(cacheKey);
+      return undefined;
+    }
+    if (!parsed.data.found) return null;
+    return {
+      slug: parsed.data.value.slug,
+      ...(parsed.data.value.position
+        ? { position: parsed.data.value.position }
+        : {}),
+      ...(parsed.data.value.teamSlug
+        ? { teamSlug: parsed.data.value.teamSlug }
+        : {}),
+      ...(parsed.data.value.nameResolution
+        ? { nameResolution: parsed.data.value.nameResolution }
+        : {}),
+    };
   }
 }

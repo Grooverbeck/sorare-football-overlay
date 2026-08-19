@@ -1135,6 +1135,57 @@ describe('Cloudflare Worker', () => {
     );
   });
 
+  it('migrates v7 team-name hits but ignores stale v7 misses', async () => {
+    const positiveV7 =
+      'player-name:v7:legacy%20transfer%20hit:Midfielder:inter-miami';
+    const negativeV7 =
+      'player-name:v7:legacy%20transfer%20miss:Midfielder:inter-miami';
+    await Promise.all([
+      env.STATS_CACHE.put(
+        positiveV7,
+        JSON.stringify({
+          found: true,
+          value: {
+            slug: 'legacy-transfer-hit',
+            position: 'Midfielder',
+            teamSlug: 'inter-miami',
+            nameResolution: 'search',
+          },
+        }),
+      ),
+      env.STATS_CACHE.put(negativeV7, JSON.stringify({ found: false })),
+    ]);
+    const context = createExecutionContext();
+    const cache = new CloudflareNameResolutionCache(
+      env.STATS_CACHE,
+      2_592_000,
+      7_200,
+      context,
+    );
+
+    await expect(
+      cache.get('Legacy Transfer Hit', 'Midfielder', 'inter-miami'),
+    ).resolves.toMatchObject({
+      slug: 'legacy-transfer-hit',
+      teamSlug: 'inter-miami',
+    });
+    await expect(
+      cache.get('Legacy Transfer Miss', 'Midfielder', 'inter-miami'),
+    ).resolves.toBeUndefined();
+    await waitOnExecutionContext(context);
+
+    await expect(
+      env.STATS_CACHE.get(
+        'player-name:v8:legacy%20transfer%20hit:Midfielder:inter-miami',
+      ),
+    ).resolves.not.toBeNull();
+    await expect(
+      env.STATS_CACHE.get(
+        'player-name:v8:legacy%20transfer%20miss:Midfielder:inter-miami',
+      ),
+    ).resolves.toBeNull();
+  });
+
   it('lazily refreshes a viewed v1 fixture that predates player-relative team names', async () => {
     const cacheKey = 'team-name-migration-probe:Midfielder:no-low';
     const fixtureDate = new Date(

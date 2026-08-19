@@ -123,6 +123,32 @@ function teamSlugsLikelyMatch(
   );
 }
 
+interface ResolutionCandidateNextGame {
+  __typename?: string;
+  homeTeam?: { slug?: string | null } | null;
+  awayTeam?: { slug?: string | null } | null;
+}
+
+interface ResolutionCandidateTeamContext {
+  activeClub?: { slug: string } | null;
+  nextGame?: ResolutionCandidateNextGame | null;
+}
+
+function confirmedResolutionTeamSlug(
+  player: ResolutionCandidateTeamContext,
+  expectedTeamSlug: string | undefined,
+): string | undefined {
+  const activeClubSlug = player.activeClub?.slug.trim().toLowerCase();
+  if (!expectedTeamSlug) return activeClubSlug;
+  return [
+    activeClubSlug,
+    player.nextGame?.homeTeam?.slug?.trim().toLowerCase(),
+    player.nextGame?.awayTeam?.slug?.trim().toLowerCase(),
+  ].find((candidateSlug) =>
+    teamSlugsLikelyMatch(candidateSlug, expectedTeamSlug),
+  );
+}
+
 function resolutionKey(
   name: string,
   position: FootballPosition | undefined,
@@ -162,6 +188,7 @@ interface SearchPlayerHit {
     displayName: string;
     position: string;
     activeClub?: { slug: string } | null;
+    nextGame?: ResolutionCandidateNextGame | null;
   };
 }
 
@@ -179,6 +206,7 @@ interface SearchCardResult {
         displayName: string;
         position: string;
         activeClub?: { slug: string } | null;
+        nextGame?: ResolutionCandidateNextGame | null;
       };
     } | null;
   }>;
@@ -217,7 +245,19 @@ const RESOLVE_PLAYER_NAME_QUERY = parse(`
   query ResolvePlayerName($query: String!) {
     searchPlayers(query: $query, pageSize: 5) {
       hits {
-        player { slug displayName position activeClub { slug } }
+        player {
+          slug
+          displayName
+          position
+          activeClub { slug }
+          nextGame {
+            __typename
+            ... on Game {
+              homeTeam { slug }
+              awayTeam { slug }
+            }
+          }
+        }
       }
     }
     searchCards(query: $query, pageSize: 5) {
@@ -226,7 +266,19 @@ const RESOLVE_PLAYER_NAME_QUERY = parse(`
           __typename
           anyPlayer {
             __typename
-            ... on Player { slug displayName position activeClub { slug } }
+            ... on Player {
+              slug
+              displayName
+              position
+              activeClub { slug }
+              nextGame {
+                __typename
+                ... on Game {
+                  homeTeam { slug }
+                  awayTeam { slug }
+                }
+              }
+            }
           }
         }
       }
@@ -559,13 +611,23 @@ export class SorareDataSource implements PlayerStatsDataSource {
       >(PLAYER_NEXT_GAMES_QUERY, variables);
       return data.players.flatMap((player): SourcePlayerFixture[] => {
         if (player.__typename !== 'Player') return [];
+        const matchingRequest = batch.find(
+          (request) => request.slug === player.slug,
+        );
+        // Only a server-resolved name may use its confirmed team to repair a
+        // stale activeClub. Raw DOM team hints remain response-local and must
+        // never become persistent fixture identity by themselves.
+        const expectedTeamSlug = matchingRequest?.resolvedFromName
+          ? matchingRequest.teamSlug
+          : undefined;
+        const nextGame = this.nextGame(player, expectedTeamSlug);
+        const playerTeamSlug =
+          nextGame?.playerTeamSlug ?? player.activeClub?.slug;
         return [
           {
             slug: player.slug,
-            ...(player.activeClub?.slug
-              ? { playerTeamSlug: player.activeClub.slug }
-              : {}),
-            nextGame: this.nextGame(player),
+            ...(playerTeamSlug ? { playerTeamSlug } : {}),
+            nextGame,
           },
         ];
       });
@@ -605,10 +667,8 @@ export class SorareDataSource implements PlayerStatsDataSource {
     const teamMatches = expectedTeamSlug
       ? candidates.filter(
           (player) =>
-            teamSlugsLikelyMatch(
-              player.activeClub?.slug.toLowerCase(),
-              expectedTeamSlug,
-            ),
+            confirmedResolutionTeamSlug(player, expectedTeamSlug) !==
+            undefined,
         )
       : candidates;
     const expectedPositionMatch = expectedPosition
@@ -619,19 +679,15 @@ export class SorareDataSource implements PlayerStatsDataSource {
     const eligibleCardMatches = expectedTeamSlug
       ? cardMatches.filter(
           (player) =>
-            teamSlugsLikelyMatch(
-              player.activeClub?.slug.toLowerCase(),
-              expectedTeamSlug,
-            ),
+            confirmedResolutionTeamSlug(player, expectedTeamSlug) !==
+            undefined,
         )
       : cardMatches;
     const eligiblePlayerMatches = expectedTeamSlug
       ? playerMatches.filter(
           (player) =>
-            teamSlugsLikelyMatch(
-              player.activeClub?.slug.toLowerCase(),
-              expectedTeamSlug,
-            ),
+            confirmedResolutionTeamSlug(player, expectedTeamSlug) !==
+            undefined,
         )
       : playerMatches;
     const exactCardMatches = eligibleCardMatches.filter(
@@ -668,13 +724,15 @@ export class SorareDataSource implements PlayerStatsDataSource {
       strongestCardMatch ??
       eligiblePlayerMatches[0];
     const position = exact ? fromSorarePosition[exact.position] : undefined;
-    const activeClubSlug = exact?.activeClub?.slug.toLowerCase();
+    const confirmedTeamSlug = exact
+      ? confirmedResolutionTeamSlug(exact, expectedTeamSlug)
+      : undefined;
     const key = resolutionKey(name, expectedPosition, expectedTeamSlug);
     if (exact && position) {
       const resolved = {
         slug: exact.slug,
         position,
-        ...(activeClubSlug ? { teamSlug: activeClubSlug } : {}),
+        ...(confirmedTeamSlug ? { teamSlug: confirmedTeamSlug } : {}),
         nameResolution: 'search' as const,
       };
       this.resolvedNames.set(key, resolved);
@@ -815,6 +873,12 @@ export class SorareDataSource implements PlayerStatsDataSource {
           fromSorarePosition[player.position];
         if (!position) return [];
         const activeClubId = player.activeClub?.id;
+        const matchingRequest = requests.find(
+          (request) => request.slug === player.slug,
+        );
+        const expectedTeamSlug = matchingRequest?.resolvedFromName
+          ? matchingRequest.teamSlug
+          : undefined;
 
         const appearances = player.playerGameScores.flatMap((score): PlayerAppearance[] => {
           if (!score || score.__typename !== 'PlayerGameScore') return [];
@@ -848,7 +912,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
               position,
               ...(activeClubId ? { activeClubId } : {}),
               appearances: this.selectAppearanceWindow(appearances),
-              nextGame: this.nextGame(player),
+              nextGame: this.nextGame(player, expectedTeamSlug),
             },
             scoreWindowWasFull: player.playerGameScores.length >= 15,
           },
@@ -1041,14 +1105,34 @@ export class SorareDataSource implements PlayerStatsDataSource {
           PlayerNextGamesQuery['players'][number],
           { __typename?: 'Player' }
         >,
+    expectedTeamSlug?: string,
   ) {
     const game = player.nextGame;
     if (!game || game.__typename !== 'Game') return null;
     const clubId = player.activeClub?.id;
-    const home = clubId !== undefined && game.homeTeam?.id === clubId;
-    const away = clubId !== undefined && game.awayTeam?.id === clubId;
-    const playerTeamSlug =
-      home || away ? player.activeClub?.slug : undefined;
+    const activeHome = clubId !== undefined && game.homeTeam?.id === clubId;
+    const activeAway = clubId !== undefined && game.awayTeam?.id === clubId;
+    const expectedHome = teamSlugsLikelyMatch(
+      game.homeTeam?.slug,
+      expectedTeamSlug,
+    );
+    const expectedAway = teamSlugsLikelyMatch(
+      game.awayTeam?.slug,
+      expectedTeamSlug,
+    );
+    const home =
+      activeHome ||
+      (!activeHome && !activeAway && expectedHome && !expectedAway);
+    const away =
+      activeAway ||
+      (!activeHome && !activeAway && expectedAway && !expectedHome);
+    const playerTeamSlug = activeHome || activeAway
+      ? player.activeClub?.slug
+      : home
+        ? game.homeTeam?.slug
+        : away
+          ? game.awayTeam?.slug
+          : undefined;
     const stats = home ? game.homeStats : away ? game.awayStats : null;
     const footballStats = stats?.__typename === 'FootballTeamGameStats' ? stats : null;
     return {
