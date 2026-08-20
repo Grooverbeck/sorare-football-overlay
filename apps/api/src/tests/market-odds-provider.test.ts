@@ -1805,6 +1805,13 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     expect(playerNameMatchScore('Heung-min Son', 'Son Heung-Woo')).toBe(0);
   });
 
+  it('matches the known Oh Hyeon-gyu transliterations and name orders only', () => {
+    expect(playerNameMatchScore('Hyeongyu Oh', 'Oh Hyeon-gyu')).toBe(100);
+    expect(playerNameMatchScore('Hyun-Gyu Oh', 'Hyeon-Gyu Oh')).toBe(100);
+    expect(playerNameMatchScore('Hyeongyu Kim', 'Oh Hyeon-gyu')).toBe(0);
+    expect(playerNameMatchScore('Hyeon-Jun Oh', 'Oh Hyeon-gyu')).toBe(0);
+  });
+
   it('matches Icelandic thorn and eth with provider transliterations', () => {
     expect(playerNameMatchScore('Stefán Þórðarson', 'Stefan Thordarson')).toBe(100);
     expect(playerNameMatchScore('Stefán Þórðarson', 'Stefán Thórdarson')).toBe(100);

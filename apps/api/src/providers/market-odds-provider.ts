@@ -1360,7 +1360,19 @@ const canonicalPlayerNames: Readonly<Record<string, string>> = {
   // as Djé D'Avilla. Canonicalize only this full identity so other players
   // named Djé cannot be merged with unrelated Tah names.
   'dje d avilla': 'tah d avilla',
+  // Sorare, its slug and bookmaker feeds use different transliterations and
+  // name orders for Beşiktaş striker Oh Hyeon-gyu. Keep these as full-name
+  // aliases so no unrelated Korean player can match on a partial token set.
+  'hyeongyu oh': 'hyeon gyu oh',
+  'hyun gyu oh': 'hyeon gyu oh',
+  'oh hyeongyu': 'hyeon gyu oh',
+  'oh hyeon gyu': 'hyeon gyu oh',
+  'oh hyun gyu': 'hyeon gyu oh',
 };
+
+const strictCanonicalPlayerNames = new Set(
+  Object.values(canonicalPlayerNames),
+);
 
 export function normalizePlayerName(value: string): string {
   // NFKD removes accents, but letters such as Icelandic thorn/eth are not
@@ -1974,6 +1986,15 @@ export function playerNameMatchScore(
   const sorare = normalizePlayerName(sorareDisplayName).split(' ');
   const odds = normalizePlayerName(oddsName).split(' ');
   if (sorare.join(' ') === odds.join(' ')) return 100;
+  // Full-name aliases represent manually confirmed identities. Once either
+  // side resolves to one, do not fall through to the broader nickname or
+  // initial heuristics for a different name that merely shares some tokens.
+  if (
+    strictCanonicalPlayerNames.has(sorare.join(' ')) ||
+    strictCanonicalPlayerNames.has(odds.join(' '))
+  ) {
+    return 0;
+  }
   // Some feeds use the Korean family-name-first order (`Son Heung Min`)
   // while Sorare displays the same person as `Heung-min Son`. Matching an
   // identical token multiset is safe here because `playerProbability` still

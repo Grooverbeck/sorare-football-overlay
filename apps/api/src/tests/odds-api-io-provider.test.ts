@@ -656,6 +656,58 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("reads Oh Hyeon-gyu's existing bookmaker-name snapshot without another request", async () => {
+    const hyeongyuOh = player({
+      slug: 'hyun-gyu-oh',
+      displayName: 'Hyeongyu Oh',
+      position: 'Forward',
+      nextGame: {
+        ...player().nextGame!,
+        competitionSlug: 'uefa-europa-league',
+        homeTeamName: 'Beşiktaş',
+        awayTeamName: 'Kauno Žalgiris',
+        playerTeamName: 'Beşiktaş',
+        opponentTeamName: 'Kauno Žalgiris',
+      },
+    });
+    const fixtureKey = oddsApiIoFixtureStoreKey(hyeongyuOh.nextGame!);
+    if (!fixtureKey) throw new Error('Expected Oh Hyeon-gyu fixture key');
+    const store = new InMemoryMarketSnapshotStore(60_000, () => now);
+    await store.set(fixtureKey, {
+      status: 'available',
+      market: 'player_goal_scorer_anytime',
+      eventId: 'besiktas-kauno-fixture',
+      capturedAt: new Date(now).toISOString(),
+      players: {
+        'oh hyeon gyu': { probability: 1 / 1.98, bookmakerCount: 1 },
+      },
+    });
+    const fetchImpl = vi.fn<typeof fetch>();
+    const { provider } = createProvider(
+      fetchImpl,
+      new InMemoryProviderQuotaUsageStore(() => now),
+      [
+        {
+          competitionSlugs: ['uefa-europa-league'],
+          leagueSlugs: [
+            'international-clubs-uefa-europa-league-playoff-round',
+          ],
+          playerMarkets: ['goal'],
+          matchOdds: false,
+        },
+      ],
+      0,
+      store,
+    );
+
+    const result = await provider.load([hyeongyuOh], { cacheOnly: true });
+
+    expect(result.get(playerMarketOddsKey(hyeongyuOh))).toMatchObject({
+      goal: { probability: 1 / 1.98 },
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('replays an away-side assist from v2 evidence without another request', async () => {
     const store = new InMemoryMarketSnapshotStore(60_000, () => now);
     const messi = player({
