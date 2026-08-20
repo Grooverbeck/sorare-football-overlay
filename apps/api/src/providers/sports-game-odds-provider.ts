@@ -3,7 +3,6 @@ import {
   PlayerMarketOddsSchema,
   type BookmakerMarketQuote,
   type MarketProbability,
-  type MatchProbabilities,
   type PlayerMarketOdds,
   type PlayerStats,
 } from '@sorare-overlay/shared';
@@ -49,7 +48,8 @@ import {
 } from './odds-usage.js';
 import {
   MatchOddsSnapshotSchema,
-  matchProbabilitiesForPlayer,
+  fixtureOddsForPlayer,
+  type FixtureOdds,
   type FixtureMatchOddsProvider,
   type MatchOddsSnapshot,
   type MatchOddsSnapshotStore,
@@ -866,8 +866,8 @@ export class SportsGameOddsPlayerMarketOddsProvider
   async loadMatchOdds(
     players: readonly PlayerStats[],
     loadOptions?: { cacheOnly?: boolean },
-  ): Promise<Map<string, MatchProbabilities | null>> {
-    const output = new Map<string, MatchProbabilities | null>(
+  ): Promise<Map<string, FixtureOdds | null>> {
+    const output = new Map<string, FixtureOdds | null>(
       players.map((player) => [playerMarketOddsKey(player), null]),
     );
     const matchStore = this.options.matchOddsStore;
@@ -949,7 +949,7 @@ export class SportsGameOddsPlayerMarketOddsProvider
       for (const player of fixture.players) {
         output.set(
           playerMarketOddsKey(player),
-          matchProbabilitiesForPlayer(player, snapshot),
+          fixtureOddsForPlayer(player, snapshot),
         );
       }
     }
@@ -1553,7 +1553,7 @@ export class SportsGameOddsFixtureMatchOddsProvider
   load(
     players: readonly PlayerStats[],
     loadOptions?: { cacheOnly?: boolean },
-  ): Promise<Map<string, MatchProbabilities | null>> {
+  ): Promise<Map<string, FixtureOdds | null>> {
     return this.source.loadMatchOdds(players, loadOptions);
   }
 }

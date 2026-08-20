@@ -2,7 +2,6 @@ import {
   MarketProbabilitySchema,
   PlayerMarketOddsSchema,
   type BookmakerMarketQuote,
-  type MatchProbabilities,
   type PlayerMarketOdds,
   type PlayerStats,
 } from '@sorare-overlay/shared';
@@ -42,7 +41,8 @@ import {
 } from './market-odds-provider.js';
 import {
   MatchOddsSnapshotSchema,
-  matchProbabilitiesForPlayer,
+  fixtureOddsForPlayer,
+  type FixtureOdds,
   type FixtureMatchOddsProvider,
   type MatchOddsSnapshot,
   type MatchOddsSnapshotStore,
@@ -81,6 +81,7 @@ const OddsApiIoMarketOddSchema = z.object({
   // expose the same one-sided price as `over`. Accept both payload shapes.
   odds: OddsApiIoDecimalOddSchema.optional(),
   yes: OddsApiIoDecimalOddSchema.optional(),
+  no: OddsApiIoDecimalOddSchema.optional(),
 });
 
 const OddsApiIoMarketSchema = z.object({
@@ -135,6 +136,13 @@ export function oddsApiIoFixtureStoreKey(
 ): string | null {
   const key = marketFixtureKey(nextGame);
   return key ? fixtureStoreKey(key) : null;
+}
+
+export function oddsApiIoMatchFixtureStoreKey(
+  nextGame: NonNullable<PlayerStats['nextGame']>,
+): string | null {
+  const key = marketFixtureKey(nextGame);
+  return key ? matchFixtureStoreKey(key) : null;
 }
 
 class OddsApiIoHttpError extends Error {
@@ -201,6 +209,10 @@ function resetTimeFromHeaders(headers: Headers, now: number): number | null {
 
 function fixtureStoreKey(fixtureKey: string): string {
   return `odds-api-io|${fixtureKey}`;
+}
+
+function matchFixtureStoreKey(fixtureKey: string): string {
+  return `odds-api-io-match:v2|${fixtureKey}`;
 }
 
 function rfc3339Seconds(value: number): string {
@@ -422,6 +434,23 @@ function decimalOdd(value: string | number | undefined): number | null {
   return Number.isFinite(parsed) && parsed > 1 ? parsed : null;
 }
 
+function binaryYesProbability(
+  market: OddsApiIoEventOdds['bookmakers'][string][number] | undefined,
+): number | null {
+  const line = market?.odds.find(
+    (odd) =>
+      decimalOdd(odd.yes) !== null &&
+      decimalOdd(odd.no) !== null,
+  );
+  if (!line) return null;
+  const yes = decimalOdd(line.yes);
+  const no = decimalOdd(line.no);
+  if (yes === null || no === null) return null;
+  const yesImplied = 1 / yes;
+  const noImplied = 1 / no;
+  return yesImplied / (yesImplied + noImplied);
+}
+
 function matchOddsSnapshot(
   response: OddsApiIoEventOdds,
   capturedAt: string,
@@ -431,7 +460,27 @@ function matchOddsSnapshot(
     draw: number;
     away: number;
   }> = [];
+  const homeCleanSheetProbabilities: number[] = [];
+  const awayCleanSheetProbabilities: number[] = [];
   for (const markets of Object.values(response.bookmakers)) {
+    const cleanSheetHome = binaryYesProbability(
+      markets.find(
+        ({ name }) =>
+          name.trim().toLocaleLowerCase() === 'clean sheet home',
+      ),
+    );
+    const cleanSheetAway = binaryYesProbability(
+      markets.find(
+        ({ name }) =>
+          name.trim().toLocaleLowerCase() === 'clean sheet away',
+      ),
+    );
+    if (cleanSheetHome !== null) {
+      homeCleanSheetProbabilities.push(cleanSheetHome);
+    }
+    if (cleanSheetAway !== null) {
+      awayCleanSheetProbabilities.push(cleanSheetAway);
+    }
     const market = markets.find(({ name }) =>
       ['ml', 'full time result', 'match result'].includes(
         name.trim().toLocaleLowerCase(),
@@ -473,6 +522,20 @@ function matchOddsSnapshot(
     home: probabilities.home / total,
     draw: probabilities.draw / total,
     away: probabilities.away / total,
+    ...(homeCleanSheetProbabilities.length > 0
+      ? {
+          homeCleanSheetProbability: median(
+            homeCleanSheetProbabilities,
+          ),
+        }
+      : {}),
+    ...(awayCleanSheetProbabilities.length > 0
+      ? {
+          awayCleanSheetProbability: median(
+            awayCleanSheetProbabilities,
+          ),
+        }
+      : {}),
     bookmakerCount: bookmakerProbabilities.length,
   });
 }
@@ -796,8 +859,8 @@ export class OddsApiIoPlayerMarketOddsProvider
   async loadMatchOdds(
     players: readonly PlayerStats[],
     loadOptions?: { cacheOnly?: boolean },
-  ): Promise<Map<string, MatchProbabilities | null>> {
-    const output = new Map<string, MatchProbabilities | null>(
+  ): Promise<Map<string, FixtureOdds | null>> {
+    const output = new Map<string, FixtureOdds | null>(
       players.map((player) => [playerMarketOddsKey(player), null]),
     );
     const store = this.options.matchOddsStore;
@@ -813,7 +876,7 @@ export class OddsApiIoPlayerMarketOddsProvider
     const reads = fixtures.map(async (fixture) => ({
       fixture,
       snapshot: await settleCacheReadWithin(
-        store.get(fixtureStoreKey(fixture.key)),
+        store.get(matchFixtureStoreKey(fixture.key)),
         cacheOnly,
       ),
     }));
@@ -921,7 +984,7 @@ export class OddsApiIoPlayerMarketOddsProvider
       for (const player of fixture.players) {
         output.set(
           playerMarketOddsKey(player),
-          matchProbabilitiesForPlayer(player, snapshot),
+          fixtureOddsForPlayer(player, snapshot),
         );
       }
     }
@@ -1473,7 +1536,7 @@ export class OddsApiIoPlayerMarketOddsProvider
       if (route.matchOdds === true && matchStore) {
         const storedMatchSnapshot =
           matchSnapshots.get(fixture.key) ??
-          (await matchStore.get(fixtureStoreKey(fixture.key)));
+          (await matchStore.get(matchFixtureStoreKey(fixture.key)));
         if (storedMatchSnapshot?.status === 'available') {
           matchSnapshots.set(fixture.key, storedMatchSnapshot);
           continue;
@@ -1499,7 +1562,7 @@ export class OddsApiIoPlayerMarketOddsProvider
             ).toISOString(),
           });
         await matchStore.set(
-          fixtureStoreKey(fixture.key),
+          matchFixtureStoreKey(fixture.key),
           nextMatchSnapshot,
         );
         matchSnapshots.set(fixture.key, nextMatchSnapshot);
@@ -1703,7 +1766,7 @@ export class OddsApiIoFixtureMatchOddsProvider
   load(
     players: readonly PlayerStats[],
     loadOptions?: { cacheOnly?: boolean },
-  ): Promise<Map<string, MatchProbabilities | null>> {
+  ): Promise<Map<string, FixtureOdds | null>> {
     return this.source.loadMatchOdds(players, loadOptions);
   }
 }

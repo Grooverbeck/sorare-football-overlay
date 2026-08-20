@@ -740,14 +740,23 @@ export class StatsService {
           marketRefreshDueState.complete
           ? marketRefreshDuePlayerKeys.has(key)
           : true);
-      const fallbackMatchProbabilities =
-        fixtureMatchOdds.get(key) ?? null;
+      const fallbackFixtureOdds = fixtureMatchOdds.get(key) ?? null;
       const nextGame = stats.nextGame
         ? {
             ...stats.nextGame,
+            cleanSheetProbability:
+              stats.nextGame.cleanSheetProbability ??
+              fallbackFixtureOdds?.cleanSheetProbability ??
+              null,
             matchProbabilities: mergeMatchProbabilities(
               stats.nextGame.matchProbabilities,
-              fallbackMatchProbabilities,
+              fallbackFixtureOdds
+                ? {
+                    win: fallbackFixtureOdds.win,
+                    draw: fallbackFixtureOdds.draw,
+                    loss: fallbackFixtureOdds.loss,
+                  }
+                : null,
             ),
             marketOdds: odds,
           }

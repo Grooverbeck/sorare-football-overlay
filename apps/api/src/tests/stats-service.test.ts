@@ -2005,7 +2005,7 @@ describe('StatsService cache writes', () => {
     expect(scheduleBackground).toHaveBeenCalledTimes(1);
   });
 
-  it('fills only missing H-D-A values and keeps Sorare probabilities authoritative', async () => {
+  it('fills missing H-D-A and CS values while keeping Sorare probabilities authoritative', async () => {
     const mock = new MockDataSource();
     const source: PlayerStatsDataSource = {
       source: 'sorare',
@@ -2016,7 +2016,8 @@ describe('StatsService cache writes', () => {
           ...player,
           nextGame: player.nextGame
             ? {
-                ...player.nextGame,
+              ...player.nextGame,
+                cleanSheetProbability: null,
                 matchProbabilities: {
                   win: null,
                   draw: 0.24,
@@ -2026,10 +2027,11 @@ describe('StatsService cache writes', () => {
             : null,
         })),
     };
-    const fallback: MatchProbabilities = {
+    const fallback = {
       win: 0.51,
       draw: 0.22,
       loss: 0.27,
+      cleanSheetProbability: 0.41,
     };
     const fixtureProvider: FixtureMatchOddsProvider = {
       supports: () => true,
@@ -2064,5 +2066,6 @@ describe('StatsService cache writes', () => {
       draw: 0.24,
       loss: 0.27,
     });
+    expect(result.data[0]?.nextGame?.cleanSheetProbability).toBe(0.41);
   });
 });

@@ -16,6 +16,7 @@ import {
   OddsApiIoFixtureMatchOddsProvider,
   OddsApiIoPlayerMarketOddsProvider,
   oddsApiIoFixtureStoreKey,
+  oddsApiIoMatchFixtureStoreKey,
 } from '../providers/odds-api-io-provider.js';
 import {
   InMemoryProviderQuotaUsageStore,
@@ -878,7 +879,7 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
       cachedPlayer.get(playerMarketOddsKey(hnlPlayer))?.assist?.probability,
     ).toBeCloseTo((1 / 4.2 + 1 / 4.6) / 2);
     const probabilities = cachedMatch.get(playerMarketOddsKey(hnlPlayer));
-    expect(probabilities).toEqual({
+    expect(probabilities).toMatchObject({
       win: expect.any(Number),
       draw: expect.any(Number),
       loss: expect.any(Number),
@@ -889,7 +890,7 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
         (probabilities?.loss ?? 0),
     ).toBeCloseTo(1);
     expect(probabilities?.win ?? 1).toBeLessThan(probabilities?.loss ?? 0);
-    const fixtureKey = oddsApiIoFixtureStoreKey(hnlPlayer.nextGame!);
+    const fixtureKey = oddsApiIoMatchFixtureStoreKey(hnlPlayer.nextGame!);
     if (!fixtureKey) throw new Error('Expected HNL fixture key');
     await expect(matchStore.get(fixtureKey)).resolves.toMatchObject({
       status: 'available',
@@ -941,6 +942,10 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
                   name: 'ML',
                   odds: [{ home: '5.50', draw: '3.80', away: '1.55' }],
                 },
+                {
+                  name: 'Clean Sheet Away',
+                  odds: [{ yes: '2.25', no: '1.571' }],
+                },
               ],
               Unibet: [
                 {
@@ -975,16 +980,20 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
     if (!matchProvider) throw new Error('Expected Conference match provider');
 
     const result = await matchProvider.load([brightonPlayer]);
-    const probabilities = result.get(playerMarketOddsKey(brightonPlayer));
+    const fixtureOdds = result.get(playerMarketOddsKey(brightonPlayer));
+    const probabilities = fixtureOdds;
 
     expect(fetchImpl).toHaveBeenCalledTimes(2);
-    expect(probabilities).toEqual({
+    expect(probabilities).toMatchObject({
       win: expect.any(Number),
       draw: expect.any(Number),
       loss: expect.any(Number),
     });
     expect(probabilities?.win ?? 0).toBeGreaterThan(
       probabilities?.loss ?? 1,
+    );
+    expect(fixtureOdds?.cleanSheetProbability).toBeCloseTo(
+      (1 / 2.25) / (1 / 2.25 + 1 / 1.571),
     );
   });
 

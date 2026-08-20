@@ -31,6 +31,8 @@ const availableSnapshotSchema = z.object({
   home: z.number().min(0).max(1),
   draw: z.number().min(0).max(1),
   away: z.number().min(0).max(1),
+  homeCleanSheetProbability: z.number().min(0).max(1).optional(),
+  awayCleanSheetProbability: z.number().min(0).max(1).optional(),
   bookmakerCount: z.number().int().positive(),
 });
 
@@ -50,6 +52,10 @@ export const MatchOddsSnapshotSchema = z.discriminatedUnion('status', [
   unavailableSnapshotSchema,
 ]);
 export type MatchOddsSnapshot = z.infer<typeof MatchOddsSnapshotSchema>;
+
+export type FixtureOdds = MatchProbabilities & {
+  cleanSheetProbability?: number;
+};
 
 export interface MatchOddsSnapshotStore {
   get(fixtureKey: string): Promise<MatchOddsSnapshot | undefined>;
@@ -118,7 +124,7 @@ export interface FixtureMatchOddsProvider {
   load(
     players: readonly PlayerStats[],
     options?: { cacheOnly?: boolean },
-  ): Promise<Map<string, MatchProbabilities | null>>;
+  ): Promise<Map<string, FixtureOdds | null>>;
   supports(player: PlayerStats): boolean;
 }
 
@@ -131,7 +137,7 @@ export class UnavailableFixtureMatchOddsProvider
 
   async load(
     players: readonly PlayerStats[],
-  ): Promise<Map<string, MatchProbabilities | null>> {
+  ): Promise<Map<string, FixtureOdds | null>> {
     return new Map(
       players.map((player) => [playerMarketOddsKey(player), null]),
     );
@@ -165,6 +171,22 @@ function supplementMatchProbabilities(
     : merged;
 }
 
+function supplementFixtureOdds(
+  primary: FixtureOdds | null | undefined,
+  fallback: FixtureOdds | null | undefined,
+): FixtureOdds | null {
+  const matchProbabilities = supplementMatchProbabilities(primary, fallback);
+  const cleanSheetProbability =
+    primary?.cleanSheetProbability ??
+    fallback?.cleanSheetProbability ??
+    null;
+  if (!matchProbabilities && cleanSheetProbability === null) return null;
+  return {
+    ...(matchProbabilities ?? { win: null, draw: null, loss: null }),
+    ...(cleanSheetProbability !== null ? { cleanSheetProbability } : {}),
+  };
+}
+
 /**
  * Keeps paid match-odds fallbacks sequential on refreshes, while reading both
  * provider caches concurrently on the response path. The fallback only sees
@@ -185,12 +207,12 @@ export class SupplementingFixtureMatchOddsProvider
   async load(
     players: readonly PlayerStats[],
     loadOptions?: { cacheOnly?: boolean },
-  ): Promise<Map<string, MatchProbabilities | null>> {
+  ): Promise<Map<string, FixtureOdds | null>> {
     const primaryPlayers = players.filter((player) =>
       this.primary.supports(player),
     );
-    let primaryValues: Map<string, MatchProbabilities | null>;
-    let fallbackValues: Map<string, MatchProbabilities | null>;
+    let primaryValues: Map<string, FixtureOdds | null>;
+    let fallbackValues: Map<string, FixtureOdds | null>;
 
     if (loadOptions?.cacheOnly) {
       const fallbackPlayers = players.filter((player) =>
@@ -199,27 +221,27 @@ export class SupplementingFixtureMatchOddsProvider
       const [primaryResult, fallbackResult] = await Promise.allSettled([
         primaryPlayers.length > 0
           ? this.primary.load(primaryPlayers, loadOptions)
-          : Promise.resolve(new Map<string, MatchProbabilities | null>()),
+          : Promise.resolve(new Map<string, FixtureOdds | null>()),
         fallbackPlayers.length > 0
           ? this.fallback.load(fallbackPlayers, loadOptions)
-          : Promise.resolve(new Map<string, MatchProbabilities | null>()),
+          : Promise.resolve(new Map<string, FixtureOdds | null>()),
       ]);
       primaryValues =
         primaryResult.status === 'fulfilled'
           ? primaryResult.value
-          : new Map<string, MatchProbabilities | null>();
+          : new Map<string, FixtureOdds | null>();
       fallbackValues =
         fallbackResult.status === 'fulfilled'
           ? fallbackResult.value
-          : new Map<string, MatchProbabilities | null>();
+          : new Map<string, FixtureOdds | null>();
     } else {
       try {
         primaryValues =
           primaryPlayers.length > 0
             ? await this.primary.load(primaryPlayers, loadOptions)
-            : new Map<string, MatchProbabilities | null>();
+            : new Map<string, FixtureOdds | null>();
       } catch {
-        primaryValues = new Map<string, MatchProbabilities | null>();
+        primaryValues = new Map<string, FixtureOdds | null>();
       }
       const fallbackPlayers = players.filter(
         (player) =>
@@ -232,9 +254,9 @@ export class SupplementingFixtureMatchOddsProvider
         fallbackValues =
           fallbackPlayers.length > 0
             ? await this.fallback.load(fallbackPlayers, loadOptions)
-            : new Map<string, MatchProbabilities | null>();
+            : new Map<string, FixtureOdds | null>();
       } catch {
-        fallbackValues = new Map<string, MatchProbabilities | null>();
+        fallbackValues = new Map<string, FixtureOdds | null>();
       }
     }
 
@@ -243,7 +265,7 @@ export class SupplementingFixtureMatchOddsProvider
         const key = playerMarketOddsKey(player);
         return [
           key,
-          supplementMatchProbabilities(
+          supplementFixtureOdds(
             primaryValues.get(key),
             fallbackValues.get(key),
           ),
@@ -464,6 +486,44 @@ export function matchProbabilitiesForPlayer(
   return null;
 }
 
+export function cleanSheetProbabilityForPlayer(
+  player: PlayerStats,
+  snapshot: z.infer<typeof availableSnapshotSchema>,
+): number | null {
+  const fixture = player.nextGame;
+  if (
+    !fixture?.playerTeamName ||
+    !fixture.homeTeamName ||
+    !fixture.awayTeamName
+  ) {
+    return null;
+  }
+  const playerTeam = normalizeTeamName(fixture.playerTeamName);
+  if (playerTeam === normalizeTeamName(fixture.homeTeamName)) {
+    return snapshot.homeCleanSheetProbability ?? null;
+  }
+  if (playerTeam === normalizeTeamName(fixture.awayTeamName)) {
+    return snapshot.awayCleanSheetProbability ?? null;
+  }
+  return null;
+}
+
+export function fixtureOddsForPlayer(
+  player: PlayerStats,
+  snapshot: z.infer<typeof availableSnapshotSchema>,
+): FixtureOdds | null {
+  const matchProbabilities = matchProbabilitiesForPlayer(player, snapshot);
+  const cleanSheetProbability = cleanSheetProbabilityForPlayer(
+    player,
+    snapshot,
+  );
+  if (!matchProbabilities && cleanSheetProbability === null) return null;
+  return {
+    ...(matchProbabilities ?? { win: null, draw: null, loss: null }),
+    ...(cleanSheetProbability !== null ? { cleanSheetProbability } : {}),
+  };
+}
+
 export class TheOddsApiFixtureMatchOddsProvider
   implements FixtureMatchOddsProvider
 {
@@ -487,8 +547,8 @@ export class TheOddsApiFixtureMatchOddsProvider
   async load(
     players: readonly PlayerStats[],
     loadOptions?: { cacheOnly?: boolean },
-  ): Promise<Map<string, MatchProbabilities | null>> {
-    const output = new Map<string, MatchProbabilities | null>(
+  ): Promise<Map<string, FixtureOdds | null>> {
+    const output = new Map<string, FixtureOdds | null>(
       players.map((player) => [playerMarketOddsKey(player), null]),
     );
     const eligible = players.filter((player) => this.routeFor(player) !== null);
@@ -658,7 +718,7 @@ export class TheOddsApiFixtureMatchOddsProvider
       for (const player of fixture.players) {
         output.set(
           playerMarketOddsKey(player),
-          matchProbabilitiesForPlayer(player, snapshot),
+          fixtureOddsForPlayer(player, snapshot),
         );
       }
     }
