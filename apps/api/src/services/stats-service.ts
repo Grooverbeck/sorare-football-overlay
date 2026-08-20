@@ -172,6 +172,32 @@ function hydrateConfirmedFixtureTeamIdentity(
   };
 }
 
+function fixtureStartsBefore(
+  candidate: NonNullable<PlayerStats['nextGame']>,
+  current: NonNullable<PlayerStats['nextGame']>,
+): boolean {
+  const candidateKickoff = Date.parse(candidate.date);
+  const currentKickoff = Date.parse(current.date);
+  return (
+    Number.isFinite(candidateKickoff) &&
+    Number.isFinite(currentKickoff) &&
+    candidateKickoff < currentKickoff
+  );
+}
+
+function preservePlayerMarketOdds(
+  teamFixture: NonNullable<PlayerStats['nextGame']>,
+  playerFixture: NonNullable<PlayerStats['nextGame']>,
+): NonNullable<PlayerStats['nextGame']> {
+  const { marketOdds: _teamMarketOdds, ...shared } = teamFixture;
+  return {
+    ...shared,
+    ...(playerFixture.marketOdds !== undefined
+      ? { marketOdds: playerFixture.marketOdds }
+      : {}),
+  };
+}
+
 function harmonizePlayerTeamFixtures(
   players: readonly PlayerStats[],
   requests: readonly SourcePlayerRequest[] = [],
@@ -426,27 +452,57 @@ export class StatsService {
             cached.parts.fixture !== undefined &&
             cached.parts.fixture !== null
           ) {
+            const canonicalTeamSlug = cached.playerRequest.resolvedFromName
+              ? cached.playerRequest.teamSlug
+              : undefined;
+            const canonicalShared = canonicalTeamSlug
+              ? await splitCache.getTeamFixture(
+                  cached.key,
+                  canonicalTeamSlug,
+                )
+              : undefined;
+            if (
+              canonicalShared &&
+              (sameFixtureIdentity(
+                canonicalShared,
+                cached.parts.fixture,
+              ) ||
+                fixtureStartsBefore(
+                  canonicalShared,
+                  cached.parts.fixture,
+                ))
+            ) {
+              const fixture = await splitCache.refreshFixture(
+                cached.key,
+                preservePlayerMarketOdds(
+                  canonicalShared,
+                  cached.parts.fixture,
+                ),
+              );
+              return { ...cached, parts: { ...cached.parts, fixture } };
+            }
             const identityHydrated = hydrateConfirmedFixtureTeamIdentity(
               cached.parts.fixture,
               cached.playerRequest,
             );
-            if (identityHydrated === cached.parts.fixture) return cached;
-            const canonicalTeamSlug = identityHydrated?.playerTeamSlug;
-            if (!canonicalTeamSlug) return cached;
+            if (
+              !identityHydrated ||
+              identityHydrated === cached.parts.fixture
+            ) {
+              return cached;
+            }
+            const hydratedTeamSlug = identityHydrated.playerTeamSlug;
+            if (!hydratedTeamSlug) return cached;
             const shared = await splitCache.getTeamFixture(
               cached.key,
-              canonicalTeamSlug,
+              hydratedTeamSlug,
             );
             const candidate =
               shared && sameFixtureIdentity(shared, identityHydrated)
-                ? {
-                    ...shared,
-                    ...(cached.parts.fixture.marketOdds !== undefined
-                      ? {
-                          marketOdds: cached.parts.fixture.marketOdds,
-                        }
-                      : {}),
-                  }
+                ? preservePlayerMarketOdds(
+                    shared,
+                    cached.parts.fixture,
+                  )
                 : identityHydrated;
             const fixture = await splitCache.refreshFixture(
               cached.key,

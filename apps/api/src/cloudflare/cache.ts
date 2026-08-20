@@ -1211,6 +1211,30 @@ class CloudflarePlayerFixtureCache
       await this.set(key, value);
       return (await this.get(key)) ?? value;
     }
+    if (existing !== null && value !== null && value.playerTeamSlug) {
+      const existingTeamSlug = existing.playerTeamSlug?.toLowerCase();
+      const valueTeamSlug = value.playerTeamSlug.toLowerCase();
+      const existingKickoff = Date.parse(existing.date);
+      const valueKickoff = Date.parse(value.date);
+      const valueRollover = fixtureRolloverExpiration(value.date);
+      const valueIsActive =
+        valueRollover !== null &&
+        valueRollover > Math.floor(this.now() / 1_000);
+      if (
+        valueIsActive &&
+        (!existingTeamSlug || existingTeamSlug === valueTeamSlug) &&
+        Number.isFinite(existingKickoff) &&
+        Number.isFinite(valueKickoff) &&
+        valueKickoff < existingKickoff
+      ) {
+        // A canonical team fixture can be earlier than a stale player-level
+        // nextGame (notably Sorare games represented as midnight placeholders).
+        // Prefer the still-active held fixture without letting an expired old
+        // match overwrite a genuine future game.
+        await this.set(key, value);
+        return (await this.get(key)) ?? value;
+      }
+    }
     if (
       existing === null ||
       value === null ||

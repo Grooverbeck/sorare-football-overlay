@@ -253,7 +253,14 @@ describe('European competition odds capabilities', () => {
     expect(
       ODDS_API_IO_ROUTES.find(({ competitionSlugs }) =>
         competitionSlugs.includes('uefa-europa-conference-league'),
-      )?.leagueSlugs[0],
-    ).toBe('international-clubs-uefa-conference-league-playoff-round');
+      ),
+    ).toMatchObject({
+      leagueSlugs: [
+        'international-clubs-uefa-conference-league-playoff-round',
+        'international-clubs-uefa-conference-league-qualification',
+        'international-clubs-uefa-conference-league',
+      ],
+      matchOdds: true,
+    });
   });
 });

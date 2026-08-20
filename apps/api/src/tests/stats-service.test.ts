@@ -1693,6 +1693,89 @@ describe('StatsService cache writes', () => {
     });
   });
 
+  it('prefers a still-active canonical team fixture over a later player nextGame', async () => {
+    const heldFixture: NonNullable<PlayerFixtureStats> = {
+      date: '2026-08-20T00:00:00.000Z',
+      competitionSlug: 'uefa-europa-conference-league',
+      homeTeamName: 'Motherwell',
+      awayTeamName: 'Freiburg',
+      playerTeamName: 'Freiburg',
+      opponentTeamName: 'Motherwell',
+      playerTeamSlug: 'freiburg-freiburg-im-breisgau',
+      cleanSheetProbability: null,
+      matchProbabilities: null,
+    };
+    const fixtureCache = new TeamAwareFixtureCache(
+      new Map([[heldFixture.playerTeamSlug!, heldFixture]]),
+    );
+    const cache = new SplitPlayerStatsCache(
+      new TtlCache<PlayerFormStats>(60_000),
+      fixtureCache,
+    );
+    const playerKey = 'matthias-ginter:Defender:no-low';
+    await cache.set(playerKey, {
+      slug: 'matthias-ginter',
+      displayName: 'Matthias Ginter',
+      position: 'Defender',
+      aaL10: { value: 14.1, sampleSize: 10 },
+      cleanSheetL10: { value: 0.2, sampleSize: 10 },
+      goalL10: { value: 0.2, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-30T13:30:00.000Z',
+        competitionSlug: 'bundesliga-de',
+        homeTeamName: 'Freiburg',
+        awayTeamName: 'Werder Bremen',
+        playerTeamName: 'Freiburg',
+        opponentTeamName: 'Werder Bremen',
+        cleanSheetProbability: null,
+        matchProbabilities: null,
+      },
+      excludedLowCoverage: 0,
+    });
+    const source: PlayerStatsDataSource = {
+      source: 'sorare',
+      resolvePlayerNames: async () => [
+        {
+          slug: 'matthias-ginter',
+          position: 'Defender',
+          teamSlug: 'freiburg-freiburg-im-breisgau',
+          resolvedFromName: 'Matthias Ginter',
+          nameResolution: 'search',
+        },
+      ],
+      fetchPlayers: vi.fn(),
+      fetchNextGames: vi.fn(),
+    };
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      cache,
+      true,
+      new UnavailablePlayerMarketOddsProvider(),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        playerNames: ['Matthias Ginter'],
+        positions: { 'Matthias Ginter': 'Defender' },
+        playerTeams: {
+          'Matthias Ginter': 'freiburg-freiburg-im-breisgau',
+        },
+      }),
+    );
+
+    expect(result.data[0]?.nextGame).toMatchObject({
+      date: heldFixture.date,
+      competitionSlug: 'uefa-europa-conference-league',
+      homeTeamName: 'Motherwell',
+      awayTeamName: 'Freiburg',
+      playerTeamSlug: 'freiburg-freiburg-im-breisgau',
+    });
+    await expect(cache.get(playerKey)).resolves.toMatchObject({
+      nextGame: { date: heldFixture.date },
+    });
+  });
+
   it('never harmonizes fixtures with different Sorare-confirmed team slugs', async () => {
     const cache = new SplitPlayerStatsCache(
       new TtlCache<PlayerFormStats>(60_000),

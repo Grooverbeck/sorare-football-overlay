@@ -333,6 +333,7 @@ const BASE_ODDS_API_IO_ROUTES = [
       'international-clubs-uefa-conference-league-qualification',
       'international-clubs-uefa-conference-league',
     ],
+    matchOdds: true,
   },
 ] as const satisfies readonly OddsApiIoRoute[];
 

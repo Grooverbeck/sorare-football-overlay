@@ -230,6 +230,8 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     expect(normalizeTeamName('NEC Nijmegen')).toBe('nec nijmegen');
     expect(normalizeTeamName('Bodø / Glimt')).toBe('bodo glimt');
     expect(normalizeTeamName('Bodoe/Glimt')).toBe('bodo glimt');
+    expect(normalizeTeamName('Tromsø')).toBe('tromso');
+    expect(normalizeTeamName('Tromsoe IL')).toBe('tromso');
   });
 
   it('resolves a fixture jointly and rejects an equally plausible duplicate', () => {

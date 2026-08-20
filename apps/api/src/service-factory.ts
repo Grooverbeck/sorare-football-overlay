@@ -346,12 +346,6 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
               region: 'eu',
               fallbackRegion: 'uk',
             },
-            {
-              sportKeys: ['soccer_uefa_europa_conference_league'],
-              competitionSlugs: ['uefa-europa-conference-league'],
-              region: 'eu',
-              fallbackRegion: 'uk',
-            },
             ...EUROPEAN_THE_ODDS_API_MATCH_ROUTES,
           ],
           fallbackWindowMs: config.matchOddsFallbackWindowMs,

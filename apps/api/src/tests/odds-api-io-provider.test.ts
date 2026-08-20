@@ -119,6 +119,37 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
     );
   });
 
+  it('keeps a date-only UEFA fixture eligible throughout its UTC match day', () => {
+    const matchStore = new InMemoryMatchOddsSnapshotStore(() => now);
+    const { matchProvider } = createProvider(
+      vi.fn<typeof fetch>(),
+      new InMemoryProviderQuotaUsageStore(() => now),
+      [
+        {
+          competitionSlugs: ['uefa-europa-conference-league'],
+          leagueSlugs: [
+            'international-clubs-uefa-conference-league-playoff-round',
+          ],
+          playerMarkets: ['goal'],
+          matchOdds: true,
+        },
+      ],
+      0,
+      new InMemoryMarketSnapshotStore(60_000, () => now),
+      matchStore,
+    );
+    if (!matchProvider) throw new Error('Expected Conference match provider');
+    const dateOnlyPlayer = player({
+      nextGame: {
+        ...player().nextGame!,
+        date: '2026-07-30T00:00:00.000Z',
+        competitionSlug: 'uefa-europa-conference-league',
+      },
+    });
+
+    expect(matchProvider.supports(dateOnlyPlayer)).toBe(true);
+  });
+
   it('honors a league-specific 24-hour player-prop fetch window', async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const { provider } = createProvider(
@@ -865,6 +896,96 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
       eventId: 'hnl-fixture-1',
       bookmakerCount: 2,
     });
+  });
+
+  it('loads Conference League H-D-A despite the Tromsø transliteration', async () => {
+    const brightonPlayer = player({
+      slug: 'ferdi-erenay-kadioglu',
+      displayName: 'Ferdi Kadıoğlu',
+      position: 'Defender',
+      nextGame: {
+        ...player().nextGame!,
+        competitionSlug: 'uefa-europa-conference-league',
+        homeTeamName: 'Tromsø',
+        awayTeamName: 'Brighton & Hove Albion',
+        playerTeamName: 'Brighton & Hove Albion',
+        opponentTeamName: 'Tromsø',
+        matchProbabilities: null,
+      },
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/events')) {
+        expect(url.searchParams.get('league')).toBe(
+          'international-clubs-uefa-conference-league-playoff-round',
+        );
+        return json([
+          {
+            id: 'conference-fixture-1',
+            date: kickoff,
+            home: 'Tromsoe IL',
+            away: 'Brighton & Hove Albion',
+          },
+        ]);
+      }
+      if (url.pathname.endsWith('/odds/multi')) {
+        return json([
+          {
+            id: 'conference-fixture-1',
+            date: kickoff,
+            home: 'Tromsoe IL',
+            away: 'Brighton & Hove Albion',
+            bookmakers: {
+              Bet365: [
+                {
+                  name: 'ML',
+                  odds: [{ home: '5.50', draw: '3.80', away: '1.55' }],
+                },
+              ],
+              Unibet: [
+                {
+                  name: 'ML',
+                  odds: [{ home: '5.20', draw: '3.90', away: '1.56' }],
+                },
+              ],
+            },
+          },
+        ]);
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    const matchStore = new InMemoryMatchOddsSnapshotStore(() => now);
+    const { matchProvider } = createProvider(
+      fetchImpl,
+      new InMemoryProviderQuotaUsageStore(() => now),
+      [
+        {
+          competitionSlugs: ['uefa-europa-conference-league'],
+          leagueSlugs: [
+            'international-clubs-uefa-conference-league-playoff-round',
+          ],
+          playerMarkets: ['goal'],
+          matchOdds: true,
+        },
+      ],
+      0,
+      new InMemoryMarketSnapshotStore(60_000, () => now),
+      matchStore,
+    );
+    if (!matchProvider) throw new Error('Expected Conference match provider');
+
+    const result = await matchProvider.load([brightonPlayer]);
+    const probabilities = result.get(playerMarketOddsKey(brightonPlayer));
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(probabilities).toEqual({
+      win: expect.any(Number),
+      draw: expect.any(Number),
+      loss: expect.any(Number),
+    });
+    expect(probabilities?.win ?? 0).toBeGreaterThan(
+      probabilities?.loss ?? 1,
+    );
   });
 
   it('serves its frozen fixture snapshot without another provider request', async () => {

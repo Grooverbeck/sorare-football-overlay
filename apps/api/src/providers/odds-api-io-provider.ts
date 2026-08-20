@@ -665,12 +665,15 @@ export class OddsApiIoPlayerMarketOddsProvider
         loadOptions,
       );
       const goalSnapshot = goalSnapshots.get(fixture.key);
-      const kickoff = Date.parse(fixture.date);
-      const untilKickoff = kickoff - this.now();
+      const kickoff = this.effectiveFixtureKickoff(fixture.date);
       const route = this.routeForFixtureGroup(fixture);
       const fetchWindowMs =
         route?.playerFetchWindowMs ?? this.options.fetchWindowMs;
-      if (untilKickoff < 0 || untilKickoff > fetchWindowMs) {
+      if (
+        !Number.isFinite(kickoff) ||
+        kickoff < this.now() ||
+        kickoff - this.now() > fetchWindowMs
+      ) {
         continue;
       }
       const needsApi =
@@ -1150,12 +1153,44 @@ export class OddsApiIoPlayerMarketOddsProvider
     fixtureDate: string | undefined,
     windowMs: number,
   ): boolean {
-    const kickoff = Date.parse(fixtureDate ?? '');
+    const kickoff = this.effectiveFixtureKickoff(fixtureDate);
     const untilKickoff = kickoff - this.now();
     return (
       Number.isFinite(kickoff) &&
       untilKickoff >= 0 &&
       untilKickoff <= windowMs
+    );
+  }
+
+  private effectiveFixtureKickoff(
+    fixtureDate: string | undefined,
+  ): number {
+    const kickoff = Date.parse(fixtureDate ?? '');
+    if (!Number.isFinite(kickoff)) return Number.NaN;
+    const fixture = new Date(kickoff);
+    const now = new Date(this.now());
+    const isMidnightPlaceholder =
+      fixture.getUTCHours() === 0 &&
+      fixture.getUTCMinutes() === 0 &&
+      fixture.getUTCSeconds() === 0 &&
+      fixture.getUTCMilliseconds() === 0;
+    const isCurrentUtcDay =
+      fixture.getUTCFullYear() === now.getUTCFullYear() &&
+      fixture.getUTCMonth() === now.getUTCMonth() &&
+      fixture.getUTCDate() === now.getUTCDate();
+    if (!isMidnightPlaceholder || !isCurrentUtcDay) return kickoff;
+    // Sorare represents some low-coverage UEFA fixtures as date-only midnight
+    // values while its UI still shows the real evening kickoff. Keep provider
+    // discovery open for the remainder of that UTC day; the event feed then
+    // supplies the precise start time used by the frozen market snapshot.
+    return Date.UTC(
+      fixture.getUTCFullYear(),
+      fixture.getUTCMonth(),
+      fixture.getUTCDate(),
+      23,
+      59,
+      59,
+      999,
     );
   }
 

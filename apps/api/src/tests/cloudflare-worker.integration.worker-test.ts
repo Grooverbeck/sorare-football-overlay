@@ -281,6 +281,67 @@ describe('Cloudflare Worker', () => {
     });
   });
 
+  it('restores a held midnight team fixture over a later player fixture', async () => {
+    const nowMs = Date.parse('2026-08-20T02:00:00.000Z');
+    const store = new D1JsonKeyValueStore(
+      env.CACHE_DB,
+      env.STATS_CACHE,
+      () => Math.floor(nowMs / 1_000),
+    );
+    const context = createExecutionContext();
+    const cache = new CloudflarePlayerStatsCache(
+      store,
+      604_800,
+      14_400,
+      context,
+      () => nowMs,
+    );
+    const heldFixture = {
+      date: '2026-08-20T00:00:00.000Z',
+      competitionSlug: 'uefa-europa-conference-league',
+      homeTeamName: 'Motherwell',
+      awayTeamName: 'Freiburg',
+      playerTeamName: 'Freiburg',
+      opponentTeamName: 'Motherwell',
+      playerTeamSlug: 'freiburg-freiburg-im-breisgau',
+      cleanSheetProbability: null,
+      matchProbabilities: null,
+    };
+    const playerKey = 'midnight-team-player:Defender:no-low';
+    await cache.setFixture(
+      'midnight-team-source:Defender:no-low',
+      heldFixture,
+    );
+    await cache.setFixture(playerKey, {
+      date: '2026-08-30T13:30:00.000Z',
+      competitionSlug: 'bundesliga-de',
+      homeTeamName: 'Freiburg',
+      awayTeamName: 'Werder Bremen',
+      playerTeamName: 'Freiburg',
+      opponentTeamName: 'Werder Bremen',
+      cleanSheetProbability: null,
+      matchProbabilities: null,
+    });
+    await waitOnExecutionContext(context);
+
+    const shared = await cache.getTeamFixture(
+      playerKey,
+      'freiburg-freiburg-im-breisgau',
+    );
+    if (!shared) throw new Error('Expected held Freiburg fixture');
+    const refreshed = await cache.refreshFixture(playerKey, shared);
+
+    expect(refreshed).toMatchObject({
+      date: heldFixture.date,
+      homeTeamName: 'Motherwell',
+      awayTeamName: 'Freiburg',
+      playerTeamSlug: 'freiburg-freiburg-im-breisgau',
+    });
+    await expect(cache.getParts(playerKey)).resolves.toMatchObject({
+      fixture: { date: heldFixture.date },
+    });
+  });
+
   it('shares the form-history refresh lease across cache instances', async () => {
     const nowMs = Date.now();
     const key = `form-history-lease-${nowMs}:Midfielder:no-low`;

@@ -951,6 +951,9 @@ const europeanTeamAliases: Readonly<Record<string, string>> = {
   'bodo glimt': 'bodo glimt',
   'bodoe glimt': 'bodo glimt',
   'bodo glimt bodo': 'bodo glimt',
+  tromso: 'tromso',
+  'tromso il': 'tromso',
+  'tromsoe il': 'tromso',
 };
 
 const teamAliases: Readonly<Record<string, string>> = {
