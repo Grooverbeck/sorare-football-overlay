@@ -1,59 +1,71 @@
-# Sorare Football Stats Overlay 0.3.4
+# Sorare Football Overlay 0.3.4
 
-## Installation
+Diese Version zeigt Quoten zuverlässiger an, verbessert den AA-Wert und bringt
+eine platzsparende Ansicht für Squad- und Lineup-Seiten.
+
+## Das ist neu
+
+### Mehr Quoten für mehr Wettbewerbe
+
+- Die Erweiterung findet jetzt häufiger Spiel-, Tor- und Assistquoten. Die
+  Abdeckung wurde unter anderem für Premier League, La Liga, Ligue 1, Ligue 2,
+  Bundesliga, 2. Bundesliga, HNL, österreichische Bundesliga, MLS und die
+  europäischen Wettbewerbe verbessert.
+- Spieler werden auch nach einem Vereinswechsel oder bei leicht abweichenden
+  Schreibweisen zuverlässiger erkannt. Dadurch fehlen seltener Quoten oder
+  werden dem falschen Verein zugeordnet.
+- Sobald eine echte Tor- oder Assistquote verfügbar ist, ersetzt sie den
+  vorläufigen historischen Wert automatisch. Ein Neuladen der Sorare-Seite ist
+  dafür nicht mehr nötig.
+
+### Passenderer AA-Wert
+
+- Für den AA-Wert zählen nur noch Spiele, in denen der Spieler mindestens
+  60 Minuten eingesetzt wurde. Kurze Einwechslungen verfälschen den Wert damit
+  nicht mehr so stark.
+- Derselbe Spieler erhält in Suche, Lineup und Aufstellung konsistentere Werte.
+  Tatsächlich unterschiedliche Kartenpositionen bleiben weiterhin getrennt.
+
+### Neue Compact View
+
+- In den Einstellungen kann jetzt die **Compact View** aktiviert werden.
+- Auf Squad- und Lineup-Seiten sind zunächst nur die kleinen farbigen
+  Kennzeichen sichtbar. Sobald du mit der Maus über die Karte fährst, werden
+  alle Werte eingeblendet.
+- Beim Zusammenstellen eines Teams bleiben alle Werte wie bisher dauerhaft
+  sichtbar.
+- Kleine Klammern, Symbole und Hinweise bei fehlenden Daten wurden besser
+  ausgerichtet und vereinheitlicht.
+
+### Zuverlässigere Anzeige
+
+- Bereits angezeigte Werte verschwinden bei einer kurzen Störung nicht mehr so
+  schnell. Die Erweiterung versucht den Abruf automatisch erneut.
+- Neu gefundene Quoten werden selbstständig auf den sichtbaren Karten ergänzt.
+
+## Vorhandene Installation aktualisieren
 
 1. Unter **Assets** die Datei
    `sorare-football-overlay-chrome-web-store-0.3.4.zip` herunterladen.
-2. Nicht die von GitHub erzeugte Datei **Source code (zip)** verwenden.
-3. Die ZIP in einen dauerhaften Ordner entpacken.
-4. `chrome://extensions` oder `edge://extensions` öffnen.
-5. Den Entwicklermodus aktivieren.
-6. **Entpackte Erweiterung laden** wählen und den Ordner mit `manifest.json`
-   auswählen.
+2. Die ZIP entpacken und den Inhalt in den bisherigen Erweiterungsordner
+   kopieren.
+3. `chrome://extensions` oder `edge://extensions` öffnen.
+4. Bei der Erweiterung auf **Neu laden** klicken.
+5. Bereits geöffnete Sorare-Seiten einmal aktualisieren.
 
-Ausführliche Anleitung:
-[Installation und Updates](https://github.com/Grooverbeck/sorare-football-overlay/blob/main/docs/INSTALLATION.md)
+## Neu installieren
 
-## Update einer vorhandenen Installation
+1. Unter **Assets** die Datei
+   `sorare-football-overlay-chrome-web-store-0.3.4.zip` herunterladen. Nicht die
+   automatisch erzeugte Datei **Source code (zip)** verwenden.
+2. Die ZIP in einen dauerhaften Ordner entpacken.
+3. `chrome://extensions` oder `edge://extensions` öffnen.
+4. Den Entwicklermodus aktivieren.
+5. **Entpackte Erweiterung laden** wählen und den entpackten Ordner öffnen.
 
-Den Inhalt der neuen ZIP in denselben Erweiterungsordner entpacken, auf der
-Erweiterungsseite **Neu laden** anklicken und offene Sorare-Tabs aktualisieren.
+Eine ausführliche Anleitung findest du unter
+[Installation und Updates](https://github.com/Grooverbeck/sorare-football-overlay/blob/main/docs/INSTALLATION.md).
 
-## Änderungen
-
-### Mehr und verlässlichere Quoten
-
-- Verbesserte Anbieter-Routen liefern je nach Wettbewerb mehr Spiel-, Tor- und
-  Assistquoten für Premier League, La Liga, Ligue 1, Ligue 2, Bundesliga,
-  2. Bundesliga, HNL, österreichische Bundesliga, MLS und UEFA-Wettbewerbe.
-- Kanonische Team-Identitäten, Transfers und abweichende Spielernamen werden
-  robuster zugeordnet. Das reduziert fehlende Quoten und falsche Vereine.
-- Bereits gecachte Tor- und Assistquoten gehen bei Teilantworten nicht mehr
-  verloren und verdrängen historische Ersatzwerte zuverlässig.
-- Neue Marktquoten erscheinen nach einem laufenden Anbieterabruf automatisch,
-  ohne dass die Sorare-Seite manuell neu geladen werden muss.
-
-### Aussagekräftigere Formwerte
-
-- AA zählt nur Spiele, in denen der Spieler mindestens 60 Minuten eingesetzt
-  wurde, und wird dadurch weniger von kurzen Einwechslungen beeinflusst.
-- Spielerwerte bleiben über unterschiedliche Sorare-Kartenansichten hinweg
-  konsistent, ohne echte Positionsvarianten zu vermischen.
-
-### Compact View und Kartenanzeige
-
-- Die neue optionale **Compact View** zeigt auf Squad- und Lineups-Seiten
-  zunächst nur das farbige AA- beziehungsweise Marktsymbol. Beim Überfahren
-  der Karte werden die vollständigen Werte eingeblendet.
-- Auf `/compose-team` bleiben die Klammern dauerhaft vollständig sichtbar.
-- Abstände, Ausrichtung, Schrift, Symbole und No-Data-Darstellung wurden für
-  kleine Karten vereinheitlicht.
-- Vorhandene Werte bleiben während kurzzeitiger Wiederholungsversuche sichtbar,
-  statt vorzeitig durch „nicht verfügbar“ ersetzt zu werden.
-
-## Hinweise
-
-- Unterstützt Google Chrome und Microsoft Edge.
-- Die Erweiterung nutzt das produktive Backend; eigene API-Schlüssel oder
-  Sorare-Zugangsdaten sind nicht erforderlich.
-- Dies ist eine inoffizielle Erweiterung und kein Produkt von Sorare.
+Die Erweiterung unterstützt Google Chrome und Microsoft Edge. Eigene
+API-Schlüssel oder Sorare-Zugangsdaten sind nicht erforderlich. Dies ist eine
+inoffizielle Erweiterung und kein Produkt von Sorare.
