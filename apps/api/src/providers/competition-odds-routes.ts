@@ -80,10 +80,33 @@ export interface CompetitionOddsCapability {
  * Match odds and player props deliberately have separate The Odds API routes:
  * European H-D-A comes from EU/UK books, while supported football player props
  * are exposed through US books. Odds-API.io supplies goalscorer markets for all
- * seven competitions, opportunistically keeps assists returned in the same
+ * eight competitions, opportunistically keeps assists returned in the same
  * response, and provides the HNL match fallback where The Odds API has no feed.
  */
 export const EUROPEAN_ODDS_CAPABILITIES = [
+  {
+    competitionSlug: 'premier-league-gb-eng',
+    sportsGameOdds: {
+      leagueId: 'EPL',
+      playerMarkets: ['goal', 'assist'],
+      matchOdds: true,
+    },
+    theOddsApiMatch: {
+      sportKeys: ['soccer_epl'],
+      region: 'eu',
+      fallbackRegion: 'uk',
+    },
+    theOddsApiPlayer: {
+      sportKeys: ['soccer_epl'],
+      region: 'us',
+      fallbackRegion: null,
+    },
+    oddsApiIo: {
+      leagueSlugs: ['england-premier-league'],
+      playerMarkets: ['goal'],
+      matchOdds: false,
+    },
+  },
   {
     competitionSlug: 'laliga-es',
     sportsGameOdds: {

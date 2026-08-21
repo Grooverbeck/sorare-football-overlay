@@ -29,6 +29,7 @@ describe('Leagues Cup external odds route', () => {
 describe('European competition odds capabilities', () => {
   it('documents each requested Sorare competition exactly once', () => {
     expect(EUROPEAN_COMPETITION_SLUGS).toEqual([
+      'premier-league-gb-eng',
       'laliga-es',
       'ligue-2-fr',
       'ligue-1-fr',
@@ -44,6 +45,12 @@ describe('European competition odds capabilities', () => {
 
   it('keeps match routes on EU/UK books and covers every league except HNL', () => {
     expect(EUROPEAN_THE_ODDS_API_MATCH_ROUTES).toEqual([
+      {
+        sportKeys: ['soccer_epl'],
+        competitionSlugs: ['premier-league-gb-eng'],
+        region: 'eu',
+        fallbackRegion: 'uk',
+      },
       {
         sportKeys: ['soccer_spain_la_liga'],
         competitionSlugs: ['laliga-es'],
@@ -91,6 +98,14 @@ describe('European competition odds capabilities', () => {
   it('keeps monthly-credit US player props inside the 24-hour window', () => {
     expect(EUROPEAN_THE_ODDS_API_PLAYER_ROUTES).toEqual([
       {
+        sportKeys: ['soccer_epl'],
+        competitionSlugs: ['premier-league-gb-eng'],
+        region: 'us',
+        fallbackRegion: null,
+        markets: ['goal', 'assist'],
+        fetchWindowMs: 24 * 60 * 60 * 1_000,
+      },
+      {
         sportKeys: ['soccer_spain_la_liga'],
         competitionSlugs: ['laliga-es'],
         region: 'us',
@@ -117,7 +132,7 @@ describe('European competition odds capabilities', () => {
     ]);
   });
 
-  it('uses SportsGameOdds for the four documented European league feeds', () => {
+  it('uses SportsGameOdds for the five documented European league feeds', () => {
     expect(SPORTS_GAME_ODDS_ROUTES).toEqual([
       {
         competitionSlugs: ['mlspa'],
@@ -136,6 +151,14 @@ describe('European competition odds capabilities', () => {
         leagueId: 'UEFA_EUROPA_LEAGUE',
         playerMarkets: ['goal', 'assist'],
         matchOdds: true,
+      },
+      {
+        competitionSlugs: ['premier-league-gb-eng'],
+        leagueId: 'EPL',
+        playerMarkets: ['goal', 'assist'],
+        matchOdds: true,
+        playerFetchWindowMs: 72 * 60 * 60 * 1_000,
+        matchOddsFetchWindowMs: 72 * 60 * 60 * 1_000,
       },
       {
         competitionSlugs: ['laliga-es'],
@@ -183,7 +206,7 @@ describe('European competition odds capabilities', () => {
     );
   });
 
-  it('routes goals for all seven leagues through Odds-API.io and marks only HNL for match odds', () => {
+  it('routes goals for all eight leagues through Odds-API.io and marks only HNL for match odds', () => {
     const routes = ODDS_API_IO_ROUTES.filter(({ competitionSlugs }) =>
       competitionSlugs.some((slug) =>
         EUROPEAN_COMPETITION_SLUGS.includes(
@@ -231,6 +254,11 @@ describe('European competition odds capabilities', () => {
   });
 
   it('uses the live La Liga slug and checks current UEFA playoff feeds first', () => {
+    expect(
+      ODDS_API_IO_ROUTES.find(({ competitionSlugs }) =>
+        competitionSlugs.includes('premier-league-gb-eng'),
+      )?.leagueSlugs,
+    ).toEqual(['england-premier-league']);
     expect(
       ODDS_API_IO_ROUTES.find(({ competitionSlugs }) =>
         competitionSlugs.includes('laliga-es'),
