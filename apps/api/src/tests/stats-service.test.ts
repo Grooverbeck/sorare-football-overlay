@@ -536,6 +536,135 @@ describe('StatsService cache writes', () => {
     expect(scheduleBackground).not.toHaveBeenCalled();
   });
 
+  it('keeps fixture teammates pending while one shared market snapshot warms', async () => {
+    const refreshedPlayers: string[][] = [];
+    const load = vi.fn<PlayerMarketOddsProvider['load']>(
+      async (players, options) => {
+        if (options?.cacheOnly) {
+          if (options.refreshDueState) {
+            options.refreshDueState.complete = true;
+          }
+          const driver = players.find(
+            (player) => player.slug === 'fixture-warmup-driver',
+          );
+          if (driver) {
+            options.refreshDuePlayerKeys?.add(playerMarketOddsKey(driver));
+          }
+          return new Map(
+            players.map((player) => [
+              playerMarketOddsKey(player),
+              player.slug === 'fixture-warmup-teammate'
+                ? {
+                    source: 'odds-api-io' as const,
+                    capturedAt: '2026-08-22T08:00:00.000Z',
+                    goal: { probability: 0.4, bookmakerCount: 1 },
+                    assist: null,
+                    decisive: null,
+                  }
+                : null,
+            ]),
+          );
+        }
+        refreshedPlayers.push(players.map(({ slug }) => slug));
+        return new Map(
+          players.map((player) => [playerMarketOddsKey(player), null]),
+        );
+      },
+    );
+    const marketOddsProvider: PlayerMarketOddsProvider = {
+      reportsRefreshDue: true,
+      supports: () => true,
+      supportsMarket: (_player, market) =>
+        market === 'goal' || market === 'assist',
+      drivesMarketRequest: (_player, market) => market === 'goal',
+      load,
+    };
+    const backgroundTasks: Promise<void>[] = [];
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      marketOddsProvider,
+      (task) => backgroundTasks.push(task),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['fixture-warmup-driver', 'fixture-warmup-teammate'],
+        positions: {
+          'fixture-warmup-driver': 'Forward',
+          'fixture-warmup-teammate': 'Forward',
+        },
+      }),
+    );
+
+    expect(
+      result.data.map(({ slug, pendingRefreshes }) => ({
+        slug,
+        pendingRefreshes,
+      })),
+    ).toEqual([
+      {
+        slug: 'fixture-warmup-driver',
+        pendingRefreshes: ['marketOdds'],
+      },
+      {
+        slug: 'fixture-warmup-teammate',
+        pendingRefreshes: ['marketOdds'],
+      },
+    ]);
+    expect(backgroundTasks).toHaveLength(1);
+    await Promise.all(backgroundTasks);
+    expect(refreshedPlayers).toEqual([['fixture-warmup-driver']]);
+  });
+
+  it('never starts provider work for an explicit odds-cache-only follow-up', async () => {
+    const load = vi.fn<PlayerMarketOddsProvider['load']>(
+      async (players, options) => {
+        if (options?.refreshDueState) options.refreshDueState.complete = true;
+        for (const player of players) {
+          options?.refreshDuePlayerKeys?.add(playerMarketOddsKey(player));
+        }
+        return new Map(
+          players.map((player) => [playerMarketOddsKey(player), null]),
+        );
+      },
+    );
+    const marketOddsProvider: PlayerMarketOddsProvider = {
+      reportsRefreshDue: true,
+      supports: () => true,
+      supportsMarket: () => true,
+      drivesMarketRequest: () => true,
+      load,
+    };
+    const scheduleBackground = vi.fn();
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      marketOddsProvider,
+      scheduleBackground,
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['cache-only-market-player'],
+        positions: { 'cache-only-market-player': 'Forward' },
+        oddsCacheOnly: true,
+      }),
+    );
+
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({ cacheOnly: true }),
+    );
+    expect(scheduleBackground).not.toHaveBeenCalled();
+    expect(result.data[0]?.pendingRefreshes ?? []).not.toContain('marketOdds');
+  });
+
   it('returns a bounded deferred response while a cold slug warms in background', async () => {
     const never = new Promise<never>(() => undefined);
     const source: PlayerStatsDataSource = {

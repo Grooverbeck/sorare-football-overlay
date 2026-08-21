@@ -40,6 +40,9 @@ export const PlayerStatsRequestSchema = z
     // The initial request remains fast and can return cached L10 form values
     // with `pendingRefreshes: ['fixture']`.
     refreshFixtures: z.boolean().default(false),
+    // Extension follow-ups for a known bookmaker warmup only observe the
+    // shared snapshot cache. They must never start another provider request.
+    oddsCacheOnly: z.boolean().default(false),
   })
   .superRefine((request, context) => {
     const total = request.slugs.length + request.playerNames.length;

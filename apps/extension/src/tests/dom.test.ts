@@ -2568,6 +2568,143 @@ describe('Sorare card DOM discovery', () => {
     }
   });
 
+  it('keeps polling a known warmup from cache when an intermediate response clears pending', async () => {
+    vi.useFakeTimers();
+    try {
+      applyHistoricalAssistFallbackSettings(true, 15);
+      const initialStats: PlayerStats = {
+        slug: 'fixture-warmup-player',
+        displayName: 'Fixture Warmup Player',
+        position: 'Forward',
+        aaL10: { value: 16, sampleSize: 10 },
+        cleanSheetL10: { value: 0.1, sampleSize: 10 },
+        goalL10: { value: 0.2, sampleSize: 10 },
+        historicalAssists: {
+          l10: { value: 0.2, sampleSize: 10 },
+          l15: { value: 0.2, sampleSize: 15 },
+          l40: { value: 0.15, sampleSize: 40 },
+        },
+        nextGame: {
+          date: '2026-08-22T14:00:00.000Z',
+          homeTeamName: 'Warmup FC',
+          awayTeamName: 'Cached United',
+          playerTeamName: 'Warmup FC',
+          opponentTeamName: 'Cached United',
+          playerTeamSlug: 'warmup-fc',
+          cleanSheetProbability: null,
+          matchProbabilities: null,
+          marketOdds: {
+            source: 'sports-game-odds',
+            capturedAt: '2026-08-22T08:00:00.000Z',
+            goal: { probability: 0.35, bookmakerCount: 2 },
+            assist: null,
+            decisive: null,
+          },
+        },
+        pendingRefreshes: ['marketOdds'],
+        excludedLowCoverage: 0,
+      };
+      const intermediateStats: PlayerStats = {
+        ...initialStats,
+        nextGame: {
+          ...initialStats.nextGame!,
+          marketOdds: {
+            ...initialStats.nextGame!.marketOdds!,
+            capturedAt: '2026-08-22T08:00:02.000Z',
+            goal: { probability: 0.36, bookmakerCount: 3 },
+          },
+        },
+        pendingRefreshes: undefined,
+      };
+      const completeStats: PlayerStats = {
+        ...intermediateStats,
+        nextGame: {
+          ...intermediateStats.nextGame!,
+          marketOdds: {
+            source: 'mixed',
+            capturedAt: '2026-08-22T08:00:03.000Z',
+            goal: { probability: 0.35, bookmakerCount: 2 },
+            assist: { probability: 0.22, bookmakerCount: 1 },
+            decisive: null,
+          },
+        },
+      };
+      const fetcher = vi.fn(
+        async (): Promise<PlayerStatsSuccessResponse> => ({
+          data: [
+            fetcher.mock.calls.length === 1
+              ? initialStats
+              : fetcher.mock.calls.length === 2
+                ? intermediateStats
+                : completeStats,
+          ],
+          meta: {
+            requested: 1,
+            returned: 1,
+            cacheHits: 1,
+            source: 'sorare',
+          },
+        }),
+      );
+      const coordinator = new StatsBatchCoordinator(
+        fetcher,
+        60_000,
+        undefined,
+        8,
+        2,
+        [5, 10],
+      );
+      coordinator.setIncludeHistoricalAssists(true);
+      const card = document.createElement('article');
+      document.body.append(card);
+      const view = new OverlayView(
+        card,
+        { slug: 'fixture-warmup-player' },
+        'Forward',
+      );
+      coordinator.enqueue(
+        {
+          slug: 'fixture-warmup-player',
+          position: 'Forward',
+          container: card,
+        },
+        view,
+      );
+
+      await coordinator.flush();
+      await vi.advanceTimersByTimeAsync(5);
+      await coordinator.flush();
+
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(fetcher.mock.calls[1]?.[0]).toMatchObject({
+        oddsCacheOnly: true,
+      });
+      expect(
+        view.host.shadowRoot?.querySelector<HTMLElement>(
+          '[data-market="assist"]',
+        )?.dataset.benchmarkSource,
+      ).toBe('historical');
+
+      await vi.advanceTimersByTimeAsync(10);
+      await coordinator.flush();
+
+      expect(fetcher).toHaveBeenCalledTimes(3);
+      expect(fetcher.mock.calls[2]?.[0]).toMatchObject({
+        oddsCacheOnly: true,
+      });
+      const assist = view.host.shadowRoot?.querySelector<HTMLElement>(
+        '[data-market="assist"]',
+      );
+      expect(assist?.dataset.benchmarkSource).toBe('market');
+      expect(assist?.textContent).toBe('22%');
+      await vi.advanceTimersByTimeAsync(50);
+      expect(fetcher).toHaveBeenCalledTimes(3);
+      view.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('retries incomplete market odds as isolated player requests instead of rebuilding the failing batch', async () => {
     vi.useFakeTimers();
     const views: OverlayView[] = [];

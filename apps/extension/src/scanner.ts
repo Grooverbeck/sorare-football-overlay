@@ -227,6 +227,12 @@ function mergePlayerMarketOdds(
   };
 }
 
+function hasIncompleteDisplayedMarketOdds(stats: PlayerStats): boolean {
+  if (stats.position === 'Goalkeeper' || !stats.nextGame) return false;
+  const odds = stats.nextGame.marketOdds;
+  return !odds?.goal || !odds.assist;
+}
+
 function mergeSharedFixtureTeamData(
   stats: PlayerStats,
   candidates: Iterable<PlayerStats>,
@@ -297,6 +303,8 @@ export class StatsBatchCoordinator {
   private readonly refreshWork = new Map<string, PendingRefreshWork>();
   private readonly fixtureRefreshTargets = new Set<string>();
   private readonly isolatedMarketRefreshKeys = new Set<string>();
+  private readonly marketWarmupKeys = new Set<string>();
+  private readonly cacheOnlyOddsRequestKeys = new Set<string>();
   private activeBatchCount = 0;
   private batchSequence = 0;
   private timer: number | undefined;
@@ -505,6 +513,7 @@ export class StatsBatchCoordinator {
     } finally {
       for (const target of job.batch) {
         const key = targetKey(target);
+        this.cacheOnlyOddsRequestKeys.delete(key);
         this.inFlightFixtureRefreshKeys.delete(key);
         if (this.inFlightTargets.get(key) === target) {
           this.inFlightTargets.delete(key);
@@ -536,6 +545,12 @@ export class StatsBatchCoordinator {
     const refreshFixtures = batch.some((target) =>
       this.fixtureRefreshTargets.has(targetKey(target)),
     );
+    const oddsCacheOnly =
+      batch.length === 1 &&
+      batch.every((target) =>
+        this.cacheOnlyOddsRequestKeys.has(targetKey(target)),
+      ) &&
+      !refreshFixtures;
     const playerTeams = Object.fromEntries(
       batch.flatMap(({ slug, playerName, teamSlug }) => {
         const identity = slug ?? playerName;
@@ -559,6 +574,7 @@ export class StatsBatchCoordinator {
           ? { includeHistoricalAssists: true }
           : {}),
         ...(refreshFixtures ? { refreshFixtures: true } : {}),
+        ...(oddsCacheOnly ? { oddsCacheOnly: true } : {}),
       });
       const diagnosticRequestId = statsDiagnosticRequestId(response);
       if (includeHistoricalAssists !== this.includeHistoricalAssists) {
@@ -602,6 +618,12 @@ export class StatsBatchCoordinator {
             (target.playerName &&
               deferredPlayerNames.has(normalizeName(target.playerName))),
         );
+        const continueKnownMarketWarmup = Boolean(
+          stats &&
+            this.marketWarmupKeys.has(key) &&
+            !stats.pendingRefreshes?.includes('marketOdds') &&
+            hasIncompleteDisplayedMarketOdds(stats),
+        );
         logStatsDiagnostic('target-resolution', {
           requestId: diagnosticRequestId ?? null,
           target: {
@@ -644,13 +666,14 @@ export class StatsBatchCoordinator {
             isDeferred,
           );
         }
-        if (stats?.pendingRefreshes?.length) {
+        if (stats?.pendingRefreshes?.length || continueKnownMarketWarmup) {
           this.schedulePendingRefresh(
             target,
             target.views,
-            stats.pendingRefreshes.includes('fixture'),
+            stats?.pendingRefreshes?.includes('fixture') ?? false,
             target.priority,
-            stats.pendingRefreshes.includes('marketOdds'),
+            (stats?.pendingRefreshes?.includes('marketOdds') ?? false) ||
+              continueKnownMarketWarmup,
           );
         } else if (stats) {
           this.clearPendingRefresh(
@@ -668,6 +691,33 @@ export class StatsBatchCoordinator {
       for (const target of batch) {
         const key = targetKey(target);
         const cached = this.cachedStatsForTarget(target);
+        if (oddsCacheOnly && this.marketWarmupKeys.has(key)) {
+          this.schedulePendingRefresh(
+            target,
+            target.views,
+            false,
+            target.priority,
+            true,
+          );
+          const retryScheduled = this.marketWarmupKeys.has(key);
+          logStatsDiagnostic('request-failed', {
+            target: {
+              slug: target.slug ?? null,
+              playerName: target.playerName ?? null,
+              position: target.position ?? null,
+            },
+            message,
+            retained: cached ? summarizeStats(cached) : null,
+            retryScheduled,
+            transient: true,
+          });
+          for (const view of target.views) {
+            if (cached) view.render(cached);
+            else if (retryScheduled) view.retrying();
+            else view.error();
+          }
+          continue;
+        }
         const isFirstTransientFailure = !this.deferredRetryUsed.has(key);
         const retryScheduled = this.scheduleRetry(target, true);
         logStatsDiagnostic('request-failed', {
@@ -699,6 +749,7 @@ export class StatsBatchCoordinator {
   ): void {
     const key = targetKey(target);
     if (refreshFixture) this.fixtureRefreshTargets.add(key);
+    if (isolateMarketOdds) this.marketWarmupKeys.add(key);
     const existing = this.refreshWork.get(key);
     if (existing) {
       for (const view of views) existing.views.add(view);
@@ -714,6 +765,8 @@ export class StatsBatchCoordinator {
     if (delay === undefined) {
       this.fixtureRefreshTargets.delete(key);
       this.isolatedMarketRefreshKeys.delete(key);
+      this.marketWarmupKeys.delete(key);
+      this.cacheOnlyOddsRequestKeys.delete(key);
       return;
     }
 
@@ -743,6 +796,8 @@ export class StatsBatchCoordinator {
         this.refreshAttempts.delete(key);
         this.fixtureRefreshTargets.delete(key);
         this.isolatedMarketRefreshKeys.delete(key);
+        this.marketWarmupKeys.delete(key);
+        this.cacheOnlyOddsRequestKeys.delete(key);
         return;
       }
       const activeViews = connectedViews.filter((view) =>
@@ -750,7 +805,10 @@ export class StatsBatchCoordinator {
       );
       if (activeViews.length === 0) return;
       this.refreshWork.delete(key);
-      if (work.isolateMarketOdds) this.isolatedMarketRefreshKeys.add(key);
+      if (work.isolateMarketOdds) {
+        this.isolatedMarketRefreshKeys.add(key);
+        this.cacheOnlyOddsRequestKeys.add(key);
+      }
       this.queueTarget(work.target, connectedViews, work.priority);
     }, work.remainingMs);
   }
@@ -907,6 +965,8 @@ export class StatsBatchCoordinator {
     this.refreshWork.delete(key);
     this.refreshAttempts.delete(key);
     this.isolatedMarketRefreshKeys.delete(key);
+    this.marketWarmupKeys.delete(key);
+    this.cacheOnlyOddsRequestKeys.delete(key);
     if (!preserveFixtureRefresh) this.fixtureRefreshTargets.delete(key);
   }
 

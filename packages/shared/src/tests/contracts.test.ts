@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { PlayerStatsSchema } from '../contracts.js';
+import {
+  PlayerStatsRequestSchema,
+  PlayerStatsSchema,
+} from '../contracts.js';
 
 const fixture = {
   slug: 'contract-player',
@@ -47,5 +50,20 @@ describe('PlayerStatsSchema team fixture identity', () => {
         },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('PlayerStatsRequestSchema odds cache mode', () => {
+  it('keeps old clients refresh-capable and accepts explicit cache-only follow-ups', () => {
+    expect(
+      PlayerStatsRequestSchema.parse({ slugs: ['contract-player'] })
+        .oddsCacheOnly,
+    ).toBe(false);
+    expect(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['contract-player'],
+        oddsCacheOnly: true,
+      }).oddsCacheOnly,
+    ).toBe(true);
   });
 });

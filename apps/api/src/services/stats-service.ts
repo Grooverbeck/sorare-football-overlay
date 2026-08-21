@@ -14,6 +14,7 @@ import {
   type SplitPlayerStatsCacheAccess,
 } from '../cache.js';
 import {
+  marketFixtureKey,
   playerMarketFieldDrivesRequest,
   playerMarketFieldSupported,
   playerMarketOddsKey,
@@ -715,31 +716,76 @@ export class StatsService {
     );
     const marketRefreshPlayers: PlayerStats[] = [];
     const matchOddsRefreshPlayers: PlayerStats[] = [];
+    const canScheduleOddsRefresh =
+      Boolean(this.scheduleBackground) && !request.oddsCacheOnly;
+    const marketStateByPlayer = new Map(
+      cachedOrLoaded.map((stats) => {
+        const key = playerMarketOddsKey(stats);
+        const supportsMarketOdds = playerMarketOddsSupported(
+          this.marketOddsProvider,
+          stats,
+        );
+        const odds = supportsMarketOdds ? marketOdds.get(key) ?? null : null;
+        const missingRequestDrivingMarket = (
+          ['goal', 'assist'] as const
+        ).some(
+          (market) =>
+            playerMarketFieldDrivesRequest(
+              this.marketOddsProvider,
+              stats,
+              market,
+            ) && !odds?.[market],
+        );
+        const missingDisplayedMarket = (['goal', 'assist'] as const).some(
+          (market) =>
+            playerMarketFieldSupported(
+              this.marketOddsProvider,
+              stats,
+              market,
+            ) && !odds?.[market],
+        );
+        const needsMarketOddsRefresh =
+          missingRequestDrivingMarket &&
+          (this.marketOddsProvider.reportsRefreshDue === true &&
+          marketRefreshDueState.complete
+            ? marketRefreshDuePlayerKeys.has(key)
+            : true);
+        return [
+          key,
+          {
+            supportsMarketOdds,
+            odds,
+            missingDisplayedMarket,
+            needsMarketOddsRefresh,
+            fixtureKey: stats.nextGame
+              ? marketFixtureKey(stats.nextGame)
+              : null,
+          },
+        ] as const;
+      }),
+    );
+    const warmingFixtureKeys = new Set(
+      [...marketStateByPlayer.values()].flatMap((state) =>
+        state.needsMarketOddsRefresh && state.fixtureKey
+          ? [state.fixtureKey]
+          : [],
+      ),
+    );
     const data = cachedOrLoaded.map((stats): PlayerStats => {
       const pending = new Set<PendingRefresh>(
         stats.pendingRefreshes ?? [],
       );
       const key = playerMarketOddsKey(stats);
-      const supportsMarketOdds = playerMarketOddsSupported(
-        this.marketOddsProvider,
-        stats,
-      );
-      const odds =
-        supportsMarketOdds ? marketOdds.get(key) ?? null : null;
-      const missingRequestDrivingMarket = (['goal', 'assist'] as const).some(
-        (market) =>
-          playerMarketFieldDrivesRequest(
-            this.marketOddsProvider,
-            stats,
-            market,
-          ) && !odds?.[market],
-      );
+      const marketState = marketStateByPlayer.get(key);
+      const supportsMarketOdds = marketState?.supportsMarketOdds ?? false;
+      const odds = marketState?.odds ?? null;
       const needsMarketOddsRefresh =
-        missingRequestDrivingMarket &&
-        (this.marketOddsProvider.reportsRefreshDue === true &&
-          marketRefreshDueState.complete
-          ? marketRefreshDuePlayerKeys.has(key)
-          : true);
+        marketState?.needsMarketOddsRefresh ?? false;
+      const sharesWarmingFixture = Boolean(
+        marketState?.missingDisplayedMarket &&
+          marketState.fixtureKey &&
+          warmingFixtureKeys.has(marketState.fixtureKey),
+      );
       const fallbackFixtureOdds = fixtureMatchOdds.get(key) ?? null;
       const nextGame = stats.nextGame
         ? {
@@ -763,17 +809,20 @@ export class StatsService {
         : null;
       const statsWithFallback = { ...stats, nextGame };
       if (
-        this.scheduleBackground &&
+        canScheduleOddsRefresh &&
         supportsMarketOdds &&
-        needsMarketOddsRefresh
+        (needsMarketOddsRefresh || sharesWarmingFixture)
       ) {
         pending.add('marketOdds');
-        if (!playersWithFixtureRefresh.has(key)) {
+        if (
+          needsMarketOddsRefresh &&
+          !playersWithFixtureRefresh.has(key)
+        ) {
           marketRefreshPlayers.push(stats);
         }
       }
       if (
-        this.scheduleBackground &&
+        canScheduleOddsRefresh &&
         this.fixtureMatchOddsProvider.supports(statsWithFallback) &&
         needsMatchProbabilitiesFallback(statsWithFallback)
       ) {
@@ -793,17 +842,17 @@ export class StatsService {
 
     if (this.scheduleBackground) {
       const tasks: Promise<void>[] = [];
-      if (fixtureRefreshEntries.length > 0) {
+      if (!request.oddsCacheOnly && fixtureRefreshEntries.length > 0) {
         tasks.push(this.refreshFixtures(fixtureRefreshEntries));
       }
-      if (marketRefreshPlayers.length > 0) {
+      if (canScheduleOddsRefresh && marketRefreshPlayers.length > 0) {
         tasks.push(
           this.marketOddsProvider
             .load(marketRefreshPlayers)
             .then(() => undefined),
         );
       }
-      if (matchOddsRefreshPlayers.length > 0) {
+      if (canScheduleOddsRefresh && matchOddsRefreshPlayers.length > 0) {
         tasks.push(
           this.fixtureMatchOddsProvider
             .load(matchOddsRefreshPlayers)
