@@ -109,6 +109,40 @@ describe('D1JsonKeyValueStore', () => {
     expect(log.warn).not.toHaveBeenCalled();
   });
 
+  it('does not consult stale KV data after an ordinary D1 miss', async () => {
+    const get = vi.fn(async () => ({ source: 'kv' }));
+    const store = new D1JsonKeyValueStore(
+      databaseReturning(null),
+      fallbackStore(get),
+      () => 1,
+    );
+
+    await expect(store.get('player-form:v3:test', 'json')).resolves.toBeNull();
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it('does not batch-read stale KV data for keys missing from D1', async () => {
+    const all = vi.fn(async () => ({ results: [] }));
+    const prepare = vi.fn(() => ({ bind: () => ({ all }) }));
+    const getMany = vi.fn(async () =>
+      new Map([['player-form:v3:test', { source: 'kv' }]]),
+    );
+    const fallback = {
+      ...fallbackStore(vi.fn(async () => ({ source: 'kv' }))),
+      getMany,
+    };
+    const store = new D1JsonKeyValueStore(
+      { prepare } as unknown as D1Database,
+      fallback,
+      () => 1,
+    );
+
+    await expect(
+      store.getMany(['player-form:v3:test'], 'json'),
+    ).resolves.toEqual(new Map());
+    expect(getMany).not.toHaveBeenCalled();
+  });
+
   it('reports both cache failures and propagates the KV error', async () => {
     const d1Error = new Error('D1 unavailable');
     const kvError = new Error('KV unavailable');

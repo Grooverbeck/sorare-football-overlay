@@ -359,6 +359,19 @@ function fixtureTeamOddsFrom(
   };
 }
 
+function sameFixtureTeamOdds(
+  left: FixtureTeamOdds | null,
+  right: FixtureTeamOdds,
+): boolean {
+  return (
+    left !== null &&
+    left.cleanSheetProbability === right.cleanSheetProbability &&
+    left.matchProbabilities?.win === right.matchProbabilities?.win &&
+    left.matchProbabilities?.draw === right.matchProbabilities?.draw &&
+    left.matchProbabilities?.loss === right.matchProbabilities?.loss
+  );
+}
+
 function fixtureTeamSide(
   fixture: NonNullable<PlayerFixtureStats>,
 ): FixtureTeamSide | null {
@@ -1058,6 +1071,18 @@ class CloudflarePlayerFixtureCache
     string,
     Promise<NonNullable<PlayerFixtureStats>>
   >();
+  private readonly teamFixtureLocks = new Map<
+    string,
+    Promise<NonNullable<PlayerFixtureStats>>
+  >();
+  private readonly teamFixtureReads = new Map<
+    string,
+    Promise<NonNullable<PlayerFixtureStats> | undefined>
+  >();
+  private readonly fixtureTeamOddsReads = new Map<
+    string,
+    Promise<FixtureTeamOdds | null>
+  >();
 
   constructor(
     namespace: JsonKeyValueStore,
@@ -1356,7 +1381,20 @@ class CloudflarePlayerFixtureCache
     if (!teamKey) {
       return this.resolveFixtureTeamOdds(playerCacheKey, fixture);
     }
-    const previous = this.teamFixtureResolutions.get(teamKey);
+    const directOdds = fixtureTeamOddsFrom(fixture);
+    const resolutionKey = [
+      teamKey,
+      marketFixtureKey(fixture) ?? fixture.date,
+      fixture.playerTeamSlug ?? fixture.playerTeamName ?? '',
+      directOdds.cleanSheetProbability ?? '',
+      directOdds.matchProbabilities?.win ?? '',
+      directOdds.matchProbabilities?.draw ?? '',
+      directOdds.matchProbabilities?.loss ?? '',
+    ].join('|');
+    const existing = this.teamFixtureResolutions.get(resolutionKey);
+    if (existing) return existing;
+
+    const previous = this.teamFixtureLocks.get(teamKey);
     const resolution = (async () => {
       if (previous) await previous.catch(() => undefined);
       return this.resolvePlayerTeamFixtureUnlocked(
@@ -1365,14 +1403,12 @@ class CloudflarePlayerFixtureCache
         teamKey,
       );
     })();
-    this.teamFixtureResolutions.set(teamKey, resolution);
-    try {
-      return await resolution;
-    } finally {
-      if (this.teamFixtureResolutions.get(teamKey) === resolution) {
-        this.teamFixtureResolutions.delete(teamKey);
-      }
-    }
+    // Identical teammate candidates share the full resolution. A genuinely
+    // different fixture or odds payload remains serialized behind the team
+    // lock so transfer and rollover ordering stays unchanged.
+    this.teamFixtureResolutions.set(resolutionKey, resolution);
+    this.teamFixtureLocks.set(teamKey, resolution);
+    return resolution;
   }
 
   private async resolvePlayerTeamFixtureUnlocked(
@@ -1418,6 +1454,7 @@ class CloudflarePlayerFixtureCache
         JSON.stringify(incomingEnvelope),
         { expiration },
       );
+      this.clearTeamFixtureReads(teamKey);
     } else {
       const existing = await this.readPlayerTeamFixture(
         teamKey,
@@ -1432,6 +1469,7 @@ class CloudflarePlayerFixtureCache
           JSON.stringify(teamFixtureEnvelope(selected)),
           { expiration },
         );
+        this.clearTeamFixtureReads(teamKey);
       }
     }
 
@@ -1449,30 +1487,44 @@ class CloudflarePlayerFixtureCache
     teamKey: string,
     expectedTeamSlug?: string,
   ): Promise<NonNullable<PlayerFixtureStats> | undefined> {
-    const raw = await this.namespace.get<unknown>(teamKey, 'json');
-    if (raw === null) return undefined;
-    const parsed = PlayerFixtureEnvelopeSchema.safeParse(raw);
-    const fixture = parsed.success ? parsed.data.nextGame : undefined;
-    if (!fixture) {
-      this.removeInvalid(teamKey);
-      return undefined;
+    const memoKey = `${teamKey}|${expectedTeamSlug ?? ''}`;
+    const existing = this.teamFixtureReads.get(memoKey);
+    if (existing) return existing;
+    const pending = (async () => {
+      const raw = await this.namespace.get<unknown>(teamKey, 'json');
+      if (raw === null) return undefined;
+      const parsed = PlayerFixtureEnvelopeSchema.safeParse(raw);
+      const fixture = parsed.success ? parsed.data.nextGame : undefined;
+      if (!fixture) {
+        this.removeInvalid(teamKey);
+        return undefined;
+      }
+      if (
+        expectedTeamSlug !== undefined &&
+        fixture.playerTeamSlug?.trim().toLowerCase() !== expectedTeamSlug
+      ) {
+        this.removeInvalid(teamKey);
+        return undefined;
+      }
+      const rolloverExpiration = fixtureRolloverExpiration(fixture.date);
+      if (
+        rolloverExpiration !== null &&
+        rolloverExpiration <= Math.floor(this.now() / 1_000)
+      ) {
+        this.removeInvalid(teamKey);
+        return undefined;
+      }
+      return fixture;
+    })();
+    this.teamFixtureReads.set(memoKey, pending);
+    return pending;
+  }
+
+  private clearTeamFixtureReads(teamKey: string): void {
+    const prefix = `${teamKey}|`;
+    for (const key of this.teamFixtureReads.keys()) {
+      if (key.startsWith(prefix)) this.teamFixtureReads.delete(key);
     }
-    if (
-      expectedTeamSlug !== undefined &&
-      fixture.playerTeamSlug?.trim().toLowerCase() !== expectedTeamSlug
-    ) {
-      this.removeInvalid(teamKey);
-      return undefined;
-    }
-    const rolloverExpiration = fixtureRolloverExpiration(fixture.date);
-    if (
-      rolloverExpiration !== null &&
-      rolloverExpiration <= Math.floor(this.now() / 1_000)
-    ) {
-      this.removeInvalid(teamKey);
-      return undefined;
-    }
-    return fixture;
   }
 
   private selectPlayerTeamFixture(
@@ -1516,8 +1568,11 @@ class CloudflarePlayerFixtureCache
       }
     }
 
-    if (hasFixtureTeamOdds(resolvedOdds)) {
-      await this.rememberFixtureTeamOdds(fixture, resolvedOdds);
+    if (
+      hasFixtureTeamOdds(resolvedOdds) &&
+      !sameFixtureTeamOdds(shared, resolvedOdds)
+    ) {
+      await this.rememberFixtureTeamOdds(fixture, resolvedOdds, shared);
     }
     return withFixtureTeamOdds(fixture, resolvedOdds);
   }
@@ -1527,36 +1582,40 @@ class CloudflarePlayerFixtureCache
   ): Promise<FixtureTeamOdds | null> {
     const key = fixtureTeamOddsKey(fixture);
     if (!key) return null;
-    const raw = await this.namespace.get<unknown>(key, 'json');
-    if (raw === null) return null;
-    const parsed = FixtureTeamOddsSchema.safeParse(raw);
-    if (!parsed.success) {
-      this.removeInvalid(key);
-      return null;
-    }
-    return parsed.data;
+    const existing = this.fixtureTeamOddsReads.get(key);
+    if (existing) return existing;
+    const pending = (async () => {
+      const raw = await this.namespace.get<unknown>(key, 'json');
+      if (raw === null) return null;
+      const parsed = FixtureTeamOddsSchema.safeParse(raw);
+      if (!parsed.success) {
+        this.removeInvalid(key);
+        return null;
+      }
+      return parsed.data;
+    })();
+    this.fixtureTeamOddsReads.set(key, pending);
+    return pending;
   }
 
   private async rememberFixtureTeamOdds(
     fixture: NonNullable<PlayerFixtureStats>,
     incoming: FixtureTeamOdds,
+    knownExisting?: FixtureTeamOdds | null,
   ): Promise<void> {
     const key = fixtureTeamOddsKey(fixture);
     if (!key || !hasFixtureTeamOdds(incoming)) return;
-    const existing = await this.readFixtureTeamOdds(fixture);
+    const existing =
+      knownExisting === undefined
+        ? await this.readFixtureTeamOdds(fixture)
+        : knownExisting;
     const merged = mergeFixtureTeamOdds(incoming, existing);
-    if (
-      existing &&
-      existing.cleanSheetProbability === merged.cleanSheetProbability &&
-      existing.matchProbabilities?.win === merged.matchProbabilities?.win &&
-      existing.matchProbabilities?.draw === merged.matchProbabilities?.draw &&
-      existing.matchProbabilities?.loss === merged.matchProbabilities?.loss
-    ) {
-      return;
-    }
+    if (sameFixtureTeamOdds(existing, merged)) return;
+    const parsed = FixtureTeamOddsSchema.parse(merged);
+    this.fixtureTeamOddsReads.set(key, Promise.resolve(parsed));
     this.persistUntil(
       key,
-      FixtureTeamOddsSchema.parse(merged),
+      parsed,
       fixtureTeamOddsExpiration(
         fixture.date,
         this.ttlSeconds,

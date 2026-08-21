@@ -94,8 +94,20 @@ const OddsApiIoEventOddsSchema = OddsApiIoEventSchema.extend({
   bookmakers: z.record(z.string(), z.array(OddsApiIoMarketSchema)),
 });
 
-const OddsApiIoMultiOddsSchema = z.array(OddsApiIoEventOddsSchema);
 type OddsApiIoEventOdds = z.infer<typeof OddsApiIoEventOddsSchema>;
+
+const OddsApiIoRawEventOddsSchema = OddsApiIoEventSchema.extend({
+  bookmakers: z.record(z.string(), z.array(z.unknown())),
+});
+const OddsApiIoRawMultiOddsSchema = z.array(OddsApiIoRawEventOddsSchema);
+const OddsApiIoMarketNameSchema = z.object({
+  name: z.string().min(1),
+});
+
+interface ParsedOddsApiIoMultiOdds {
+  events: OddsApiIoEventOdds[];
+  ignoredPlayerMarkets: ReadonlySet<string>;
+}
 
 const ODDS_API_IO_PLAYER_MARKET_PARSER_VERSION = 3;
 const ODDS_API_IO_EVIDENCE_AFTER_KICKOFF_MS = 48 * 60 * 60 * 1_000;
@@ -257,6 +269,65 @@ function normalizedProviderMarketName(value: string): string {
 
 function looksLikePlayerMarket(name: string): boolean {
   return /(?:player|goalscorer|assist)/i.test(name);
+}
+
+function retainedProviderMarket(
+  name: string,
+  includeMatchOdds: boolean,
+): boolean {
+  const normalized = normalizedProviderMarketName(name);
+  if (
+    [
+      'anytime goalscorer',
+      'player to assist',
+      'player to score or assist',
+    ].includes(normalized)
+  ) {
+    return true;
+  }
+  return (
+    includeMatchOdds &&
+    [
+      'clean sheet home',
+      'clean sheet away',
+      'ml',
+      'full time result',
+      'match result',
+    ].includes(normalized)
+  );
+}
+
+function parseOddsApiIoMultiOdds(
+  body: unknown,
+  includeMatchOdds: boolean,
+): ParsedOddsApiIoMultiOdds {
+  const rawEvents = OddsApiIoRawMultiOddsSchema.parse(body);
+  const ignoredPlayerMarkets = new Set<string>();
+  const events = rawEvents.map((event): OddsApiIoEventOdds => ({
+    id: event.id,
+    date: event.date,
+    home: event.home,
+    away: event.away,
+    bookmakers: Object.fromEntries(
+      Object.entries(event.bookmakers).map(([bookmaker, rawMarkets]) => [
+        bookmaker,
+        rawMarkets.flatMap((rawMarket) => {
+          const header = OddsApiIoMarketNameSchema.safeParse(rawMarket);
+          if (!header.success) return [];
+          if (!retainedProviderMarket(header.data.name, includeMatchOdds)) {
+            if (looksLikePlayerMarket(header.data.name)) {
+              ignoredPlayerMarkets.add(header.data.name);
+            }
+            return [];
+          }
+          // Relevant markets remain strictly validated. Only unrelated market
+          // payloads avoid the expensive deep odds/selection traversal.
+          return [OddsApiIoMarketSchema.parse(rawMarket)];
+        }),
+      ]),
+    ),
+  }));
+  return { events, ignoredPlayerMarkets };
 }
 
 function classifyPlayerSelection(
@@ -591,11 +662,20 @@ export class OddsApiIoPlayerMarketOddsProvider
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly now: () => number;
+  private readonly routesByCompetition = new Map<string, OddsApiIoRoute>();
 
   constructor(private readonly options: OddsApiIoOptions) {
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.sleep = options.sleep ?? defaultSleep;
     this.now = options.now ?? Date.now;
+    for (const route of options.routes) {
+      for (const competitionSlug of route.competitionSlugs) {
+        const key = competitionSlug.trim().toLocaleLowerCase();
+        if (!this.routesByCompetition.has(key)) {
+          this.routesByCompetition.set(key, route);
+        }
+      }
+    }
   }
 
   supports(player: PlayerStats): boolean {
@@ -1180,6 +1260,15 @@ export class OddsApiIoPlayerMarketOddsProvider
   }
 
   private routeForPlayer(player: PlayerStats): OddsApiIoRoute | null {
+    if (player.position === 'Goalkeeper') return null;
+    const competitionSlug = player.nextGame?.competitionSlug;
+    if (competitionSlug !== undefined) {
+      return competitionSlug === null
+        ? null
+        : this.routesByCompetition.get(
+            competitionSlug.trim().toLocaleLowerCase(),
+          ) ?? null;
+    }
     return (
       this.options.routes.find((route) =>
         supportsPlayerCompetition(player, route.competitionSlugs),
@@ -1188,6 +1277,14 @@ export class OddsApiIoPlayerMarketOddsProvider
   }
 
   private routeForFixture(player: PlayerStats): OddsApiIoRoute | null {
+    const competitionSlug = player.nextGame?.competitionSlug;
+    if (competitionSlug !== undefined) {
+      return competitionSlug === null
+        ? null
+        : this.routesByCompetition.get(
+            competitionSlug.trim().toLocaleLowerCase(),
+          ) ?? null;
+    }
     return (
       this.options.routes.find((route) =>
         supportsFixtureCompetition(player, route.competitionSlugs),
@@ -1295,7 +1392,7 @@ export class OddsApiIoPlayerMarketOddsProvider
           playerSlug: player.slug,
           playerDisplayName: player.displayName,
           reason: resolution.status,
-          candidates,
+          candidates: candidates.slice(0, 2),
         },
         'Odds-API.io player quote could not be assigned safely',
       );
@@ -1390,19 +1487,27 @@ export class OddsApiIoPlayerMarketOddsProvider
           provider: 'odds-api-io',
           fixture: fixture.key,
           reason: resolution.status,
-          candidates: resolution.candidates,
+          candidates: resolution.candidates.slice(0, 2),
         },
         'Odds-API.io fixture identity could not be resolved; no market miss stored',
       );
     }
 
     const oddsByEvent = new Map<string, OddsApiIoEventOdds>();
+    const ignoredPlayerMarkets = new Set<string>();
     for (const batch of chunks([...matched.values()], 10)) {
       const body = await this.requestJson('/odds/multi', {
         eventIds: batch.map(({ event }) => event.id).join(','),
         bookmakers: this.options.bookmakers.join(','),
       });
-      for (const eventOdds of OddsApiIoMultiOddsSchema.parse(body)) {
+      const parsedOdds = parseOddsApiIoMultiOdds(
+        body,
+        route.matchOdds === true,
+      );
+      for (const market of parsedOdds.ignoredPlayerMarkets) {
+        ignoredPlayerMarkets.add(market);
+      }
+      for (const eventOdds of parsedOdds.events) {
         oddsByEvent.set(eventOdds.id, eventOdds);
       }
     }
@@ -1578,17 +1683,23 @@ export class OddsApiIoPlayerMarketOddsProvider
         bookmakers: this.options.bookmakers,
         matchOdds: route.matchOdds === true,
         observedPlayerMarkets: [...observedPlayerMarkets].sort(),
+        ignoredPlayerMarketCount:
+          new Set([...ignoredPlayerMarkets, ...unhandledPlayerMarkets]).size,
       },
       'Odds-API.io fixture snapshot received',
     );
-    if (unhandledPlayerMarkets.size > 0) {
-      this.options.logger.warn(
+    const ignored = [
+      ...new Set([...ignoredPlayerMarkets, ...unhandledPlayerMarkets]),
+    ].sort();
+    if (ignored.length > 0) {
+      this.options.logger.debug(
         {
           event: 'player_market_unhandled',
           provider: 'odds-api-io',
           competitions: route.competitionSlugs,
           leagues: queriedLeagues,
-          markets: [...unhandledPlayerMarkets].sort(),
+          marketCount: ignored.length,
+          markets: ignored.slice(0, 5),
         },
         'Odds-API.io returned labelled player markets that no parser consumed',
       );

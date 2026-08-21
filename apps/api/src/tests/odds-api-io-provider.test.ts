@@ -173,7 +173,7 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
   });
 
   it('reports labelled player markets that no parser consumed', async () => {
-    const warn = vi.fn<AppLogger['warn']>();
+    const debug = vi.fn<AppLogger['debug']>();
     const fetchImpl = vi.fn<typeof fetch>(async (input) => {
       const url = new URL(String(input));
       if (url.pathname.endsWith('/events')) {
@@ -196,7 +196,9 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
             Bet365: [
               {
                 name: 'Player Creative Assist',
-                odds: [{ label: 'Otar Kiteishvili', odds: '4.00' }],
+                // Irrelevant player markets are intentionally not traversed
+                // deeply, so even an unsupported payload shape stays cheap.
+                odds: [{ deeply: { nested: 'ignored' } }],
               },
             ],
           },
@@ -210,15 +212,16 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
       0,
       new InMemoryMarketSnapshotStore(60_000, () => now),
       undefined,
-      { ...logger, warn },
+      { ...logger, debug },
     );
 
     await provider.load([player()]);
 
-    expect(warn).toHaveBeenCalledWith(
+    expect(debug).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'player_market_unhandled',
         provider: 'odds-api-io',
+        marketCount: 1,
         markets: ['Player Creative Assist'],
       }),
       expect.any(String),

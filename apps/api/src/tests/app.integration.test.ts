@@ -159,7 +159,10 @@ describe('POST /api/player-stats', () => {
 
     await app.request('/api/player-stats', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        'x-request-id': '00-sampled-phase-log',
+      },
       body: JSON.stringify({ slugs: ['private-player-slug'] }),
     });
 

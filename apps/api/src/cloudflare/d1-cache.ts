@@ -17,9 +17,9 @@ interface CacheWriteOptions {
 }
 
 /**
- * Temporary persistent cache backed by D1. Reads fall back to the existing KV
- * namespace so the already populated weekly form cache remains useful while KV
- * writes are unavailable.
+ * Persistent cache backed by D1. The optional KV namespace is now an
+ * outage-only fallback: production KV contains only obsolete migration keys,
+ * so consulting it after every ordinary D1 miss wastes the daily read budget.
  */
 export class D1JsonKeyValueStore implements JsonKeyValueStore {
   constructor(
@@ -73,7 +73,7 @@ export class D1JsonKeyValueStore implements JsonKeyValueStore {
       }
     }
 
-    return this.fallback?.get<T>(key, type) ?? null;
+    return null;
   }
 
   async getMany<T = unknown>(
@@ -126,10 +126,6 @@ export class D1JsonKeyValueStore implements JsonKeyValueStore {
     }
     await Promise.all(invalidKeys.map((key) => this.delete(key)));
 
-    const missingKeys = uniqueKeys.filter((key) => !values.has(key));
-    if (missingKeys.length === 0 || !this.fallback) return values;
-    const fallbackValues = await this.readFallbackMany<T>(missingKeys, type);
-    for (const [key, value] of fallbackValues) values.set(key, value);
     return values;
   }
 

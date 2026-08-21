@@ -1303,6 +1303,22 @@ export async function resolveProviderFixture<TEvent>(
 
 const defaultSupportedCompetitionSlugs = ['mlspa'] as const;
 const knownMlsTeamNames = new Set(Object.values(mlsTeamAliases));
+const supportedCompetitionSets = new WeakMap<
+  readonly string[],
+  ReadonlySet<string>
+>();
+
+function supportedCompetitionSet(
+  competitionSlugs: readonly string[],
+): ReadonlySet<string> {
+  const existing = supportedCompetitionSets.get(competitionSlugs);
+  if (existing) return existing;
+  const normalized = new Set(
+    competitionSlugs.map((slug) => slug.trim().toLocaleLowerCase()),
+  );
+  supportedCompetitionSets.set(competitionSlugs, normalized);
+  return normalized;
+}
 
 export function supportsPlayerCompetition(
   player: PlayerStats,
@@ -1321,9 +1337,7 @@ export function supportsFixtureCompetition(
     defaultSupportedCompetitionSlugs,
 ): boolean {
   if (!player.nextGame) return false;
-  const supported = new Set(
-    supportedCompetitionSlugs.map((slug) => slug.trim().toLocaleLowerCase()),
-  );
+  const supported = supportedCompetitionSet(supportedCompetitionSlugs);
   const competitionSlug = player.nextGame.competitionSlug;
   if (competitionSlug !== undefined) {
     return (

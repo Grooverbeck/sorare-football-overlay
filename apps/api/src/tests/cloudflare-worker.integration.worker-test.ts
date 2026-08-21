@@ -6,7 +6,7 @@ import {
   waitOnExecutionContext,
 } from 'cloudflare:test';
 import { parse } from 'graphql';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   CloudflareMarketSnapshotStore,
   CloudflareNameResolutionCache,
@@ -47,15 +47,13 @@ afterEach(() => {
 });
 
 describe('Cloudflare Worker', () => {
-  it('writes new cache values to D1 and retains KV as a read fallback', async () => {
+  it('writes new cache values to D1 without reviving stale KV-only entries', async () => {
     const fallbackKey = 'd1-fallback-probe';
     const d1Key = 'd1-primary-probe';
     await env.STATS_CACHE.put(fallbackKey, JSON.stringify({ source: 'kv' }));
     const store = new D1JsonKeyValueStore(env.CACHE_DB, env.STATS_CACHE);
 
-    await expect(store.get(fallbackKey, 'json')).resolves.toEqual({
-      source: 'kv',
-    });
+    await expect(store.get(fallbackKey, 'json')).resolves.toBeNull();
     await store.put(d1Key, JSON.stringify({ source: 'd1' }), {
       expirationTtl: 3_600,
     });
@@ -71,6 +69,74 @@ describe('Cloudflare Worker', () => {
       Math.floor(Date.now() / 1_000) + 3_590,
     );
 
+  });
+
+  it('shares one canonical team resolution across identical teammates in a batch', async () => {
+    const values = new Map<string, string>();
+    const get = vi.fn(async (key: string) => {
+      const value = values.get(key);
+      return value === undefined ? null : JSON.parse(value);
+    });
+    const put = vi.fn(async (key: string, value: string) => {
+      values.set(key, value);
+    });
+    const putEarlierFixture = vi.fn(async (key: string, value: string) => {
+      if (!values.has(key)) values.set(key, value);
+    });
+    const namespace = {
+      get,
+      put,
+      putEarlierFixture,
+      delete: vi.fn(async (key: string) => {
+        values.delete(key);
+      }),
+    };
+    const context = createExecutionContext();
+    const cache = new CloudflarePlayerStatsCache(
+      namespace,
+      604_800,
+      14_400,
+      context,
+    );
+    const fixture = {
+      date: '2026-08-23T18:00:00.000Z',
+      competitionSlug: 'bundesliga-de',
+      homeTeamName: 'Shared Home',
+      awayTeamName: 'Shared Away',
+      playerTeamName: 'Shared Home',
+      opponentTeamName: 'Shared Away',
+      playerTeamSlug: 'shared-home',
+      cleanSheetProbability: 0.42,
+      matchProbabilities: { win: 0.61, draw: 0.23, loss: 0.16 },
+    };
+    const stats = (slug: string) => ({
+      slug,
+      displayName: slug,
+      position: 'Defender' as const,
+      aaL10: { value: 12, sampleSize: 10 },
+      cleanSheetL10: { value: 0.3, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      nextGame: fixture,
+      excludedLowCoverage: 0,
+    });
+
+    await Promise.all([
+      cache.set('first:Defender:no-low', stats('first')),
+      cache.set('second:Defender:no-low', stats('second')),
+    ]);
+    await waitOnExecutionContext(context);
+
+    expect(putEarlierFixture).toHaveBeenCalledTimes(1);
+    expect(
+      get.mock.calls.filter(([key]) =>
+        String(key).startsWith('player-team-fixture:v2:shared-home'),
+      ),
+    ).toHaveLength(1);
+    expect(
+      get.mock.calls.filter(([key]) =>
+        String(key).startsWith('fixture-team-odds:v1:'),
+      ),
+    ).toHaveLength(1);
   });
 
   it('aligns weekly form expiry to Monday at 10:00 UTC', () => {

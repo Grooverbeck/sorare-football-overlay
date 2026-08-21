@@ -78,7 +78,7 @@ function createWorkerServices(
   const nameMissTtlSeconds = Math.floor(config.nameMissCacheTtlMs / 1_000);
   const cacheStore = new D1JsonKeyValueStore(
     env.CACHE_DB,
-    env.STATS_CACHE,
+    undefined,
     undefined,
     logger,
   );

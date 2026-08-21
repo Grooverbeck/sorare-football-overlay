@@ -27,6 +27,13 @@ type AppEnv = {
   };
 };
 
+const SLOW_REQUEST_LOG_THRESHOLD_MS = 2_000;
+
+function samplesSuccessfulRequest(requestId: string): boolean {
+  const firstByte = Number.parseInt(requestId.slice(0, 2), 16);
+  return Number.isFinite(firstByte) && firstByte < 16;
+}
+
 function servePublicHtml(context: Context<AppEnv>, html: string): Response {
   for (const [name, value] of Object.entries(publicPageHeaders)) context.header(name, value);
   return context.html(html);
@@ -48,16 +55,23 @@ export function createApp(options: CreateAppOptions): Hono<AppEnv> {
     context.header('x-request-id', requestId);
     const startedAt = performance.now();
     await next();
-    options.logger.info(
-      {
-        requestId,
-        method: context.req.method,
-        path: context.req.path,
-        status: context.res.status,
-        durationMs: Math.round(performance.now() - startedAt),
-      },
-      'Request completed',
-    );
+    const durationMs = Math.round(performance.now() - startedAt);
+    if (
+      context.res.status >= 400 ||
+      durationMs >= SLOW_REQUEST_LOG_THRESHOLD_MS ||
+      samplesSuccessfulRequest(requestId)
+    ) {
+      options.logger.info(
+        {
+          requestId,
+          method: context.req.method,
+          path: context.req.path,
+          status: context.res.status,
+          durationMs,
+        },
+        'Request completed',
+      );
+    }
   });
 
   app.use(
@@ -95,13 +109,23 @@ export function createApp(options: CreateAppOptions): Hono<AppEnv> {
     }
 
     const result = await options.statsService.getPlayerStats(parsed.data);
-    options.logger.info(
-      {
-        requestId: context.get('requestId'),
-        ...result.diagnostics,
-      },
-      'Player statistics phases completed',
-    );
+    const requestId = context.get('requestId');
+    if (
+      result.diagnostics.responseBudgetExceeded ||
+      result.diagnostics.deferredNames > 0 ||
+      result.diagnostics.partialHistories > 0 ||
+      result.diagnostics.durationsMs.total >=
+        SLOW_REQUEST_LOG_THRESHOLD_MS ||
+      samplesSuccessfulRequest(requestId)
+    ) {
+      options.logger.info(
+        {
+          requestId,
+          ...result.diagnostics,
+        },
+        'Player statistics phases completed',
+      );
+    }
     let data = result.data;
     if (options.mlsAaBenchmarkStore) {
       try {
