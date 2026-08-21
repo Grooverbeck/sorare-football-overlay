@@ -18,12 +18,18 @@ export interface PlayerStatsCacheParts {
 
 export interface Cache<T> {
   get(key: string): T | undefined | Promise<T | undefined>;
+  getMany?(
+    keys: readonly string[],
+  ): Map<string, T> | Promise<Map<string, T>>;
   set(key: string, value: T): void | Promise<void>;
   fillMissing?(key: string, value: T): T | Promise<T>;
 }
 
 export interface ReadonlyCache<T> {
   get(key: string): T | undefined | Promise<T | undefined>;
+  getMany?(
+    keys: readonly string[],
+  ): Map<string, T> | Promise<Map<string, T>>;
 }
 
 const playerPositions = new Set([
@@ -58,10 +64,17 @@ export function playerFixtureCacheKey(key: string): string {
 
 export interface SplitPlayerStatsCacheAccess extends Cache<PlayerStats> {
   getParts(key: string): Promise<PlayerStatsCacheParts>;
+  getPartsMany(
+    keys: readonly string[],
+  ): Promise<Map<string, PlayerStatsCacheParts>>;
   setForm(key: string, value: PlayerFormStats): void | Promise<void>;
   claimFormHistoryRefresh(key: string): boolean | Promise<boolean>;
   releaseFormHistoryRefresh(key: string): void | Promise<void>;
   claimFixtureRefresh(value: PlayerFixtureStats): boolean | Promise<boolean>;
+  getTeamFixture(
+    playerCacheKey: string,
+    teamSlug: string,
+  ): Promise<PlayerFixtureStats | undefined>;
   setFixture(
     key: string,
     value: PlayerFixtureStats,
@@ -78,10 +91,12 @@ export function supportsSplitPlayerStatsCache(
   const candidate = cache as Partial<SplitPlayerStatsCacheAccess>;
   return (
     typeof candidate.getParts === 'function' &&
+    typeof candidate.getPartsMany === 'function' &&
     typeof candidate.setForm === 'function' &&
     typeof candidate.claimFormHistoryRefresh === 'function' &&
     typeof candidate.releaseFormHistoryRefresh === 'function' &&
     typeof candidate.claimFixtureRefresh === 'function' &&
+    typeof candidate.getTeamFixture === 'function' &&
     typeof candidate.setFixture === 'function' &&
     typeof candidate.refreshFixture === 'function'
   );
@@ -103,6 +118,15 @@ export class TtlCache<T> implements Cache<T> {
       return undefined;
     }
     return entry.value;
+  }
+
+  getMany(keys: readonly string[]): Map<string, T> {
+    return new Map(
+      [...new Set(keys)].flatMap((key) => {
+        const value = this.get(key);
+        return value === undefined ? [] : [[key, value] as const];
+      }),
+    );
   }
 
   set(key: string, value: T): void {
@@ -158,6 +182,88 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
       ...(form !== undefined ? { form } : {}),
       ...(fixture !== undefined ? { fixture } : {}),
     };
+  }
+
+  async getPartsMany(
+    keys: readonly string[],
+  ): Promise<Map<string, PlayerStatsCacheParts>> {
+    const uniqueKeys = [...new Set(keys)];
+    if (uniqueKeys.length === 0) return new Map();
+    const fixtureKeyByPlayer = new Map(
+      uniqueKeys.map((key) => [key, playerFixtureCacheKey(key)]),
+    );
+    const [forms, canonicalFixtures] = await Promise.all([
+      this.readMany(this.formCache, uniqueKeys),
+      this.readMany(this.fixtureCache, [
+        ...new Set(fixtureKeyByPlayer.values()),
+      ]),
+    ]);
+
+    const fixtureByPlayer = new Map<string, PlayerFixtureStats>();
+    for (const key of uniqueKeys) {
+      const fixtureKey = fixtureKeyByPlayer.get(key)!;
+      if (canonicalFixtures.has(fixtureKey)) {
+        fixtureByPlayer.set(key, canonicalFixtures.get(fixtureKey)!);
+      }
+    }
+
+    // Older split-cache versions stored fixtures under the concrete position.
+    // Read only those misses in one batch and lazily migrate any hits.
+    const legacyFixtureKeys = uniqueKeys.filter(
+      (key) =>
+        !fixtureByPlayer.has(key) && fixtureKeyByPlayer.get(key) !== key,
+    );
+    const legacyFixtures = await this.readMany(
+      this.fixtureCache,
+      legacyFixtureKeys,
+    );
+    const fixtureMigrations: Promise<unknown>[] = [];
+    for (const key of legacyFixtureKeys) {
+      if (!legacyFixtures.has(key)) continue;
+      const fixture = legacyFixtures.get(key)!;
+      fixtureByPlayer.set(key, fixture);
+      const fixtureKey = fixtureKeyByPlayer.get(key)!;
+      fixtureMigrations.push(
+        Promise.resolve(
+          this.fixtureCache.fillMissing
+            ? this.fixtureCache.fillMissing(fixtureKey, fixture)
+            : this.fixtureCache.set(fixtureKey, fixture),
+        ),
+      );
+    }
+
+    // Consult the combined v1 cache only when neither split part exists,
+    // preserving the original migration policy without N+1 reads.
+    const legacyCandidates = uniqueKeys.filter(
+      (key) => !forms.has(key) && !fixtureByPlayer.has(key),
+    );
+    const legacyPlayers = this.legacyCache
+      ? await this.readMany(this.legacyCache, legacyCandidates)
+      : new Map<string, PlayerStats>();
+    const legacyMigrations: Promise<unknown>[] = [];
+    const result = new Map<string, PlayerStatsCacheParts>();
+    for (const key of uniqueKeys) {
+      const legacy = legacyPlayers.get(key);
+      if (legacy) {
+        const {
+          nextGame,
+          pendingRefreshes: _pendingRefreshes,
+          mlsAaContext: _mlsAaContext,
+          ...legacyForm
+        } = legacy;
+        result.set(key, { form: legacyForm, fixture: nextGame });
+        legacyMigrations.push(Promise.resolve(this.set(key, legacy)));
+        continue;
+      }
+      const parts: PlayerStatsCacheParts = {};
+      if (forms.has(key)) parts.form = forms.get(key)!;
+      if (fixtureByPlayer.has(key)) {
+        parts.fixture = fixtureByPlayer.get(key)!;
+      }
+      result.set(key, parts);
+    }
+    await Promise.all([...fixtureMigrations, ...legacyMigrations]);
+    return result;
   }
 
   async get(key: string): Promise<PlayerStats | undefined> {
@@ -234,13 +340,40 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
     value: PlayerFixtureStats,
   ): Promise<PlayerFixtureStats> {
     const existing = await this.getFixture(key);
-    if (existing !== undefined) return existing;
     const fixtureKey = playerFixtureCacheKey(key);
+    if (existing !== undefined) {
+      // A negative fixture lookup is not authoritative forever. Once Sorare
+      // or the canonical team cache supplies a fixture, replace the cached
+      // null instead of hiding that fixture until the negative TTL expires.
+      if (existing === null && value !== null) {
+        await this.fixtureCache.set(fixtureKey, value);
+        return (await this.fixtureCache.get(fixtureKey)) ?? value;
+      }
+      return existing;
+    }
     if (this.fixtureCache.fillMissing) {
       return this.fixtureCache.fillMissing(fixtureKey, value);
     }
     await this.fixtureCache.set(fixtureKey, value);
     return value;
+  }
+
+  async getTeamFixture(
+    playerCacheKey: string,
+    teamSlug: string,
+  ): Promise<PlayerFixtureStats | undefined> {
+    const teamAware = this.fixtureCache as Cache<PlayerFixtureStats> & {
+      getTeamFixture?: (
+        cacheKey: string,
+        canonicalTeamSlug: string,
+      ) => Promise<PlayerFixtureStats | undefined>;
+    };
+    return teamAware.getTeamFixture
+      ? teamAware.getTeamFixture(
+          playerFixtureCacheKey(playerCacheKey),
+          teamSlug,
+        )
+      : undefined;
   }
 
   async refreshFixture(
@@ -310,5 +443,22 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
     }
     await this.fixtureCache.set(fixtureKey, legacyFixture);
     return legacyFixture;
+  }
+
+  private async readMany<TValue>(
+    cache: ReadonlyCache<TValue>,
+    keys: readonly string[],
+  ): Promise<Map<string, TValue>> {
+    const uniqueKeys = [...new Set(keys)];
+    if (uniqueKeys.length === 0) return new Map();
+    if (cache.getMany) return cache.getMany(uniqueKeys);
+    const entries = await Promise.all(
+      uniqueKeys.map(async (key) => [key, await cache.get(key)] as const),
+    );
+    return new Map(
+      entries.flatMap(([key, value]) =>
+        value === undefined ? [] : ([[key, value]] as const),
+      ),
+    );
   }
 }

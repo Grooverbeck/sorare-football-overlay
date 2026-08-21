@@ -1,15 +1,16 @@
 [data-sorare-overlay-native-lineup="true"] {
   color: #0d1117;
   font-family:
-    "Segoe UI Variable Text",
+    "Segoe UI Variable Small",
     "Segoe UI",
-    Inter,
+    Arial,
     ui-sans-serif,
     system-ui,
     sans-serif;
-  font-variant-numeric: tabular-nums;
-  -webkit-font-smoothing: antialiased;
-  text-rendering: geometricPrecision;
+  font-variant-numeric: lining-nums tabular-nums;
+  font-optical-sizing: auto;
+  -webkit-font-smoothing: auto;
+  text-rendering: auto;
 }
 
 [data-sorare-overlay-native-lineup-surface="true"] {
@@ -82,15 +83,17 @@
   padding: 0 !important;
   color: currentColor !important;
   font-family:
-    "Segoe UI Variable Text",
+    "Segoe UI Variable Small",
     "Segoe UI",
-    Inter,
+    Arial,
     ui-sans-serif,
     system-ui,
     sans-serif !important;
   font-size: 9.5px !important;
-  font-weight: 700 !important;
-  letter-spacing: 0.01em !important;
+  font-weight: 750 !important;
+  font-feature-settings: "lnum" 1, "tnum" 1 !important;
+  font-kerning: none !important;
+  letter-spacing: .005em !important;
   line-height: 1.05 !important;
   text-align: right !important;
   white-space: nowrap !important;

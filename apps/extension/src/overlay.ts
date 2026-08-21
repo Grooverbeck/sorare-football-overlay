@@ -9,12 +9,13 @@ import {
   type Metric,
   type PlayerStats,
 } from '@sorare-overlay/shared';
+import { supportsCompactViewPath } from './compact-view-route.js';
+import { isScoreDetailsDialogTarget } from './dom.js';
 import type {
   HistoricalAssistWindow,
   MarketBracketSide,
   MarketValueFormat,
 } from './settings.js';
-import { isScoreDetailsDialogTarget } from './dom.js';
 
 const styles = `
   :host { all: initial; }
@@ -101,11 +102,23 @@ const styles = `
     border-radius: 6px 0 0 6px;
     box-shadow: -2px 2px 5px rgba(0,0,0,.34);
     filter: drop-shadow(0 1px 1px rgba(0,0,0,.2));
-    font-variant-numeric: tabular-nums;
+    font-variant-numeric: lining-nums tabular-nums;
+    font-optical-sizing: auto;
+    -webkit-font-smoothing: auto;
+    text-rendering: auto;
     pointer-events: none;
   }
   :host([data-market-value-format="decimal"]) .market-bracket {
     width: 54px;
+  }
+  :host([data-card-size="mini"]) .market-bracket {
+    transform: scale(.9);
+    transform-origin: top right;
+  }
+  :host(
+    [data-card-size="mini"][data-market-bracket-side="left"]
+  ) .market-bracket {
+    transform-origin: top left;
   }
   .market-bracket[data-fold-tone="very-low"] { --market-fold: #ff5d62; }
   .market-bracket[data-fold-tone="low"] { --market-fold: #ff922b; }
@@ -113,6 +126,7 @@ const styles = `
   .market-bracket[data-fold-tone="good"] { --market-fold: #51cf66; }
   .market-bracket[data-fold-tone="strong"] { --market-fold: #4dabf7; }
   .market-bracket[data-fold-tone="elite"] { --market-fold: #cc8cff; }
+  .market-bracket.no-data-bracket { --market-fold: #667180; }
   .market-bracket::after {
     position: absolute;
     right: 0;
@@ -214,17 +228,181 @@ const styles = `
     flex: 0 0 auto;
     overflow: visible;
     color: currentColor;
-    font-family: "Segoe UI Variable Text", "Segoe UI", Inter, ui-sans-serif, system-ui, sans-serif;
+    font-family: "Segoe UI Variable Small", "Segoe UI", Arial, ui-sans-serif, system-ui, sans-serif;
     font-size: 9.5px;
-    font-weight: 700;
-    letter-spacing: .01em;
+    font-weight: 750;
+    font-feature-settings: "lnum" 1, "tnum" 1;
+    font-kerning: none;
+    letter-spacing: .005em;
     line-height: 1.05;
     padding: 0;
     background: transparent;
     text-align: right;
-    text-rendering: optimizeLegibility;
+    text-rendering: auto;
     white-space: nowrap;
-    -webkit-font-smoothing: antialiased;
+    -webkit-font-smoothing: auto;
+  }
+  :host([data-compact-market-brackets="true"]) .market-bracket {
+    width: 38px;
+  }
+  :host(
+    [data-compact-market-brackets="true"][data-market-value-format="decimal"]
+  ) .market-bracket {
+    width: 46px;
+  }
+  :host([data-compact-market-brackets="true"]) .market-cell {
+    min-height: 15px;
+    padding: 0 3px;
+    justify-content: space-between;
+    gap: 2px;
+  }
+  :host(
+    [data-compact-market-brackets="true"][data-market-bracket-side="left"]
+  ) .market-cell {
+    padding-right: 3px;
+    padding-left: 3px;
+  }
+  :host([data-compact-market-brackets="true"]) .market-slot-spacer {
+    min-height: 15px;
+  }
+  :host([data-compact-market-brackets="true"]) .market-icon {
+    width: 9px;
+    height: 9px;
+    flex-basis: 9px;
+  }
+  :host([data-compact-market-brackets="true"]) .market-value {
+    min-width: 0;
+    font-size: 8px;
+    letter-spacing: 0;
+    line-height: 1;
+  }
+  :host([data-market-bracket-compact-view="true"]) .market-bracket {
+    width: 22px;
+    transition: width 140ms ease, opacity 120ms ease;
+  }
+  :host([data-market-bracket-compact-view="true"]) .market-icon {
+    width: 11px;
+    height: 11px;
+    flex-basis: 11px;
+  }
+  :host([data-market-bracket-compact-view="true"])
+    .market-bracket:hover,
+  :host([data-market-bracket-compact-view="true"])
+    .market-bracket:focus-within {
+    width: 46px;
+  }
+  :host(
+    [data-market-bracket-compact-view="true"][data-market-value-format="decimal"]
+  ) .market-bracket:hover,
+  :host(
+    [data-market-bracket-compact-view="true"][data-market-value-format="decimal"]
+  ) .market-bracket:focus-within {
+    width: 54px;
+  }
+  :host(
+    [data-market-bracket-compact-view="true"][data-compact-market-brackets="true"]
+  ) .market-bracket:hover,
+  :host(
+    [data-market-bracket-compact-view="true"][data-compact-market-brackets="true"]
+  ) .market-bracket:focus-within {
+    width: 38px;
+  }
+  :host(
+    [data-market-bracket-compact-view="true"][data-compact-market-brackets="true"][data-market-value-format="decimal"]
+  ) .market-bracket:hover,
+  :host(
+    [data-market-bracket-compact-view="true"][data-compact-market-brackets="true"][data-market-value-format="decimal"]
+  ) .market-bracket:focus-within {
+    width: 46px;
+  }
+  :host([data-market-bracket-compact-view="true"]) .market-cell {
+    justify-content: center;
+    gap: 0;
+  }
+  :host([data-market-bracket-compact-view="true"])
+    .market-bracket:hover .market-cell,
+  :host([data-market-bracket-compact-view="true"])
+    .market-bracket:focus-within .market-cell {
+    justify-content: space-between;
+    gap: 2px;
+  }
+  :host(
+    [data-market-bracket-compact-view="true"][data-compact-market-brackets="true"]
+  ) .market-bracket:hover .market-cell,
+  :host(
+    [data-market-bracket-compact-view="true"][data-compact-market-brackets="true"]
+  ) .market-bracket:focus-within .market-cell {
+    justify-content: space-between;
+    gap: 2px;
+  }
+  :host([data-market-bracket-compact-view="true"]) .market-value {
+    min-width: 0;
+    max-width: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: max-width 140ms ease, opacity 90ms ease;
+    visibility: hidden;
+  }
+  :host([data-market-bracket-compact-view="true"])
+    .market-bracket:hover .market-value,
+  :host([data-market-bracket-compact-view="true"])
+    .market-bracket:focus-within .market-value {
+    max-width: 36px;
+    opacity: 1;
+    visibility: visible;
+  }
+  :host([data-market-bracket-compact-view="true"]) .aa-sample-warning {
+    opacity: 0;
+    pointer-events: none;
+    visibility: hidden;
+  }
+  :host([data-market-bracket-compact-view="true"])
+    .market-bracket:hover .aa-sample-warning,
+  :host([data-market-bracket-compact-view="true"])
+    .market-bracket:focus-within .aa-sample-warning {
+    opacity: 1;
+    pointer-events: auto;
+    visibility: visible;
+  }
+  :host(
+    [data-market-bracket-compact-view="true"][data-market-bracket-card-hover="true"]
+  ) .market-bracket {
+    width: 46px;
+  }
+  :host(
+    [data-market-bracket-compact-view="true"][data-market-bracket-card-hover="true"][data-market-value-format="decimal"]
+  ) .market-bracket {
+    width: 54px;
+  }
+  :host(
+    [data-market-bracket-compact-view="true"][data-market-bracket-card-hover="true"][data-compact-market-brackets="true"]
+  ) .market-bracket {
+    width: 38px;
+  }
+  :host(
+    [data-market-bracket-compact-view="true"][data-market-bracket-card-hover="true"][data-compact-market-brackets="true"][data-market-value-format="decimal"]
+  ) .market-bracket {
+    width: 46px;
+  }
+  :host(
+    [data-market-bracket-compact-view="true"][data-market-bracket-card-hover="true"]
+  ) .market-cell {
+    justify-content: space-between;
+    gap: 2px;
+  }
+  :host(
+    [data-market-bracket-compact-view="true"][data-market-bracket-card-hover="true"]
+  ) .market-value {
+    max-width: 36px;
+    opacity: 1;
+    visibility: visible;
+  }
+  :host(
+    [data-market-bracket-compact-view="true"][data-market-bracket-card-hover="true"]
+  ) .aa-sample-warning {
+    opacity: 1;
+    pointer-events: auto;
+    visibility: visible;
   }
   .market-cell[data-tone="very-low"] { --market-tone: #ff5d62; }
   .market-cell[data-tone="low"] { --market-tone: #ff922b; }
@@ -290,25 +468,15 @@ const styles = `
     pointer-events: auto;
     transform: translate(2px, -2px);
   }
-  .aa-sample-warning::before,
-  .aa-sample-warning::after {
-    position: absolute;
-    left: 50%;
+  .aa-sample-warning-glyph {
     display: block;
-    width: 2px;
-    border-radius: 999px;
-    background: currentColor;
-    content: "";
+    width: 9px;
+    height: 10px;
+    flex: 0 0 auto;
+    overflow: visible;
+    fill: currentColor;
     pointer-events: none;
-    transform: translateX(-50%);
-  }
-  .aa-sample-warning::before {
-    top: 2px;
-    height: 4px;
-  }
-  .aa-sample-warning::after {
-    bottom: 2px;
-    height: 2px;
+    shape-rendering: geometricPrecision;
   }
   :host([data-market-bracket-side="left"]) .aa-sample-warning {
     right: auto;
@@ -405,17 +573,62 @@ const styles = `
     border-radius: 6px 0 0 6px;
   }
   .aa-market-icon,
-  .cs-market-icon {
+  .cs-market-icon,
+  .no-data-market-icon {
     display: flex;
     align-items: center;
     justify-content: center;
     color: currentColor;
-    font-family: "Segoe UI Variable Text", "Segoe UI", Inter, ui-sans-serif, system-ui, sans-serif;
+    font-family: "Segoe UI Variable Small", "Segoe UI", Arial, ui-sans-serif, system-ui, sans-serif;
     font-size: 6.5px;
     font-weight: 800;
+    font-optical-sizing: auto;
+    font-kerning: none;
     letter-spacing: -.15px;
     line-height: 1;
-    -webkit-font-smoothing: antialiased;
+    -webkit-font-smoothing: auto;
+    text-rendering: auto;
+  }
+  .cs-market-icon,
+  :host([data-compact-market-brackets="true"]) .cs-market-icon,
+  :host([data-market-bracket-compact-view="true"]) .cs-market-icon {
+    display: block;
+    width: 11px;
+    height: auto;
+    flex: 0 0 11px;
+    padding: 0;
+    text-align: center;
+  }
+  .clean-sheet-content {
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 2px;
+  }
+  :host([data-market-bracket-side="left"]) .clean-sheet-content {
+    flex-direction: row-reverse;
+  }
+  :host([data-market-bracket-compact-view="true"]) .clean-sheet-content {
+    justify-content: center;
+    gap: 0;
+  }
+  :host([data-market-bracket-compact-view="true"])
+    .market-bracket:hover .clean-sheet-content,
+  :host([data-market-bracket-compact-view="true"])
+    .market-bracket:focus-within .clean-sheet-content,
+  :host(
+    [data-market-bracket-compact-view="true"][data-market-bracket-card-hover="true"]
+  ) .clean-sheet-content {
+    justify-content: space-between;
+    gap: 2px;
+  }
+  .no-data-market-icon,
+  :host([data-compact-market-brackets="true"]) .no-data-market-icon,
+  :host([data-market-bracket-compact-view="true"]) .no-data-market-icon {
+    width: 14px;
+    flex-basis: 14px;
   }
   :host([data-market-bracket-side="left"]) .aa-bracket-cell,
   :host([data-market-bracket-side="left"]) .aa-bracket-cell:first-child,
@@ -765,6 +978,17 @@ function homeAwayProbabilities(
   };
 }
 
+function usesCompactMarketBrackets(container: HTMLElement): boolean {
+  // Sorare's five-slot team grid is shared by lineup and squad views. Cards
+  // offered in pickers live outside that grid and keep the larger scouting
+  // brackets. Selection screens such as compose-team and Hot Streaks also use
+  // the grid, so route-gate the smaller presentation to passive team views.
+  return (
+    supportsCompactViewPath(window.location.pathname) &&
+    Boolean(container.closest('[class~="slots5"]'))
+  );
+}
+
 function lineupBuilderTeamRow(container: HTMLElement): HTMLElement | null {
   // Sorare reuses the same semantic card footer in the lineup builder,
   // captain selection and squad player picker, but those screens have
@@ -1105,6 +1329,29 @@ function compactMarketCell(
   return cell;
 }
 
+function noL10BracketNode(message: string): HTMLElement {
+  const bracket = document.createElement('div');
+  bracket.className = 'market-bracket no-data-bracket';
+  bracket.setAttribute('aria-label', message);
+  bracket.title = message;
+
+  const cell = document.createElement('span');
+  cell.className = 'market-cell market-first market-last';
+  cell.dataset.available = 'false';
+
+  const label = document.createElement('span');
+  label.className = 'market-icon no-data-market-icon';
+  label.textContent = 'L10';
+
+  const value = document.createElement('span');
+  value.className = 'market-value';
+  value.textContent = '—';
+
+  cell.append(label, value);
+  bracket.append(cell);
+  return bracket;
+}
+
 interface HistoricalMarketSelection {
   window: HistoricalAssistWindow;
   metric: Metric;
@@ -1210,9 +1457,13 @@ function marketBracketNode(stats: PlayerStats): HTMLElement | null {
   );
   if (preview) bracket.dataset.preview = 'true';
   if (stats.position !== 'Goalkeeper') {
-    const aaCell = aaStatNode(stats, 'top');
-    aaCell.dataset.bracketSlot = 'aa';
-    bracket.append(aaCell);
+    if (stats.aaL10.value !== null) {
+      const aaCell = aaStatNode(stats, 'top');
+      aaCell.dataset.bracketSlot = 'aa';
+      bracket.append(aaCell);
+    } else {
+      bracket.append(marketBracketSlotSpacer('aa', true));
+    }
   } else {
     bracket.append(marketBracketSlotSpacer('aa', true));
   }
@@ -1278,6 +1529,7 @@ function marketBracketNode(stats: PlayerStats): HTMLElement | null {
   const visibleCells = Array.from(
     bracket.querySelectorAll<HTMLElement>('.market-cell'),
   );
+  if (visibleCells.length === 0) return null;
   visibleCells.at(-1)?.classList.add('market-fold-end');
   bracket.dataset.foldTone =
     visibleCells.at(-1)?.dataset.tone ?? 'unavailable';
@@ -1312,7 +1564,8 @@ function aaStatNode(
   if (limitedClubSample) {
     const sampleWarningReason =
       `AA ${score(stats.aaL10)} · Datenbasis: ${stats.aaL10.sampleSize}/10 gültige ` +
-      `Spiele beim aktuellen Verein. Andere Vereine/Nationalteam ausgeschlossen.`;
+      `Spiele mit mindestens 60 Minuten beim aktuellen Verein. ` +
+      `Andere Vereine/Nationalteam ausgeschlossen.`;
     stat.dataset.limitedSample = 'true';
     stat.dataset.clubSampleSize = String(stats.aaL10.sampleSize);
     const warning = document.createElement('span');
@@ -1324,6 +1577,21 @@ function aaStatNode(
       'aria-label',
       `Warnung: Begrenzte AA-Datenbasis. ${sampleWarningReason}`,
     );
+    const warningGlyph = svgElement('svg', {
+      class: 'aa-sample-warning-glyph',
+      viewBox: '0 0 12 12',
+      'aria-hidden': 'true',
+    });
+    warningGlyph.append(
+      svgElement('path', {
+        d: 'M5.15 1.1h1.7l-.35 6H5.5z',
+      }),
+      svgElement('circle', {
+        cx: '6',
+        cy: '9.7',
+        r: '1.05',
+      }),
+    );
     const warningTooltip = document.createElement('span');
     warningTooltip.className = 'aa-sample-warning-tooltip';
     warningTooltip.setAttribute('aria-hidden', 'true');
@@ -1334,7 +1602,7 @@ function aaStatNode(
     warningDetail.className = 'aa-sample-warning-detail';
     warningDetail.textContent = sampleWarningReason;
     warningTooltip.append(warningTitle, warningDetail);
-    warning.append(warningTooltip);
+    warning.append(warningGlyph, warningTooltip);
     stat.append(warning);
   }
   if (topRank) {
@@ -1363,7 +1631,7 @@ function aaStatNode(
       'aria-label',
       `AA L10 ${score(stats.aaL10)}: keine belastbare MLS-Perzentileinstufung${
         limitedClubSample
-          ? `; Warnung: nur ${stats.aaL10.sampleSize} Vereinsspiele des aktuellen Clubs`
+          ? `; Warnung: nur ${stats.aaL10.sampleSize} Vereinsspiele mit mindestens 60 Minuten`
           : ''
       }`,
     );
@@ -1377,7 +1645,7 @@ function aaStatNode(
       topRank ? `, Rang ${topRank}` : ''
     }${stats.mlsAaContext ? `, Stand ${stats.mlsAaContext.asOf}` : ''}${
       limitedClubSample
-        ? `; Warnung: nur ${stats.aaL10.sampleSize} Vereinsspiele des aktuellen Clubs`
+        ? `; Warnung: nur ${stats.aaL10.sampleSize} Vereinsspiele mit mindestens 60 Minuten`
         : ''
     }`,
   );
@@ -1417,7 +1685,10 @@ function cleanSheetBracketCellNode(
         }`
       : 'Next Clean Sheet: keine Quote',
   );
-  cell.append(icon, value);
+  const content = document.createElement('span');
+  content.className = 'clean-sheet-content';
+  content.append(icon, value);
+  cell.append(content);
   return cell;
 }
 
@@ -1504,6 +1775,7 @@ const packDialogText = /\b(?:deine\s+karten|your\s+cards|neuverpflichtungen|new\
 const packDialogHeaderText =
   /^(?:deine\s+karten|your\s+cards|neuverpflichtungen|new\s+signings)(?:\s*:\s*\d+\s*\/\s*\d+)?$/i;
 const packStatusClearancePx = 10;
+const miniBracketCardWidthPx = 88;
 const packReservedStatusHeightPx = 24;
 const packDialogHeaderClearancePx = 6;
 const packOverlayMinimumHeightPx = 22;
@@ -1741,6 +2013,7 @@ let marketBracketSide: MarketBracketSide = 'right';
 let historicalAssistFallbackEnabled = false;
 let historicalAssistWindow: HistoricalAssistWindow = 15;
 let marketValueFormat: MarketValueFormat = 'percentage';
+let marketBracketCompactView = false;
 const lineupOddsOwners = new WeakMap<HTMLElement, OverlayView>();
 
 function requestPositionFrame(callback: () => void): number {
@@ -1952,6 +2225,23 @@ export function applyMarketValueFormat(format: MarketValueFormat): void {
   }
 }
 
+export function applyMarketBracketCompactView(enabled: boolean): void {
+  marketBracketCompactView = enabled;
+  document.documentElement.toggleAttribute(
+    'data-sorare-overlay-compact-view',
+    enabled,
+  );
+  for (const host of document.querySelectorAll<HTMLElement>(
+    '[data-sorare-overlay-root]',
+  )) {
+    if (enabled) host.dataset.marketBracketCompactView = 'true';
+    else {
+      delete host.dataset.marketBracketCompactView;
+      delete host.dataset.marketBracketCardHover;
+    }
+  }
+}
+
 export class OverlayView {
   readonly host: HTMLDivElement;
   private readonly panel: HTMLDivElement;
@@ -1970,6 +2260,14 @@ export class OverlayView {
   private packLayoutPhase: 'none' | 'reveal' | 'result' = 'none';
   private viewportPriorityActive = true;
   private destroyed = false;
+  private readonly openMarketBracketForCardHover = (): void => {
+    if (marketBracketCompactView) {
+      this.host.dataset.marketBracketCardHover = 'true';
+    }
+  };
+  private readonly closeMarketBracketForCardHover = (): void => {
+    delete this.host.dataset.marketBracketCardHover;
+  };
 
   constructor(
     private readonly container: HTMLElement,
@@ -1980,6 +2278,9 @@ export class OverlayView {
     this.host.dataset.sorareOverlayRoot = 'true';
     this.host.dataset.marketBracketSide = marketBracketSide;
     this.host.dataset.marketValueFormat = marketValueFormat;
+    if (marketBracketCompactView) {
+      this.host.dataset.marketBracketCompactView = 'true';
+    }
     if (identity.slug) this.host.dataset.playerSlug = identity.slug;
     if (identity.playerName) this.host.dataset.playerName = identity.playerName;
     if (position) this.host.dataset.position = position;
@@ -1990,6 +2291,11 @@ export class OverlayView {
       transform: 'translateY(-100%)',
     });
     this.reposition = (context): void => {
+      if (usesCompactMarketBrackets(this.container)) {
+        this.host.dataset.compactMarketBrackets = 'true';
+      } else {
+        delete this.host.dataset.compactMarketBrackets;
+      }
       if (!this.container.isConnected) {
         this.host.style.display = 'none';
         this.lineupOddsHost.hidden = true;
@@ -2103,6 +2409,11 @@ export class OverlayView {
       this.host.dataset.horizontalAnchor = cardImageRect
         ? 'card-image'
         : 'container-inset';
+      if (compactWidth < miniBracketCardWidthPx) {
+        this.host.dataset.cardSize = 'mini';
+      } else {
+        delete this.host.dataset.cardSize;
+      }
       this.host.style.left = cssPixels(compactLeft);
       this.host.style.width = cssPixels(compactWidth);
       if (
@@ -2191,6 +2502,24 @@ export class OverlayView {
     );
     shadow.append(style, this.panel, this.playerMarketTooltip);
     (document.body ?? document.documentElement).append(this.host);
+    this.container.addEventListener(
+      'mouseenter',
+      this.openMarketBracketForCardHover,
+    );
+    this.container.addEventListener(
+      'mouseleave',
+      this.closeMarketBracketForCardHover,
+    );
+    this.cleanupCallbacks.push(() => {
+      this.container.removeEventListener(
+        'mouseenter',
+        this.openMarketBracketForCardHover,
+      );
+      this.container.removeEventListener(
+        'mouseleave',
+        this.closeMarketBracketForCardHover,
+      );
+    });
     this.reposition();
     registerPositionedOverlay(this);
     this.cleanupCallbacks.push(() => unregisterPositionedOverlay(this));
@@ -2295,6 +2624,16 @@ export class OverlayView {
     this.state('Lade L10 …', 'pulse');
   }
 
+  retrying(): void {
+    this.clearLineupOdds();
+    this.clearPlayerMarketTooltip();
+    this.state(
+      'Lade L10 erneut …',
+      'pulse',
+      'Die letzte Anfrage ist fehlgeschlagen oder läuft im Hintergrund weiter. Die Extension versucht es automatisch erneut.',
+    );
+  }
+
   error(): void {
     this.clearLineupOdds();
     this.clearPlayerMarketTooltip();
@@ -2308,7 +2647,7 @@ export class OverlayView {
   noData(): void {
     this.clearLineupOdds();
     this.clearPlayerMarketTooltip();
-    this.state('Keine L10-Daten', '');
+    this.state('Keine L10-Daten', 'no-data');
   }
 
   render(stats: PlayerStats): void {
@@ -2688,13 +3027,18 @@ export class OverlayView {
   ): void {
     if (this.destroyed) return;
     this.stopPackBracketSettling();
-    this.panel.classList.remove('bracket-only');
     this.panel.replaceChildren();
-    const state = document.createElement('div');
-    state.className = `state ${modifier}`.trim();
-    state.textContent = message;
-    if (title) state.title = title;
-    this.panel.append(state);
+    if (modifier === 'no-data') {
+      this.panel.classList.add('bracket-only');
+      this.panel.append(noL10BracketNode(message));
+    } else {
+      this.panel.classList.remove('bracket-only');
+      const state = document.createElement('div');
+      state.className = `state ${modifier}`.trim();
+      state.textContent = message;
+      if (title) state.title = title;
+      this.panel.append(state);
+    }
     this.reposition();
     if (!packRevealScope(this.container)) {
       delete this.host.dataset.packDataPending;

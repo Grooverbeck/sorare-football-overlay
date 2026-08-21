@@ -66,6 +66,20 @@ describe('weekly MLS AA benchmark', () => {
                 {
                   __typename: 'PlayerGameScore',
                   positionTyped: position,
+                  allAroundScore: 999,
+                  footballGame: {
+                    date: '2026-07-28T18:00:00.000Z',
+                    lowCoverage: false,
+                  },
+                  footballPlayerGameStats: {
+                    playedInGame: true,
+                    minsPlayed: 59,
+                    anyTeam: { id: `club-${slug}` },
+                  },
+                },
+                {
+                  __typename: 'PlayerGameScore',
+                  positionTyped: position,
                   allAroundScore: 100,
                   footballGame: {
                     date: '2026-07-27T18:00:00.000Z',
@@ -111,12 +125,17 @@ describe('weekly MLS AA benchmark', () => {
     const snapshot = await refresher.run();
 
     expect(snapshot.asOf).toBe('2026-07-27');
+    expect(snapshot.minimumMinutes).toBe(60);
     expect(snapshot.populationSize).toBe(12);
     expect(snapshot.positions.Forward.topThree.map(({ slug }) => slug)).toEqual([
       'forward-3',
       'forward-2',
       'forward-1',
     ]);
+    expect(snapshot.positions.Forward.topThree[0]).toMatchObject({
+      aa: 30,
+      appearances: 1,
+    });
     await expect(store.get()).resolves.toEqual(snapshot);
   });
 

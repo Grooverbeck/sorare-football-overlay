@@ -1,4 +1,5 @@
 import {
+  FootballPositionSchema,
   MarketProbabilitySchema,
   PlayerMarketOddsSchema,
   type BookmakerMarketQuote,
@@ -47,6 +48,9 @@ export const FrozenMarketSnapshotSchema = z.object({
   market: OddsMarketKeySchema,
   eventId: z.string().min(1),
   capturedAt: z.string().datetime(),
+  // Provider adapters can replay short-lived evidence after parser upgrades.
+  // Optional keeps every legacy snapshot readable.
+  parserVersion: z.number().int().positive().optional(),
   // A successful market remains frozen. One optional supplement pass may add
   // late-listed players and bookmaker detail without changing captured values.
   supplementedAt: z.string().datetime().optional(),
@@ -60,6 +64,15 @@ export const FrozenMarketSnapshotSchema = z.object({
 const MissingMarketSnapshotSchema = z.object({
   status: z.literal('unavailable'),
   market: OddsMarketKeySchema,
+  // Negative snapshots are safe only for the fixture resolver version that
+  // produced them. A resolver upgrade lazily retries old misses while keeping
+  // immutable positive snapshots intact.
+  fixtureIdentityVersion: z.number().int().positive().optional(),
+  reason: z.enum(['market_not_offered', 'player_not_listed']).optional(),
+  parserVersion: z.number().int().positive().optional(),
+  // Providers that bill per returned event can target a later supplement by
+  // ID even when the requested market was not listed on the first response.
+  eventId: z.string().min(1).optional(),
   checkedAt: z.string().datetime(),
   attemptCount: z.number().int().min(1).optional(),
   nextRetryAt: z.string().datetime().nullable().optional(),
@@ -74,9 +87,143 @@ export const MarketSnapshotSchema = z.discriminatedUnion('status', [
 export type FrozenMarketSnapshot = z.infer<typeof FrozenMarketSnapshotSchema>;
 export type MarketSnapshot = z.infer<typeof MarketSnapshotSchema>;
 
+export const FIXTURE_IDENTITY_VERSION = 2;
+
+export const MarketSupplementPlayerSchema = z.object({
+  slug: z.string().trim().min(1).max(160),
+  displayName: z.string().trim().min(1).max(200),
+  position: FootballPositionSchema,
+});
+
+export const MarketSupplementBatchSchema = z.object({
+  queuedAt: z.string().datetime(),
+  readyAt: z.string().datetime(),
+  players: z.array(MarketSupplementPlayerSchema),
+});
+
+export type MarketSupplementPlayer = z.infer<
+  typeof MarketSupplementPlayerSchema
+>;
+export type MarketSupplementBatch = z.infer<
+  typeof MarketSupplementBatchSchema
+>;
+
+export interface MarketSnapshotRead {
+  fixtureKey: string;
+  market: OddsMarketKey;
+}
+
 export interface MarketSnapshotStore {
   get(fixtureKey: string, market: OddsMarketKey): Promise<MarketSnapshot | undefined>;
+  getMany?(
+    requests: readonly MarketSnapshotRead[],
+  ): Promise<Array<MarketSnapshot | undefined>>;
   set(fixtureKey: string, snapshot: MarketSnapshot): void | Promise<void>;
+  getEvidence?(
+    fixtureKey: string,
+    provider: string,
+  ): Promise<unknown | undefined>;
+  setEvidence?(
+    fixtureKey: string,
+    provider: string,
+    evidence: unknown,
+    expiresAt: string,
+  ): void | Promise<void>;
+  claimRefreshLease?(
+    fixtureKey: string,
+    requestGroup: string,
+    ttlMs: number,
+  ): Promise<boolean>;
+  releaseRefreshLease?(
+    fixtureKey: string,
+    requestGroup: string,
+  ): Promise<void>;
+  enqueueSupplementPlayers?(
+    fixtureKey: string,
+    requestGroup: string,
+    players: readonly MarketSupplementPlayer[],
+    delayMs: number,
+    ttlMs: number,
+  ): Promise<MarketSupplementBatch>;
+  getSupplementBatch?(
+    fixtureKey: string,
+    requestGroup: string,
+  ): Promise<MarketSupplementBatch | undefined>;
+  clearSupplementBatch?(
+    fixtureKey: string,
+    requestGroup: string,
+  ): Promise<void>;
+  getProviderTeamAliases?(
+    provider: MarketIdentityProvider,
+    providerTeamNames: readonly string[],
+  ): Promise<ReadonlyMap<string, string>>;
+  setProviderTeamAliases?(
+    provider: MarketIdentityProvider,
+    aliases: readonly ProviderTeamAlias[],
+  ): void | Promise<void>;
+}
+
+export type MarketIdentityProvider =
+  | 'the-odds-api'
+  | 'odds-api-io'
+  | 'sports-game-odds';
+
+const fixtureIdentityCooldownMs = 10 * 60 * 1_000;
+const fixtureIdentityCooldownVersion = 1;
+
+function fixtureIdentityCooldownProvider(
+  provider: MarketIdentityProvider,
+): string {
+  return `${provider}:fixture-identity-unresolved:v${fixtureIdentityCooldownVersion}`;
+}
+
+export async function fixtureIdentityCooldownActive(
+  store: MarketSnapshotStore,
+  provider: MarketIdentityProvider,
+  fixtureKey: string,
+): Promise<boolean> {
+  if (!store.getEvidence) return false;
+  try {
+    return Boolean(
+      await store.getEvidence(
+        fixtureKey,
+        fixtureIdentityCooldownProvider(provider),
+      ),
+    );
+  } catch {
+    // Coordination storage is an optimization. A cache outage must not make
+    // an otherwise healthy provider unavailable.
+    return false;
+  }
+}
+
+export async function rememberFixtureIdentityCooldown(
+  store: MarketSnapshotStore,
+  provider: MarketIdentityProvider,
+  fixtureKey: string,
+  reason: 'unmatched' | 'ambiguous',
+  now: number = Date.now(),
+): Promise<void> {
+  if (!store.setEvidence) return;
+  try {
+    await store.setEvidence(
+      fixtureKey,
+      fixtureIdentityCooldownProvider(provider),
+      {
+        reason,
+        checkedAt: new Date(now).toISOString(),
+      },
+      new Date(now + fixtureIdentityCooldownMs).toISOString(),
+    );
+  } catch {
+    // Failing to persist the cooldown must not replace a provider result with
+    // an application error.
+  }
+}
+
+export interface ProviderTeamAlias {
+  providerTeamName: string;
+  canonicalTeamSlug: string;
 }
 
 interface MemoryEntry {
@@ -84,8 +231,38 @@ interface MemoryEntry {
   expiresAt: number | null;
 }
 
+interface MemoryEvidenceEntry {
+  evidence: unknown;
+  expiresAt: number;
+}
+
+export function mergeSupplementBatch(
+  existing: MarketSupplementBatch | undefined,
+  players: readonly MarketSupplementPlayer[],
+  now: number,
+  delayMs: number,
+): MarketSupplementBatch {
+  const mergedPlayers = new Map<string, MarketSupplementPlayer>();
+  for (const player of [...(existing?.players ?? []), ...players]) {
+    mergedPlayers.set(playerMarketOddsKey(player), player);
+  }
+  return MarketSupplementBatchSchema.parse({
+    queuedAt: existing?.queuedAt ?? new Date(now).toISOString(),
+    readyAt:
+      existing?.readyAt ?? new Date(now + Math.max(0, delayMs)).toISOString(),
+    players: [...mergedPlayers.values()],
+  });
+}
+
 export class InMemoryMarketSnapshotStore implements MarketSnapshotStore {
   private readonly entries = new Map<string, MemoryEntry>();
+  private readonly evidenceEntries = new Map<string, MemoryEvidenceEntry>();
+  private readonly refreshLeases = new Map<string, number>();
+  private readonly providerTeamAliases = new Map<string, string>();
+  private readonly supplementBatches = new Map<
+    string,
+    { batch: MarketSupplementBatch; expiresAt: number }
+  >();
 
   constructor(
     private readonly missTtlMs: number,
@@ -106,6 +283,14 @@ export class InMemoryMarketSnapshotStore implements MarketSnapshotStore {
     return entry.snapshot;
   }
 
+  getMany(
+    requests: readonly MarketSnapshotRead[],
+  ): Promise<Array<MarketSnapshot | undefined>> {
+    return Promise.all(
+      requests.map(({ fixtureKey, market }) => this.get(fixtureKey, market)),
+    );
+  }
+
   set(fixtureKey: string, snapshot: MarketSnapshot): void {
     this.entries.set(this.key(fixtureKey, snapshot.market), {
       snapshot,
@@ -118,8 +303,136 @@ export class InMemoryMarketSnapshotStore implements MarketSnapshotStore {
     });
   }
 
+  async getEvidence(
+    fixtureKey: string,
+    provider: string,
+  ): Promise<unknown | undefined> {
+    const key = this.evidenceKey(fixtureKey, provider);
+    const entry = this.evidenceEntries.get(key);
+    if (!entry) return undefined;
+    if (entry.expiresAt <= this.now()) {
+      this.evidenceEntries.delete(key);
+      return undefined;
+    }
+    return entry.evidence;
+  }
+
+  setEvidence(
+    fixtureKey: string,
+    provider: string,
+    evidence: unknown,
+    expiresAt: string,
+  ): void {
+    const expiration = Date.parse(expiresAt);
+    if (!Number.isFinite(expiration) || expiration <= this.now()) return;
+    this.evidenceEntries.set(this.evidenceKey(fixtureKey, provider), {
+      evidence,
+      expiresAt: expiration,
+    });
+  }
+
+  async claimRefreshLease(
+    fixtureKey: string,
+    requestGroup: string,
+    ttlMs: number,
+  ): Promise<boolean> {
+    const key = this.coordinationKey(fixtureKey, requestGroup);
+    const expiresAt = this.refreshLeases.get(key);
+    if (expiresAt !== undefined && expiresAt > this.now()) return false;
+    this.refreshLeases.set(key, this.now() + ttlMs);
+    return true;
+  }
+
+  async releaseRefreshLease(
+    fixtureKey: string,
+    requestGroup: string,
+  ): Promise<void> {
+    this.refreshLeases.delete(
+      this.coordinationKey(fixtureKey, requestGroup),
+    );
+  }
+
+  async enqueueSupplementPlayers(
+    fixtureKey: string,
+    requestGroup: string,
+    players: readonly MarketSupplementPlayer[],
+    delayMs: number,
+    ttlMs: number,
+  ): Promise<MarketSupplementBatch> {
+    const key = this.coordinationKey(fixtureKey, requestGroup);
+    const existing = this.supplementBatches.get(key);
+    const active =
+      existing !== undefined && existing.expiresAt > this.now()
+        ? existing.batch
+        : undefined;
+    const batch = mergeSupplementBatch(active, players, this.now(), delayMs);
+    this.supplementBatches.set(key, {
+      batch,
+      expiresAt: this.now() + ttlMs,
+    });
+    return batch;
+  }
+
+  async getSupplementBatch(
+    fixtureKey: string,
+    requestGroup: string,
+  ): Promise<MarketSupplementBatch | undefined> {
+    const key = this.coordinationKey(fixtureKey, requestGroup);
+    const entry = this.supplementBatches.get(key);
+    if (!entry) return undefined;
+    if (entry.expiresAt <= this.now()) {
+      this.supplementBatches.delete(key);
+      return undefined;
+    }
+    return entry.batch;
+  }
+
+  async clearSupplementBatch(
+    fixtureKey: string,
+    requestGroup: string,
+  ): Promise<void> {
+    this.supplementBatches.delete(
+      this.coordinationKey(fixtureKey, requestGroup),
+    );
+  }
+
+  async getProviderTeamAliases(
+    provider: MarketIdentityProvider,
+    providerTeamNames: readonly string[],
+  ): Promise<ReadonlyMap<string, string>> {
+    return new Map(
+      providerTeamNames.flatMap((providerTeamName) => {
+        const normalized = normalizeTeamName(providerTeamName);
+        const canonicalTeamSlug = this.providerTeamAliases.get(
+          `${provider}:${normalized}`,
+        );
+        return canonicalTeamSlug ? [[normalized, canonicalTeamSlug]] : [];
+      }),
+    );
+  }
+
+  setProviderTeamAliases(
+    provider: MarketIdentityProvider,
+    aliases: readonly ProviderTeamAlias[],
+  ): void {
+    for (const alias of aliases) {
+      this.providerTeamAliases.set(
+        `${provider}:${normalizeTeamName(alias.providerTeamName)}`,
+        alias.canonicalTeamSlug,
+      );
+    }
+  }
+
   private key(fixtureKey: string, market: OddsMarketKey): string {
     return `${fixtureKey}:${market}`;
+  }
+
+  private coordinationKey(fixtureKey: string, requestGroup: string): string {
+    return `${requestGroup}:${fixtureKey}`;
+  }
+
+  private evidenceKey(fixtureKey: string, provider: string): string {
+    return `${provider}:${fixtureKey}`;
   }
 }
 
@@ -129,13 +442,103 @@ export interface PlayerMarketOddsProvider {
     options?: PlayerMarketOddsLoadOptions,
   ): Promise<Map<string, PlayerMarketOdds | null>>;
   supports?(player: PlayerStats): boolean;
+  supportsMarket?(
+    player: PlayerStats,
+    market: PlayerMarketField,
+  ): boolean;
+  // A provider may extract and merge a field without letting its absence spend
+  // another external request. This keeps opportunistic props distinct from
+  // request-driving markets.
+  drivesMarketRequest?(
+    player: PlayerStats,
+    market: PlayerMarketField,
+  ): boolean;
+  // True when cache-only loads populate `refreshDuePlayerKeys` from the same
+  // freshness rules used by the provider's normal network path.
+  readonly reportsRefreshDue?: boolean;
   refreshUsage?(): Promise<ProviderQuotaUsage[]>;
 }
+
+export type PlayerMarketField = 'goal' | 'assist' | 'decisive';
 
 export interface PlayerMarketOddsLoadOptions {
   // Read immutable snapshots only. External bookmaker APIs must never be
   // contacted on the player-stats response path.
   cacheOnly?: boolean;
+  // Internal wall-clock deadline shared by nested cache-only provider
+  // compositions. Leaf providers may ignore it; composite providers use it
+  // to return partial snapshots before their parent budget expires.
+  cacheOnlyDeadlineMs?: number;
+  // Internal response-path metadata. Providers add only players for which a
+  // normal load would currently attempt an external refresh. This prevents a
+  // fresh negative market snapshot from causing blind extension polling.
+  refreshDuePlayerKeys?: Set<string>;
+  refreshDueState?: { complete: boolean };
+}
+
+export function markRefreshDueStateComplete(
+  loadOptions?: PlayerMarketOddsLoadOptions,
+): void {
+  if (loadOptions?.refreshDueState) loadOptions.refreshDueState.complete = true;
+}
+
+const defaultCacheOnlySnapshotReadBudgetMs = 100;
+
+export function settleCacheReadWithin<T>(
+  pending: Promise<T>,
+  cacheOnly: boolean,
+  timeoutMs = defaultCacheOnlySnapshotReadBudgetMs,
+): Promise<T | undefined> {
+  if (!cacheOnly) return pending;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: T | undefined) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(value);
+    };
+    const timeout = setTimeout(() => finish(undefined), Math.max(1, timeoutMs));
+    void pending.then(
+      (value) => finish(value),
+      () => finish(undefined),
+    );
+  });
+}
+
+export function cacheOnlySnapshotReadBudgetMs(
+  loadOptions?: PlayerMarketOddsLoadOptions,
+): number | undefined {
+  if (
+    loadOptions?.cacheOnly !== true ||
+    loadOptions.cacheOnlyDeadlineMs === undefined
+  ) {
+    return undefined;
+  }
+  return Math.max(1, loadOptions.cacheOnlyDeadlineMs - Date.now());
+}
+
+export async function readMarketSnapshotsWithin(
+  store: MarketSnapshotStore,
+  requests: readonly MarketSnapshotRead[],
+  cacheOnly: boolean,
+  timeoutMs?: number,
+): Promise<Array<MarketSnapshot | undefined>> {
+  if (requests.length === 0) return [];
+  if (!store.getMany) {
+    return Promise.all(
+      requests.map(({ fixtureKey, market }) =>
+        settleCacheReadWithin(
+          store.get(fixtureKey, market),
+          cacheOnly,
+          timeoutMs,
+        ),
+      ),
+    );
+  }
+  const pending = store.getMany(requests);
+  const loaded = await settleCacheReadWithin(pending, cacheOnly, timeoutMs);
+  return loaded ?? requests.map(() => undefined);
 }
 
 export function playerMarketOddsKey(
@@ -154,34 +557,75 @@ export function playerMarketOddsSupported(
   );
 }
 
+export function playerMarketFieldSupported(
+  provider: PlayerMarketOddsProvider,
+  player: PlayerStats,
+  market: PlayerMarketField,
+): boolean {
+  return (
+    provider.supportsMarket?.(player, market) ??
+    playerMarketOddsSupported(provider, player)
+  );
+}
+
+export function playerMarketFieldDrivesRequest(
+  provider: PlayerMarketOddsProvider,
+  player: PlayerStats,
+  market: PlayerMarketField,
+): boolean {
+  return (
+    provider.drivesMarketRequest?.(player, market) ??
+    playerMarketFieldSupported(provider, player, market)
+  );
+}
+
 export class UnavailablePlayerMarketOddsProvider
   implements PlayerMarketOddsProvider
 {
+  readonly reportsRefreshDue = true;
   supports(): boolean {
+    return false;
+  }
+
+  supportsMarket(): boolean {
+    return false;
+  }
+
+  drivesMarketRequest(): boolean {
     return false;
   }
 
   async load(
     players: readonly PlayerStats[],
-    _options?: PlayerMarketOddsLoadOptions,
+    options?: PlayerMarketOddsLoadOptions,
   ): Promise<Map<string, PlayerMarketOdds | null>> {
+    markRefreshDueStateComplete(options);
     return new Map(players.map((player) => [playerMarketOddsKey(player), null]));
   }
 }
 
 export class MockPlayerMarketOddsProvider implements PlayerMarketOddsProvider {
+  readonly reportsRefreshDue = true;
   constructor(private readonly now: () => number = Date.now) {}
 
   supports(player: PlayerStats): boolean {
     return player.position !== 'Goalkeeper' && player.nextGame !== null;
   }
 
+  supportsMarket(player: PlayerStats): boolean {
+    return this.supports(player);
+  }
+
+  drivesMarketRequest(player: PlayerStats): boolean {
+    return this.supports(player);
+  }
+
   async load(
     players: readonly PlayerStats[],
-    _options?: PlayerMarketOddsLoadOptions,
+    options?: PlayerMarketOddsLoadOptions,
   ): Promise<Map<string, PlayerMarketOdds | null>> {
     const capturedAt = new Date(this.now()).toISOString();
-    return new Map(
+    const output = new Map(
       players.map((player) => {
         if (player.position === 'Goalkeeper' || !player.nextGame) {
           return [playerMarketOddsKey(player), null];
@@ -231,6 +675,8 @@ export class MockPlayerMarketOddsProvider implements PlayerMarketOddsProvider {
         ];
       }),
     );
+    markRefreshDueStateComplete(options);
+    return output;
   }
 }
 
@@ -270,12 +716,16 @@ const EventOddsSchema = OddsEventSchema.extend({
 type EventOdds = z.infer<typeof EventOddsSchema>;
 type OddsOutcome = z.infer<typeof OddsOutcomeSchema>;
 
-export interface FixtureGroup {
+export interface FixtureGroup<
+  TPlayer extends MarketSupplementPlayer = PlayerStats,
+> {
   key: string;
   date: string;
   homeTeamName: string;
   awayTeamName: string;
-  players: PlayerStats[];
+  homeTeamSlug?: string;
+  awayTeamSlug?: string;
+  players: TPlayer[];
 }
 
 interface TheOddsApiOptions {
@@ -293,6 +743,10 @@ interface TheOddsApiOptions {
   usageStore?: ProviderQuotaUsageStore;
   refreshUsage?: boolean;
   supportedCompetitionSlugs?: readonly string[];
+  supportedMarkets?: readonly PlayerMarketField[];
+  supplementBatchDelayMs?: number;
+  supplementBatchTtlMs?: number;
+  refreshLeaseTtlMs?: number;
   fetchImpl?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
   now?: () => number;
@@ -312,6 +766,10 @@ class OddsApiHttpError extends Error {
 
 const defaultSleep = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+
+const defaultSupplementBatchDelayMs = 0;
+const defaultSupplementBatchTtlMs = 15 * 60 * 1_000;
+const defaultRefreshLeaseTtlMs = 90 * 1_000;
 
 const mlsTeamAliases: Readonly<Record<string, string>> = {
   atlanta: 'atlanta united',
@@ -369,6 +827,57 @@ const mlsTeamAliases: Readonly<Record<string, string>> = {
   'vancouver whitecaps': 'vancouver whitecaps',
 };
 
+const ligaMxTeamAliases: Readonly<Record<string, string>> = {
+  // Leagues Cup pairs MLS teams with Liga MX teams. Sorare, bookmakers and
+  // English-language feeds frequently use different club prefixes or the
+  // common Chivas/Rayados names for the same side.
+  atlas: 'atlas',
+  'club atlas': 'atlas',
+  america: 'club america',
+  'club america': 'club america',
+  'atletico san luis': 'atletico san luis',
+  'atletico de san luis': 'atletico san luis',
+  'club atletico de san luis': 'atletico san luis',
+  guadalajara: 'guadalajara',
+  'club guadalajara': 'guadalajara',
+  'cd guadalajara': 'guadalajara',
+  chivas: 'guadalajara',
+  'chivas guadalajara': 'guadalajara',
+  'cruz azul': 'cruz azul',
+  juarez: 'juarez',
+  'club juarez': 'juarez',
+  leon: 'leon',
+  'club leon': 'leon',
+  mazatlan: 'mazatlan',
+  'club mazatlan': 'mazatlan',
+  monterrey: 'monterrey',
+  rayados: 'monterrey',
+  'rayados monterrey': 'monterrey',
+  necaxa: 'necaxa',
+  'club necaxa': 'necaxa',
+  pachuca: 'pachuca',
+  'club pachuca': 'pachuca',
+  puebla: 'puebla',
+  'club puebla': 'puebla',
+  pumas: 'pumas unam',
+  unam: 'pumas unam',
+  'pumas unam': 'pumas unam',
+  'unam pumas': 'pumas unam',
+  queretaro: 'queretaro',
+  'club queretaro': 'queretaro',
+  'santos laguna': 'santos laguna',
+  tigres: 'tigres uanl',
+  'tigres uanl': 'tigres uanl',
+  tijuana: 'tijuana',
+  'club tijuana': 'tijuana',
+  xolos: 'tijuana',
+  'xolos de tijuana': 'tijuana',
+  toluca: 'toluca',
+  'deportivo toluca': 'toluca',
+  atlante: 'atlante',
+  'club atlante': 'atlante',
+};
+
 const contenderTeamAliases: Readonly<Record<string, string>> = {
   // Austrian Bundesliga: Sorare generally uses club short names while the
   // bookmaker feed often includes sponsors or common prefixes.
@@ -418,13 +927,50 @@ const contenderTeamAliases: Readonly<Record<string, string>> = {
   '1 nurnberg': 'nurnberg',
 };
 
+const europeanTeamAliases: Readonly<Record<string, string>> = {
+  // Provider feeds commonly translate or expand these names differently.
+  'athletic bilbao': 'athletic bilbao',
+  'athletic club': 'athletic bilbao',
+  'bayern munchen': 'bayern munich',
+  'bayern munich': 'bayern munich',
+  'borussia m gladbach': 'borussia monchengladbach',
+  'borussia monchengladbach': 'borussia monchengladbach',
+  monchengladbach: 'borussia monchengladbach',
+  cologne: 'cologne',
+  koln: 'cologne',
+  '1 koln': 'cologne',
+  lyon: 'lyon',
+  'olympique lyonnais': 'lyon',
+  'real betis': 'real betis',
+  'real betis balompie': 'real betis',
+  // UEFA feeds expand NEC and transliterate Bodø in several incompatible
+  // ways. Collapse every observed form before fixture matching and keying.
+  nec: 'nec nijmegen',
+  'nec nijmegen': 'nec nijmegen',
+  'bod glimt': 'bodo glimt',
+  'bodo glimt': 'bodo glimt',
+  'bodoe glimt': 'bodo glimt',
+  'bodo glimt bodo': 'bodo glimt',
+  tromso: 'tromso',
+  'tromso il': 'tromso',
+  'tromsoe il': 'tromso',
+};
+
 const teamAliases: Readonly<Record<string, string>> = {
   ...mlsTeamAliases,
+  ...ligaMxTeamAliases,
   ...contenderTeamAliases,
+  ...europeanTeamAliases,
 };
 
 function normalizeWords(value: string): string {
   return value
+    .replace(/[Øø]/g, 'o')
+    .replace(/[Ææ]/g, 'ae')
+    .replace(/[Ðð]/g, 'd')
+    .replace(/[Þþ]/g, 'th')
+    .replace(/[Łł]/g, 'l')
+    .replace(/ß/g, 'ss')
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLocaleLowerCase()
@@ -442,8 +988,337 @@ export function normalizeTeamName(value: string): string {
   return teamAliases[withoutClubSuffix] ?? withoutClubSuffix;
 }
 
+const providerClubTokens = new Set([
+  'ac',
+  'afc',
+  'bsc',
+  'cf',
+  'fc',
+  'fk',
+  'gnk',
+  'hnk',
+  'nk',
+  'rb',
+  'rc',
+  'rcd',
+  'sc',
+  'sk',
+  'sl',
+  'sv',
+  'vfl',
+]);
+const ambiguousTeamTokens = new Set([
+  'athletic',
+  'city',
+  'club',
+  'real',
+  'sporting',
+  'united',
+]);
+
+function providerTeamTokens(value: string): string[] {
+  return normalizeTeamName(value)
+    .split(' ')
+    .filter(
+      (token) =>
+        !providerClubTokens.has(token) &&
+        !/^(?:18|19|20)\d{2}$/.test(token),
+    );
+}
+
+/**
+ * Accepts provider prefixes/sponsors only when both names still share a
+ * distinctive token. Ambiguous single words such as `Real` or `United` never
+ * match on their own.
+ */
+export function providerTeamNamesMatch(left: string, right: string): boolean {
+  const normalizedLeft = normalizeTeamName(left);
+  const normalizedRight = normalizeTeamName(right);
+  if (normalizedLeft === normalizedRight) return true;
+  const leftTokens = providerTeamTokens(left);
+  const rightTokens = providerTeamTokens(right);
+  if (leftTokens.join(' ') === rightTokens.join(' ')) return true;
+  const [shorter, longer] =
+    leftTokens.length <= rightTokens.length
+      ? [leftTokens, rightTokens]
+      : [rightTokens, leftTokens];
+  return (
+    shorter.length > 0 &&
+    shorter.every((token) => longer.includes(token)) &&
+    shorter.some(
+      (token) => token.length >= 4 && !ambiguousTeamTokens.has(token),
+    )
+  );
+}
+
+function normalizedTeamSlug(value: string | undefined): string | null {
+  return value ? normalizeTeamName(value.replaceAll('-', ' ')) : null;
+}
+
+function editDistance(left: string, right: string): number {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      current[rightIndex] = Math.min(
+        (current[rightIndex - 1] ?? 0) + 1,
+        (previous[rightIndex] ?? 0) + 1,
+        (previous[rightIndex - 1] ?? 0) +
+          (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1),
+      );
+    }
+    previous.splice(0, previous.length, ...current);
+  }
+  return previous[right.length] ?? Math.max(left.length, right.length);
+}
+
+function teamIdentityScore(
+  providerTeamName: string,
+  fixtureTeamName: string,
+  fixtureTeamSlug: string | undefined,
+  learnedAliases: ReadonlyMap<string, string>,
+): number {
+  const providerName = normalizeTeamName(providerTeamName);
+  const fixtureName = normalizeTeamName(fixtureTeamName);
+  const fixtureSlug = normalizedTeamSlug(fixtureTeamSlug);
+  const learnedSlug = learnedAliases.get(providerName);
+  if (
+    learnedSlug &&
+    fixtureTeamSlug &&
+    learnedSlug.toLocaleLowerCase() === fixtureTeamSlug.toLocaleLowerCase()
+  ) {
+    return 120;
+  }
+  if (providerName === fixtureName) return 110;
+  if (fixtureSlug && providerName === fixtureSlug) return 105;
+  if (providerTeamNamesMatch(providerName, fixtureName)) return 90;
+  if (fixtureSlug && providerTeamNamesMatch(providerName, fixtureSlug)) {
+    return 85;
+  }
+
+  const providerTokens = new Set(providerTeamTokens(providerTeamName));
+  const fixtureTokens = new Set([
+    ...providerTeamTokens(fixtureTeamName),
+    ...(fixtureSlug ? fixtureSlug.split(' ') : []),
+  ]);
+  const sharedDistinctive = [...providerTokens].filter(
+    (token) =>
+      fixtureTokens.has(token) &&
+      token.length >= 4 &&
+      !ambiguousTeamTokens.has(token),
+  );
+  const union = new Set([...providerTokens, ...fixtureTokens]);
+  if (
+    sharedDistinctive.length > 0 &&
+    union.size > 0 &&
+    sharedDistinctive.length / union.size >= 0.34
+  ) {
+    return 70;
+  }
+
+  const providerCompact = providerName.replaceAll(' ', '');
+  const fixtureCompacts = [fixtureName, fixtureSlug]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.replaceAll(' ', ''));
+  if (
+    providerCompact.length >= 5 &&
+    fixtureCompacts.some(
+      (candidate) =>
+        candidate.length >= 5 && editDistance(providerCompact, candidate) <= 2,
+    )
+  ) {
+    return 68;
+  }
+  return 0;
+}
+
+export interface ProviderFixtureCandidate<TEvent> {
+  event: TEvent;
+  eventId: string;
+  date: string;
+  homeTeamName: string;
+  awayTeamName: string;
+}
+
+export interface ProviderFixtureCandidateScore {
+  eventId: string;
+  homeTeamName: string;
+  awayTeamName: string;
+  homeScore: number;
+  awayScore: number;
+  kickoffDifferenceMs: number;
+  score: number;
+}
+
+export type ProviderFixtureResolution<TEvent> =
+  | {
+      status: 'matched';
+      event: TEvent;
+      eventId: string;
+      highConfidence: boolean;
+      candidates: readonly ProviderFixtureCandidateScore[];
+    }
+  | {
+      status: 'unmatched' | 'ambiguous';
+      candidates: readonly ProviderFixtureCandidateScore[];
+    };
+
+export function resolveProviderFixtureCandidates<TEvent>(
+  fixture: FixtureGroup<MarketSupplementPlayer>,
+  candidates: readonly ProviderFixtureCandidate<TEvent>[],
+  learnedAliases: ReadonlyMap<string, string> = new Map(),
+): ProviderFixtureResolution<TEvent> {
+  const kickoff = Date.parse(fixture.date);
+  const scored = candidates
+    .map((candidate) => {
+      const kickoffDifferenceMs = Math.abs(Date.parse(candidate.date) - kickoff);
+      const homeScore = teamIdentityScore(
+        candidate.homeTeamName,
+        fixture.homeTeamName,
+        fixture.homeTeamSlug,
+        learnedAliases,
+      );
+      const awayScore = teamIdentityScore(
+        candidate.awayTeamName,
+        fixture.awayTeamName,
+        fixture.awayTeamSlug,
+        learnedAliases,
+      );
+      const timeScore = Math.max(
+        0,
+        20 - Math.floor(kickoffDifferenceMs / (60 * 60 * 1_000)),
+      );
+      return {
+        candidate,
+        diagnostic: {
+          eventId: candidate.eventId,
+          homeTeamName: candidate.homeTeamName,
+          awayTeamName: candidate.awayTeamName,
+          homeScore,
+          awayScore,
+          kickoffDifferenceMs,
+          score: homeScore + awayScore + timeScore,
+        },
+      };
+    })
+    .filter(
+      ({ diagnostic }) =>
+        diagnostic.kickoffDifferenceMs <= 36 * 60 * 60 * 1_000,
+    )
+    .sort(
+      (left, right) =>
+        right.diagnostic.score - left.diagnostic.score ||
+        left.diagnostic.kickoffDifferenceMs -
+          right.diagnostic.kickoffDifferenceMs,
+    );
+  const diagnostics = scored.slice(0, 3).map(({ diagnostic }) => diagnostic);
+  const best = scored[0];
+  if (
+    !best ||
+    best.diagnostic.homeScore < 60 ||
+    best.diagnostic.awayScore < 60 ||
+    best.diagnostic.homeScore + best.diagnostic.awayScore < 150
+  ) {
+    return { status: 'unmatched', candidates: diagnostics };
+  }
+  const second = scored[1];
+  const margin = second
+    ? best.diagnostic.score - second.diagnostic.score
+    : Number.POSITIVE_INFINITY;
+  if (margin < 8) {
+    return { status: 'ambiguous', candidates: diagnostics };
+  }
+  return {
+    status: 'matched',
+    event: best.candidate.event,
+    eventId: best.candidate.eventId,
+    highConfidence:
+      best.diagnostic.homeScore >= 85 &&
+      best.diagnostic.awayScore >= 85 &&
+      best.diagnostic.kickoffDifferenceMs <= 3 * 60 * 60 * 1_000,
+    candidates: diagnostics,
+  };
+}
+
+export async function resolveProviderFixture<TEvent>(
+  store: MarketSnapshotStore,
+  provider: MarketIdentityProvider,
+  fixture: FixtureGroup<MarketSupplementPlayer>,
+  candidates: readonly ProviderFixtureCandidate<TEvent>[],
+): Promise<ProviderFixtureResolution<TEvent>> {
+  const providerTeamNames = candidates.flatMap((candidate) => [
+    candidate.homeTeamName,
+    candidate.awayTeamName,
+  ]);
+  let learnedAliases: ReadonlyMap<string, string> = new Map();
+  try {
+    learnedAliases =
+      (await store.getProviderTeamAliases?.(provider, providerTeamNames)) ??
+      learnedAliases;
+  } catch {
+    // Alias storage is an optimization. Static and contextual matching remain
+    // available if the cache is temporarily unavailable.
+  }
+  const resolution = resolveProviderFixtureCandidates(
+    fixture,
+    candidates,
+    learnedAliases,
+  );
+  if (
+    resolution.status === 'matched' &&
+    resolution.highConfidence &&
+    fixture.homeTeamSlug &&
+    fixture.awayTeamSlug &&
+    store.setProviderTeamAliases
+  ) {
+    const selected = candidates.find(
+      (candidate) => candidate.eventId === resolution.eventId,
+    );
+    if (selected) {
+      const aliases = [
+        {
+          providerTeamName: selected.homeTeamName,
+          canonicalTeamSlug: fixture.homeTeamSlug,
+        },
+        {
+          providerTeamName: selected.awayTeamName,
+          canonicalTeamSlug: fixture.awayTeamSlug,
+        },
+      ].filter(
+        (alias) =>
+          learnedAliases.get(normalizeTeamName(alias.providerTeamName)) ===
+          undefined,
+      );
+      if (aliases.length === 0) return resolution;
+      try {
+        await store.setProviderTeamAliases(provider, aliases);
+      } catch {
+        // The current fixture is already resolved. A failed learning write must
+        // never suppress its market response.
+      }
+    }
+  }
+  return resolution;
+}
+
 const defaultSupportedCompetitionSlugs = ['mlspa'] as const;
 const knownMlsTeamNames = new Set(Object.values(mlsTeamAliases));
+const supportedCompetitionSets = new WeakMap<
+  readonly string[],
+  ReadonlySet<string>
+>();
+
+function supportedCompetitionSet(
+  competitionSlugs: readonly string[],
+): ReadonlySet<string> {
+  const existing = supportedCompetitionSets.get(competitionSlugs);
+  if (existing) return existing;
+  const normalized = new Set(
+    competitionSlugs.map((slug) => slug.trim().toLocaleLowerCase()),
+  );
+  supportedCompetitionSets.set(competitionSlugs, normalized);
+  return normalized;
+}
 
 export function supportsPlayerCompetition(
   player: PlayerStats,
@@ -462,9 +1337,7 @@ export function supportsFixtureCompetition(
     defaultSupportedCompetitionSlugs,
 ): boolean {
   if (!player.nextGame) return false;
-  const supported = new Set(
-    supportedCompetitionSlugs.map((slug) => slug.trim().toLocaleLowerCase()),
-  );
+  const supported = supportedCompetitionSet(supportedCompetitionSlugs);
   const competitionSlug = player.nextGame.competitionSlug;
   if (competitionSlug !== undefined) {
     return (
@@ -489,15 +1362,50 @@ export function supportsFixtureCompetition(
   );
 }
 
+const canonicalPlayerNameParts: Readonly<Record<string, string>> = {
+  // Sorare and several bookmakers use different English transliterations for
+  // the same Cyrillic surname. Keep this deliberately narrow so unrelated
+  // near-matches cannot be merged by the odds matcher.
+  markhiyev: 'markhiev',
+};
+
+const canonicalPlayerNames: Readonly<Record<string, string>> = {
+  // Sorare uses Tah D'Avilla while Bet365/Odds-API.io lists the same player
+  // as Djé D'Avilla. Canonicalize only this full identity so other players
+  // named Djé cannot be merged with unrelated Tah names.
+  'dje d avilla': 'tah d avilla',
+  // Sorare, its slug and bookmaker feeds use different transliterations and
+  // name orders for Beşiktaş striker Oh Hyeon-gyu. Keep these as full-name
+  // aliases so no unrelated Korean player can match on a partial token set.
+  'hyeongyu oh': 'hyeon gyu oh',
+  'hyun gyu oh': 'hyeon gyu oh',
+  'oh hyeongyu': 'hyeon gyu oh',
+  'oh hyeon gyu': 'hyeon gyu oh',
+  'oh hyun gyu': 'hyeon gyu oh',
+};
+
+const strictCanonicalPlayerNames = new Set(
+  Object.values(canonicalPlayerNames),
+);
+
 export function normalizePlayerName(value: string): string {
-  const parts = normalizeWords(value).split(' ');
+  // NFKD removes accents, but letters such as Icelandic thorn/eth are not
+  // decomposed. Odds feeds commonly transliterate them while Sorare keeps the
+  // native spelling (for example `Stefán Þórðarson` vs `Stefan Thordarson`).
+  const transliterated = value
+    .replace(/[Þþ]/g, 'th')
+    .replace(/[Ðð]/g, 'd');
+  const parts = normalizeWords(transliterated)
+    .split(' ')
+    .map((part) => canonicalPlayerNameParts[part] ?? part);
   while (
     parts.length > 1 &&
     ['jr', 'sr', 'ii', 'iii', 'iv'].includes(parts[parts.length - 1] ?? '')
   ) {
     parts.pop();
   }
-  return parts.join(' ');
+  const normalized = parts.join(' ');
+  return canonicalPlayerNames[normalized] ?? normalized;
 }
 
 export function marketFixtureKey(
@@ -554,6 +1462,12 @@ export function groupFixtures(
     const existing = groups.get(key);
     if (existing) {
       existing.players.push(player);
+      if (!existing.homeTeamSlug && player.nextGame.homeTeamSlug) {
+        existing.homeTeamSlug = player.nextGame.homeTeamSlug;
+      }
+      if (!existing.awayTeamSlug && player.nextGame.awayTeamSlug) {
+        existing.awayTeamSlug = player.nextGame.awayTeamSlug;
+      }
       continue;
     }
     groups.set(key, {
@@ -561,29 +1475,16 @@ export function groupFixtures(
       date: player.nextGame.date,
       homeTeamName: player.nextGame.homeTeamName,
       awayTeamName: player.nextGame.awayTeamName,
+      ...(player.nextGame.homeTeamSlug
+        ? { homeTeamSlug: player.nextGame.homeTeamSlug }
+        : {}),
+      ...(player.nextGame.awayTeamSlug
+        ? { awayTeamSlug: player.nextGame.awayTeamSlug }
+        : {}),
       players: [player],
     });
   }
   return [...groups.values()];
-}
-
-function findEvent(fixture: FixtureGroup, events: readonly OddsEvent[]): OddsEvent | null {
-  const home = normalizeTeamName(fixture.homeTeamName);
-  const away = normalizeTeamName(fixture.awayTeamName);
-  const kickoff = Date.parse(fixture.date);
-  const candidates = events
-    .filter(
-      (event) =>
-        normalizeTeamName(event.home_team) === home &&
-        normalizeTeamName(event.away_team) === away,
-    )
-    .map((event) => ({
-      event,
-      difference: Math.abs(Date.parse(event.commence_time) - kickoff),
-    }))
-    .filter(({ difference }) => difference <= 36 * 60 * 60 * 1_000)
-    .sort((left, right) => left.difference - right.difference);
-  return candidates[0]?.event ?? null;
 }
 
 interface MarketOutcomeQuote {
@@ -686,26 +1587,132 @@ function extractMarketSnapshot(
   });
 }
 
-export function playerProbability(
+const playerIdentityNoiseTokens = new Set([
+  'al',
+  'bin',
+  'da',
+  'de',
+  'del',
+  'di',
+  'dos',
+  'jr',
+  'la',
+  'le',
+  'sr',
+  'van',
+  'von',
+]);
+
+function significantPlayerTokens(value: string): string[] {
+  return normalizePlayerName(value)
+    .split(' ')
+    .filter(
+      (token) =>
+        token.length >= 3 && !playerIdentityNoiseTokens.has(token),
+    );
+}
+
+function slugIdentityMatchScore(
+  player: MarketSupplementPlayer,
+  oddsName: string,
+): number {
+  const oddsTokens = significantPlayerTokens(oddsName);
+  if (oddsTokens.length < 2) return 0;
+  const slugTokens = new Set(
+    significantPlayerTokens(player.slug.replace(/-+/g, ' ')),
+  );
+  return oddsTokens.every((token) => slugTokens.has(token)) ? 90 : 0;
+}
+
+export function playerIdentityMatchScore(
+  player: MarketSupplementPlayer,
+  oddsName: string,
+): number {
+  return Math.max(
+    playerNameMatchScore(player.displayName, oddsName),
+    slugIdentityMatchScore(player, oddsName),
+  );
+}
+
+export interface PlayerMarketMatchCandidate {
+  marketName: string;
+  score: number;
+}
+
+export type PlayerProbabilityResolution =
+  | { status: 'snapshot_unavailable' }
+  | {
+      status: 'player_not_listed';
+      candidates: readonly PlayerMarketMatchCandidate[];
+    }
+  | {
+      status: 'market_ambiguous';
+      candidates: readonly PlayerMarketMatchCandidate[];
+    }
+  | {
+      status: 'roster_ambiguous';
+      matchedMarketName: string;
+      candidates: readonly PlayerMarketMatchCandidate[];
+    }
+  | {
+      status: 'available';
+      probability: MarketProbability;
+      matchedMarketName: string;
+      score: number;
+      matchedBy: 'display_name' | 'sorare_slug';
+    };
+
+function diagnosticCandidateScore(
+  player: MarketSupplementPlayer,
+  marketName: string,
+): number {
+  const playerTokens = new Set([
+    ...significantPlayerTokens(player.displayName),
+    ...significantPlayerTokens(player.slug.replace(/-+/g, ' ')),
+  ]);
+  const marketTokens = significantPlayerTokens(marketName);
+  const shared = marketTokens.filter((token) => playerTokens.has(token)).length;
+  if (shared === 0) return 0;
+  return Math.min(49, shared * 15 + (shared === marketTokens.length ? 4 : 0));
+}
+
+export function resolvePlayerProbability(
   snapshot: FrozenMarketSnapshot | undefined,
-  player: PlayerStats,
-  fixturePlayers: readonly PlayerStats[],
-): MarketProbability | null {
-  if (!snapshot) return null;
+  player: MarketSupplementPlayer,
+  fixturePlayers: readonly MarketSupplementPlayer[],
+): PlayerProbabilityResolution {
+  if (!snapshot) return { status: 'snapshot_unavailable' };
   const marketCandidates = Object.entries(snapshot.players)
     .map(([marketName, probability]) => ({
       marketName,
       probability,
-      score: playerNameMatchScore(player.displayName, marketName),
+      score: playerIdentityMatchScore(player, marketName),
     }))
     .filter(({ score }) => score > 0)
     .sort((left, right) => right.score - left.score);
   const selected = marketCandidates[0];
-  if (
-    !selected ||
-    marketCandidates.filter(({ score }) => score === selected.score).length !== 1
-  ) {
-    return null;
+  if (!selected) {
+    const candidates = Object.keys(snapshot.players)
+      .map((marketName) => ({
+        marketName,
+        score: diagnosticCandidateScore(player, marketName),
+      }))
+      .filter(({ score }) => score > 0)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 3);
+    return { status: 'player_not_listed', candidates };
+  }
+  const equallyRankedMarketCandidates = marketCandidates.filter(
+    ({ score }) => score === selected.score,
+  );
+  if (equallyRankedMarketCandidates.length !== 1) {
+    return {
+      status: 'market_ambiguous',
+      candidates: equallyRankedMarketCandidates.map(({ marketName, score }) => ({
+        marketName,
+        score,
+      })),
+    };
   }
 
   const logicalPlayers = [
@@ -716,7 +1723,7 @@ export function playerProbability(
   const rosterCandidates = logicalPlayers
     .map((candidate) => ({
       slug: candidate.slug,
-      score: playerNameMatchScore(candidate.displayName, selected.marketName),
+      score: playerIdentityMatchScore(candidate, selected.marketName),
     }))
     .filter(({ score }) => score > 0)
     .sort((left, right) => right.score - left.score);
@@ -727,14 +1734,41 @@ export function playerProbability(
     rosterCandidates.filter(({ score }) => score === bestRoster.score).length !==
       1
   ) {
-    return null;
+    return {
+      status: 'roster_ambiguous',
+      matchedMarketName: selected.marketName,
+      candidates: rosterCandidates.slice(0, 3).map(({ slug, score }) => ({
+        marketName: slug,
+        score,
+      })),
+    };
   }
-  return selected.probability;
+  const displayScore = playerNameMatchScore(
+    player.displayName,
+    selected.marketName,
+  );
+  const slugScore = slugIdentityMatchScore(player, selected.marketName);
+  return {
+    status: 'available',
+    probability: selected.probability,
+    matchedMarketName: selected.marketName,
+    score: selected.score,
+    matchedBy: slugScore > displayScore ? 'sorare_slug' : 'display_name',
+  };
+}
+
+export function playerProbability(
+  snapshot: FrozenMarketSnapshot | undefined,
+  player: MarketSupplementPlayer,
+  fixturePlayers: readonly MarketSupplementPlayer[],
+): MarketProbability | null {
+  const resolution = resolvePlayerProbability(snapshot, player, fixturePlayers);
+  return resolution.status === 'available' ? resolution.probability : null;
 }
 
 export function needsFrozenSnapshotSupplement(
   snapshot: MarketSnapshot | undefined,
-  fixturePlayers: readonly PlayerStats[],
+  fixturePlayers: readonly MarketSupplementPlayer[],
   fixtureDate: string,
   now: number,
 ): boolean {
@@ -777,7 +1811,7 @@ export function needsFrozenSnapshotSupplement(
 export function supplementFrozenSnapshot(
   existing: FrozenMarketSnapshot | undefined,
   incoming: FrozenMarketSnapshot,
-  fixturePlayers: readonly PlayerStats[],
+  fixturePlayers: readonly MarketSupplementPlayer[],
   fixtureDate: string,
 ): FrozenMarketSnapshot {
   const players = { ...(existing?.players ?? {}) };
@@ -796,6 +1830,9 @@ export function supplementFrozenSnapshot(
   const supplemented = FrozenMarketSnapshotSchema.parse({
     ...(existing ?? incoming),
     ...(existing ? { supplementedAt: incoming.capturedAt } : {}),
+    ...(incoming.parserVersion !== undefined
+      ? { parserVersion: incoming.parserVersion }
+      : {}),
     players,
   });
   const missingPlayerChecks = {
@@ -824,7 +1861,7 @@ export function supplementFrozenSnapshot(
 
 export function recordFrozenSnapshotCheck(
   existing: FrozenMarketSnapshot,
-  fixturePlayers: readonly PlayerStats[],
+  fixturePlayers: readonly MarketSupplementPlayer[],
   fixtureDate: string,
   checkedAt: number,
 ): FrozenMarketSnapshot {
@@ -912,6 +1949,9 @@ export function shouldRetryMarketFailure(
   }
   if ('status' in failure) {
     if (failure.status === 'available') return false;
+    if (failure.fixtureIdentityVersion !== FIXTURE_IDENTITY_VERSION) {
+      return true;
+    }
     if (failure.nextRetryAt === null) return false;
     if (failure.nextRetryAt === undefined) {
       return Date.parse(failure.checkedAt) + firstMarketRetryDelayMs <= now;
@@ -923,16 +1963,20 @@ export function shouldRetryMarketFailure(
 }
 
 export function missingMarketSnapshot(
-  fixture: FixtureGroup,
+  fixture: FixtureGroup<MarketSupplementPlayer>,
   market: OddsMarketKey,
   previous: MarketSnapshot | undefined,
   checkedAt: number,
+  eventId?: string,
 ): MarketSnapshot {
   const kickoff = Date.parse(fixture.date);
   const retry = nextMarketRetryState(previous, checkedAt, kickoff);
   return MissingMarketSnapshotSchema.parse({
     status: 'unavailable',
     market,
+    fixtureIdentityVersion: FIXTURE_IDENTITY_VERSION,
+    reason: 'market_not_offered',
+    ...(eventId ? { eventId } : {}),
     ...retry,
     expiresAt: new Date(kickoff + missingMarketRetentionMs).toISOString(),
   });
@@ -956,6 +2000,15 @@ export function playerNameMatchScore(
   const sorare = normalizePlayerName(sorareDisplayName).split(' ');
   const odds = normalizePlayerName(oddsName).split(' ');
   if (sorare.join(' ') === odds.join(' ')) return 100;
+  // Full-name aliases represent manually confirmed identities. Once either
+  // side resolves to one, do not fall through to the broader nickname or
+  // initial heuristics for a different name that merely shares some tokens.
+  if (
+    strictCanonicalPlayerNames.has(sorare.join(' ')) ||
+    strictCanonicalPlayerNames.has(odds.join(' '))
+  ) {
+    return 0;
+  }
   // Some feeds use the Korean family-name-first order (`Son Heung Min`)
   // while Sorare displays the same person as `Heung-min Son`. Matching an
   // identical token multiset is safe here because `playerProbability` still
@@ -1055,6 +2108,7 @@ async function mapWithConcurrency<T>(
 export class TheOddsApiPlayerMarketOddsProvider
   implements PlayerMarketOddsProvider
 {
+  readonly reportsRefreshDue = true;
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly now: () => number;
@@ -1070,6 +2124,33 @@ export class TheOddsApiPlayerMarketOddsProvider
       player,
       this.options.supportedCompetitionSlugs ??
         defaultSupportedCompetitionSlugs,
+    );
+  }
+
+  supportsMarket(
+    player: PlayerStats,
+    market: PlayerMarketField,
+  ): boolean {
+    return this.supports(player) && this.supportedFields().includes(market);
+  }
+
+  drivesMarketRequest(
+    player: PlayerStats,
+    market: PlayerMarketField,
+  ): boolean {
+    return this.supportsMarket(player, market);
+  }
+
+  private supportedFields(): readonly PlayerMarketField[] {
+    return this.options.supportedMarkets ?? ['goal', 'assist'];
+  }
+
+  private supportedMarketKeys(): readonly OddsMarketKey[] {
+    const fields = this.supportedFields();
+    return oddsMarketKeys.filter((market) =>
+      fields.includes(
+        market === 'player_goal_scorer_anytime' ? 'goal' : 'assist',
+      ),
     );
   }
 
@@ -1097,6 +2178,124 @@ export class TheOddsApiPlayerMarketOddsProvider
     return [usage];
   }
 
+  private refreshRequestGroup(): string {
+    return [
+      'the-odds-api',
+      this.options.sportKey,
+      this.options.region,
+      'player-props',
+    ].join(':');
+  }
+
+  private async loadFixtureSnapshots(
+    fixtureKey: string,
+    cacheOnly: boolean,
+    cacheOnlyReadBudgetMs?: number,
+  ): Promise<Map<OddsMarketKey, MarketSnapshot>> {
+    const byMarket = new Map<OddsMarketKey, MarketSnapshot>();
+    const reads = this.supportedMarketKeys().map(async (market) => ({
+      market,
+      snapshot: await settleCacheReadWithin(
+        this.options.store.get(fixtureKey, market),
+        cacheOnly,
+        cacheOnlyReadBudgetMs,
+      ),
+    }));
+    if (!cacheOnly) {
+      const loaded = await Promise.all(reads);
+      for (const { market, snapshot } of loaded) {
+        if (snapshot) byMarket.set(market, snapshot);
+      }
+      return byMarket;
+    }
+    const loaded = await Promise.allSettled(reads);
+    for (const result of loaded) {
+      if (result.status !== 'fulfilled') continue;
+      const { market, snapshot } = result.value;
+      if (snapshot) byMarket.set(market, snapshot);
+    }
+    return byMarket;
+  }
+
+  private async loadCachedFixtureSnapshots(
+    fixtures: readonly FixtureGroup[],
+    loadOptions?: PlayerMarketOddsLoadOptions,
+  ): Promise<Map<string, Map<OddsMarketKey, MarketSnapshot>>> {
+    const markets = this.supportedMarketKeys();
+    const entries = fixtures.flatMap((fixture) =>
+      markets.map((market) => ({
+        fixtureKey: fixture.key,
+        market,
+      })),
+    );
+    const loaded = await readMarketSnapshotsWithin(
+      this.options.store,
+      entries,
+      true,
+      cacheOnlySnapshotReadBudgetMs(loadOptions),
+    );
+    const snapshots = new Map<string, Map<OddsMarketKey, MarketSnapshot>>(
+      fixtures.map((fixture) => [fixture.key, new Map()]),
+    );
+    for (const [index, entry] of entries.entries()) {
+      const snapshot = loaded[index];
+      if (snapshot) snapshots.get(entry.fixtureKey)?.set(entry.market, snapshot);
+    }
+    return snapshots;
+  }
+
+  private marketsNeedingApi(
+    fixture: FixtureGroup<MarketSupplementPlayer>,
+    byMarket: Map<OddsMarketKey, MarketSnapshot>,
+    protection: OddsUsageProtection,
+  ): OddsMarketKey[] {
+    const kickoff = Date.parse(fixture.date);
+    return this.supportedMarketKeys().filter((market) => {
+      const snapshot = byMarket.get(market);
+      return (
+        !snapshot ||
+        (snapshot.status === 'unavailable'
+          ? shouldRetryMarketFailure(snapshot, kickoff, this.now())
+          : protection.allowSnapshotSupplements &&
+            needsFrozenSnapshotSupplement(
+              snapshot,
+              fixture.players,
+              fixture.date,
+              this.now(),
+            ))
+      );
+    });
+  }
+
+  private supplementPlayers(
+    fixture: FixtureGroup<MarketSupplementPlayer>,
+    markets: readonly OddsMarketKey[],
+    snapshots: Map<OddsMarketKey, MarketSnapshot>,
+  ): MarketSupplementPlayer[] {
+    const missing = fixture.players.filter((player) =>
+      markets.some((market) => {
+        const snapshot = snapshots.get(market);
+        return (
+          snapshot?.status === 'available' &&
+          playerProbability(snapshot, player, fixture.players) === null
+        );
+      }),
+    );
+    return missing.length > 0 ? missing : fixture.players;
+  }
+
+  private mergeQueuedPlayers(
+    fixture: FixtureGroup,
+    batch: MarketSupplementBatch | undefined,
+  ): FixtureGroup<MarketSupplementPlayer> {
+    if (!batch) return fixture;
+    const players = new Map<string, MarketSupplementPlayer>();
+    for (const player of [...fixture.players, ...batch.players]) {
+      players.set(playerMarketOddsKey(player), player);
+    }
+    return { ...fixture, players: [...players.values()] };
+  }
+
   async load(
     players: readonly PlayerStats[],
     loadOptions?: PlayerMarketOddsLoadOptions,
@@ -1107,9 +2306,20 @@ export class TheOddsApiPlayerMarketOddsProvider
     const fixtures = groupFixtures(
       players.filter((player) => this.supports(player)),
     );
-    if (fixtures.length === 0) return output;
+    if (fixtures.length === 0) {
+      markRefreshDueStateComplete(loadOptions);
+      return output;
+    }
     const protection = loadOptions?.cacheOnly
-      ? protectionForUsage(undefined)
+      ? loadOptions.refreshDuePlayerKeys
+        ? await providerProtection(
+            this.options.usageStore,
+            'the-odds-api',
+            this.options.logger,
+            this.now(),
+            false,
+          )
+        : protectionForUsage(undefined)
       : await providerProtection(
           this.options.usageStore,
           'the-odds-api',
@@ -1121,19 +2331,29 @@ export class TheOddsApiPlayerMarketOddsProvider
     const fixturesNeedingApi: Array<{
       fixture: FixtureGroup;
       missingMarkets: OddsMarketKey[];
+      supplementOnly: boolean;
     }> = [];
 
-    for (const fixture of fixtures) {
-      const byMarket = new Map<OddsMarketKey, MarketSnapshot>();
-      const loaded = await Promise.all(
-        oddsMarketKeys.map(async (market) => ({
-          market,
-          snapshot: await this.options.store.get(fixture.key, market),
-        })),
+    const cacheOnly = loadOptions?.cacheOnly === true;
+    const cachedFixtureSnapshots = new Map<
+      string,
+      Map<OddsMarketKey, MarketSnapshot>
+    >();
+    if (cacheOnly) {
+      const loadedFixtures = await this.loadCachedFixtureSnapshots(
+        fixtures,
+        loadOptions,
       );
-      for (const { market, snapshot } of loaded) {
-        if (snapshot) byMarket.set(market, snapshot);
+      for (const [fixtureKey, snapshots] of loadedFixtures) {
+        cachedFixtureSnapshots.set(fixtureKey, snapshots);
       }
+    }
+
+    for (const fixture of fixtures) {
+      const byMarket = cacheOnly
+        ? (cachedFixtureSnapshots.get(fixture.key) ??
+          new Map<OddsMarketKey, MarketSnapshot>())
+        : await this.loadFixtureSnapshots(fixture.key, false);
       snapshots.set(fixture.key, byMarket);
 
       const kickoff = Date.parse(fixture.date);
@@ -1142,33 +2362,145 @@ export class TheOddsApiPlayerMarketOddsProvider
         millisecondsUntilKickoff <= this.options.fetchWindowMs &&
         millisecondsUntilKickoff >= 0;
       if (!insideFetchWindow) continue;
-      const missingMarkets = oddsMarketKeys.filter(
-        (market) => {
-          const snapshot = byMarket.get(market);
-          return (
-            !snapshot ||
-            (snapshot.status === 'unavailable'
-              ? shouldRetryMarketFailure(snapshot, kickoff, this.now())
-              : protection.allowSnapshotSupplements &&
-                needsFrozenSnapshotSupplement(
-                  snapshot,
-                  fixture.players,
-                  fixture.date,
-                  this.now(),
-                ))
-          );
-        },
+      const missingMarkets = this.marketsNeedingApi(
+        fixture,
+        byMarket,
+        protection,
       );
+      if (
+        cacheOnly &&
+        loadOptions?.refreshDuePlayerKeys &&
+        protection.allowExternalRequests &&
+        missingMarkets.length > 0 &&
+        !(await fixtureIdentityCooldownActive(
+          this.options.store,
+          'the-odds-api',
+          fixture.key,
+        ))
+      ) {
+        for (const player of fixture.players) {
+          loadOptions.refreshDuePlayerKeys.add(playerMarketOddsKey(player));
+        }
+      }
       if (
         !loadOptions?.cacheOnly &&
         protection.allowExternalRequests &&
         missingMarkets.length > 0
       ) {
-        fixturesNeedingApi.push({ fixture, missingMarkets });
+        fixturesNeedingApi.push({
+          fixture,
+          missingMarkets,
+          supplementOnly: missingMarkets.every(
+            (market) => byMarket.get(market)?.status === 'available',
+          ),
+        });
       }
     }
 
     if (fixturesNeedingApi.length > 0) {
+      const requestGroup = this.refreshRequestGroup();
+      const batchDelayMs =
+        this.options.supplementBatchDelayMs ?? defaultSupplementBatchDelayMs;
+      const batchTtlMs =
+        this.options.supplementBatchTtlMs ?? defaultSupplementBatchTtlMs;
+      const leaseTtlMs =
+        this.options.refreshLeaseTtlMs ?? defaultRefreshLeaseTtlMs;
+      const identityEligible = (
+        await Promise.all(
+          fixturesNeedingApi.map(async (pending) =>
+            (await fixtureIdentityCooldownActive(
+              this.options.store,
+              'the-odds-api',
+              pending.fixture.key,
+            ))
+              ? null
+              : pending,
+          ),
+        )
+      ).filter(
+        (pending): pending is (typeof fixturesNeedingApi)[number] =>
+          pending !== null,
+      );
+      const coordinated = (
+        await Promise.all(
+          identityEligible.map(async (pending) => {
+            if (
+              pending.supplementOnly &&
+              this.options.store.enqueueSupplementPlayers
+            ) {
+              await this.options.store.enqueueSupplementPlayers(
+                pending.fixture.key,
+                requestGroup,
+                this.supplementPlayers(
+                  pending.fixture,
+                  pending.missingMarkets,
+                  snapshots.get(pending.fixture.key) ??
+                    new Map<OddsMarketKey, MarketSnapshot>(),
+                ),
+                batchDelayMs,
+                batchTtlMs,
+              );
+            }
+
+            const ownsLease = this.options.store.claimRefreshLease
+              ? await this.options.store.claimRefreshLease(
+                  pending.fixture.key,
+                  requestGroup,
+                  leaseTtlMs,
+                )
+              : true;
+            if (!ownsLease) {
+              this.options.logger.debug(
+                { fixture: pending.fixture.key, requestGroup },
+                'The Odds API refresh skipped because another Worker owns the lease',
+              );
+              return null;
+            }
+
+            if (pending.supplementOnly && batchDelayMs > 0) {
+              await this.sleep(batchDelayMs);
+            }
+            const batch = pending.supplementOnly
+              ? await this.options.store.getSupplementBatch?.(
+                  pending.fixture.key,
+                  requestGroup,
+                )
+              : undefined;
+            const fixture = this.mergeQueuedPlayers(pending.fixture, batch);
+            const byMarket = await this.loadFixtureSnapshots(
+              fixture.key,
+              loadOptions?.cacheOnly === true,
+            );
+            snapshots.set(fixture.key, byMarket);
+            const missingMarkets = this.marketsNeedingApi(
+              fixture,
+              byMarket,
+              protection,
+            );
+            if (missingMarkets.length === 0) {
+              return null;
+            }
+            return {
+              fixture,
+              missingMarkets,
+              queuedSupplement: pending.supplementOnly,
+            };
+          }),
+        )
+      ).filter(
+        (
+          pending,
+        ): pending is {
+          fixture: FixtureGroup<MarketSupplementPlayer>;
+          missingMarkets: OddsMarketKey[];
+          queuedSupplement: boolean;
+        } => pending !== null,
+      );
+
+      if (coordinated.length === 0) {
+        markRefreshDueStateComplete(loadOptions);
+        return this.resultsFromSnapshots(output, fixtures, snapshots);
+      }
       const sportKeys = this.sportKeys();
       const eventCatalogs: Array<{
         sportKey: string;
@@ -1197,44 +2529,69 @@ export class TheOddsApiPlayerMarketOddsProvider
       });
 
       if (eventCatalogs.length > 0) {
-        const allEventLookupsSucceeded =
-          eventCatalogs.length === sportKeys.length;
-        await mapWithConcurrency(fixturesNeedingApi, 4, async (pending) => {
-          const match = eventCatalogs
-            .map((catalog) => ({
-              sportKey: catalog.sportKey,
-              event: findEvent(pending.fixture, catalog.events),
-            }))
-            .find(
-              (
-                candidate,
-              ): candidate is { sportKey: string; event: OddsEvent } =>
-                candidate.event !== null,
+        await mapWithConcurrency(coordinated, 4, async (pending) => {
+          const resolution = await resolveProviderFixture(
+            this.options.store,
+            'the-odds-api',
+            pending.fixture,
+            eventCatalogs.flatMap((catalog) =>
+              catalog.events.map((event) => ({
+                event: { sportKey: catalog.sportKey, event },
+                eventId: event.id,
+                date: event.commence_time,
+                homeTeamName: event.home_team,
+                awayTeamName: event.away_team,
+              })),
+            ),
+          );
+          if (resolution.status !== 'matched') {
+            await rememberFixtureIdentityCooldown(
+              this.options.store,
+              'the-odds-api',
+              pending.fixture.key,
+              resolution.status,
+              this.now(),
             );
-          if (!match) {
-            if (allEventLookupsSucceeded) {
-              const unavailableMarkets = pending.missingMarkets.filter(
-                (market) =>
-                  snapshots.get(pending.fixture.key)?.get(market)?.status !==
-                  'available',
-              );
-              await this.storeMissing(pending.fixture, unavailableMarkets);
-            }
+            this.options.logger.warn(
+              {
+                event: 'fixture_identity_unresolved',
+                provider: 'the-odds-api',
+                fixture: pending.fixture.key,
+                reason: resolution.status,
+                candidates: resolution.candidates,
+              },
+              'The Odds API fixture identity could not be resolved; no market miss stored',
+            );
             return;
           }
           await this.fetchFixtureMarkets(
             pending.fixture,
-            match.event,
+            resolution.event.event,
             pending.missingMarkets,
             snapshots.get(pending.fixture.key) ??
               new Map<OddsMarketKey, MarketSnapshot>(),
             protection,
-            match.sportKey,
+            resolution.event.sportKey,
           );
         });
       }
+      // Supplement queues intentionally expire instead of being deleted here.
+      // A player may be enqueued by another isolate while this owner is still
+      // fetching. Retaining the short-lived queue prevents that late player
+      // from being acknowledged without ever being processed and also keeps
+      // transient provider failures retryable.
     }
 
+    const results = this.resultsFromSnapshots(output, fixtures, snapshots);
+    markRefreshDueStateComplete(loadOptions);
+    return results;
+  }
+
+  private resultsFromSnapshots(
+    output: Map<string, PlayerMarketOdds | null>,
+    fixtures: readonly FixtureGroup[],
+    snapshots: Map<string, Map<OddsMarketKey, MarketSnapshot>>,
+  ): Map<string, PlayerMarketOdds | null> {
     for (const fixture of fixtures) {
       const byMarket = snapshots.get(fixture.key);
       const goalSnapshot = byMarket?.get('player_goal_scorer_anytime');
@@ -1276,7 +2633,7 @@ export class TheOddsApiPlayerMarketOddsProvider
   }
 
   private async fetchFixtureMarkets(
-    fixture: FixtureGroup,
+    fixture: FixtureGroup<MarketSupplementPlayer>,
     event: OddsEvent,
     markets: OddsMarketKey[],
     snapshots: Map<OddsMarketKey, MarketSnapshot>,
@@ -1333,6 +2690,7 @@ export class TheOddsApiPlayerMarketOddsProvider
             market,
             existing,
             Date.parse(capturedAt),
+            event.id,
           );
         await this.options.store.set(fixture.key, snapshot);
         snapshots.set(market, snapshot);
@@ -1379,7 +2737,7 @@ export class TheOddsApiPlayerMarketOddsProvider
   }
 
   private marketsNeedingFallback(
-    fixture: FixtureGroup,
+    fixture: FixtureGroup<MarketSupplementPlayer>,
     markets: readonly OddsMarketKey[],
     snapshots: Map<OddsMarketKey, MarketSnapshot>,
   ): OddsMarketKey[] {
@@ -1404,7 +2762,7 @@ export class TheOddsApiPlayerMarketOddsProvider
   }
 
   private async fetchFallbackFixtureMarkets(
-    fixture: FixtureGroup,
+    fixture: FixtureGroup<MarketSupplementPlayer>,
     event: OddsEvent,
     markets: readonly OddsMarketKey[],
     snapshots: Map<OddsMarketKey, MarketSnapshot>,
@@ -1479,7 +2837,7 @@ export class TheOddsApiPlayerMarketOddsProvider
   }
 
   private async fetchSingleFallbackFixtureMarket(
-    fixture: FixtureGroup,
+    fixture: FixtureGroup<MarketSupplementPlayer>,
     event: OddsEvent,
     market: OddsMarketKey,
     snapshots: Map<OddsMarketKey, MarketSnapshot>,
@@ -1528,7 +2886,7 @@ export class TheOddsApiPlayerMarketOddsProvider
   }
 
   private async mergeFallbackMarketResponse(
-    fixture: FixtureGroup,
+    fixture: FixtureGroup<MarketSupplementPlayer>,
     markets: readonly OddsMarketKey[],
     snapshots: Map<OddsMarketKey, MarketSnapshot>,
     responseBody: unknown,
@@ -1574,7 +2932,7 @@ export class TheOddsApiPlayerMarketOddsProvider
   }
 
   private async fetchSingleFixtureMarket(
-    fixture: FixtureGroup,
+    fixture: FixtureGroup<MarketSupplementPlayer>,
     event: OddsEvent,
     market: OddsMarketKey,
     snapshots: Map<OddsMarketKey, MarketSnapshot>,
@@ -1641,6 +2999,7 @@ export class TheOddsApiPlayerMarketOddsProvider
           market,
           existing,
           Date.parse(capturedAt),
+          event.id,
         );
       await this.options.store.set(fixture.key, snapshot);
       snapshots.set(market, snapshot);
@@ -1679,6 +3038,7 @@ export class TheOddsApiPlayerMarketOddsProvider
           market,
           existing,
           this.now(),
+          event.id,
         );
         await this.options.store.set(fixture.key, snapshot);
         snapshots.set(market, snapshot);
@@ -1702,22 +3062,6 @@ export class TheOddsApiPlayerMarketOddsProvider
         'The Odds API market request failed; returning stats without new market odds',
       );
     }
-  }
-
-  private async storeMissing(
-    fixture: FixtureGroup,
-    markets: readonly OddsMarketKey[],
-  ): Promise<void> {
-    const checkedAt = this.now();
-    await Promise.all(
-      markets.map(async (market) => {
-        const previous = await this.options.store.get(fixture.key, market);
-        await this.options.store.set(
-          fixture.key,
-          missingMarketSnapshot(fixture, market, previous, checkedAt),
-        );
-      }),
-    );
   }
 
   private async requestJson(

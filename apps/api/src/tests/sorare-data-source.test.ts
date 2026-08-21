@@ -9,11 +9,73 @@ import type {
 } from '../services/data-source.js';
 
 describe('SorareDataSource player-name resolution', () => {
+  it('loads position-specific and generic name aliases in one cache batch', async () => {
+    const get = vi.fn(async () => {
+      throw new Error('Individual cache reads must not be used');
+    });
+    const getMany = vi.fn<
+      NonNullable<PlayerNameResolutionCache['getMany']>
+    >(async (reads) =>
+      reads.map(({ name, position }) =>
+        position
+          ? {
+              slug: `${name.toLowerCase().replace(/\s+/g, '-')}`,
+              position,
+            }
+          : undefined,
+      ),
+    );
+    const cache: PlayerNameResolutionCache = {
+      get,
+      getMany,
+      set: vi.fn(),
+    };
+    const request = vi.fn();
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+      false,
+      86_400_000,
+      true,
+      cache,
+    );
+
+    const resolved = await source.resolvePlayerNames(
+      ['First Player', 'Second Player'],
+      {
+        'First Player': 'Midfielder',
+        'Second Player': 'Forward',
+      },
+      { cacheOnly: true },
+    );
+
+    expect(resolved).toEqual([
+      {
+        slug: 'first-player',
+        position: 'Midfielder',
+        resolvedFromName: 'First Player',
+      },
+      {
+        slug: 'second-player',
+        position: 'Forward',
+        resolvedFromName: 'Second Player',
+      },
+    ]);
+    expect(getMany).toHaveBeenCalledTimes(1);
+    expect(getMany.mock.calls[0]?.[0]).toHaveLength(4);
+    expect(get).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it('returns persistent name mappings without contacting Sorare in cache-only mode', async () => {
     const cache: PlayerNameResolutionCache = {
       get: vi.fn(async (name) =>
         name === 'Cached Player'
-          ? { slug: 'cached-player', position: 'Midfielder' }
+          ? {
+              slug: 'cached-player',
+              position: 'Midfielder',
+              teamSlug: 'cached-club',
+            }
           : undefined,
       ),
       set: vi.fn(),
@@ -37,6 +99,7 @@ describe('SorareDataSource player-name resolution', () => {
     ).resolves.toEqual([
       {
         slug: 'cached-player',
+        teamSlug: 'cached-club',
         resolvedFromName: 'Cached Player',
       },
     ]);
@@ -45,7 +108,12 @@ describe('SorareDataSource player-name resolution', () => {
 
   it('resolves direct slug candidates before using individual Sorare searches and caches them', async () => {
     const players = {
-      'Tim Ream': { slug: 'tim-ream', displayName: 'Tim Ream', position: 'Defender' },
+      'Tim Ream': {
+        slug: 'tim-ream',
+        displayName: 'Tim Ream',
+        position: 'Defender',
+        activeClub: { slug: 'charlotte-fc-charlotte-north-carolina' },
+      },
       'Sam Surridge': {
         slug: 'sam-surridge',
         displayName: 'Samuel Surridge',
@@ -68,6 +136,7 @@ describe('SorareDataSource player-name resolution', () => {
     await expect(source.resolvePlayerNames(['Tim Ream', 'Sam Surridge'])).resolves.toEqual([
       {
         slug: 'tim-ream',
+        teamSlug: 'charlotte-fc-charlotte-north-carolina',
         resolvedFromName: 'Tim Ream',
         nameResolution: 'direct',
       },
@@ -369,7 +438,120 @@ describe('SorareDataSource player-name resolution', () => {
     );
   });
 
-  it('prefers exact card-search evidence when an image-only name is ambiguous', async () => {
+  it('uses the highlighted card team to resolve same-name players without a DOM position', async () => {
+    const wrongPlayer = {
+      slug: 'joaquin-pereyra',
+      displayName: 'Joaquín Pereyra',
+      position: 'Defender',
+      activeClub: { slug: 'estudiantes-la-plata-buenos-aires' },
+    };
+    const correctPlayer = {
+      slug: 'joaquin-nicolas-pereyra',
+      displayName: 'Joaquín Pereyra',
+      position: 'Midfielder',
+      activeClub: {
+        slug: 'minnesota-united',
+      },
+    };
+    const request = vi.fn(async (_document: unknown, variables: { query?: string; slugs?: string[] }) => {
+      if (variables.slugs) {
+        return { players: [{ __typename: 'Player', ...wrongPlayer }] };
+      }
+      return {
+        searchPlayers: {
+          hits: [
+            { player: wrongPlayer },
+            { player: correctPlayer },
+          ],
+        },
+        searchCards: { hits: [] },
+      };
+    });
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    await expect(
+      source.resolvePlayerNames(['Joaquín Pereyra'], undefined, {
+        teamSlugs: {
+          'Joaquín Pereyra':
+            'minnesota-united-minneapolis-saint-paul-minnesota',
+        },
+      }),
+    ).resolves.toEqual([
+      {
+        slug: 'joaquin-nicolas-pereyra',
+        teamSlug: 'minnesota-united',
+        resolvedFromName: 'Joaquín Pereyra',
+        nameResolution: 'search',
+      },
+    ]);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('resolves a transferred player when nextGame confirms the expected team', async () => {
+    const request = vi.fn(
+      async (
+        _document: unknown,
+        variables: { query?: string; slugs?: string[] },
+      ) => {
+        if (variables.slugs) return { players: [] };
+        return {
+          searchPlayers: {
+            hits: [
+              {
+                player: {
+                  slug: 'carlos-henrique-casimiro',
+                  displayName: 'Casemiro',
+                  position: 'Midfielder',
+                  activeClub: { slug: 'manchester-united-manchester' },
+                  nextGame: {
+                    __typename: 'Game',
+                    homeTeam: { slug: 'philadelphia-union' },
+                    awayTeam: { slug: 'inter-miami' },
+                  },
+                },
+              },
+            ],
+          },
+          searchCards: { hits: [] },
+        };
+      },
+    );
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    await expect(
+      source.resolvePlayerNames(
+        ['Casemiro'],
+        { Casemiro: 'Midfielder' },
+        { teamSlugs: { Casemiro: 'inter-miami' } },
+      ),
+    ).resolves.toEqual([
+      {
+        slug: 'carlos-henrique-casimiro',
+        position: 'Midfielder',
+        teamSlug: 'inter-miami',
+        resolvedFromName: 'Casemiro',
+        nameResolution: 'search',
+      },
+    ]);
+    expect(request).toHaveBeenCalledTimes(2);
+
+    await expect(
+      source.resolvePlayerNames(
+        ['Casemiro'],
+        { Casemiro: 'Midfielder' },
+        { teamSlugs: { Casemiro: 'unrelated-club' } },
+      ),
+    ).resolves.toEqual([]);
+    expect(request).toHaveBeenCalledTimes(4);
+  });
+
+  it('prefers an exact display-name hit over accent-insensitive alternatives', async () => {
     const request = vi.fn(
       async (
         _document: unknown,
@@ -444,6 +626,75 @@ describe('SorareDataSource player-name resolution', () => {
       {
         slug: 'ederson-santana-de-moraes',
         resolvedFromName: 'Ederson',
+        nameResolution: 'search',
+      },
+    ]);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('prefers Sorare player relevance over historical card volume for identical names', async () => {
+    const request = vi.fn(
+      async (
+        _document: unknown,
+        variables: { query?: string; slugs?: string[] },
+      ) => {
+        if (variables.slugs) return { players: [] };
+        const goalkeeperCard = {
+          card: {
+            __typename: 'Card',
+            anyPlayer: {
+              __typename: 'Player',
+              slug: 'andre-nogueira-gomes',
+              displayName: 'André Gomes',
+              position: 'Goalkeeper',
+            },
+          },
+        };
+        return {
+          searchPlayers: {
+            hits: [
+              {
+                player: {
+                  slug: 'andre-filipe-tavares-gomes',
+                  displayName: 'André Gomes',
+                  position: 'Midfielder',
+                },
+              },
+              {
+                player: goalkeeperCard.card.anyPlayer,
+              },
+            ],
+          },
+          searchCards: {
+            hits: [
+              goalkeeperCard,
+              goalkeeperCard,
+              goalkeeperCard,
+              {
+                card: {
+                  __typename: 'Card',
+                  anyPlayer: {
+                    __typename: 'Player',
+                    slug: 'andre-filipe-tavares-gomes',
+                    displayName: 'André Gomes',
+                    position: 'Midfielder',
+                  },
+                },
+              },
+            ],
+          },
+        };
+      },
+    );
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    await expect(source.resolvePlayerNames(['André Gomes'])).resolves.toEqual([
+      {
+        slug: 'andre-filipe-tavares-gomes',
+        resolvedFromName: 'André Gomes',
         nameResolution: 'search',
       },
     ]);
@@ -669,12 +920,20 @@ describe('SorareDataSource player-name resolution', () => {
           slug: 'angus-gunn',
           displayName: 'Angus Gunn',
           position: 'Goalkeeper',
-          activeClub: { id: 'san-jose' },
+          activeClub: { id: 'san-jose', slug: 'san-jose-earthquakes' },
           nextGame: {
             __typename: 'Game',
             date: '2026-07-23T02:30:00Z',
-            homeTeam: { id: 'san-jose', shortName: 'San Jose' },
-            awayTeam: { id: 'orlando', shortName: 'Orlando' },
+            homeTeam: {
+              id: 'san-jose',
+              slug: 'san-jose-earthquakes',
+              shortName: 'San Jose',
+            },
+            awayTeam: {
+              id: 'orlando',
+              slug: 'orlando-city',
+              shortName: 'Orlando',
+            },
             homeStats: {
               __typename: 'FootballTeamGameStats',
               cleanSheetOdds: 3.45,
@@ -704,8 +963,11 @@ describe('SorareDataSource player-name resolution', () => {
     expect(stats?.nextGame).toMatchObject({
       homeTeamName: 'San Jose',
       awayTeamName: 'Orlando',
+      homeTeamSlug: 'san-jose-earthquakes',
+      awayTeamSlug: 'orlando-city',
       playerTeamName: 'San Jose',
       opponentTeamName: 'Orlando',
+      playerTeamSlug: 'san-jose-earthquakes',
     });
   });
 
@@ -717,12 +979,20 @@ describe('SorareDataSource player-name resolution', () => {
           slug: 'adrian-andres-cubas',
           displayName: 'Andrés Cubas',
           position: 'Midfielder',
-          activeClub: { id: 'vancouver' },
+          activeClub: { id: 'vancouver', slug: 'vancouver-whitecaps' },
           nextGame: {
             __typename: 'Game',
             date: '2026-07-27T01:00:00Z',
-            homeTeam: { id: 'minnesota', shortName: 'Minnesota United' },
-            awayTeam: { id: 'vancouver', shortName: 'Vancouver Whitecaps' },
+            homeTeam: {
+              id: 'minnesota',
+              slug: 'minnesota-united',
+              shortName: 'Minnesota United',
+            },
+            awayTeam: {
+              id: 'vancouver',
+              slug: 'vancouver-whitecaps',
+              shortName: 'Vancouver Whitecaps',
+            },
             homeStats: null,
             awayStats: {
               __typename: 'FootballTeamGameStats',
@@ -748,8 +1018,11 @@ describe('SorareDataSource player-name resolution', () => {
     expect(stats?.nextGame).toMatchObject({
       homeTeamName: 'Minnesota United',
       awayTeamName: 'Vancouver Whitecaps',
+      homeTeamSlug: 'minnesota-united',
+      awayTeamSlug: 'vancouver-whitecaps',
       playerTeamName: 'Vancouver Whitecaps',
       opponentTeamName: 'Minnesota United',
+      playerTeamSlug: 'vancouver-whitecaps',
       matchProbabilities: { win: 0.49, draw: 0.25, loss: 0.26 },
     });
   });
@@ -1013,6 +1286,80 @@ describe('SorareDataSource player-name resolution', () => {
     expect(player?.appearances).toHaveLength(10);
     expect(metrics.aaL10).toEqual({ value: 5.5, sampleSize: 10 });
     expect(metrics.goalL10).toEqual({ value: 0.3, sampleSize: 10 });
+  });
+
+  it('loads older history until AA has ten 60-minute appearances', async () => {
+    const recentScores = Array.from({ length: 15 }, (_, index) => ({
+      __typename: 'PlayerGameScore',
+      positionTyped: 'Midfielder',
+      allAroundScore: 99,
+      footballGame: {
+        date: new Date(Date.UTC(2026, 6, 24 - index)).toISOString(),
+        lowCoverage: false,
+      },
+      footballPlayerGameStats: {
+        goals: 0,
+        minsPlayed: 59,
+        cleanSheet60: 0,
+        playedInGame: true,
+      },
+    }));
+    const historyNodes = Array.from({ length: 15 }, (_, index) => ({
+      date: new Date(Date.UTC(2026, 6, 24 - index)).toISOString(),
+      lowCoverage: false,
+      playerGameScore: {
+        __typename: 'PlayerGameScore',
+        positionTyped: 'Midfielder',
+        allAroundScore: index < 5 ? 99 : 10,
+        footballPlayerGameStats: {
+          goals: 0,
+          minsPlayed: index < 5 ? 59 : 60,
+          cleanSheet60: 0,
+          playedInGame: true,
+        },
+      },
+    }));
+    const request = vi.fn(
+      async (_document: unknown, variables: { slug?: string }) =>
+        variables.slug
+          ? {
+              anyPlayer: {
+                __typename: 'Player',
+                slug: 'sixty-minute-player',
+                pastGames: { nodes: historyNodes },
+              },
+            }
+          : {
+              players: [
+                {
+                  __typename: 'Player',
+                  slug: 'sixty-minute-player',
+                  displayName: 'Sixty Minute Player',
+                  position: 'Midfielder',
+                  activeClub: null,
+                  nextGame: null,
+                  playerGameScores: recentScores,
+                },
+              ],
+            },
+    );
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    const [player] = await source.fetchPlayers([
+      { slug: 'sixty-minute-player', position: 'Midfielder' },
+    ]);
+    const metrics = calculatePlayerMetrics(
+      player?.appearances ?? [],
+      'Midfielder',
+      { excludeLowCoverage: true },
+    );
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(player?.appearances).toHaveLength(15);
+    expect(metrics.aaL10).toEqual({ value: 10, sampleSize: 10 });
   });
 
   it('loads up to forty assist appearances only when explicitly requested', async () => {
@@ -1318,13 +1665,21 @@ describe('SorareDataSource player-name resolution', () => {
         players: variables.slugs.map((slug) => ({
           __typename: 'Player',
           slug,
-          activeClub: { id: `club-${slug}` },
+          activeClub: { id: `club-${slug}`, slug: `team-${slug}` },
           nextGame: {
             __typename: 'Game',
             date: '2026-08-01T18:00:00Z',
             competition: { slug: 'mlspa' },
-            homeTeam: { id: `club-${slug}`, shortName: 'Home' },
-            awayTeam: { id: 'away-club', shortName: 'Away' },
+            homeTeam: {
+              id: `club-${slug}`,
+              slug: `team-${slug}`,
+              shortName: 'Home',
+            },
+            awayTeam: {
+              id: 'away-club',
+              slug: 'away-club',
+              shortName: 'Away',
+            },
             homeStats: {
               __typename: 'FootballTeamGameStats',
               cleanSheetOdds: 2.5,
@@ -1356,16 +1711,127 @@ describe('SorareDataSource player-name resolution', () => {
     expect(fixtures).toHaveLength(7);
     expect(fixtures[0]).toEqual({
       slug: 'fixture-player-1',
+      playerTeamSlug: 'team-fixture-player-1',
       nextGame: {
         date: '2026-08-01T18:00:00Z',
         competitionSlug: 'mlspa',
         homeTeamName: 'Home',
         awayTeamName: 'Away',
+        homeTeamSlug: 'team-fixture-player-1',
+        awayTeamSlug: 'away-club',
         playerTeamName: 'Home',
         opponentTeamName: 'Away',
+        playerTeamSlug: 'team-fixture-player-1',
         cleanSheetProbability: 0.4,
         matchProbabilities: { win: 0.55, draw: 0.25, loss: 0.2 },
       },
     });
+  });
+
+  it('uses a confirmed request team to map nextGame when activeClub is stale', async () => {
+    const request = vi.fn(async () => ({
+      players: [
+        {
+          __typename: 'Player',
+          slug: 'carlos-henrique-casimiro',
+          displayName: 'Casemiro',
+          position: 'Midfielder',
+          activeClub: {
+            id: 'manchester-united',
+            slug: 'manchester-united-manchester',
+          },
+          nextGame: {
+            __typename: 'Game',
+            date: '2026-08-24T00:30:00Z',
+            competition: { slug: 'mlspa' },
+            homeTeam: {
+              id: 'philadelphia-union',
+              slug: 'philadelphia-union',
+              shortName: 'Philadelphia',
+            },
+            awayTeam: {
+              id: 'inter-miami',
+              slug: 'inter-miami',
+              shortName: 'Inter Miami',
+            },
+            homeStats: null,
+            awayStats: {
+              __typename: 'FootballTeamGameStats',
+              cleanSheetOdds: 3.2,
+              winOddsBasisPoints: 5_200,
+              drawOddsBasisPoints: 2_400,
+              loseOddsBasisPoints: 2_400,
+            },
+          },
+          playerGameScores: [],
+        },
+      ],
+    }));
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    const [stats] = await source.fetchPlayers([
+      {
+        slug: 'carlos-henrique-casimiro',
+        position: 'Midfielder',
+        teamSlug: 'inter-miami',
+        resolvedFromName: 'Casemiro',
+        nameResolution: 'search',
+      },
+    ]);
+
+    expect(stats?.nextGame).toMatchObject({
+      homeTeamSlug: 'philadelphia-union',
+      awayTeamSlug: 'inter-miami',
+      playerTeamName: 'Inter Miami',
+      opponentTeamName: 'Philadelphia',
+      playerTeamSlug: 'inter-miami',
+      cleanSheetProbability: 0.3125,
+      matchProbabilities: { win: 0.52, draw: 0.24, loss: 0.24 },
+    });
+
+    const [unconfirmed] = await source.fetchPlayers([
+      {
+        slug: 'carlos-henrique-casimiro',
+        position: 'Midfielder',
+        teamSlug: 'inter-miami',
+      },
+    ]);
+    expect(unconfirmed?.nextGame).toMatchObject({
+      playerTeamName: null,
+      opponentTeamName: null,
+      cleanSheetProbability: null,
+      matchProbabilities: null,
+    });
+    expect(unconfirmed?.nextGame?.playerTeamSlug).toBeUndefined();
+  });
+
+  it('returns the Sorare-confirmed team slug when the player next game is null', async () => {
+    const request = vi.fn(async () => ({
+      players: [
+        {
+          __typename: 'Player',
+          slug: 'fixture-missing-player',
+          activeClub: { id: 'confirmed-club', slug: 'confirmed-club' },
+          nextGame: null,
+        },
+      ],
+    }));
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+    );
+
+    await expect(
+      source.fetchNextGames([{ slug: 'fixture-missing-player' }]),
+    ).resolves.toEqual([
+      {
+        slug: 'fixture-missing-player',
+        playerTeamSlug: 'confirmed-club',
+        nextGame: null,
+      },
+    ]);
   });
 });

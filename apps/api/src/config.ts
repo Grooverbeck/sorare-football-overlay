@@ -48,6 +48,7 @@ const EnvSchema = z.object({
     .min(1)
     .max(168)
     .default(72),
+  MATCH_ODDS_MISS_CACHE_TTL_SECONDS: optionalTtlSeconds(86_400),
   ODDS_MISS_CACHE_TTL_SECONDS: optionalTtlSeconds(86_400),
   SPORTS_GAME_ODDS_API_KEY: optionalString,
   SPORTS_GAME_ODDS_BASE_URL: z
@@ -106,6 +107,7 @@ export interface AppConfig {
   oddsApiFallbackRegion?: string;
   oddsFetchWindowMs: number;
   matchOddsFallbackWindowMs: number;
+  matchOddsMissCacheTtlMs: number;
   oddsMissCacheTtlMs: number;
   sportsGameOddsApiKey?: string;
   sportsGameOddsBaseUrl: string;
@@ -153,6 +155,8 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): A
     oddsFetchWindowMs: parsed.ODDS_FETCH_WINDOW_HOURS * 60 * 60 * 1_000,
     matchOddsFallbackWindowMs:
       parsed.MATCH_ODDS_FALLBACK_WINDOW_HOURS * 60 * 60 * 1_000,
+    matchOddsMissCacheTtlMs:
+      (parsed.MATCH_ODDS_MISS_CACHE_TTL_SECONDS ?? 3_600) * 1_000,
     oddsMissCacheTtlMs:
       (parsed.ODDS_MISS_CACHE_TTL_SECONDS ?? 21_600) * 1_000,
     ...(parsed.SPORTS_GAME_ODDS_API_KEY

@@ -1,18 +1,22 @@
 import { SorareCardScanner } from './scanner.js';
 import { hydrateCardPictureNames } from './dom.js';
+import { supportsCompactViewPath } from './compact-view-route.js';
 import {
   applyHistoricalAssistFallbackSettings,
+  applyMarketBracketCompactView,
   applyMarketBracketSide,
   applyMarketValueFormat,
 } from './overlay.js';
 import {
   getCardPictureNames,
   getHistoricalAssistFallbackSettings,
+  getMarketBracketCompactView,
   getMarketBracketSide,
   getMarketValueFormat,
   getOverlayEnabled,
   HISTORICAL_ASSIST_FALLBACK_ENABLED_KEY,
   HISTORICAL_ASSIST_WINDOW_KEY,
+  MARKET_BRACKET_COMPACT_VIEW_KEY,
   MARKET_BRACKET_SIDE_KEY,
   MARKET_VALUE_FORMAT_KEY,
   normalizeMarketValueFormat,
@@ -42,8 +46,35 @@ const scanner = new SorareCardScanner(
   },
 );
 let enabled = false;
+let compactViewEnabled = false;
+let lastCompactViewPathname: string | undefined;
+let lastCompactViewActive: boolean | undefined;
 let historicalAssistEnabled = false;
 let historicalAssistWindow: HistoricalAssistWindow = 15;
+
+function syncCompactViewForCurrentRoute(): void {
+  const pathname = window.location.pathname;
+  const active = compactViewEnabled && supportsCompactViewPath(pathname);
+  if (
+    pathname === lastCompactViewPathname &&
+    active === lastCompactViewActive
+  ) {
+    return;
+  }
+  lastCompactViewPathname = pathname;
+  lastCompactViewActive = active;
+  applyMarketBracketCompactView(active);
+}
+
+const compactViewRouteObserver = new MutationObserver(() => {
+  syncCompactViewForCurrentRoute();
+});
+compactViewRouteObserver.observe(document.documentElement, {
+  childList: true,
+  subtree: true,
+});
+window.addEventListener('popstate', syncCompactViewForCurrentRoute);
+window.addEventListener('hashchange', syncCompactViewForCurrentRoute);
 
 function applyEnabled(nextEnabled: boolean): void {
   if (enabled === nextEnabled) return;
@@ -55,6 +86,7 @@ function applyEnabled(nextEnabled: boolean): void {
 void Promise.all([
   getOverlayEnabled(),
   getMarketBracketSide(),
+  getMarketBracketCompactView(),
   getHistoricalAssistFallbackSettings(),
   getMarketValueFormat(),
   getCardPictureNames(),
@@ -62,6 +94,7 @@ void Promise.all([
   ([
     nextEnabled,
     bracketSide,
+    compactView,
     historicalAssistSettings,
     marketValueFormat,
     cardPictureNames,
@@ -69,6 +102,8 @@ void Promise.all([
     rememberedCardPictureNames = cardPictureNames;
     hydrateCardPictureNames(cardPictureNames);
     applyMarketBracketSide(bracketSide);
+    compactViewEnabled = compactView;
+    syncCompactViewForCurrentRoute();
     historicalAssistEnabled = historicalAssistSettings.enabled;
     historicalAssistWindow = historicalAssistSettings.window;
     applyHistoricalAssistFallbackSettings(
@@ -88,6 +123,11 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   const sideChange = changes[MARKET_BRACKET_SIDE_KEY];
   if (sideChange) {
     applyMarketBracketSide(normalizeMarketBracketSide(sideChange.newValue));
+  }
+  const compactViewChange = changes[MARKET_BRACKET_COMPACT_VIEW_KEY];
+  if (compactViewChange) {
+    compactViewEnabled = compactViewChange.newValue === true;
+    syncCompactViewForCurrentRoute();
   }
   const historicalAssistEnabledChange =
     changes[HISTORICAL_ASSIST_FALLBACK_ENABLED_KEY];

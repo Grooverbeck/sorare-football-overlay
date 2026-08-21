@@ -7,6 +7,7 @@ import type {
 export interface SourcePlayerRequest {
   slug: string;
   position?: FootballPosition;
+  teamSlug?: string;
   includeHistoricalAssists?: boolean;
   resolvedFromName?: string;
   nameResolution?: 'direct' | 'search';
@@ -18,17 +19,29 @@ export interface PlayerNameResolutionOptions {
   // handlers return known players immediately while cold resolutions continue
   // through ExecutionContext.waitUntil().
   cacheOnly?: boolean;
+  teamSlugs?: Readonly<Record<string, string>>;
+}
+
+export interface PlayerNameResolutionCacheRead {
+  name: string;
+  position: FootballPosition | undefined;
+  teamSlug?: string;
 }
 
 export interface PlayerNameResolutionCache {
   get(
     name: string,
     position: FootballPosition | undefined,
+    teamSlug?: string,
   ): Promise<SourcePlayerRequest | null | undefined>;
+  getMany?(
+    requests: readonly PlayerNameResolutionCacheRead[],
+  ): Promise<Array<SourcePlayerRequest | null | undefined>>;
   set(
     name: string,
     position: FootballPosition | undefined,
     value: SourcePlayerRequest | null,
+    teamSlug?: string,
   ): void | Promise<void>;
 }
 
@@ -37,8 +50,11 @@ export interface SourceNextGame {
   competitionSlug?: string | null;
   homeTeamName: string | null;
   awayTeamName: string | null;
+  homeTeamSlug?: string;
+  awayTeamSlug?: string;
   playerTeamName: string | null;
   opponentTeamName: string | null;
+  playerTeamSlug?: string;
   cleanSheetProbability: number | null;
   matchProbabilities: MatchProbabilities | null;
 }
@@ -58,6 +74,8 @@ export interface SourcePlayer {
 
 export interface SourcePlayerFixture {
   slug: string;
+  // Confirmed by Sorare's activeClub, even when nextGame is temporarily null.
+  playerTeamSlug?: string;
   nextGame: SourceNextGame | null;
 }
 

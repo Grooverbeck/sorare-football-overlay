@@ -25,6 +25,12 @@ export const PlayerStatsRequestSchema = z
         ...new Map(names.map((name) => [name.toLocaleLowerCase(), name.trim()])).values(),
       ]),
     positions: z.record(z.string(), FootballPositionSchema).optional(),
+    playerTeams: z
+      .record(
+        z.string(),
+        z.string().trim().min(1).max(180).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i),
+      )
+      .optional(),
     includeHistoricalAssists: z.boolean().default(false),
     // Capability handshake for rollout safety. Older extension versions reject
     // the `formHistory` refresh hint, so the backend may only return an early
@@ -34,6 +40,9 @@ export const PlayerStatsRequestSchema = z
     // The initial request remains fast and can return cached L10 form values
     // with `pendingRefreshes: ['fixture']`.
     refreshFixtures: z.boolean().default(false),
+    // Extension follow-ups for a known bookmaker warmup only observe the
+    // shared snapshot cache. They must never start another provider request.
+    oddsCacheOnly: z.boolean().default(false),
   })
   .superRefine((request, context) => {
     const total = request.slugs.length + request.playerNames.length;
@@ -88,6 +97,10 @@ export const BookmakerMarketQuoteSchema = z.object({
   title: z.string().trim().min(1),
   decimalOdds: z.number().finite().gt(1),
   probability: z.number().min(0).max(1),
+  // Optional provider provenance keeps parser decisions auditable without
+  // invalidating snapshots captured before the fields existed.
+  providerMarketName: z.string().trim().min(1).max(200).optional(),
+  providerSelectionLabel: z.string().trim().min(1).max(300).optional(),
 });
 
 export const MarketProbabilitySchema = z.object({
@@ -141,10 +154,35 @@ export const PlayerStatsSchema = z.object({
       // written before team names were added to the response contract.
       homeTeamName: z.string().trim().min(1).nullable().optional(),
       awayTeamName: z.string().trim().min(1).nullable().optional(),
+      // Canonical Sorare identities used internally for provider-fixture
+      // resolution. Optional keeps legacy fixture cache entries readable.
+      homeTeamSlug: z
+        .string()
+        .trim()
+        .min(1)
+        .max(180)
+        .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i)
+        .optional(),
+      awayTeamSlug: z
+        .string()
+        .trim()
+        .min(1)
+        .max(180)
+        .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i)
+        .optional(),
       // Player-relative names keep W/D/L labels unambiguous for away players.
       // They remain optional while older fixture:v1 entries migrate lazily.
       playerTeamName: z.string().trim().min(1).nullable().optional(),
       opponentTeamName: z.string().trim().min(1).nullable().optional(),
+      // Canonical identity of the player's side in this fixture. This is
+      // server-derived from Sorare team ids and never trusted from the client.
+      playerTeamSlug: z
+        .string()
+        .trim()
+        .min(1)
+        .max(180)
+        .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i)
+        .optional(),
       cleanSheetProbability: z.number().min(0).max(1).nullable(),
       matchProbabilities: MatchProbabilitiesSchema.nullable(),
       // Added after the split player/fixture caches. Optional lets old KV
@@ -186,6 +224,16 @@ export const PlayerStatsSuccessResponseSchema = z.object({
     // Cold gallery names may be resolved and warmed after the response. The
     // extension keeps only these cards in loading state and retries them.
     deferredPlayerNames: z.array(z.string().trim().min(2).max(120)).optional(),
+    deferredPlayerSlugs: z
+      .array(
+        z
+          .string()
+          .trim()
+          .min(1)
+          .max(160)
+          .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i),
+      )
+      .optional(),
   }),
 });
 

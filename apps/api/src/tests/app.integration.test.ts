@@ -60,6 +60,12 @@ describe('POST /api/player-stats', () => {
       goal: { bookmakerCount: 3 },
       assist: { bookmakerCount: 3 },
     });
+    expect(
+      firstBody.data.every(
+        (player: Record<string, unknown>) =>
+          !Object.hasOwn(player, 'nextGamePrediction'),
+      ),
+    ).toBe(true);
 
     const second = await request();
     expect((await second.json()).meta.cacheHits).toBe(2);
@@ -153,7 +159,10 @@ describe('POST /api/player-stats', () => {
 
     await app.request('/api/player-stats', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        'x-request-id': '00-sampled-phase-log',
+      },
       body: JSON.stringify({ slugs: ['private-player-slug'] }),
     });
 

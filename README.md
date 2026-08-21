@@ -104,11 +104,12 @@ Alle Werte werden aus `apps/api/.env` oder der Prozessumgebung gelesen.
 | `ODDS_API_FALLBACK_REGION` | leer | Optionale zweite Region für weiterhin fehlende Spieler- oder H/D/A-Märkte; Produktion nutzt `uk` |
 | `ODDS_FETCH_WINDOW_HOURS` | `72` | Tor-/Assistquoten frühestens so viele Stunden vor Anpfiff abrufen |
 | `MATCH_ODDS_FALLBACK_WINDOW_HOURS` | `72` | Externe H/D/A-Quoten nur innerhalb dieses Zeitfensters ergänzen, wenn Sorare noch Werte fehlen |
+| `MATCH_ODDS_MISS_CACHE_TTL_SECONDS` | `3600` | Fehlende H/D/A-Märkte nach spätestens einer Stunde erneut prüfen; ein erfolgreicher Abruf wird weiterhin bis nach Anpfiff eingefroren |
 | `ODDS_MISS_CACHE_TTL_SECONDS` | `21600` | Legacy-Fallback für alte negative Quoten-Cacheeinträge; neue Einträge nutzen 12h/24h plus eine letzte Prüfung vier Stunden vor Anpfiff |
-| `SPORTS_GAME_ODDS_API_KEY` | leer | Serverseitiger Schlüssel für direkte Tor-, Assist- und Tor-oder-Assist-Märkte |
+| `SPORTS_GAME_ODDS_API_KEY` | leer | Serverseitiger Schlüssel für direkte Tor-, Assist-, Tor-oder-Assist- und H/D/A-Märkte |
 | `SPORTS_GAME_ODDS_BASE_URL` | `https://api.sportsgameodds.com/v2` | Basis-URL von SportsGameOdds |
-| `SPORTS_GAME_ODDS_LEAGUE_ID` | `MLS` | Liga bei SportsGameOdds |
-| `ODDS_API_IO_KEY` | leer | Serverseitiger Schlüssel für den zusätzlichen Torquoten-Fallback |
+| `SPORTS_GAME_ODDS_LEAGUE_ID` | `MLS` | Überschreibbare SportsGameOdds-ID der MLS-Route; die europäischen IDs kommen aus der Routingmatrix |
+| `ODDS_API_IO_KEY` | leer | Serverseitiger Schlüssel für den zusätzlichen Torquoten-Fallback; mitgelieferte Assistquoten werden ohne eigenen Abruf übernommen |
 | `ODDS_API_IO_BASE_URL` | `https://api.odds-api.io/v3` | Basis-URL von Odds-API.io |
 | `ODDS_API_IO_LEAGUE` | `austria-bundesliga` | Überschreibbarer Odds-API.io-Slug für die österreichische Bundesliga |
 | `ODDS_API_IO_BOOKMAKERS` | `Bet365,Unibet` | Gemeinsam und gebündelt abgefragte Buchmacher |
@@ -157,14 +158,18 @@ frühere Variable `CACHE_TTL_SECONDS` wird aus Kompatibilitätsgründen noch als
 Fallback für die Form-TTL akzeptiert.
 
 SportsGameOdds wird primär für direkte Tor-, Assist- und
-Tor-oder-Assist-Märkte verwendet. The Odds API ergänzt nur weiterhin fehlende
-Tor- oder Assistwerte. Odds-API.io ergänzt als letzte Rückfallebene eine noch
-fehlende Torquote. Assist-Lücken allein lösen dort keinen Abruf aus, weil
-dieser Feed dafür aktuell keine Assist-Märkte liefert. Die Spielerquoten
-mehrerer Begegnungen desselben Wettbewerbs werden in möglichst wenigen
-Sammelabfragen geladen. Die Anbieter werden nicht bei jedem Kartenaufruf
-abgefragt. Innerhalb des konfigurierten Zeitfensters lädt das Backend die
-angebotenen Märkte einmalig. Ein täglich um 05:00 UTC laufender Cloudflare-Cron
+Tor-oder-Assist-Märkte sowie als erster externer H/D/A-Fallback verwendet. Ein
+zurückgegebenes Spielobjekt füllt beide Snapshot-Arten gleichzeitig. The Odds
+API ergänzt danach weiterhin fehlende Tor-, Assist- oder H/D/A-Werte;
+Odds-API.io ergänzt als letzte Rückfallebene eine noch fehlende Torquote und in
+der HNL auch H/D/A. Enthält dieselbe Antwort `Player To Assist`, wird dieser
+Markt ebenfalls eingefroren und ausgeliefert. Assist-Lücken allein lösen weder
+einen Abruf noch einen Fehlversuch aus. Die Quoten mehrerer Begegnungen werden in
+möglichst wenigen Sammelabfragen geladen. Ist eine SportsGameOdds-Event-ID
+bekannt, wird eine spätere Ergänzungsprüfung direkt auf dieses Spiel begrenzt.
+Die Anbieter werden nicht bei jedem Kartenaufruf abgefragt. Innerhalb des
+konfigurierten Zeitfensters lädt das Backend die angebotenen Märkte einmalig.
+Ein täglich um 05:00 UTC laufender Cloudflare-Cron
 wärmt MLS-Begegnungen vor, die in den nächsten 72 Stunden beginnen. Erfolgreich
 erfasste Spielerwerte bleiben als unveränderlicher Begegnungs-Snapshot ohne
 Ablaufdatum gespeichert. Ein Ergänzungslauf kann später gelistete Spieler und
@@ -173,42 +178,43 @@ Spielerwahrscheinlichkeit. Fehlende Märkte und konkret angefragte, noch nicht
 gelistete Spieler verwenden einen spielbezogenen Retry-Zustand: nach dem ersten
 Fehlschlag frühestens nach zwölf Stunden, danach nach 24 Stunden und höchstens
 noch einmal vier Stunden vor Anpfiff. Nach der letzten Prüfung und nach
-Spielbeginn werden keine weiteren Quotenabrufe ausgelöst. Bei dem produktiven
-72-Stunden-Abruffenster ergeben sich dadurch höchstens drei Marktprüfungen pro
-Begegnung statt einer Prüfung alle sechs Stunden.
+Spielbeginn werden keine weiteren Quotenabrufe ausgelöst. Bei den
+72-Stunden-Abruffenstern von SportsGameOdds und Odds-API.io ergeben sich dadurch
+höchstens drei Marktprüfungen pro Begegnung statt einer Prüfung alle sechs
+Stunden. Der monatlich kontingentierte The-Odds-API-Fallback für europäische
+Spielermärkte beginnt dagegen erst 24 Stunden vor Anpfiff und nutzt denselben
+begrenzten Retry-Zustand.
 
 Vor einem externen Abruf prüft das Backend zusätzlich die von Sorare gelieferte
-Competition. SportsGameOdds unterstützt gezielt MLS, Champions League
-einschließlich Qualifikation und Europa League. The Odds API ergänzt diese
-Wettbewerbe sowie die Conference League. Aus dem Sorare-27-Contender-Pool sind
-über The Odds API außerdem die österreichische Bundesliga und die
-2. Bundesliga freigeschaltet. Odds-API.io ist als Goal-only-Fallback für MLS,
-die drei UEFA-Wettbewerbe und alle vier Contender-Wettbewerbe einschließlich
-kroatischer HNL und Ligue 2 freigeschaltet. Externe H/D/A-Fallbacks bleiben
-für HNL und Ligue 2 weiterhin deaktiviert. Für europäische Spiele bei
-The Odds API werden zuerst europäische und nur bei Bedarf britische Buchmacher
-abgefragt. Unbekannte oder andere Wettbewerbe lösen keinen externen
+Competition. SportsGameOdds unterstützt gezielt MLS, Champions League,
+Europa League, La Liga, Ligue 1, Ligue 2 und Bundesliga. The Odds API ergänzt
+diese Wettbewerbe und deckt zusätzlich Leagues Cup, Conference League,
+2. Bundesliga und die österreichische Bundesliga ab. Odds-API.io wird über die
+Torquote angesteuert, übernimmt dabei aber opportunistisch mitgelieferte
+Assistquoten und liefert in der kroatischen HNL zusätzlich den externen
+H/D/A-Fallback. Für europäische Spiele
+bei The Odds API werden zuerst europäische und nur bei Bedarf britische
+Buchmacher abgefragt. Unbekannte oder andere Wettbewerbe lösen keinen externen
 Feed-Aufruf aus. Alte Fixture-Cacheeinträge ohne Competition werden einmalig
 beim nächsten Kartenaufruf aktualisiert.
 
-H/D/A-Wahrscheinlichkeiten stammen weiterhin vorrangig von Sorare. Erst ab
-72 Stunden vor Anpfiff darf The Odds API noch fehlende H-, D- oder A-Werte
-ergänzen. Der Abruf läuft nach der eigentlichen Statistikantwort gebündelt pro
-Wettbewerb. Der bereinigte Buchmacher-Median wird anschließend bis nach dem
-Spiel gespeichert. Bereits vorhandene Sorare-Werte werden dabei nie durch den
-externen Fallback ersetzt.
+H/D/A-Wahrscheinlichkeiten stammen weiterhin vorrangig von Sorare. Innerhalb
+des jeweiligen Abruffensters ergänzt SportsGameOdds fehlende Werte zuerst;
+danach folgen The Odds API und, wo konfiguriert, Odds-API.io. Der Abruf läuft
+nach der eigentlichen Statistikantwort gebündelt pro Wettbewerb. Der
+bereinigte Buchmacher-Median wird anschließend bis nach dem Spiel gespeichert.
+Bereits vorhandene Sorare-Werte werden dabei nie durch den externen Fallback
+ersetzt.
 
-Der tägliche Cron speichert außerdem die Kontingentnutzung beider
-Quotenanbieter. Ab 50 % wird eine Warnung protokolliert. The Odds API verzichtet
-ab 70 % auf den zusätzlichen Regionen-Fallback, ab 85 % auf reine
-Ergänzungsprüfungen und stoppt ab 90 % neue externe Abrufe. SportsGameOdds lädt
-zwischen 70 und 85 % nur noch bisher unbekannte Begegnungen, aber keine
-Ergänzungen für bereits geprüfte Spiele. Ab 85 % arbeitet dieser Anbieter nur
-noch aus dem Cache, ab 90 % greift zusätzlich der allgemeine Notstopp. Die Zahl
-der empfangenen Spielobjekte wird zwischen den täglichen exakten
-Kontingentprüfungen lokal fortgeschrieben. Neue Karten desselben Spiels lösen
-außerdem erst am nächsten gemeinsamen Prüfzeitpunkt einen Ergänzungsabruf aus.
-Bereits gespeicherte Quoten bleiben in allen Schutzstufen lesbar.
+Der tägliche Cron speichert außerdem die Kontingentnutzung der Quotenanbieter.
+The Odds API verzichtet ab 70 % auf den zusätzlichen Regionen-Fallback, ab
+85 % auf reine Ergänzungsprüfungen und stoppt ab 90 % neue externe Abrufe. Die
+SportsGameOdds-Objektnutzung ist dagegen reine Telemetrie und aktiviert keine
+proaktive Schutzstufe; nur eine echte Provider-Antwort wie HTTP 429 begrenzt
+dort Requests. Die Zahl der empfangenen Spielobjekte wird zwischen den
+täglichen exakten Kontingentprüfungen lokal fortgeschrieben. Neue Karten
+desselben Spiels lösen außerdem erst am nächsten gemeinsamen Prüfzeitpunkt
+einen Ergänzungsabruf aus. Bereits gespeicherte Quoten bleiben lesbar.
 
 Für Odds-API.io führt das Backend zusätzlich lokale Stunden- und Tageszähler.
 Ab 85 % des jeweils engeren Fensters werden keine Ergänzungsprüfungen
@@ -469,12 +475,13 @@ weiterhin nur gelb („mittel“) ist. Die historische Skala ist separat
 versioniert und kann später anhand einer vollständigen MLS-Saisonverteilung
 neu kalibriert werden.
 
-Das Backend lädt die Märkte erst in den letzten 72 Stunden vor Anpfiff und
-friert jeden erfolgreich gelieferten Markt anschließend dauerhaft in
-Cloudflare KV ein. SportsGameOdds wird als primäre Quelle abgefragt; The Odds
-API ergänzt weiterhin fehlende Tor- und Assistwerte. Odds-API.io ergänzt als
-letzte Quelle noch fehlende Torquoten. Alle API-Secrets bleiben ausschließlich
-im Worker.
+Das Backend lädt die Märkte erst innerhalb des je Wettbewerb konfigurierten
+Abruffensters und friert jeden erfolgreich gelieferten Markt anschließend
+dauerhaft in Cloudflare KV ein. SportsGameOdds wird als primäre Quelle
+abgefragt; The Odds API ergänzt weiterhin fehlende Tor- und Assistwerte.
+Odds-API.io ergänzt als letzte Quelle noch fehlende Torquoten und übernimmt
+`Player To Assist`, wenn der Markt bereits in derselben Antwort enthalten ist.
+Alle API-Secrets bleiben ausschließlich im Worker.
 
 ### MLS-Perzentile für AA und Next CS
 
@@ -566,6 +573,12 @@ npm run dev:cloudflare   # Backend lokal in der Worker-Laufzeit mit KV
 npm run dev:extension    # Extension mit Watch-Modus
 npm run deploy:cloudflare:dry-run # Worker-Bundle und Konfiguration prüfen
 npm run benchmark:mls-aa # MLS-AA-Verteilung als JSON analysieren
+npm run analyze:player-prediction -- --player <slug>:FWD # separate lokale Prognose
 ```
 
 Die API-Integrationstests laufen vollständig gegen die injizierte Mock-Datenquelle und benötigen weder Internetzugriff noch Zugangsdaten. Ein zusätzlicher Integrationstest startet den echten Worker lokal in Miniflare und prüft Health-Endpunkt, Hono-Routing, Mock-Statistiken, KV-Bindung und den korrekten Workerd-Aufruf des globalen `fetch`.
+
+Die Spieler-Prognose ist bewusst vom Overlay getrennt. Sie läuft nur bei einem
+manuellen Aufruf des Analysebefehls und verändert weder API-Antworten noch
+Extension-Caches. Formel, Optionen und Beispiele stehen in
+[`docs/PLAYER_PREDICTION_MODEL.md`](docs/PLAYER_PREDICTION_MODEL.md).

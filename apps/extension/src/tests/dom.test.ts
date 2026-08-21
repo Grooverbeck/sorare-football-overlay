@@ -11,6 +11,7 @@ import {
 } from '../dom.js';
 import {
   applyHistoricalAssistFallbackSettings,
+  applyMarketBracketCompactView,
   applyMarketBracketSide,
   applyMarketValueFormat,
   OverlayView,
@@ -27,6 +28,7 @@ describe('Sorare card DOM discovery', () => {
       value: undefined,
     });
     applyMarketBracketSide('right');
+    applyMarketBracketCompactView(false);
     applyMarketValueFormat('percentage');
     applyHistoricalAssistFallbackSettings(false, 15);
     hydrateCardPictureNames({});
@@ -198,6 +200,373 @@ describe('Sorare card DOM discovery', () => {
     ]);
   });
 
+  it('uses Sorare\'s highlighted native team to disambiguate an image-only namesake', async () => {
+    document.body.innerHTML = `
+      <div data-testid="player-row">
+        <button type="button">
+          <img
+            alt="Joaquín Pereyra - common"
+            src="https://assets.sorare.com/image-resize/cardsamplepicture/pereyra/picture/card.png"
+          >
+        </button>
+        <button type="button">
+          <div data-testid="fixture-teams">
+            <div aria-label="Team" class="generated highlighted">
+              <img alt="minnesota-united-minneapolis-saint-paul-minnesota" src="/min.png">
+              <span>MIN</span>
+            </div>
+            <div aria-label="Team">
+              <span>JUA</span>
+              <img alt="juarez-ciudad-juarez-chihuahua" src="/jua.png">
+            </div>
+          </div>
+        </button>
+      </div>
+    `;
+    const response: PlayerStatsSuccessResponse = {
+      data: [
+        {
+          slug: 'joaquin-nicolas-pereyra',
+          displayName: 'Joaquín Pereyra',
+          position: 'Midfielder',
+          aaL10: { value: 15.8, sampleSize: 10 },
+          cleanSheetL10: { value: null, sampleSize: 0 },
+          goalL10: { value: 0.2, sampleSize: 10 },
+          nextGame: null,
+          excludedLowCoverage: 0,
+        },
+      ],
+      meta: { requested: 1, returned: 1, cacheHits: 0, source: 'sorare' },
+    };
+    const fetcher = vi.fn(async () => response);
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const scanner = new SorareCardScanner(coordinator);
+
+    expect(findCardTargets(document)).toMatchObject([
+      {
+        playerName: 'Joaquín Pereyra',
+        teamSlug: 'minnesota-united-minneapolis-saint-paul-minnesota',
+      },
+    ]);
+    scanner.scan(document);
+    await coordinator.flush();
+
+    expect(fetcher).toHaveBeenCalledWith({
+      slugs: [],
+      playerNames: ['Joaquín Pereyra'],
+      playerTeams: {
+        'Joaquín Pereyra': 'minnesota-united-minneapolis-saint-paul-minnesota',
+      },
+      supportsPartialFormHistory: true,
+    });
+  });
+
+  it('keeps exact team cache keys isolated while preserving the teamless name fallback', async () => {
+    const fetcher = vi.fn(
+      async (
+        request: PlayerStatsRequest,
+      ): Promise<PlayerStatsSuccessResponse> => {
+        const teamSlug = request.playerTeams?.['Alex Smith'];
+        const isSecondTeam = teamSlug === 'second-team-city';
+        return {
+          data: [
+            {
+              slug: isSecondTeam ? 'alex-smith-second' : 'alex-smith-first',
+              displayName: 'Alex Smith',
+              position: 'Midfielder',
+              aaL10: { value: isSecondTeam ? 22 : 11, sampleSize: 10 },
+              cleanSheetL10: { value: null, sampleSize: 0 },
+              goalL10: { value: 0.1, sampleSize: 10 },
+              nextGame: null,
+              excludedLowCoverage: 0,
+            },
+          ],
+          meta: { requested: 1, returned: 1, cacheHits: 0, source: 'sorare' },
+        };
+      },
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const enqueue = (teamSlug?: string) => {
+      const card = document.createElement('button');
+      document.body.append(card);
+      const view = new OverlayView(
+        card,
+        { playerName: 'Alex Smith' },
+        'Midfielder',
+      );
+      coordinator.enqueue(
+        {
+          playerName: 'Alex Smith',
+          position: 'Midfielder',
+          ...(teamSlug ? { teamSlug } : {}),
+          container: card,
+        },
+        view,
+      );
+      return view;
+    };
+
+    const firstTeamView = enqueue('first-team-town');
+    await coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    const secondTeamView = enqueue('second-team-city');
+    await coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[1]?.[0]).toMatchObject({
+      playerTeams: { 'Alex Smith': 'second-team-city' },
+    });
+    expect(
+      secondTeamView.host.shadowRoot?.querySelector(
+        '.aa-bracket-cell .market-value',
+      )?.textContent,
+    ).toBe('22.0');
+
+    const teamlessView = enqueue();
+    await coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(
+      teamlessView.host.shadowRoot?.querySelector(
+        '.aa-bracket-cell .market-value',
+      )?.textContent,
+    ).toBe('22.0');
+
+    firstTeamView.destroy();
+    secondTeamView.destroy();
+    teamlessView.destroy();
+  });
+
+  it('aliases a positionless name resolution by canonical team and concrete position', async () => {
+    const fetcher = vi.fn(
+      async (
+        request: PlayerStatsRequest,
+      ): Promise<PlayerStatsSuccessResponse> => {
+        const requestedPosition = request.positions?.['Lionel Messi'];
+        const position = requestedPosition ?? 'Forward';
+        return {
+          data: [
+            {
+              slug: 'lionel-andres-messi-cuccittini',
+              displayName: 'Lionel Messi',
+              position,
+              aaL10: {
+                value: position === 'Midfielder' ? 18.2 : 22.3,
+                sampleSize: 10,
+              },
+              cleanSheetL10: { value: null, sampleSize: 0 },
+              goalL10: { value: 0.5, sampleSize: 10 },
+              nextGame: {
+                date: '2026-08-16T00:30:00.000Z',
+                homeTeamName: 'Nashville SC',
+                awayTeamName: 'Inter Miami',
+                playerTeamName: 'Inter Miami',
+                opponentTeamName: 'Nashville SC',
+                playerTeamSlug: 'inter-miami',
+                cleanSheetProbability: null,
+                matchProbabilities: null,
+                marketOdds: null,
+              },
+              excludedLowCoverage: 0,
+            },
+          ],
+          meta: { requested: 1, returned: 1, cacheHits: 0, source: 'sorare' },
+        };
+      },
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const enqueue = (
+      position: 'Forward' | 'Midfielder' | undefined,
+      teamSlug: string,
+    ) => {
+      const card = document.createElement('button');
+      document.body.append(card);
+      const view = new OverlayView(
+        card,
+        { playerName: 'Lionel Messi' },
+        position,
+      );
+      coordinator.enqueue(
+        {
+          playerName: 'Lionel Messi',
+          ...(position ? { position } : {}),
+          teamSlug,
+          container: card,
+        },
+        view,
+      );
+      return view;
+    };
+
+    const pickerView = enqueue(undefined, 'inter-miami-miami-florida');
+    await coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    const forwardView = enqueue('Forward', 'inter-miami');
+    await coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(
+      forwardView.host.shadowRoot?.querySelector(
+        '.aa-bracket-cell .market-value',
+      )?.textContent,
+    ).toBe('22.3');
+
+    const midfielderView = enqueue('Midfielder', 'inter-miami');
+    await coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[1]?.[0].positions).toEqual({
+      'Lionel Messi': 'Midfielder',
+    });
+    expect(
+      midfielderView.host.shadowRoot?.querySelector(
+        '.aa-bracket-cell .market-value',
+      )?.textContent,
+    ).toBe('18.2');
+
+    pickerView.destroy();
+    forwardView.destroy();
+    midfielderView.destroy();
+  });
+
+  it('keeps real market odds across an empty refresh for the same fixture only', async () => {
+    applyHistoricalAssistFallbackSettings(true, 15);
+    const fixture = {
+      date: '2026-08-16T00:30:00.000Z',
+      homeTeamName: 'Nashville SC',
+      awayTeamName: 'Inter Miami',
+      playerTeamName: 'Inter Miami',
+      opponentTeamName: 'Nashville SC',
+      playerTeamSlug: 'inter-miami',
+      cleanSheetProbability: null,
+      matchProbabilities: null,
+    } as const;
+    const baseStats: PlayerStats = {
+      slug: 'lionel-andres-messi-cuccittini',
+      displayName: 'Lionel Messi',
+      position: 'Forward',
+      aaL10: { value: 22.3, sampleSize: 10 },
+      cleanSheetL10: { value: null, sampleSize: 0 },
+      goalL10: { value: 0.5, sampleSize: 10 },
+      historicalGoals: {
+        l10: { value: 0.5, sampleSize: 10 },
+        l15: { value: 0.6, sampleSize: 15 },
+        l40: { value: 0.4, sampleSize: 40 },
+      },
+      historicalAssists: {
+        l10: { value: 0.4, sampleSize: 10 },
+        l15: { value: 7 / 15, sampleSize: 15 },
+        l40: { value: 0.35, sampleSize: 40 },
+      },
+      nextGame: {
+        ...fixture,
+        marketOdds: {
+          source: 'sports-game-odds',
+          capturedAt: '2026-08-15T00:00:00.000Z',
+          goal: { probability: 0.51, bookmakerCount: 3 },
+          assist: { probability: 0.41, bookmakerCount: 1 },
+          decisive: null,
+        },
+      },
+      excludedLowCoverage: 0,
+    };
+    const responses: PlayerStats[] = [
+      baseStats,
+      {
+        ...baseStats,
+        nextGame: { ...fixture, marketOdds: null },
+        pendingRefreshes: ['marketOdds'],
+      },
+      {
+        ...baseStats,
+        nextGame: {
+          ...fixture,
+          date: '2026-08-23T00:30:00.000Z',
+          homeTeamName: 'Inter Miami',
+          awayTeamName: 'Atlanta United',
+          opponentTeamName: 'Atlanta United',
+          marketOdds: null,
+        },
+      },
+    ];
+    const fetcher = vi.fn(
+      async (): Promise<PlayerStatsSuccessResponse> => ({
+        data: [responses[Math.min(fetcher.mock.calls.length - 1, 2)]!],
+        meta: { requested: 1, returned: 1, cacheHits: 1, source: 'sorare' },
+      }),
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    coordinator.setIncludeHistoricalAssists(true);
+    const pickerCard = document.createElement('button');
+    document.body.append(pickerCard);
+    const pickerView = new OverlayView(
+      pickerCard,
+      { playerName: 'Lionel Messi' },
+      undefined,
+    );
+    const pickerTarget = {
+      playerName: 'Lionel Messi',
+      teamSlug: 'inter-miami',
+      container: pickerCard,
+    };
+
+    coordinator.enqueue(pickerTarget, pickerView);
+    await coordinator.flush();
+    expect(
+      pickerView.host.shadowRoot?.querySelector(
+        '[data-market="assist"] .market-value',
+      )?.textContent,
+    ).toBe('41%');
+
+    coordinator.enqueue(pickerTarget, pickerView, 0, true);
+    await coordinator.flush();
+    const preservedAssist = pickerView.host.shadowRoot?.querySelector<HTMLElement>(
+      '[data-market="assist"]',
+    );
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(preservedAssist?.dataset.benchmarkSource).toBe('market');
+    expect(preservedAssist?.querySelector('.market-value')?.textContent).toBe(
+      '41%',
+    );
+
+    const selectedCard = document.createElement('button');
+    document.body.append(selectedCard);
+    const selectedView = new OverlayView(
+      selectedCard,
+      { playerName: 'Lionel Messi' },
+      'Forward',
+    );
+    coordinator.enqueue(
+      {
+        playerName: 'Lionel Messi',
+        position: 'Forward',
+        teamSlug: 'inter-miami',
+        container: selectedCard,
+      },
+      selectedView,
+    );
+    await coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(
+      selectedView.host.shadowRoot?.querySelector(
+        '[data-market="assist"] .market-value',
+      )?.textContent,
+    ).toBe('41%');
+
+    coordinator.enqueue(pickerTarget, pickerView, 0, true);
+    await coordinator.flush();
+    for (const view of [pickerView, selectedView]) {
+      const historicalAssist = view.host.shadowRoot?.querySelector<HTMLElement>(
+        '[data-market="assist"]',
+      );
+      expect(historicalAssist?.dataset.benchmarkSource).toBe('historical');
+      expect(historicalAssist?.querySelector('.market-value')?.textContent).toBe(
+        '(47%)',
+      );
+    }
+
+    pickerView.destroy();
+    selectedView.destroy();
+  });
+
   it('does not inherit a distant position filter from an unrelated app area', () => {
     document.body.innerHTML = `
       <main data-testid="app-shell">
@@ -282,6 +651,7 @@ describe('Sorare card DOM discovery', () => {
   });
 
   it('keeps overlays on cards in an editable inline lineup overview', async () => {
+    window.history.replaceState({}, '', '/de/football/lineups/test-lineup');
     document.body.innerHTML = `
       <article class="isInline">
         <div class="FOOTBALL forced_inline slots5">
@@ -332,7 +702,48 @@ describe('Sorare card DOM discovery', () => {
       positions: { 'Marcel Hartel': 'Midfielder' },
       supportsPartialFormHistory: true,
     });
-    expect(document.querySelector('[data-sorare-overlay-root]')).not.toBeNull();
+    const overlay = document.querySelector<HTMLElement>(
+      '[data-sorare-overlay-root]',
+    );
+    expect(overlay).not.toBeNull();
+    expect(overlay?.dataset.compactMarketBrackets).toBe('true');
+  });
+
+  it('uses one full bracket style for selected and picker cards on selection screens', () => {
+    window.history.replaceState({}, '', '/de/football/hot-streaks/test');
+    document.body.innerHTML = `
+      <div class="FOOTBALL spread slots5 smartWidth">
+        <button type="button" data-testid="selected-card">
+          <img alt="Selected Player - common" src="/selected.png">
+        </button>
+      </div>
+      <button type="button" data-testid="picker-card">
+        <img alt="Picker Player - common" src="/picker.png">
+      </button>
+    `;
+    const selectedCard = document.querySelector<HTMLElement>(
+      '[data-testid="selected-card"]',
+    );
+    const pickerCard = document.querySelector<HTMLElement>(
+      '[data-testid="picker-card"]',
+    );
+    if (!selectedCard || !pickerCard) throw new Error('Expected both cards');
+
+    const selectedView = new OverlayView(
+      selectedCard,
+      { playerName: 'Selected Player' },
+      'Forward',
+    );
+    const pickerView = new OverlayView(
+      pickerCard,
+      { playerName: 'Picker Player' },
+      'Forward',
+    );
+
+    expect(selectedView.host.dataset.compactMarketBrackets).toBeUndefined();
+    expect(pickerView.host.dataset.compactMarketBrackets).toBeUndefined();
+    selectedView.destroy();
+    pickerView.destroy();
   });
 
   it('excludes only the miniature card inside a score-details dialog', () => {
@@ -521,6 +932,7 @@ describe('Sorare card DOM discovery', () => {
       '[data-sorare-overlay-root]',
     );
     const bar = companion?.shadowRoot?.querySelector<HTMLElement>('.lineup-odds-bar');
+    expect(overlay?.dataset.compactMarketBrackets).toBeUndefined();
     expect(companion?.hidden).toBe(false);
     expect(teamRow.nextElementSibling).toBe(companion);
     expect(
@@ -616,6 +1028,144 @@ describe('Sorare card DOM discovery', () => {
       document.querySelectorAll('[data-sorare-overlay-companion="lineup-odds"]'),
     ).toHaveLength(1);
     scanner.stop();
+  });
+
+  it('reuses known team fixture odds when a teammate response is temporarily incomplete', async () => {
+    const completeFixture = {
+      date: '2026-08-08T02:30:00.000Z',
+      homeTeamName: 'Vancouver Whitecaps',
+      awayTeamName: 'Juárez',
+      playerTeamName: 'Vancouver Whitecaps',
+      opponentTeamName: 'Juárez',
+      cleanSheetProbability: 1 / 3,
+      matchProbabilities: { win: 0.61, draw: 0.21, loss: 0.18 },
+      marketOdds: null,
+    } as const;
+    const fetcher = vi.fn(
+      async (
+        request: PlayerStatsRequest,
+      ): Promise<PlayerStatsSuccessResponse> => ({
+        data: request.playerNames.includes('Isaac Boehmer')
+          ? [
+              {
+                slug: 'isaac-boehmer',
+                displayName: 'Isaac Boehmer',
+                position: 'Goalkeeper',
+                aaL10: { value: 7.9, sampleSize: 3 },
+                cleanSheetL10: { value: 0, sampleSize: 2 },
+                goalL10: { value: 0, sampleSize: 3 },
+                nextGame: completeFixture,
+                excludedLowCoverage: 0,
+              },
+            ]
+          : [
+              {
+                slug: 'sam-adekugbe',
+                displayName: 'Samuel Adekugbe',
+                position: 'Defender',
+                aaL10: { value: 2.2, sampleSize: 2 },
+                cleanSheetL10: { value: null, sampleSize: 0 },
+                goalL10: { value: 0, sampleSize: 2 },
+                nextGame: {
+                  ...completeFixture,
+                  cleanSheetProbability: null,
+                  matchProbabilities: null,
+                },
+                excludedLowCoverage: 0,
+              },
+            ],
+        meta: { requested: 1, returned: 1, cacheHits: 1, source: 'sorare' },
+      }),
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+
+    const goalkeeperCard = document.createElement('button');
+    document.body.append(goalkeeperCard);
+    const goalkeeperView = new OverlayView(
+      goalkeeperCard,
+      { playerName: 'Isaac Boehmer' },
+      'Goalkeeper',
+    );
+    coordinator.enqueue(
+      {
+        playerName: 'Isaac Boehmer',
+        position: 'Goalkeeper',
+        container: goalkeeperCard,
+      },
+      goalkeeperView,
+    );
+    await coordinator.flush();
+
+    const defenderShell = document.createElement('section');
+    defenderShell.innerHTML = `
+      <button data-testid="adekugbe-card">
+        <img alt="Samuel Adekugbe - common" src="/adekugbe.png">
+      </button>
+      <button>
+        <div data-testid="adekugbe-teams">
+          <div aria-label="Team">VAN</div>
+          <div aria-label="Team">JUA</div>
+        </div>
+      </button>
+    `;
+    document.body.append(defenderShell);
+    const defenderCard = defenderShell.querySelector<HTMLElement>(
+      '[data-testid="adekugbe-card"]',
+    );
+    const teamRow = defenderShell.querySelector<HTMLElement>(
+      '[data-testid="adekugbe-teams"]',
+    );
+    if (!defenderCard || !teamRow) throw new Error('Expected defender fixture');
+    vi.spyOn(defenderCard, 'getBoundingClientRect').mockReturnValue({
+      x: 40,
+      y: 100,
+      top: 100,
+      right: 150,
+      bottom: 278,
+      left: 40,
+      width: 110,
+      height: 178,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(teamRow, 'getBoundingClientRect').mockReturnValue({
+      x: 40,
+      y: 300,
+      top: 300,
+      right: 150,
+      bottom: 320,
+      left: 40,
+      width: 110,
+      height: 20,
+      toJSON: () => ({}),
+    });
+    const defenderView = new OverlayView(
+      defenderCard,
+      { playerName: 'Samuel Adekugbe' },
+      'Defender',
+    );
+    coordinator.enqueue(
+      {
+        playerName: 'Samuel Adekugbe',
+        position: 'Defender',
+        container: defenderCard,
+      },
+      defenderView,
+    );
+    await coordinator.flush();
+
+    const companion = teamRow.nextElementSibling as HTMLElement | null;
+    expect(companion?.dataset.sorareOverlayCompanion).toBe('lineup-odds');
+    expect(
+      companion?.shadowRoot?.querySelector('.lineup-odds-bar')?.textContent,
+    ).toBe('61%21%18%');
+    expect(
+      defenderView.host.shadowRoot?.querySelector(
+        '.clean-sheet-bracket-cell .market-value',
+      )?.textContent,
+    ).toBe('33%');
+
+    goalkeeperView.destroy();
+    defenderView.destroy();
   });
 
   it('does not borrow a fixture row from a different lineup slot', () => {
@@ -912,6 +1462,7 @@ describe('Sorare card DOM discovery', () => {
                 aaL10: { value: null, sampleSize: 0 },
                 cleanSheetL10: { value: null, sampleSize: 0 },
                 goalL10: { value: null, sampleSize: 0 },
+                nextGame: null,
               },
             ]
           : [stats];
@@ -930,7 +1481,11 @@ describe('Sorare card DOM discovery', () => {
     await coordinator.flush();
 
     const host = document.querySelector<HTMLElement>('[data-sorare-overlay-root]');
-    expect(host?.shadowRoot?.textContent).toContain('Keine L10-Daten');
+    const noDataBracket = host?.shadowRoot?.querySelector<HTMLElement>(
+      '.no-data-bracket',
+    );
+    expect(noDataBracket?.getAttribute('aria-label')).toBe('Keine L10-Daten');
+    expect(noDataBracket?.textContent).toBe('L10—');
 
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
     expect(host?.shadowRoot?.querySelector('.aa-bracket-cell')).toBeNull();
@@ -954,7 +1509,7 @@ describe('Sorare card DOM discovery', () => {
     expect(
       host?.shadowRoot?.querySelector('.clean-sheet-probability'),
     ).toBeNull();
-    expect(host?.shadowRoot?.textContent).not.toContain('Keine L10-Daten');
+    expect(host?.shadowRoot?.querySelector('.no-data-bracket')).toBeNull();
   });
 
   it('keeps only deferred name cards loading and retries them without blocking returned players', async () => {
@@ -1025,9 +1580,9 @@ describe('Sorare card DOM discovery', () => {
       'Lade L10',
     );
     expect(cards[1]?.view.host.shadowRoot?.textContent).toContain('Lade L10');
-    expect(cards[1]?.view.host.shadowRoot?.textContent).not.toContain(
-      'Keine L10-Daten',
-    );
+    expect(
+      cards[1]?.view.host.shadowRoot?.querySelector('.no-data-bracket'),
+    ).toBeNull();
 
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
     expect(cards[1]?.view.host.shadowRoot?.textContent).not.toContain(
@@ -1241,6 +1796,90 @@ describe('Sorare card DOM discovery', () => {
       ),
     ).toBe(true);
     views.forEach((view) => view.destroy());
+  });
+
+  it('isolates one player\'s position variants without poisoning the default cache', async () => {
+    const playerName = 'Marcel Hartel';
+    const fetcher = vi.fn(
+      async (request: PlayerStatsRequest): Promise<PlayerStatsSuccessResponse> => {
+        const requestedPosition = request.positions?.[playerName];
+        const position = requestedPosition ?? 'Midfielder';
+        return {
+          data: [
+            {
+              slug: 'marcel-hartel',
+              displayName: playerName,
+              position,
+              aaL10: {
+                value: position === 'Forward' ? 21.4 : 17.4,
+                sampleSize: 10,
+              },
+              cleanSheetL10: { value: null, sampleSize: 0 },
+              goalL10: { value: 0.2, sampleSize: 10 },
+              nextGame: null,
+              excludedLowCoverage: 0,
+            },
+          ],
+          meta: { requested: 1, returned: 1, cacheHits: 0, source: 'sorare' },
+        };
+      },
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const variants = [
+      { position: undefined, expectedAa: '17.4' },
+      { position: 'Midfielder' as const, expectedAa: '17.4' },
+      { position: 'Forward' as const, expectedAa: '21.4' },
+    ];
+    const mounted = variants.map(({ position }) => {
+      const card = document.createElement('article');
+      document.body.append(card);
+      const view = new OverlayView(card, { playerName }, position);
+      coordinator.enqueue(
+        {
+          playerName,
+          ...(position ? { position } : {}),
+          container: card,
+        },
+        view,
+      );
+      return { card, view };
+    });
+
+    await coordinator.flush();
+
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(fetcher.mock.calls.map(([request]) => request.positions)).toEqual([
+      undefined,
+      { [playerName]: 'Midfielder' },
+      { [playerName]: 'Forward' },
+    ]);
+    variants.forEach(({ expectedAa }, index) => {
+      expect(
+        mounted[index]?.view.host.shadowRoot?.querySelector(
+          '.aa-bracket-cell .market-value',
+        )?.textContent,
+      ).toBe(expectedAa);
+    });
+
+    const repeatedDefaultCard = document.createElement('article');
+    document.body.append(repeatedDefaultCard);
+    const repeatedDefaultView = new OverlayView(
+      repeatedDefaultCard,
+      { playerName },
+    );
+    coordinator.enqueue(
+      { playerName, container: repeatedDefaultCard },
+      repeatedDefaultView,
+    );
+
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(
+      repeatedDefaultView.host.shadowRoot?.querySelector(
+        '.aa-bracket-cell .market-value',
+      )?.textContent,
+    ).toBe('17.4');
+    mounted.forEach(({ view }) => view.destroy());
+    repeatedDefaultView.destroy();
   });
 
   it('pauses retries while a card is offscreen and resumes the remaining delay', async () => {
@@ -1817,6 +2456,363 @@ describe('Sorare card DOM discovery', () => {
     view.destroy();
   });
 
+  it('replaces a historical fallback when cached market odds appear after the initial refresh window', async () => {
+    vi.useFakeTimers();
+    try {
+      applyHistoricalAssistFallbackSettings(true, 15);
+      const partialStats: PlayerStats = {
+        slug: 'cached-assist-player',
+        displayName: 'Cached Assist Player',
+        position: 'Forward',
+        aaL10: { value: 18.2, sampleSize: 10 },
+        cleanSheetL10: { value: 0.1, sampleSize: 10 },
+        goalL10: { value: 0.4, sampleSize: 10 },
+        historicalAssists: {
+          l10: { value: 0.4, sampleSize: 10 },
+          l15: { value: 7 / 15, sampleSize: 15 },
+          l40: { value: 0.35, sampleSize: 40 },
+        },
+        nextGame: {
+          date: '2026-08-16T18:00:00.000Z',
+          homeTeamName: 'Home FC',
+          awayTeamName: 'Away FC',
+          playerTeamName: 'Home FC',
+          opponentTeamName: 'Away FC',
+          playerTeamSlug: 'home-fc',
+          cleanSheetProbability: null,
+          matchProbabilities: null,
+          marketOdds: {
+            source: 'odds-api-io',
+            capturedAt: '2026-08-15T00:00:00.000Z',
+            goal: { probability: 0.54, bookmakerCount: 2 },
+            assist: null,
+            decisive: null,
+          },
+        },
+        pendingRefreshes: ['marketOdds'],
+        excludedLowCoverage: 0,
+      };
+      const completeStats: PlayerStats = {
+        ...partialStats,
+        nextGame: {
+          ...partialStats.nextGame!,
+          marketOdds: {
+            source: 'mixed',
+            capturedAt: '2026-08-15T00:00:00.000Z',
+            goal: { probability: 0.54, bookmakerCount: 2 },
+            assist: { probability: 0.408, bookmakerCount: 1 },
+            decisive: null,
+          },
+        },
+        pendingRefreshes: undefined,
+      };
+      const fetcher = vi.fn(
+        async (): Promise<PlayerStatsSuccessResponse> => ({
+          data: [
+            fetcher.mock.calls.length < 4 ? partialStats : completeStats,
+          ],
+          meta: {
+            requested: 1,
+            returned: 1,
+            cacheHits: 1,
+            source: 'sorare',
+          },
+        }),
+      );
+      const coordinator = new StatsBatchCoordinator(
+        fetcher,
+        60_000,
+        undefined,
+        8,
+        2,
+      );
+      coordinator.setIncludeHistoricalAssists(true);
+      const card = document.createElement('article');
+      document.body.append(card);
+      const view = new OverlayView(
+        card,
+        { slug: 'cached-assist-player' },
+        'Forward',
+      );
+      coordinator.enqueue(
+        {
+          slug: 'cached-assist-player',
+          position: 'Forward',
+          container: card,
+        },
+        view,
+      );
+
+      await coordinator.flush();
+
+      let assist = view.host.shadowRoot?.querySelector<HTMLElement>(
+        '[data-market="assist"]',
+      );
+      expect(assist?.dataset.benchmarkSource).toBe('historical');
+      expect(assist?.textContent).toBe('(47%)');
+
+      for (const delay of [2_500, 8_000, 25_000]) {
+        await vi.advanceTimersByTimeAsync(delay);
+        await coordinator.flush();
+      }
+
+      expect(fetcher).toHaveBeenCalledTimes(4);
+      assist = view.host.shadowRoot?.querySelector<HTMLElement>(
+        '[data-market="assist"]',
+      );
+      expect(assist?.dataset.benchmarkSource).toBe('market');
+      expect(assist?.textContent).toBe('41%');
+      view.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps polling a known warmup from cache when an intermediate response clears pending', async () => {
+    vi.useFakeTimers();
+    try {
+      applyHistoricalAssistFallbackSettings(true, 15);
+      const initialStats: PlayerStats = {
+        slug: 'fixture-warmup-player',
+        displayName: 'Fixture Warmup Player',
+        position: 'Forward',
+        aaL10: { value: 16, sampleSize: 10 },
+        cleanSheetL10: { value: 0.1, sampleSize: 10 },
+        goalL10: { value: 0.2, sampleSize: 10 },
+        historicalAssists: {
+          l10: { value: 0.2, sampleSize: 10 },
+          l15: { value: 0.2, sampleSize: 15 },
+          l40: { value: 0.15, sampleSize: 40 },
+        },
+        nextGame: {
+          date: '2026-08-22T14:00:00.000Z',
+          homeTeamName: 'Warmup FC',
+          awayTeamName: 'Cached United',
+          playerTeamName: 'Warmup FC',
+          opponentTeamName: 'Cached United',
+          playerTeamSlug: 'warmup-fc',
+          cleanSheetProbability: null,
+          matchProbabilities: null,
+          marketOdds: {
+            source: 'sports-game-odds',
+            capturedAt: '2026-08-22T08:00:00.000Z',
+            goal: { probability: 0.35, bookmakerCount: 2 },
+            assist: null,
+            decisive: null,
+          },
+        },
+        pendingRefreshes: ['marketOdds'],
+        excludedLowCoverage: 0,
+      };
+      const intermediateStats: PlayerStats = {
+        ...initialStats,
+        nextGame: {
+          ...initialStats.nextGame!,
+          marketOdds: {
+            ...initialStats.nextGame!.marketOdds!,
+            capturedAt: '2026-08-22T08:00:02.000Z',
+            goal: { probability: 0.36, bookmakerCount: 3 },
+          },
+        },
+        pendingRefreshes: undefined,
+      };
+      const completeStats: PlayerStats = {
+        ...intermediateStats,
+        nextGame: {
+          ...intermediateStats.nextGame!,
+          marketOdds: {
+            source: 'mixed',
+            capturedAt: '2026-08-22T08:00:03.000Z',
+            goal: { probability: 0.35, bookmakerCount: 2 },
+            assist: { probability: 0.22, bookmakerCount: 1 },
+            decisive: null,
+          },
+        },
+      };
+      const fetcher = vi.fn(
+        async (): Promise<PlayerStatsSuccessResponse> => ({
+          data: [
+            fetcher.mock.calls.length === 1
+              ? initialStats
+              : fetcher.mock.calls.length === 2
+                ? intermediateStats
+                : completeStats,
+          ],
+          meta: {
+            requested: 1,
+            returned: 1,
+            cacheHits: 1,
+            source: 'sorare',
+          },
+        }),
+      );
+      const coordinator = new StatsBatchCoordinator(
+        fetcher,
+        60_000,
+        undefined,
+        8,
+        2,
+        [5, 10],
+      );
+      coordinator.setIncludeHistoricalAssists(true);
+      const card = document.createElement('article');
+      document.body.append(card);
+      const view = new OverlayView(
+        card,
+        { slug: 'fixture-warmup-player' },
+        'Forward',
+      );
+      coordinator.enqueue(
+        {
+          slug: 'fixture-warmup-player',
+          position: 'Forward',
+          container: card,
+        },
+        view,
+      );
+
+      await coordinator.flush();
+      await vi.advanceTimersByTimeAsync(5);
+      await coordinator.flush();
+
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(fetcher.mock.calls[1]?.[0]).toMatchObject({
+        oddsCacheOnly: true,
+      });
+      expect(
+        view.host.shadowRoot?.querySelector<HTMLElement>(
+          '[data-market="assist"]',
+        )?.dataset.benchmarkSource,
+      ).toBe('historical');
+
+      await vi.advanceTimersByTimeAsync(10);
+      await coordinator.flush();
+
+      expect(fetcher).toHaveBeenCalledTimes(3);
+      expect(fetcher.mock.calls[2]?.[0]).toMatchObject({
+        oddsCacheOnly: true,
+      });
+      const assist = view.host.shadowRoot?.querySelector<HTMLElement>(
+        '[data-market="assist"]',
+      );
+      expect(assist?.dataset.benchmarkSource).toBe('market');
+      expect(assist?.textContent).toBe('22%');
+      await vi.advanceTimersByTimeAsync(50);
+      expect(fetcher).toHaveBeenCalledTimes(3);
+      view.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries incomplete market odds as isolated player requests instead of rebuilding the failing batch', async () => {
+    vi.useFakeTimers();
+    const views: OverlayView[] = [];
+    try {
+      applyHistoricalAssistFallbackSettings(true, 15);
+      const names = ['Batch Player One', 'Lionel Messi', 'Batch Player Three'];
+      const statsFor = (name: string, complete: boolean): PlayerStats => ({
+        slug: name.toLocaleLowerCase().replaceAll(' ', '-'),
+        displayName: name,
+        position: 'Forward',
+        aaL10: { value: name === 'Lionel Messi' ? 22.3 : 11, sampleSize: 10 },
+        cleanSheetL10: { value: 0.1, sampleSize: 10 },
+        goalL10: { value: 0.3, sampleSize: 10 },
+        historicalAssists: {
+          l10: { value: 0.4, sampleSize: 10 },
+          l15: { value: 7 / 15, sampleSize: 15 },
+          l40: { value: 0.35, sampleSize: 40 },
+        },
+        nextGame: {
+          date: '2026-08-16T00:30:00.000Z',
+          homeTeamName: 'Nashville SC',
+          awayTeamName: 'Inter Miami',
+          playerTeamName: 'Inter Miami',
+          opponentTeamName: 'Nashville SC',
+          playerTeamSlug: 'inter-miami',
+          cleanSheetProbability: 0.19,
+          matchProbabilities: { win: 0.32, draw: 0.24, loss: 0.44 },
+          marketOdds: {
+            source: complete ? 'sports-game-odds' : 'odds-api-io',
+            capturedAt: '2026-08-14T05:01:11.562Z',
+            goal: { probability: complete ? 0.512 : 0.54, bookmakerCount: 3 },
+            assist: complete
+              ? { probability: 0.408, bookmakerCount: 1 }
+              : null,
+            decisive: complete
+              ? { probability: 0.655, bookmakerCount: 1 }
+              : null,
+          },
+        },
+        ...(complete ? {} : { pendingRefreshes: ['marketOdds'] }),
+        excludedLowCoverage: 0,
+      });
+      const fetcher = vi.fn(
+        async (request: PlayerStatsRequest): Promise<PlayerStatsSuccessResponse> => {
+          const requestedNames = request.playerNames ?? [];
+          return {
+            data: requestedNames.map((name) =>
+              statsFor(
+                name,
+                requestedNames.length === 1 && name === 'Lionel Messi',
+              ),
+            ),
+            meta: {
+              requested: requestedNames.length,
+              returned: requestedNames.length,
+              cacheHits: requestedNames.length,
+              source: 'sorare',
+            },
+          };
+        },
+      );
+      const coordinator = new StatsBatchCoordinator(
+        fetcher,
+        60_000,
+        undefined,
+        12,
+        2,
+        [5],
+      );
+      coordinator.setIncludeHistoricalAssists(true);
+
+      for (const name of names) {
+        const card = document.createElement('article');
+        document.body.append(card);
+        const view = new OverlayView(card, { playerName: name }, 'Forward');
+        views.push(view);
+        coordinator.enqueue(
+          { playerName: name, position: 'Forward', container: card },
+          view,
+        );
+      }
+
+      await coordinator.flush();
+      expect(fetcher.mock.calls[0]?.[0].playerNames).toHaveLength(3);
+
+      await vi.advanceTimersByTimeAsync(5);
+      await coordinator.flush();
+
+      const refreshRequests = fetcher.mock.calls.slice(1).map(([request]) => request);
+      expect(refreshRequests).toHaveLength(3);
+      expect(
+        refreshRequests.every(
+          (request) =>
+            (request.slugs?.length ?? 0) + (request.playerNames?.length ?? 0) === 1,
+        ),
+      ).toBe(true);
+      const messiView = views[1];
+      const assist = messiView?.host.shadowRoot?.querySelector<HTMLElement>(
+        '[data-market="assist"]',
+      );
+      expect(assist?.dataset.benchmarkSource).toBe('market');
+      expect(assist?.textContent).toBe('41%');
+    } finally {
+      for (const view of views) view.destroy();
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     {
       cachedSampleSize: 2,
@@ -2065,40 +3061,129 @@ describe('Sorare card DOM discovery', () => {
     view.destroy();
   });
 
-  it('shows a short user-facing message for an initial request failure', async () => {
-    const fetcher = vi.fn(async () => {
-      throw new Error(
-        'BACKEND_UNAVAILABLE: Statistikdienst ist nicht erreichbar',
+  it('recovers from one transient request failure without showing an error', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher = vi.fn(
+        async (): Promise<PlayerStatsSuccessResponse> => {
+          if (fetcher.mock.calls.length === 1) {
+            throw new Error(
+              'BACKEND_UNAVAILABLE: Statistikdienst ist nicht erreichbar',
+            );
+          }
+          return {
+            data: [
+              {
+                slug: 'temporarily-unavailable-player',
+                displayName: 'Temporarily Unavailable Player',
+                position: 'Midfielder',
+                aaL10: { value: 13.4, sampleSize: 10 },
+                cleanSheetL10: { value: 0.2, sampleSize: 10 },
+                goalL10: { value: 0.1, sampleSize: 10 },
+                nextGame: null,
+                excludedLowCoverage: 0,
+              },
+            ],
+            meta: {
+              requested: 1,
+              returned: 1,
+              cacheHits: 1,
+              source: 'sorare',
+            },
+          };
+        },
       );
-    });
-    const coordinator = new StatsBatchCoordinator(
-      fetcher,
-      0,
-      [],
-    );
-    const card = document.createElement('article');
-    document.body.append(card);
-    const view = new OverlayView(
-      card,
-      { playerName: 'Unavailable Player' },
-      'Midfielder',
-    );
-    coordinator.enqueue(
-      {
-        playerName: 'Unavailable Player',
-        position: 'Midfielder',
-        container: card,
-      },
-      view,
-    );
+      const coordinator = new StatsBatchCoordinator(fetcher, 0, [5_000]);
+      const card = document.createElement('article');
+      document.body.append(card);
+      const view = new OverlayView(
+        card,
+        { playerName: 'Temporarily Unavailable Player' },
+        'Midfielder',
+      );
+      coordinator.enqueue(
+        {
+          playerName: 'Temporarily Unavailable Player',
+          position: 'Midfielder',
+          container: card,
+        },
+        view,
+      );
 
-    await coordinator.flush();
+      await coordinator.flush();
 
-    const state = view.host.shadowRoot?.querySelector<HTMLElement>('.state');
-    expect(state?.textContent).toBe('Kurz nicht verfügbar');
-    expect(state?.textContent).not.toContain('BACKEND_UNAVAILABLE');
-    expect(state?.title).toContain('automatisch erneut');
-    view.destroy();
+      expect(view.host.shadowRoot?.textContent).toContain('Lade L10');
+      expect(view.host.shadowRoot?.textContent).not.toContain(
+        'Kurz nicht verfügbar',
+      );
+
+      await vi.advanceTimersByTimeAsync(750);
+      await coordinator.flush();
+
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(
+        view.host.shadowRoot?.querySelector(
+          '.aa-bracket-cell .market-value',
+        )?.textContent,
+      ).toBe('13.4');
+      expect(view.host.shadowRoot?.textContent).not.toContain(
+        'Kurz nicht verfügbar',
+      );
+      view.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps showing an active retry until the full retry budget is exhausted', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher = vi.fn(async () => {
+        throw new Error(
+          'BACKEND_UNAVAILABLE: Statistikdienst ist nicht erreichbar',
+        );
+      });
+      const coordinator = new StatsBatchCoordinator(fetcher, 0, [5_000]);
+      const card = document.createElement('article');
+      document.body.append(card);
+      const view = new OverlayView(
+        card,
+        { playerName: 'Unavailable Player' },
+        'Midfielder',
+      );
+      coordinator.enqueue(
+        {
+          playerName: 'Unavailable Player',
+          position: 'Midfielder',
+          container: card,
+        },
+        view,
+      );
+
+      await coordinator.flush();
+      expect(view.host.shadowRoot?.textContent).toContain('Lade L10');
+
+      await vi.advanceTimersByTimeAsync(750);
+      await coordinator.flush();
+
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(view.host.shadowRoot?.textContent).toContain('Lade L10 erneut');
+      expect(view.host.shadowRoot?.textContent).not.toContain(
+        'Kurz nicht verfügbar',
+      );
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await coordinator.flush();
+
+      const state = view.host.shadowRoot?.querySelector<HTMLElement>('.state');
+      expect(fetcher).toHaveBeenCalledTimes(3);
+      expect(state?.textContent).toBe('Kurz nicht verfügbar');
+      expect(state?.textContent).not.toContain('BACKEND_UNAVAILABLE');
+      expect(state?.title).toContain('automatisch erneut');
+      view.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('requests synchronous fixture hydration on a pending-fixture follow-up', async () => {
@@ -2174,6 +3259,100 @@ describe('Sorare card DOM discovery', () => {
       view.host.shadowRoot?.querySelector('.clean-sheet-bracket-cell .market-value')
         ?.textContent,
     ).toBe('29%');
+    view.destroy();
+  });
+
+  it('hydrates and renders fixture brackets for a resolved player without L10 appearances', async () => {
+    const emptyStats: PlayerStatsSuccessResponse['data'][number] = {
+      slug: 'maxwell-murray',
+      displayName: 'Maxwell Murray',
+      position: 'Defender',
+      aaL10: { value: null, sampleSize: 0 },
+      cleanSheetL10: { value: null, sampleSize: 0 },
+      goalL10: { value: null, sampleSize: 0 },
+      nextGame: null,
+      pendingRefreshes: ['formHistory', 'fixture', 'marketOdds'],
+      excludedLowCoverage: 0,
+    };
+    const fetcher = vi.fn(
+      async (
+        request: PlayerStatsRequest,
+      ): Promise<PlayerStatsSuccessResponse> => ({
+        data: [
+          fetcher.mock.calls.length === 1
+            ? emptyStats
+            : {
+                ...emptyStats,
+                nextGame: {
+                  date: '2026-08-06T23:30:00.000Z',
+                  homeTeamName: 'New York City',
+                  awayTeamName: 'Santos Laguna',
+                  playerTeamName: 'New York City',
+                  opponentTeamName: 'Santos Laguna',
+                  cleanSheetProbability: 0.38,
+                  matchProbabilities: { win: 0.6, draw: 0.22, loss: 0.18 },
+                  marketOdds: {
+                    source: 'odds-api-io',
+                    capturedAt: '2026-08-06T20:00:00.000Z',
+                    goal: { probability: 0.11, bookmakerCount: 1 },
+                    assist: null,
+                  },
+                },
+                pendingRefreshes: ['formHistory', 'marketOdds'],
+              },
+        ],
+        meta: {
+          requested: request.playerNames.length,
+          returned: 1,
+          cacheHits: fetcher.mock.calls.length === 1 ? 0 : 1,
+          source: 'sorare',
+        },
+      }),
+    );
+    const coordinator = new StatsBatchCoordinator(
+      fetcher,
+      0,
+      [5_000],
+      8,
+      2,
+      [5],
+    );
+    const card = document.createElement('article');
+    document.body.append(card);
+    const view = new OverlayView(
+      card,
+      { playerName: 'Maxwell Murray' },
+      'Defender',
+    );
+    coordinator.enqueue(
+      {
+        playerName: 'Maxwell Murray',
+        position: 'Defender',
+        teamSlug: 'new-york-city-new-york-new-york',
+        container: card,
+      },
+      view,
+    );
+
+    await coordinator.flush();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+
+    expect(fetcher.mock.calls[1]?.[0]).toMatchObject({
+      refreshFixtures: true,
+    });
+    const bracket =
+      view.host.shadowRoot?.querySelector<HTMLElement>('.market-bracket');
+    expect(bracket?.querySelector('.aa-bracket-cell')).toBeNull();
+    expect(
+      bracket?.querySelector('.clean-sheet-bracket-cell .market-value')
+        ?.textContent,
+    ).toBe('38%');
+    expect(
+      bracket?.querySelector('[data-market="goal"] .market-value')?.textContent,
+    ).toBe('11%');
+    expect(
+      view.host.shadowRoot?.querySelector('.no-data-bracket'),
+    ).toBeNull();
     view.destroy();
   });
 
@@ -2468,6 +3647,42 @@ describe('Sorare card DOM discovery', () => {
     expect(view.host.dataset.horizontalAnchor).toBe('card-image');
     expect(view.host.style.left).toBe('400.25px');
     expect(view.host.style.width).toBe('300.5px');
+    expect(view.host.dataset.cardSize).toBeUndefined();
+    view.destroy();
+  });
+
+  it('scales bracket values down for mini but still usable card images', () => {
+    document.body.innerHTML = `
+      <article data-testid="football-card">
+        <img alt="Compact Player - common" src="https://assets.sorare.com/card.png">
+      </article>
+    `;
+    const card = document.querySelector<HTMLElement>('article');
+    const image = document.querySelector<HTMLImageElement>('img');
+    if (!card || !image) throw new Error('Expected compact card and image');
+    const compactRect = {
+      x: 100,
+      y: 100,
+      top: 100,
+      right: 173.4,
+      bottom: 218.91,
+      left: 100,
+      width: 73.4,
+      height: 118.91,
+      toJSON: () => ({}),
+    };
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue(compactRect);
+    vi.spyOn(image, 'getBoundingClientRect').mockReturnValue(compactRect);
+
+    const view = new OverlayView(
+      card,
+      { playerName: 'Compact Player' },
+      'Midfielder',
+    );
+
+    expect(view.host.dataset.horizontalAnchor).toBe('card-image');
+    expect(view.host.style.width).toBe('73.4px');
+    expect(view.host.dataset.cardSize).toBe('mini');
     view.destroy();
   });
 
@@ -2998,7 +4213,10 @@ describe('Sorare card DOM discovery', () => {
       frameCallbacks.shift()?.((frame + 13) * 16);
     }
     expect(view.host.dataset.packSettling).toBeUndefined();
-    expect(view.host.dataset.placement).toBe('pack-status-above');
+    expect(view.host.dataset.placement).toBe('pack-card-edge');
+    expect(
+      view.host.shadowRoot?.querySelector('.no-data-bracket')?.textContent,
+    ).toBe('L10—');
 
     view.destroy();
     vi.unstubAllGlobals();
@@ -3115,7 +4333,9 @@ describe('Sorare card DOM discovery', () => {
     }
     expect(view.host.dataset.packSettling).toBeUndefined();
     expect(view.host.dataset.placement).toBe('pack-card-edge');
-    expect(view.host.shadowRoot?.textContent).toContain('Keine L10-Daten');
+    expect(
+      view.host.shadowRoot?.querySelector('.no-data-bracket')?.textContent,
+    ).toBe('L10—');
 
     view.destroy();
     vi.unstubAllGlobals();
@@ -3333,7 +4553,7 @@ describe('Sorare card DOM discovery', () => {
       marketBracket?.querySelector<HTMLElement>('.aa-bracket-cell');
     expect(compactAa?.querySelector('.aa-market-icon')?.textContent).toBe('AA');
     expect(compactAa?.querySelector('.market-value')?.textContent).toBe('14.2');
-    expect(compactAa?.dataset.tone).toBe('strong');
+    expect(compactAa?.dataset.tone).toBe('good');
     expect(compactAa?.dataset.clubSampleSize).toBe('9');
     const aaWarning =
       compactAa?.querySelector<HTMLElement>('.aa-sample-warning');
@@ -3341,7 +4561,7 @@ describe('Sorare card DOM discovery', () => {
     expect(aaWarning?.tabIndex).toBe(0);
     expect(aaWarning?.getAttribute('role')).toBe('note');
     expect(aaWarning?.getAttribute('aria-label')).toContain(
-      'AA 14.2 · Datenbasis: 9/10 gültige Spiele beim aktuellen Verein',
+      'AA 14.2 · Datenbasis: 9/10 gültige Spiele mit mindestens 60 Minuten beim aktuellen Verein',
     );
     expect(
       aaWarning?.querySelector('.aa-sample-warning-title')?.textContent,
@@ -3351,12 +4571,12 @@ describe('Sorare card DOM discovery', () => {
     ).toContain('Andere Vereine/Nationalteam ausgeschlossen');
     expect(compactAa?.title).toBe('');
     expect(compactAa?.getAttribute('aria-label')).toContain(
-      'nur 9 Vereinsspiele des aktuellen Clubs',
+      'nur 9 Vereinsspiele mit mindestens 60 Minuten',
     );
-    expect(compactAa?.dataset.percentileBand).toBe('P80–90');
+    expect(compactAa?.dataset.percentileBand).toBe('P60–80');
     expect(compactAa?.querySelector('.performance-scale')).toBeNull();
     expect(marketBracket?.textContent).toBe(
-      'AA14.2!Begrenzte AA-DatenbasisAA 14.2 · Datenbasis: 9/10 gültige Spiele beim aktuellen Verein. Andere Vereine/Nationalteam ausgeschlossen.CS47%18%11%',
+      'AA14.2!Begrenzte AA-DatenbasisAA 14.2 · Datenbasis: 9/10 gültige Spiele mit mindestens 60 Minuten beim aktuellen Verein. Andere Vereine/Nationalteam ausgeschlossen.CS47%18%11%',
     );
     expect(marketBracket?.firstElementChild).toBe(compactAa);
     expect(compactAa?.classList.contains('aa-bracket-top')).toBe(true);
@@ -3691,19 +4911,63 @@ describe('Sorare card DOM discovery', () => {
     secondView.destroy();
   });
 
+  it('applies Compact View to existing and newly created market brackets', () => {
+    const firstCard = document.createElement('article');
+    const secondCard = document.createElement('article');
+    document.body.append(firstCard, secondCard);
+
+    const firstView = new OverlayView(
+      firstCard,
+      { slug: 'luis-suarez' },
+      'Forward',
+    );
+    expect(firstView.host.dataset.marketBracketCompactView).toBeUndefined();
+
+    applyMarketBracketCompactView(true);
+    expect(firstView.host.dataset.marketBracketCompactView).toBe('true');
+    expect(
+      document.documentElement.hasAttribute('data-sorare-overlay-compact-view'),
+    ).toBe(true);
+
+    firstCard.dispatchEvent(new MouseEvent('mouseenter'));
+    expect(firstView.host.dataset.marketBracketCardHover).toBe('true');
+    firstCard.dispatchEvent(new MouseEvent('mouseleave'));
+    expect(firstView.host.dataset.marketBracketCardHover).toBeUndefined();
+
+    const secondView = new OverlayView(
+      secondCard,
+      { slug: 'denis-bouanga' },
+      'Forward',
+    );
+    expect(secondView.host.dataset.marketBracketCompactView).toBe('true');
+    secondCard.dispatchEvent(new MouseEvent('mouseenter'));
+    expect(secondView.host.dataset.marketBracketCardHover).toBe('true');
+
+    applyMarketBracketCompactView(false);
+    expect(firstView.host.dataset.marketBracketCompactView).toBeUndefined();
+    expect(secondView.host.dataset.marketBracketCompactView).toBeUndefined();
+    expect(secondView.host.dataset.marketBracketCardHover).toBeUndefined();
+    expect(
+      document.documentElement.hasAttribute('data-sorare-overlay-compact-view'),
+    ).toBe(false);
+
+    firstView.destroy();
+    secondView.destroy();
+  });
+
   it('marks the current MLS AA leader per concrete position with a podium rank', async () => {
     document.body.innerHTML = `
       <article data-testid="football-card" data-position="Midfielder">
-        <a href="/football/players/alonso-coello-camarero">Player</a>
+        <a href="/football/players/adrian-andres-cubas">Player</a>
       </article>
     `;
     const response: PlayerStatsSuccessResponse = {
       data: [
         {
-          slug: 'alonso-coello-camarero',
-          displayName: 'Alonso Coello',
+          slug: 'adrian-andres-cubas',
+          displayName: 'Andrés Cubas',
           position: 'Midfielder',
-          aaL10: { value: 24.09, sampleSize: 10 },
+          aaL10: { value: 27.62, sampleSize: 5 },
           cleanSheetL10: { value: 0.1, sampleSize: 10 },
           goalL10: { value: 0.2, sampleSize: 10 },
           nextGame: null,
@@ -3729,29 +4993,29 @@ describe('Sorare card DOM discovery', () => {
   it('renders distinct silver and bronze rank badges for places two and three', async () => {
     document.body.innerHTML = `
       <article data-testid="football-card" data-position="Midfielder">
-        <a href="/football/players/carles-gil-de-pareja-vicent">Carles Gil</a>
+        <a href="/football/players/alonso-coello-camarero">Alonso Coello</a>
       </article>
       <article data-testid="football-card" data-position="Defender">
-        <a href="/football/players/nouhou-tolo">Nouhou Tolo</a>
+        <a href="/football/players/jaziel-orozco">Jaziel Orozco</a>
       </article>
     `;
     const response: PlayerStatsSuccessResponse = {
       data: [
         {
-          slug: 'carles-gil-de-pareja-vicent',
-          displayName: 'Carles Gil',
+          slug: 'alonso-coello-camarero',
+          displayName: 'Alonso Coello',
           position: 'Midfielder',
-          aaL10: { value: 19.4, sampleSize: 10 },
+          aaL10: { value: 24.09, sampleSize: 10 },
           cleanSheetL10: { value: 0.3, sampleSize: 10 },
           goalL10: { value: 0.1, sampleSize: 10 },
           nextGame: null,
           excludedLowCoverage: 0,
         },
         {
-          slug: 'nouhou-tolo',
-          displayName: 'Nouhou Tolo',
+          slug: 'jaziel-orozco',
+          displayName: 'Jaziel Orozco',
           position: 'Defender',
-          aaL10: { value: 20.86, sampleSize: 10 },
+          aaL10: { value: 25.6, sampleSize: 5 },
           cleanSheetL10: { value: 0.4, sampleSize: 10 },
           goalL10: { value: 0, sampleSize: 10 },
           nextGame: null,
@@ -3765,10 +5029,10 @@ describe('Sorare card DOM discovery', () => {
     await coordinator.flush();
 
     const silver = document.querySelector<HTMLElement>(
-      '[data-sorare-overlay-root][data-player-slug="carles-gil-de-pareja-vicent"]',
+      '[data-sorare-overlay-root][data-player-slug="alonso-coello-camarero"]',
     );
     const bronze = document.querySelector<HTMLElement>(
-      '[data-sorare-overlay-root][data-player-slug="nouhou-tolo"]',
+      '[data-sorare-overlay-root][data-player-slug="jaziel-orozco"]',
     );
     expect(silver?.shadowRoot?.querySelector('.aa-percentile')?.getAttribute('data-top-rank')).toBe('2');
     expect(
@@ -3980,6 +5244,87 @@ describe('Sorare card DOM discovery', () => {
 
     scanner.stop();
     vi.unstubAllGlobals();
+  });
+
+  it('hydrates historical assists without discarding cached real market odds', async () => {
+    applyHistoricalAssistFallbackSettings(true, 15);
+    const marketStats: PlayerStats = {
+      slug: 'historical-assist-player',
+      displayName: 'Historical Assist Player',
+      position: 'Forward',
+      aaL10: { value: 12, sampleSize: 10 },
+      cleanSheetL10: { value: 0, sampleSize: 10 },
+      goalL10: { value: 0.2, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-16T18:00:00.000Z',
+        homeTeamName: 'Home FC',
+        awayTeamName: 'Away FC',
+        playerTeamName: 'Home FC',
+        opponentTeamName: 'Away FC',
+        playerTeamSlug: 'home-fc',
+        cleanSheetProbability: null,
+        matchProbabilities: null,
+        marketOdds: {
+          source: 'sports-game-odds',
+          capturedAt: '2026-08-15T00:00:00.000Z',
+          goal: { probability: 0.44, bookmakerCount: 3 },
+          assist: { probability: 0.31, bookmakerCount: 1 },
+          decisive: null,
+        },
+      },
+      excludedLowCoverage: 0,
+    };
+    const hydratedStats: PlayerStats = {
+      ...marketStats,
+      historicalGoals: {
+        l10: { value: 0.2, sampleSize: 10 },
+        l15: { value: 0.2, sampleSize: 15 },
+        l40: { value: 0.15, sampleSize: 40 },
+      },
+      historicalAssists: {
+        l10: { value: 0.2, sampleSize: 10 },
+        l15: { value: 4 / 15, sampleSize: 15 },
+        l40: { value: 0.2, sampleSize: 40 },
+      },
+      nextGame: { ...marketStats.nextGame!, marketOdds: null },
+      pendingRefreshes: ['marketOdds'],
+    };
+    const fetcher = vi.fn(
+      async (): Promise<PlayerStatsSuccessResponse> => ({
+        data: [fetcher.mock.calls.length === 1 ? marketStats : hydratedStats],
+        meta: { requested: 1, returned: 1, cacheHits: 1, source: 'sorare' },
+      }),
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const card = document.createElement('article');
+    document.body.append(card);
+    const view = new OverlayView(
+      card,
+      { slug: 'historical-assist-player' },
+      'Forward',
+    );
+    const target = {
+      slug: 'historical-assist-player',
+      position: 'Forward' as const,
+      container: card,
+    };
+
+    coordinator.enqueue(target, view);
+    await coordinator.flush();
+    coordinator.setIncludeHistoricalAssists(true);
+    coordinator.enqueue(target, view);
+    await coordinator.flush();
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[1]?.[0]).toMatchObject({
+      includeHistoricalAssists: true,
+    });
+    const assist = view.host.shadowRoot?.querySelector<HTMLElement>(
+      '[data-market="assist"]',
+    );
+    expect(assist?.dataset.benchmarkSource).toBe('market');
+    expect(assist?.querySelector('.market-value')?.textContent).toBe('31%');
+    view.destroy();
   });
 
   it('requests historical assist windows only after the fallback is enabled', async () => {

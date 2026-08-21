@@ -19,12 +19,20 @@ import {
   type SplitPlayerStatsCacheAccess,
 } from '../cache.js';
 import {
+  FIXTURE_IDENTITY_VERSION,
+  MarketSupplementBatchSchema,
   MarketSnapshotSchema,
   marketFixtureKey,
+  mergeSupplementBatch,
   normalizeTeamName,
+  type MarketSupplementBatch,
+  type MarketSupplementPlayer,
   type MarketSnapshot,
+  type MarketSnapshotRead,
   type MarketSnapshotStore,
+  type MarketIdentityProvider,
   type OddsMarketKey,
+  type ProviderTeamAlias,
 } from '../providers/market-odds-provider.js';
 import {
   MatchOddsSnapshotSchema,
@@ -38,6 +46,7 @@ import {
   type ProviderQuotaUsageStore,
 } from '../providers/odds-usage.js';
 import type {
+  PlayerNameResolutionCacheRead,
   PlayerNameResolutionCache,
   SourcePlayerRequest,
 } from '../services/data-source.js';
@@ -53,6 +62,7 @@ import {
 const SourcePlayerRequestSchema = z.object({
   slug: z.string().trim().min(1).max(160).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i),
   position: FootballPositionSchema.optional(),
+  teamSlug: z.string().trim().min(1).max(180).optional(),
   nameResolution: z.enum(['direct', 'search']).optional(),
 });
 
@@ -61,10 +71,30 @@ const NameResolutionEnvelopeSchema = z.discriminatedUnion('found', [
   z.object({ found: z.literal(false) }),
 ]);
 
+const ProviderTeamAliasEnvelopeSchema = z.object({
+  canonicalTeamSlug: z
+    .string()
+    .trim()
+    .min(1)
+    .max(180)
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i),
+  learnedAt: z.string().datetime(),
+});
+
+const ProviderRequestBlockSchema = z.object({
+  blockedUntil: z.string().datetime(),
+});
+
 const PlayerFormStatsSchema = PlayerStatsSchema.omit({
   nextGame: true,
   pendingRefreshes: true,
   mlsAaContext: true,
+});
+const HISTORICAL_CLUB_SCOPE_VERSION = 1;
+const CachedPlayerFormStatsSchema = PlayerFormStatsSchema.extend({
+  historicalClubScopeVersion: z
+    .literal(HISTORICAL_CLUB_SCOPE_VERSION)
+    .optional(),
 });
 // v3 adds the Sorare competition slug used to route bookmaker requests only
 // to explicitly supported competitions. Older fixtures refresh lazily.
@@ -85,6 +115,10 @@ type FixtureTeamSide = 'home' | 'away';
 
 export interface JsonKeyValueStore {
   get<T = unknown>(key: string, type: 'json'): Promise<T | null>;
+  getMany?<T = unknown>(
+    keys: readonly string[],
+    type: 'json',
+  ): Promise<Map<string, T>>;
   put(
     key: string,
     value: string,
@@ -100,6 +134,18 @@ export interface JsonKeyValueStore {
     value: string,
     options?: { expiration?: number; expirationTtl?: number },
   ): Promise<void>;
+  /**
+   * D1 can merge the short-lived bookmaker supplement queue in one SQL
+   * statement. Keeping this optional preserves the KV/in-memory fallback,
+   * while preventing concurrent Worker isolates from overwriting players.
+   */
+  mergeMarketSupplementBatch?(
+    key: string,
+    playersJson: string,
+    queuedAt: string,
+    readyAt: string,
+    expirationTtl: number,
+  ): Promise<string>;
   delete(key: string): Promise<void>;
 }
 
@@ -138,6 +184,27 @@ abstract class CloudflareKvCache {
       this.namespace.put(key, JSON.stringify(value), { expiration }),
     );
   }
+
+  protected async readMany<T = unknown>(
+    keys: readonly string[],
+  ): Promise<Map<string, T>> {
+    const uniqueKeys = [...new Set(keys)];
+    if (uniqueKeys.length === 0) return new Map();
+    if (this.namespace.getMany) {
+      return this.namespace.getMany<T>(uniqueKeys, 'json');
+    }
+    const entries = await Promise.all(
+      uniqueKeys.map(async (key) => [
+        key,
+        await this.namespace.get<T>(key, 'json'),
+      ] as const),
+    );
+    return new Map(
+      entries.flatMap(([key, value]) =>
+        value === null ? [] : ([[key, value]] as const),
+      ),
+    );
+  }
 }
 
 const MONDAY_UTC = 1;
@@ -151,6 +218,7 @@ const FORM_HISTORY_REFRESH_LEASE_PREFIX =
 const FIXTURE_ODDS_REFRESH_LEASE_SECONDS = 15 * 60;
 const FIXTURE_ODDS_CHECK_PREFIX = 'sorare-fixture-odds-check:v1:';
 const PLAYER_TEAM_FIXTURE_PREFIX = 'player-team-fixture:v1:';
+const PLAYER_TEAM_FIXTURE_SLUG_PREFIX = 'player-team-fixture:v2:';
 
 export function nextMondayFormExpiration(
   nowMs: number,
@@ -291,6 +359,19 @@ function fixtureTeamOddsFrom(
   };
 }
 
+function sameFixtureTeamOdds(
+  left: FixtureTeamOdds | null,
+  right: FixtureTeamOdds,
+): boolean {
+  return (
+    left !== null &&
+    left.cleanSheetProbability === right.cleanSheetProbability &&
+    left.matchProbabilities?.win === right.matchProbabilities?.win &&
+    left.matchProbabilities?.draw === right.matchProbabilities?.draw &&
+    left.matchProbabilities?.loss === right.matchProbabilities?.loss
+  );
+}
+
 function fixtureTeamSide(
   fixture: NonNullable<PlayerFixtureStats>,
 ): FixtureTeamSide | null {
@@ -341,13 +422,27 @@ function samePlayerFixture(
   return leftTeams[0] === rightTeams[0] && leftTeams[1] === rightTeams[1];
 }
 
-function playerTeamFixtureKey(
+function playerTeamFixtureSlugKey(teamSlug: string): string {
+  return `${PLAYER_TEAM_FIXTURE_SLUG_PREFIX}${encodeURIComponent(
+    teamSlug.trim().toLowerCase(),
+  )}`;
+}
+
+function playerTeamFixtureLegacyKey(
   fixture: NonNullable<PlayerFixtureStats>,
 ): string | null {
   const team = playerTeamFixtureIdentity(fixture);
   return team
     ? `${PLAYER_TEAM_FIXTURE_PREFIX}${encodeURIComponent(team)}`
     : null;
+}
+
+function playerTeamFixtureKey(
+  fixture: NonNullable<PlayerFixtureStats>,
+): string | null {
+  return fixture.playerTeamSlug
+    ? playerTeamFixtureSlugKey(fixture.playerTeamSlug)
+    : playerTeamFixtureLegacyKey(fixture);
 }
 
 function teamFixtureEnvelope(
@@ -439,6 +534,29 @@ export class CloudflareMarketSnapshotStore
     return parsed.data;
   }
 
+  async getMany(
+    requests: readonly MarketSnapshotRead[],
+  ): Promise<Array<MarketSnapshot | undefined>> {
+    if (requests.length === 0) return [];
+    const keys = requests.map(({ fixtureKey, market }) =>
+      this.key(fixtureKey, market),
+    );
+    if (!this.namespace.getMany) {
+      return Promise.all(
+        requests.map(({ fixtureKey, market }) => this.get(fixtureKey, market)),
+      );
+    }
+    const rawByKey = await this.namespace.getMany<unknown>(keys, 'json');
+    return keys.map((key) => {
+      const raw = rawByKey.get(key);
+      if (raw === undefined) return undefined;
+      const parsed = MarketSnapshotSchema.safeParse(raw);
+      if (parsed.success) return parsed.data;
+      this.removeInvalid(key);
+      return undefined;
+    });
+  }
+
   async set(fixtureKey: string, snapshot: MarketSnapshot): Promise<void> {
     const key = this.key(fixtureKey, snapshot.market);
     const value = JSON.stringify(MarketSnapshotSchema.parse(snapshot));
@@ -459,8 +577,217 @@ export class CloudflareMarketSnapshotStore
     });
   }
 
+  async getEvidence(
+    fixtureKey: string,
+    provider: string,
+  ): Promise<unknown | undefined> {
+    const raw = await this.namespace.get<unknown>(
+      this.evidenceKey(fixtureKey, provider),
+      'json',
+    );
+    return raw === null ? undefined : raw;
+  }
+
+  async setEvidence(
+    fixtureKey: string,
+    provider: string,
+    evidence: unknown,
+    expiresAt: string,
+  ): Promise<void> {
+    const expiration = Math.floor(Date.parse(expiresAt) / 1_000);
+    if (
+      !Number.isFinite(expiration) ||
+      expiration <= Math.floor(Date.now() / 1_000)
+    ) {
+      return;
+    }
+    await this.namespace.put(
+      this.evidenceKey(fixtureKey, provider),
+      JSON.stringify(evidence),
+      { expiration },
+    );
+  }
+
+  async claimRefreshLease(
+    fixtureKey: string,
+    requestGroup: string,
+    ttlMs: number,
+  ): Promise<boolean> {
+    if (!this.namespace.putIfAbsent) return true;
+    return this.namespace.putIfAbsent(
+      this.refreshLeaseKey(fixtureKey, requestGroup),
+      JSON.stringify({ claimedAt: new Date().toISOString() }),
+      { expirationTtl: Math.max(1, Math.ceil(ttlMs / 1_000)) },
+    );
+  }
+
+  async releaseRefreshLease(
+    fixtureKey: string,
+    requestGroup: string,
+  ): Promise<void> {
+    await this.namespace.delete(
+      this.refreshLeaseKey(fixtureKey, requestGroup),
+    );
+  }
+
+  async enqueueSupplementPlayers(
+    fixtureKey: string,
+    requestGroup: string,
+    players: readonly MarketSupplementPlayer[],
+    delayMs: number,
+    ttlMs: number,
+  ): Promise<MarketSupplementBatch> {
+    const key = this.supplementBatchKey(fixtureKey, requestGroup);
+    const now = Date.now();
+    const created = mergeSupplementBatch(undefined, players, now, delayMs);
+    const ttlSeconds = Math.max(1, Math.ceil(ttlMs / 1_000));
+    if (this.namespace.mergeMarketSupplementBatch) {
+      const raw = await this.namespace.mergeMarketSupplementBatch(
+        key,
+        JSON.stringify(created.players),
+        created.queuedAt,
+        created.readyAt,
+        ttlSeconds,
+      );
+      const parsed = MarketSupplementBatchSchema.safeParse(JSON.parse(raw));
+      if (parsed.success) return parsed.data;
+    }
+    if (this.namespace.putIfAbsent) {
+      const inserted = await this.namespace.putIfAbsent(
+        key,
+        JSON.stringify(created),
+        { expirationTtl: ttlSeconds },
+      );
+      if (inserted) return created;
+    }
+
+    const raw = await this.namespace.get<unknown>(key, 'json');
+    const existing = MarketSupplementBatchSchema.safeParse(raw);
+    const merged = mergeSupplementBatch(
+      existing.success ? existing.data : undefined,
+      players,
+      now,
+      delayMs,
+    );
+    await this.namespace.put(key, JSON.stringify(merged), {
+      expirationTtl: ttlSeconds,
+    });
+    return merged;
+  }
+
+  async getSupplementBatch(
+    fixtureKey: string,
+    requestGroup: string,
+  ): Promise<MarketSupplementBatch | undefined> {
+    const key = this.supplementBatchKey(fixtureKey, requestGroup);
+    const raw = await this.namespace.get<unknown>(key, 'json');
+    if (raw === null) return undefined;
+    const parsed = MarketSupplementBatchSchema.safeParse(raw);
+    if (!parsed.success) {
+      await this.namespace.delete(key);
+      return undefined;
+    }
+    return parsed.data;
+  }
+
+  async clearSupplementBatch(
+    fixtureKey: string,
+    requestGroup: string,
+  ): Promise<void> {
+    await this.namespace.delete(
+      this.supplementBatchKey(fixtureKey, requestGroup),
+    );
+  }
+
+  async getProviderTeamAliases(
+    provider: MarketIdentityProvider,
+    providerTeamNames: readonly string[],
+  ): Promise<ReadonlyMap<string, string>> {
+    const normalizedNames = [
+      ...new Set(providerTeamNames.map(normalizeTeamName)),
+    ];
+    const keys = normalizedNames.map((name) =>
+      this.providerTeamAliasKey(provider, name),
+    );
+    const rawByKey = this.namespace.getMany
+      ? await this.namespace.getMany<unknown>(keys, 'json')
+      : new Map(
+          await Promise.all(
+            keys.map(async (key) => [
+              key,
+              (await this.namespace.get<unknown>(key, 'json')) ?? undefined,
+            ] as const),
+          ),
+        );
+    return new Map(
+      normalizedNames.flatMap((name, index) => {
+        const parsed = ProviderTeamAliasEnvelopeSchema.safeParse(
+          rawByKey.get(keys[index] ?? ''),
+        );
+        return parsed.success
+          ? [[name, parsed.data.canonicalTeamSlug] as const]
+          : [];
+      }),
+    );
+  }
+
+  async setProviderTeamAliases(
+    provider: MarketIdentityProvider,
+    aliases: readonly ProviderTeamAlias[],
+  ): Promise<void> {
+    await Promise.all(
+      aliases.map((alias) =>
+        this.namespace.put(
+          this.providerTeamAliasKey(
+            provider,
+            normalizeTeamName(alias.providerTeamName),
+          ),
+          JSON.stringify(
+            ProviderTeamAliasEnvelopeSchema.parse({
+              canonicalTeamSlug: alias.canonicalTeamSlug,
+              learnedAt: new Date().toISOString(),
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+
   private key(fixtureKey: string, market: OddsMarketKey): string {
     return `market-odds:v1:${encodeURIComponent(fixtureKey)}:${market}`;
+  }
+
+  private refreshLeaseKey(
+    fixtureKey: string,
+    requestGroup: string,
+  ): string {
+    return `market-odds-refresh-lease:v1:${encodeURIComponent(
+      requestGroup,
+    )}:${encodeURIComponent(fixtureKey)}`;
+  }
+
+  private evidenceKey(fixtureKey: string, provider: string): string {
+    return `market-evidence:v1:${encodeURIComponent(
+      provider,
+    )}:${encodeURIComponent(fixtureKey)}`;
+  }
+
+  private supplementBatchKey(
+    fixtureKey: string,
+    requestGroup: string,
+  ): string {
+    return `market-odds-supplement-batch:v1:${encodeURIComponent(
+      requestGroup,
+    )}:${encodeURIComponent(fixtureKey)}`;
+  }
+
+  private providerTeamAliasKey(
+    provider: MarketIdentityProvider,
+    normalizedProviderTeamName: string,
+  ): string {
+    return `provider-team-alias:v1:${encodeURIComponent(
+      provider,
+    )}:${encodeURIComponent(normalizedProviderTeamName)}`;
   }
 }
 
@@ -482,6 +809,13 @@ export class CloudflareMatchOddsSnapshotStore
       await this.namespace.delete(key);
       return undefined;
     }
+    if (
+      parsed.data.status === 'unavailable' &&
+      parsed.data.fixtureIdentityVersion !== FIXTURE_IDENTITY_VERSION
+    ) {
+      await this.namespace.delete(key);
+      return undefined;
+    }
     return parsed.data;
   }
 
@@ -493,6 +827,32 @@ export class CloudflareMatchOddsSnapshotStore
     await this.namespace.put(this.key(fixtureKey), JSON.stringify(parsed), {
       expiration: Math.floor(Date.parse(parsed.expiresAt) / 1_000),
     });
+  }
+
+  async claimRefreshLease(
+    fixtureKey: string,
+    requestGroup: string,
+    ttlMs: number,
+  ): Promise<boolean> {
+    if (!this.namespace.putIfAbsent) return true;
+    return this.namespace.putIfAbsent(
+      `match-odds-refresh-lease:v1:${encodeURIComponent(
+        requestGroup,
+      )}:${encodeURIComponent(fixtureKey)}`,
+      JSON.stringify({ claimedAt: new Date().toISOString() }),
+      { expirationTtl: Math.max(1, Math.ceil(ttlMs / 1_000)) },
+    );
+  }
+
+  async releaseRefreshLease(
+    fixtureKey: string,
+    requestGroup: string,
+  ): Promise<void> {
+    await this.namespace.delete(
+      `match-odds-refresh-lease:v1:${encodeURIComponent(
+        requestGroup,
+      )}:${encodeURIComponent(fixtureKey)}`,
+    );
   }
 
   private key(fixtureKey: string): string {
@@ -527,8 +887,66 @@ export class CloudflareProviderQuotaUsageStore
     );
   }
 
+  async getRequestBlockedUntil(
+    provider: OddsProviderName,
+  ): Promise<number | undefined> {
+    const key = this.requestBlockKey(provider);
+    const raw = await this.namespace.get<unknown>(key, 'json');
+    if (raw === null) return undefined;
+    const parsed = ProviderRequestBlockSchema.safeParse(raw);
+    if (!parsed.success) {
+      await this.namespace.delete(key);
+      return undefined;
+    }
+    const blockedUntil = Date.parse(parsed.data.blockedUntil);
+    if (!Number.isFinite(blockedUntil) || blockedUntil <= Date.now()) {
+      await this.namespace.delete(key);
+      return undefined;
+    }
+    return blockedUntil;
+  }
+
+  async setRequestBlockedUntil(
+    provider: OddsProviderName,
+    blockedUntil: number,
+  ): Promise<void> {
+    const expiration = Math.ceil(blockedUntil / 1_000);
+    if (
+      !Number.isFinite(expiration) ||
+      expiration <= Math.floor(Date.now() / 1_000)
+    ) {
+      return;
+    }
+    await this.namespace.put(
+      this.requestBlockKey(provider),
+      JSON.stringify(
+        ProviderRequestBlockSchema.parse({
+          blockedUntil: new Date(blockedUntil).toISOString(),
+        }),
+      ),
+      { expiration },
+    );
+  }
+
+  async claimRefreshLease(
+    provider: OddsProviderName,
+    lease: string,
+    ttlSeconds: number,
+  ): Promise<boolean> {
+    if (!this.namespace.putIfAbsent) return true;
+    return this.namespace.putIfAbsent(
+      `odds-provider-refresh-lease:v1:${provider}:${encodeURIComponent(lease)}`,
+      JSON.stringify({ claimedAt: new Date().toISOString() }),
+      { expirationTtl: Math.max(1, ttlSeconds) },
+    );
+  }
+
   private key(provider: OddsProviderName): string {
     return `odds-provider-usage:v1:${provider}`;
+  }
+
+  private requestBlockKey(provider: OddsProviderName): string {
+    return `odds-provider-request-block:v1:${provider}`;
   }
 }
 
@@ -546,21 +964,72 @@ class CloudflarePlayerFormCache
   }
 
   async get(key: string): Promise<PlayerFormStats | undefined> {
-    const cacheKey = `player-form:v2:${key}`;
+    const cacheKey = `player-form:v3:${key}`;
     const raw = await this.namespace.get<unknown>(cacheKey, 'json');
     if (raw === null) return undefined;
-    const parsed = PlayerFormStatsSchema.safeParse(raw);
+    return this.parse(cacheKey, raw);
+  }
+
+  async getMany(
+    keys: readonly string[],
+  ): Promise<Map<string, PlayerFormStats>> {
+    const cacheKeyByPlayer = new Map(
+      [...new Set(keys)].map((key) => [key, `player-form:v3:${key}`]),
+    );
+    const raw = await this.readMany<unknown>([...cacheKeyByPlayer.values()]);
+    const values = new Map<string, PlayerFormStats>();
+    for (const [key, cacheKey] of cacheKeyByPlayer) {
+      if (!raw.has(cacheKey)) continue;
+      const parsed = this.parse(cacheKey, raw.get(cacheKey));
+      if (parsed) values.set(key, parsed);
+    }
+    return values;
+  }
+
+  private parse(
+    cacheKey: string,
+    raw: unknown,
+  ): PlayerFormStats | undefined {
+    const parsed = CachedPlayerFormStatsSchema.safeParse(raw);
     if (!parsed.success) {
       this.removeInvalid(cacheKey);
       return undefined;
     }
-    return parsed.data;
+    const {
+      historicalClubScopeVersion,
+      historicalGoals,
+      historicalAssists,
+      historicalDecisives,
+      ...baseForm
+    } = parsed.data;
+    const hasHistoricalMetrics =
+      historicalGoals !== undefined ||
+      historicalAssists !== undefined ||
+      historicalDecisives !== undefined;
+    if (
+      hasHistoricalMetrics &&
+      historicalClubScopeVersion !== HISTORICAL_CLUB_SCOPE_VERSION
+    ) {
+      return baseForm;
+    }
+    return {
+      ...baseForm,
+      ...(historicalGoals !== undefined ? { historicalGoals } : {}),
+      ...(historicalAssists !== undefined ? { historicalAssists } : {}),
+      ...(historicalDecisives !== undefined
+        ? { historicalDecisives }
+        : {}),
+    };
   }
 
   set(key: string, value: PlayerFormStats): void {
+    const parsed = PlayerFormStatsSchema.parse(value);
     this.persistUntil(
-      `player-form:v2:${key}`,
-      PlayerFormStatsSchema.parse(value),
+      `player-form:v3:${key}`,
+      {
+        ...parsed,
+        historicalClubScopeVersion: HISTORICAL_CLUB_SCOPE_VERSION,
+      },
       nextMondayFormExpiration(this.now(), this.ttlSeconds),
     );
   }
@@ -602,6 +1071,18 @@ class CloudflarePlayerFixtureCache
     string,
     Promise<NonNullable<PlayerFixtureStats>>
   >();
+  private readonly teamFixtureLocks = new Map<
+    string,
+    Promise<NonNullable<PlayerFixtureStats>>
+  >();
+  private readonly teamFixtureReads = new Map<
+    string,
+    Promise<NonNullable<PlayerFixtureStats> | undefined>
+  >();
+  private readonly fixtureTeamOddsReads = new Map<
+    string,
+    Promise<FixtureTeamOdds | null>
+  >();
 
   constructor(
     namespace: JsonKeyValueStore,
@@ -616,6 +1097,45 @@ class CloudflarePlayerFixtureCache
     const fixture = await this.readPlayerFixture(key);
     if (fixture === undefined || fixture === null) return fixture;
     return this.resolvePlayerTeamFixture(key, fixture);
+  }
+
+  async getMany(
+    keys: readonly string[],
+  ): Promise<Map<string, PlayerFixtureStats>> {
+    const cacheKeyByPlayer = new Map(
+      [...new Set(keys)].map((key) => [key, `player-fixture:v1:${key}`]),
+    );
+    const raw = await this.readMany<unknown>([...cacheKeyByPlayer.values()]);
+    const loaded = await Promise.all(
+      [...cacheKeyByPlayer].map(async ([key, cacheKey]) => {
+        if (!raw.has(cacheKey)) return [key, undefined] as const;
+        const fixture = this.parsePlayerFixture(cacheKey, raw.get(cacheKey));
+        if (fixture === undefined || fixture === null) {
+          return [key, fixture] as const;
+        }
+        return [key, await this.resolvePlayerTeamFixture(key, fixture)] as const;
+      }),
+    );
+    return new Map(
+      loaded.flatMap(([key, fixture]) =>
+        fixture === undefined ? [] : ([[key, fixture]] as const),
+      ),
+    );
+  }
+
+  async getTeamFixture(
+    playerCacheKey: string,
+    teamSlug: string,
+  ): Promise<PlayerFixtureStats | undefined> {
+    const normalizedTeamSlug = teamSlug.trim().toLowerCase();
+    if (!normalizedTeamSlug) return undefined;
+    const fixture = await this.readPlayerTeamFixture(
+      playerTeamFixtureSlugKey(normalizedTeamSlug),
+      normalizedTeamSlug,
+    );
+    return fixture
+      ? this.resolveFixtureTeamOdds(playerCacheKey, fixture)
+      : undefined;
   }
 
   async set(key: string, value: PlayerFixtureStats): Promise<void> {
@@ -671,11 +1191,19 @@ class CloudflarePlayerFixtureCache
     if (!Number.isFinite(kickoffMs) || kickoffMs <= this.now()) return false;
     const key = fixtureOddsCheckKey(value);
     if (!key) return false;
+    const leaseValue = JSON.stringify({
+      checkedAt: new Date(this.now()).toISOString(),
+    });
+    if (this.namespace.putIfAbsent) {
+      return this.namespace.putIfAbsent(key, leaseValue, {
+        expirationTtl: FIXTURE_ODDS_REFRESH_LEASE_SECONDS,
+      });
+    }
     const existing = await this.namespace.get<unknown>(key, 'json');
     if (existing !== null) return false;
     await this.namespace.put(
       key,
-      JSON.stringify({ checkedAt: new Date(this.now()).toISOString() }),
+      leaseValue,
       { expirationTtl: FIXTURE_ODDS_REFRESH_LEASE_SECONDS },
     );
     return true;
@@ -690,10 +1218,53 @@ class CloudflarePlayerFixtureCache
       await this.set(key, value);
       return value;
     }
+    if (existing === null && value !== null) {
+      await this.set(key, value);
+      return (await this.get(key)) ?? value;
+    }
+    if (
+      existing !== null &&
+      value !== null &&
+      existing.playerTeamSlug &&
+      value.playerTeamSlug &&
+      existing.playerTeamSlug.toLowerCase() !==
+        value.playerTeamSlug.toLowerCase()
+    ) {
+      // A server-confirmed club change is authoritative. Holding the previous
+      // club's fixture until its rollover would attach the wrong match to a
+      // transferred player.
+      await this.set(key, value);
+      return (await this.get(key)) ?? value;
+    }
+    if (existing !== null && value !== null && value.playerTeamSlug) {
+      const existingTeamSlug = existing.playerTeamSlug?.toLowerCase();
+      const valueTeamSlug = value.playerTeamSlug.toLowerCase();
+      const existingKickoff = Date.parse(existing.date);
+      const valueKickoff = Date.parse(value.date);
+      const valueRollover = fixtureRolloverExpiration(value.date);
+      const valueIsActive =
+        valueRollover !== null &&
+        valueRollover > Math.floor(this.now() / 1_000);
+      if (
+        valueIsActive &&
+        (!existingTeamSlug || existingTeamSlug === valueTeamSlug) &&
+        Number.isFinite(existingKickoff) &&
+        Number.isFinite(valueKickoff) &&
+        valueKickoff < existingKickoff
+      ) {
+        // A canonical team fixture can be earlier than a stale player-level
+        // nextGame (notably Sorare games represented as midnight placeholders).
+        // Prefer the still-active held fixture without letting an expired old
+        // match overwrite a genuine future game.
+        await this.set(key, value);
+        return (await this.get(key)) ?? value;
+      }
+    }
     if (
       existing === null ||
       value === null ||
-      !samePlayerFixture(existing, value)
+      (!samePlayerFixture(existing, value) &&
+        !sameFixtureIdentity(existing, value))
     ) {
       if (existing) await this.rememberFixtureRefreshAttempt(existing);
       return existing;
@@ -703,9 +1274,24 @@ class CloudflarePlayerFixtureCache
       fixtureTeamOddsFrom(value),
       fixtureTeamOddsFrom(existing),
     );
-    const refreshed = withFixtureTeamOdds(existing, mergedOdds);
+    const identityHydrated =
+      value.playerTeamSlug &&
+      value.playerTeamName &&
+      value.opponentTeamName &&
+      (!existing.playerTeamSlug ||
+        !existing.playerTeamName ||
+        !existing.opponentTeamName)
+        ? {
+            ...value,
+            ...(existing.marketOdds !== undefined
+              ? { marketOdds: existing.marketOdds }
+              : {}),
+          }
+        : existing;
+    const identityWasHydrated = identityHydrated !== existing;
+    const refreshed = withFixtureTeamOdds(identityHydrated, mergedOdds);
     if (hasFixtureTeamOdds(mergedOdds)) {
-      await this.rememberFixtureTeamOdds(existing, mergedOdds);
+      await this.rememberFixtureTeamOdds(refreshed, mergedOdds);
     }
     this.persistUntil(
       `player-fixture:v1:${key}`,
@@ -719,7 +1305,9 @@ class CloudflarePlayerFixtureCache
         this.now(),
       ),
     );
-    await this.rememberFixtureRefreshAttempt(refreshed);
+    if (!identityWasHydrated || hasFixtureTeamOdds(mergedOdds)) {
+      await this.rememberFixtureRefreshAttempt(refreshed);
+    }
     return refreshed;
   }
 
@@ -729,6 +1317,13 @@ class CloudflarePlayerFixtureCache
     const cacheKey = `player-fixture:v1:${key}`;
     const raw = await this.namespace.get<unknown>(cacheKey, 'json');
     if (raw === null) return undefined;
+    return this.parsePlayerFixture(cacheKey, raw);
+  }
+
+  private parsePlayerFixture(
+    cacheKey: string,
+    raw: unknown,
+  ): PlayerFixtureStats | undefined {
     const parsed = PlayerFixtureEnvelopeSchema.safeParse(raw);
     if (!parsed.success) {
       this.removeInvalid(cacheKey);
@@ -786,7 +1381,20 @@ class CloudflarePlayerFixtureCache
     if (!teamKey) {
       return this.resolveFixtureTeamOdds(playerCacheKey, fixture);
     }
-    const previous = this.teamFixtureResolutions.get(teamKey);
+    const directOdds = fixtureTeamOddsFrom(fixture);
+    const resolutionKey = [
+      teamKey,
+      marketFixtureKey(fixture) ?? fixture.date,
+      fixture.playerTeamSlug ?? fixture.playerTeamName ?? '',
+      directOdds.cleanSheetProbability ?? '',
+      directOdds.matchProbabilities?.win ?? '',
+      directOdds.matchProbabilities?.draw ?? '',
+      directOdds.matchProbabilities?.loss ?? '',
+    ].join('|');
+    const existing = this.teamFixtureResolutions.get(resolutionKey);
+    if (existing) return existing;
+
+    const previous = this.teamFixtureLocks.get(teamKey);
     const resolution = (async () => {
       if (previous) await previous.catch(() => undefined);
       return this.resolvePlayerTeamFixtureUnlocked(
@@ -795,14 +1403,12 @@ class CloudflarePlayerFixtureCache
         teamKey,
       );
     })();
-    this.teamFixtureResolutions.set(teamKey, resolution);
-    try {
-      return await resolution;
-    } finally {
-      if (this.teamFixtureResolutions.get(teamKey) === resolution) {
-        this.teamFixtureResolutions.delete(teamKey);
-      }
-    }
+    // Identical teammate candidates share the full resolution. A genuinely
+    // different fixture or odds payload remains serialized behind the team
+    // lock so transfer and rollover ordering stays unchanged.
+    this.teamFixtureResolutions.set(resolutionKey, resolution);
+    this.teamFixtureLocks.set(teamKey, resolution);
+    return resolution;
   }
 
   private async resolvePlayerTeamFixtureUnlocked(
@@ -814,6 +1420,25 @@ class CloudflarePlayerFixtureCache
       playerCacheKey,
       fixture,
     );
+    const expectedTeamSlug = candidate.playerTeamSlug?.trim().toLowerCase();
+    const rolloverExpiration = fixtureRolloverExpiration(candidate.date);
+    if (
+      rolloverExpiration !== null &&
+      rolloverExpiration <= Math.floor(this.now() / 1_000)
+    ) {
+      // A delayed old Sorare response must never replace the already known
+      // next fixture after the configured morning rollover.
+      const current = await this.readPlayerTeamFixture(
+        teamKey,
+        expectedTeamSlug,
+      );
+      if (current) {
+        return this.resolveFixtureTeamOdds(playerCacheKey, current);
+      }
+      const { marketOdds: _marketOdds, ...playerFixture } = candidate;
+      return playerFixture;
+    }
+
     const incomingEnvelope = teamFixtureEnvelope(candidate);
     const incomingFixture = incomingEnvelope.nextGame;
     if (!incomingFixture) return candidate;
@@ -829,8 +1454,12 @@ class CloudflarePlayerFixtureCache
         JSON.stringify(incomingEnvelope),
         { expiration },
       );
+      this.clearTeamFixtureReads(teamKey);
     } else {
-      const existing = await this.readPlayerTeamFixture(teamKey);
+      const existing = await this.readPlayerTeamFixture(
+        teamKey,
+        expectedTeamSlug,
+      );
       const selected = existing
         ? this.selectPlayerTeamFixture(existing, incomingFixture)
         : incomingFixture;
@@ -840,11 +1469,13 @@ class CloudflarePlayerFixtureCache
           JSON.stringify(teamFixtureEnvelope(selected)),
           { expiration },
         );
+        this.clearTeamFixtureReads(teamKey);
       }
     }
 
     const selected =
-      (await this.readPlayerTeamFixture(teamKey)) ?? incomingFixture;
+      (await this.readPlayerTeamFixture(teamKey, expectedTeamSlug)) ??
+      incomingFixture;
     if (sameFixtureIdentity(selected, candidate)) {
       const { marketOdds: _marketOdds, ...playerFixture } = candidate;
       return playerFixture;
@@ -854,24 +1485,46 @@ class CloudflarePlayerFixtureCache
 
   private async readPlayerTeamFixture(
     teamKey: string,
+    expectedTeamSlug?: string,
   ): Promise<NonNullable<PlayerFixtureStats> | undefined> {
-    const raw = await this.namespace.get<unknown>(teamKey, 'json');
-    if (raw === null) return undefined;
-    const parsed = PlayerFixtureEnvelopeSchema.safeParse(raw);
-    const fixture = parsed.success ? parsed.data.nextGame : undefined;
-    if (!fixture) {
-      this.removeInvalid(teamKey);
-      return undefined;
+    const memoKey = `${teamKey}|${expectedTeamSlug ?? ''}`;
+    const existing = this.teamFixtureReads.get(memoKey);
+    if (existing) return existing;
+    const pending = (async () => {
+      const raw = await this.namespace.get<unknown>(teamKey, 'json');
+      if (raw === null) return undefined;
+      const parsed = PlayerFixtureEnvelopeSchema.safeParse(raw);
+      const fixture = parsed.success ? parsed.data.nextGame : undefined;
+      if (!fixture) {
+        this.removeInvalid(teamKey);
+        return undefined;
+      }
+      if (
+        expectedTeamSlug !== undefined &&
+        fixture.playerTeamSlug?.trim().toLowerCase() !== expectedTeamSlug
+      ) {
+        this.removeInvalid(teamKey);
+        return undefined;
+      }
+      const rolloverExpiration = fixtureRolloverExpiration(fixture.date);
+      if (
+        rolloverExpiration !== null &&
+        rolloverExpiration <= Math.floor(this.now() / 1_000)
+      ) {
+        this.removeInvalid(teamKey);
+        return undefined;
+      }
+      return fixture;
+    })();
+    this.teamFixtureReads.set(memoKey, pending);
+    return pending;
+  }
+
+  private clearTeamFixtureReads(teamKey: string): void {
+    const prefix = `${teamKey}|`;
+    for (const key of this.teamFixtureReads.keys()) {
+      if (key.startsWith(prefix)) this.teamFixtureReads.delete(key);
     }
-    const rolloverExpiration = fixtureRolloverExpiration(fixture.date);
-    if (
-      rolloverExpiration !== null &&
-      rolloverExpiration <= Math.floor(this.now() / 1_000)
-    ) {
-      this.removeInvalid(teamKey);
-      return undefined;
-    }
-    return fixture;
   }
 
   private selectPlayerTeamFixture(
@@ -915,8 +1568,11 @@ class CloudflarePlayerFixtureCache
       }
     }
 
-    if (hasFixtureTeamOdds(resolvedOdds)) {
-      await this.rememberFixtureTeamOdds(fixture, resolvedOdds);
+    if (
+      hasFixtureTeamOdds(resolvedOdds) &&
+      !sameFixtureTeamOdds(shared, resolvedOdds)
+    ) {
+      await this.rememberFixtureTeamOdds(fixture, resolvedOdds, shared);
     }
     return withFixtureTeamOdds(fixture, resolvedOdds);
   }
@@ -926,36 +1582,40 @@ class CloudflarePlayerFixtureCache
   ): Promise<FixtureTeamOdds | null> {
     const key = fixtureTeamOddsKey(fixture);
     if (!key) return null;
-    const raw = await this.namespace.get<unknown>(key, 'json');
-    if (raw === null) return null;
-    const parsed = FixtureTeamOddsSchema.safeParse(raw);
-    if (!parsed.success) {
-      this.removeInvalid(key);
-      return null;
-    }
-    return parsed.data;
+    const existing = this.fixtureTeamOddsReads.get(key);
+    if (existing) return existing;
+    const pending = (async () => {
+      const raw = await this.namespace.get<unknown>(key, 'json');
+      if (raw === null) return null;
+      const parsed = FixtureTeamOddsSchema.safeParse(raw);
+      if (!parsed.success) {
+        this.removeInvalid(key);
+        return null;
+      }
+      return parsed.data;
+    })();
+    this.fixtureTeamOddsReads.set(key, pending);
+    return pending;
   }
 
   private async rememberFixtureTeamOdds(
     fixture: NonNullable<PlayerFixtureStats>,
     incoming: FixtureTeamOdds,
+    knownExisting?: FixtureTeamOdds | null,
   ): Promise<void> {
     const key = fixtureTeamOddsKey(fixture);
     if (!key || !hasFixtureTeamOdds(incoming)) return;
-    const existing = await this.readFixtureTeamOdds(fixture);
+    const existing =
+      knownExisting === undefined
+        ? await this.readFixtureTeamOdds(fixture)
+        : knownExisting;
     const merged = mergeFixtureTeamOdds(incoming, existing);
-    if (
-      existing &&
-      existing.cleanSheetProbability === merged.cleanSheetProbability &&
-      existing.matchProbabilities?.win === merged.matchProbabilities?.win &&
-      existing.matchProbabilities?.draw === merged.matchProbabilities?.draw &&
-      existing.matchProbabilities?.loss === merged.matchProbabilities?.loss
-    ) {
-      return;
-    }
+    if (sameFixtureTeamOdds(existing, merged)) return;
+    const parsed = FixtureTeamOddsSchema.parse(merged);
+    this.fixtureTeamOddsReads.set(key, Promise.resolve(parsed));
     this.persistUntil(
       key,
-      FixtureTeamOddsSchema.parse(merged),
+      parsed,
       fixtureTeamOddsExpiration(
         fixture.date,
         this.ttlSeconds,
@@ -1001,6 +1661,24 @@ class CloudflareLegacyPlayerStatsCache
     }
     return parsed.data;
   }
+
+  async getMany(keys: readonly string[]): Promise<Map<string, PlayerStats>> {
+    const cacheKeyByPlayer = new Map(
+      [...new Set(keys)].map((key) => [key, `player-stats:v1:${key}`]),
+    );
+    const raw = await this.readMany<unknown>([...cacheKeyByPlayer.values()]);
+    const values = new Map<string, PlayerStats>();
+    for (const [key, cacheKey] of cacheKeyByPlayer) {
+      if (!raw.has(cacheKey)) continue;
+      const parsed = PlayerStatsSchema.safeParse(raw.get(cacheKey));
+      if (!parsed.success) {
+        this.removeInvalid(cacheKey);
+        continue;
+      }
+      values.set(key, parsed.data);
+    }
+    return values;
+  }
 }
 
 export class CloudflarePlayerStatsCache
@@ -1035,6 +1713,12 @@ export class CloudflarePlayerStatsCache
     return this.splitCache.getParts(key);
   }
 
+  getPartsMany(
+    keys: readonly string[],
+  ): Promise<Map<string, PlayerStatsCacheParts>> {
+    return this.splitCache.getPartsMany(keys);
+  }
+
   setForm(key: string, value: PlayerFormStats): Promise<void> {
     return this.splitCache.setForm(key, value);
   }
@@ -1051,6 +1735,13 @@ export class CloudflarePlayerStatsCache
     value: PlayerFixtureStats,
   ): boolean | Promise<boolean> {
     return this.splitCache.claimFixtureRefresh(value);
+  }
+
+  getTeamFixture(
+    playerCacheKey: string,
+    teamSlug: string,
+  ): Promise<PlayerFixtureStats | undefined> {
+    return this.splitCache.getTeamFixture(playerCacheKey, teamSlug);
   }
 
   set(key: string, value: PlayerStats): Promise<void> {
@@ -1079,7 +1770,7 @@ export class CloudflarePlayerStatsCache
 export class CloudflareMlsAaBenchmarkStore
   implements MlsAaBenchmarkStore
 {
-  private static readonly key = 'mls-aa-benchmark:v1';
+  private static readonly key = 'mls-aa-benchmark:v2';
   private readonly fallback = MlsAaBenchmarkSnapshotSchema.parse(
     MLS_AA_BENCHMARKS,
   );
@@ -1124,10 +1815,99 @@ export class CloudflareNameResolutionCache
   async get(
     name: string,
     position: FootballPosition | undefined,
+    teamSlug?: string,
   ): Promise<SourcePlayerRequest | null | undefined> {
-    const cacheKey = this.key(name, position);
+    const cacheKey = this.key(name, position, teamSlug);
     const raw = await this.namespace.get<unknown>(cacheKey, 'json');
-    if (raw === null) return undefined;
+    if (raw !== null) return this.parse(cacheKey, raw);
+
+    const legacyKey = this.legacyTeamKey(name, position, teamSlug);
+    if (!legacyKey) return undefined;
+    const legacyRaw = await this.namespace.get<unknown>(legacyKey, 'json');
+    if (legacyRaw === null) return undefined;
+    const legacy = this.parse(legacyKey, legacyRaw);
+    // Preserve old positive mappings without reviving v7 negatives created by
+    // the stale-activeClub bug. The positive is lazily migrated to v8.
+    if (legacy && typeof legacy === 'object') {
+      this.persist(cacheKey, { found: true, value: legacy }, this.positiveTtlSeconds);
+      return legacy;
+    }
+    return undefined;
+  }
+
+  async getMany(
+    requests: readonly PlayerNameResolutionCacheRead[],
+  ): Promise<Array<SourcePlayerRequest | null | undefined>> {
+    const keys = requests.map(({ name, position, teamSlug }) =>
+      this.key(name, position, teamSlug),
+    );
+    const raw = await this.readMany<unknown>(keys);
+    const legacyKeyByIndex = requests.map(
+      ({ name, position, teamSlug }, index) =>
+        raw.has(keys[index]!)
+          ? undefined
+          : this.legacyTeamKey(name, position, teamSlug),
+    );
+    const legacyRaw = await this.readMany<unknown>(
+      legacyKeyByIndex.filter((key): key is string => Boolean(key)),
+    );
+    return keys.map((cacheKey, index) => {
+      if (raw.has(cacheKey)) return this.parse(cacheKey, raw.get(cacheKey));
+      const legacyKey = legacyKeyByIndex[index];
+      if (!legacyKey || !legacyRaw.has(legacyKey)) return undefined;
+      const legacy = this.parse(legacyKey, legacyRaw.get(legacyKey));
+      if (legacy && typeof legacy === 'object') {
+        this.persist(
+          cacheKey,
+          { found: true, value: legacy },
+          this.positiveTtlSeconds,
+        );
+        return legacy;
+      }
+      return undefined;
+    });
+  }
+
+  set(
+    name: string,
+    position: FootballPosition | undefined,
+    value: SourcePlayerRequest | null,
+    teamSlug?: string,
+  ): void {
+    const envelope = value
+      ? { found: true as const, value: SourcePlayerRequestSchema.parse(value) }
+      : { found: false as const };
+    this.persist(
+      this.key(name, position, teamSlug),
+      envelope,
+      value ? this.positiveTtlSeconds : this.negativeTtlSeconds,
+    );
+  }
+
+  private key(
+    name: string,
+    position: FootballPosition | undefined,
+    teamSlug?: string,
+  ): string {
+    if (!teamSlug) {
+      return `player-name:v5:${encodeURIComponent(normalizeName(name))}:${position ?? 'any'}`;
+    }
+    return `player-name:v8:${encodeURIComponent(normalizeName(name))}:${position ?? 'any'}:${encodeURIComponent(teamSlug.toLowerCase())}`;
+  }
+
+  private legacyTeamKey(
+    name: string,
+    position: FootballPosition | undefined,
+    teamSlug?: string,
+  ): string | undefined {
+    if (!teamSlug) return undefined;
+    return `player-name:v7:${encodeURIComponent(normalizeName(name))}:${position ?? 'any'}:${encodeURIComponent(teamSlug.toLowerCase())}`;
+  }
+
+  private parse(
+    cacheKey: string,
+    raw: unknown,
+  ): SourcePlayerRequest | null | undefined {
     const parsed = NameResolutionEnvelopeSchema.safeParse(raw);
     if (!parsed.success) {
       this.removeInvalid(cacheKey);
@@ -1139,28 +1919,12 @@ export class CloudflareNameResolutionCache
       ...(parsed.data.value.position
         ? { position: parsed.data.value.position }
         : {}),
+      ...(parsed.data.value.teamSlug
+        ? { teamSlug: parsed.data.value.teamSlug }
+        : {}),
       ...(parsed.data.value.nameResolution
         ? { nameResolution: parsed.data.value.nameResolution }
         : {}),
     };
-  }
-
-  set(
-    name: string,
-    position: FootballPosition | undefined,
-    value: SourcePlayerRequest | null,
-  ): void {
-    const envelope = value
-      ? { found: true as const, value: SourcePlayerRequestSchema.parse(value) }
-      : { found: false as const };
-    this.persist(
-      this.key(name, position),
-      envelope,
-      value ? this.positiveTtlSeconds : this.negativeTtlSeconds,
-    );
-  }
-
-  private key(name: string, position: FootballPosition | undefined): string {
-    return `player-name:v4:${encodeURIComponent(normalizeName(name))}:${position ?? 'any'}`;
   }
 }

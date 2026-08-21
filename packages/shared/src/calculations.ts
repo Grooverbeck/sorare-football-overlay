@@ -59,6 +59,23 @@ function validAppearancesForPosition(
     .sort((left, right) => Date.parse(right.date) - Date.parse(left.date));
 }
 
+export const AA_MINIMUM_MINUTES = 60;
+
+function currentClubAppearancesOrFallback(
+  appearances: readonly PlayerAppearance[],
+): PlayerAppearance[] {
+  const currentClubAppearances = appearances.filter(
+    (appearance) => appearance.currentClubGame === true,
+  );
+
+  // A newly transferred player can have reliable club markers without having
+  // played for the new club yet. Keep the previous history available until the
+  // first current-club appearance arrives, then switch over immediately.
+  return currentClubAppearances.length > 0
+    ? currentClubAppearances
+    : [...appearances];
+}
+
 export function calculatePlayerMetrics(
   appearances: readonly PlayerAppearance[],
   position: FootballPosition,
@@ -79,15 +96,20 @@ export function calculatePlayerMetrics(
   const hasCurrentClubMarkers = allValidAppearances.some(
     (appearance) => appearance.currentClubGame !== undefined,
   );
-  const currentClubAppearances = (
+  const aaEligibleAppearances = (
     hasCurrentClubMarkers
       ? allValidAppearances.filter(
           (appearance) => appearance.currentClubGame === true,
         )
       : allValidAppearances
-  ).slice(0, limit);
+  )
+    .filter(
+      (appearance) =>
+        (appearance.minsPlayed ?? 0) >= AA_MINIMUM_MINUTES,
+    )
+    .slice(0, limit);
 
-  const allAroundScores = currentClubAppearances.flatMap((appearance) =>
+  const allAroundScores = aaEligibleAppearances.flatMap((appearance) =>
     appearance.allAroundScore === null ? [] : [appearance.allAroundScore],
   );
   const cleanSheetEligible = validAppearances.filter(
@@ -114,10 +136,12 @@ export function calculateHistoricalAssistMetrics(
   position: FootballPosition,
   excludeLowCoverage: boolean,
 ): HistoricalAssistMetrics {
-  const validAppearances = validAppearancesForPosition(
-    appearances,
-    position,
-    excludeLowCoverage,
+  const validAppearances = currentClubAppearancesOrFallback(
+    validAppearancesForPosition(
+      appearances,
+      position,
+      excludeLowCoverage,
+    ),
   );
   const forWindow = (limit: number): Metric => {
     const selected = validAppearances.slice(0, limit);
@@ -138,10 +162,12 @@ export function calculateHistoricalGoalMetrics(
   position: FootballPosition,
   excludeLowCoverage: boolean,
 ): HistoricalAssistMetrics {
-  const validAppearances = validAppearancesForPosition(
-    appearances,
-    position,
-    excludeLowCoverage,
+  const validAppearances = currentClubAppearancesOrFallback(
+    validAppearancesForPosition(
+      appearances,
+      position,
+      excludeLowCoverage,
+    ),
   );
   const forWindow = (limit: number): Metric => {
     const selected = validAppearances.slice(0, limit);
@@ -162,10 +188,12 @@ export function calculateHistoricalDecisiveMetrics(
   position: FootballPosition,
   excludeLowCoverage: boolean,
 ): HistoricalAssistMetrics {
-  const validAppearances = validAppearancesForPosition(
-    appearances,
-    position,
-    excludeLowCoverage,
+  const validAppearances = currentClubAppearancesOrFallback(
+    validAppearancesForPosition(
+      appearances,
+      position,
+      excludeLowCoverage,
+    ),
   );
   const forWindow = (limit: number): Metric => {
     const selected = validAppearances.slice(0, limit);
@@ -190,5 +218,27 @@ export function hasAnyDisplayData(stats: PlayerStats): boolean {
     stats.position === 'Goalkeeper' || stats.position === 'Defender'
       ? stats.cleanSheetL10
       : stats.goalL10;
-  return stats.aaL10.value !== null || roleMetric.value !== null;
+  const nextGame = stats.nextGame;
+  const matchProbabilities = nextGame?.matchProbabilities;
+  const hasCompleteMatchProbabilities = Boolean(
+    matchProbabilities &&
+      matchProbabilities.win !== null &&
+      matchProbabilities.draw !== null &&
+      matchProbabilities.loss !== null,
+  );
+  const hasRelevantCleanSheetProbability =
+    (stats.position === 'Goalkeeper' || stats.position === 'Defender') &&
+    nextGame?.cleanSheetProbability !== null &&
+    nextGame?.cleanSheetProbability !== undefined;
+  const hasRelevantPlayerMarket =
+    stats.position !== 'Goalkeeper' &&
+    Boolean(nextGame?.marketOdds?.goal || nextGame?.marketOdds?.assist);
+
+  return (
+    stats.aaL10.value !== null ||
+    roleMetric.value !== null ||
+    hasCompleteMatchProbabilities ||
+    hasRelevantCleanSheetProbability ||
+    hasRelevantPlayerMarket
+  );
 }

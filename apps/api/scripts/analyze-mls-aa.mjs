@@ -1,5 +1,6 @@
 const url = process.env.SORARE_GRAPHQL_URL ?? 'https://api.sorare.com/graphql';
 const minimumAppearances = 5;
+const minimumMinutes = 60;
 const pageSize = 30;
 const scoreBatchSize = 5;
 const allPositions = ['Goalkeeper', 'Defender', 'Midfielder', 'Forward'];
@@ -41,13 +42,14 @@ const scoresQuery = `
       __typename
       ... on Player {
         slug
+        activeClub { id }
         playerGameScores(last: 15, lowCoverage: true, position: $position) {
           __typename
           positionTyped
           ... on PlayerGameScore {
             allAroundScore
             footballGame { date lowCoverage }
-            footballPlayerGameStats { playedInGame minsPlayed }
+            footballPlayerGameStats { playedInGame minsPlayed anyTeam { id } }
           }
         }
       }
@@ -155,14 +157,17 @@ for (const position of positionsToAnalyze) {
       if (scorePlayer.__typename !== 'Player') continue;
       const seed = candidateBySlug.get(scorePlayer.slug);
       if (!seed) continue;
+      const activeClubId = scorePlayer.activeClub?.id;
       const validScores = scorePlayer.playerGameScores
         .filter(
           (score) =>
             score?.__typename === 'PlayerGameScore' &&
             score.positionTyped === position &&
             score.footballPlayerGameStats.playedInGame &&
-            (score.footballPlayerGameStats.minsPlayed ?? 0) > 0 &&
-            !score.footballGame.lowCoverage,
+            (score.footballPlayerGameStats.minsPlayed ?? 0) >= minimumMinutes &&
+            !score.footballGame.lowCoverage &&
+            (!activeClubId ||
+              score.footballPlayerGameStats.anyTeam?.id === activeClubId),
         )
         .sort(
           (left, right) =>
@@ -221,9 +226,11 @@ process.stdout.write(
       retrievedAt: new Date().toISOString(),
       methodology: {
         metric: 'mean allAroundScore of newest ten valid appearances',
+        minimumMinutes,
         minimumAppearances,
         dnpExcluded: true,
         lowCoverageExcluded: true,
+        currentClubOnlyWhenKnown: true,
         position: 'cardPositions[0], falling back to player.position',
       },
       rawPopulationSize: players.length,

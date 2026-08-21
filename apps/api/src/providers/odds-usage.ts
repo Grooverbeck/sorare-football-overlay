@@ -38,12 +38,28 @@ export type ProviderQuotaUsage = z.infer<typeof ProviderQuotaUsageSchema>;
 export interface ProviderQuotaUsageStore {
   get(provider: OddsProviderName): Promise<ProviderQuotaUsage | undefined>;
   set(usage: ProviderQuotaUsage): void | Promise<void>;
+  getRequestBlockedUntil?(
+    provider: OddsProviderName,
+  ): Promise<number | undefined>;
+  setRequestBlockedUntil?(
+    provider: OddsProviderName,
+    blockedUntil: number,
+  ): void | Promise<void>;
+  claimRefreshLease?(
+    provider: OddsProviderName,
+    lease: string,
+    ttlSeconds: number,
+  ): Promise<boolean>;
 }
 
 export class InMemoryProviderQuotaUsageStore
   implements ProviderQuotaUsageStore
 {
   private readonly entries = new Map<OddsProviderName, ProviderQuotaUsage>();
+  private readonly refreshLeases = new Map<string, number>();
+  private readonly requestBlocks = new Map<OddsProviderName, number>();
+
+  constructor(private readonly now: () => number = Date.now) {}
 
   async get(
     provider: OddsProviderName,
@@ -53,6 +69,42 @@ export class InMemoryProviderQuotaUsageStore
 
   set(usage: ProviderQuotaUsage): void {
     this.entries.set(usage.provider, ProviderQuotaUsageSchema.parse(usage));
+  }
+
+  async getRequestBlockedUntil(
+    provider: OddsProviderName,
+  ): Promise<number | undefined> {
+    const blockedUntil = this.requestBlocks.get(provider);
+    if (blockedUntil === undefined) return undefined;
+    if (blockedUntil <= this.now()) {
+      this.requestBlocks.delete(provider);
+      return undefined;
+    }
+    return blockedUntil;
+  }
+
+  setRequestBlockedUntil(
+    provider: OddsProviderName,
+    blockedUntil: number,
+  ): void {
+    if (!Number.isFinite(blockedUntil) || blockedUntil <= this.now()) return;
+    this.requestBlocks.set(provider, blockedUntil);
+  }
+
+  async claimRefreshLease(
+    provider: OddsProviderName,
+    lease: string,
+    ttlSeconds: number,
+  ): Promise<boolean> {
+    const key = `${provider}:${lease}`;
+    const now = this.now();
+    const expiresAt = this.refreshLeases.get(key);
+    if (expiresAt !== undefined && expiresAt > now) return false;
+    this.refreshLeases.set(
+      key,
+      now + Math.max(1, ttlSeconds) * 1_000,
+    );
+    return true;
   }
 }
 
@@ -149,29 +201,16 @@ export function protectionForProviderUsage(
   now: number = Date.now(),
 ): OddsUsageProtection {
   const protection = protectionForUsage(usage, now);
-  if (
-    provider !== 'sports-game-odds' ||
-    protection.ratio === null ||
-    protection.ratio < oddsUsageThresholds.fallbackDisabled ||
-    protection.level === 'stopped'
-  ) {
-    return protection;
-  }
-  if (protection.ratio < oddsUsageThresholds.essentialOnly) {
-    return {
-      level: 'essential-only',
-      ratio: protection.ratio,
-      allowExternalRequests: true,
-      allowRegionalFallback: false,
-      allowSnapshotSupplements: false,
-    };
-  }
+  if (provider !== 'sports-game-odds') return protection;
+  // SportsGameOdds is currently a free allocation. Keep its object usage as
+  // telemetry, but let the provider's real HTTP 429 response be the only
+  // request limiter instead of proactively disabling useful fixture data.
   return {
-    level: 'cache-only',
+    level: 'normal',
     ratio: protection.ratio,
-    allowExternalRequests: false,
-    allowRegionalFallback: false,
-    allowSnapshotSupplements: false,
+    allowExternalRequests: true,
+    allowRegionalFallback: true,
+    allowSnapshotSupplements: true,
   };
 }
 
@@ -180,6 +219,7 @@ export async function providerProtection(
   provider: OddsProviderName,
   logger: AppLogger,
   now: number = Date.now(),
+  logActive = true,
 ): Promise<OddsUsageProtection> {
   let usage: ProviderQuotaUsage | undefined;
   try {
@@ -194,7 +234,7 @@ export async function providerProtection(
     );
   }
   const protection = protectionForProviderUsage(provider, usage, now);
-  if (protection.level !== 'normal') {
+  if (logActive && protection.level !== 'normal') {
     logger.warn(
       {
         provider,

@@ -103,6 +103,7 @@ export class MockDataSource implements PlayerStatsDataSource {
           awayTeamName: 'Demo City',
           playerTeamName: 'Mock United',
           opponentTeamName: 'Demo City',
+          playerTeamSlug: 'mock-united',
           cleanSheetProbability: template.nextCleanSheetProbability ?? null,
           matchProbabilities: template.nextMatchProbabilities,
         },
@@ -115,6 +116,7 @@ export class MockDataSource implements PlayerStatsDataSource {
   ): Promise<SourcePlayerFixture[]> {
     return (await this.fetchPlayers(requests)).map(({ slug, nextGame }) => ({
       slug,
+      playerTeamSlug: 'mock-united',
       nextGame,
     }));
   }

@@ -39,6 +39,7 @@ const configKeys = [
   'ODDS_API_FALLBACK_REGION',
   'ODDS_FETCH_WINDOW_HOURS',
   'MATCH_ODDS_FALLBACK_WINDOW_HOURS',
+  'MATCH_ODDS_MISS_CACHE_TTL_SECONDS',
   'ODDS_MISS_CACHE_TTL_SECONDS',
   'SPORTS_GAME_ODDS_API_KEY',
   'SPORTS_GAME_ODDS_BASE_URL',
@@ -77,7 +78,9 @@ function createWorkerServices(
   const nameMissTtlSeconds = Math.floor(config.nameMissCacheTtlMs / 1_000);
   const cacheStore = new D1JsonKeyValueStore(
     env.CACHE_DB,
-    env.STATS_CACHE,
+    undefined,
+    undefined,
+    logger,
   );
   const mlsAaBenchmarkStore = new CloudflareMlsAaBenchmarkStore(
     cacheStore,

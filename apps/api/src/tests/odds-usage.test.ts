@@ -71,51 +71,51 @@ describe('bookmaker quota protection', () => {
     });
   });
 
-  it('keeps new SportsGameOdds fixtures enabled at 70 percent and switches to cache-only at 85 percent', () => {
-    const restrictedUsage = quotaUsage(
-      'sports-game-odds',
-      'objects',
-      1_750,
-      2_500,
-      checkedAt,
-    );
-    if (!restrictedUsage) throw new Error('Expected finite quota usage');
-
-    expect(
-      protectionForProviderUsage(
-        'sports-game-odds',
-        restrictedUsage,
-        now,
-      ),
-    ).toMatchObject({
-      level: 'essential-only',
-      ratio: 0.7,
-      allowExternalRequests: true,
-      allowRegionalFallback: false,
-      allowSnapshotSupplements: false,
-    });
-
-    const cacheOnlyUsage = quotaUsage(
+  it('keeps SportsGameOdds usage as telemetry without proactive protection stages', () => {
+    const highUsage = quotaUsage(
       'sports-game-odds',
       'objects',
       2_125,
       2_500,
       checkedAt,
     );
-    if (!cacheOnlyUsage) throw new Error('Expected finite quota usage');
+    if (!highUsage) throw new Error('Expected finite quota usage');
 
     expect(
       protectionForProviderUsage(
         'sports-game-odds',
-        cacheOnlyUsage,
+        highUsage,
         now,
       ),
     ).toMatchObject({
-      level: 'cache-only',
+      level: 'normal',
       ratio: 0.85,
-      allowExternalRequests: false,
-      allowRegionalFallback: false,
-      allowSnapshotSupplements: false,
+      allowExternalRequests: true,
+      allowRegionalFallback: true,
+      allowSnapshotSupplements: true,
+    });
+
+    const exhaustedUsage = quotaUsage(
+      'sports-game-odds',
+      'objects',
+      2_500,
+      2_500,
+      checkedAt,
+    );
+    if (!exhaustedUsage) throw new Error('Expected finite quota usage');
+
+    expect(
+      protectionForProviderUsage(
+        'sports-game-odds',
+        exhaustedUsage,
+        now,
+      ),
+    ).toMatchObject({
+      level: 'normal',
+      ratio: 1,
+      allowExternalRequests: true,
+      allowRegionalFallback: true,
+      allowSnapshotSupplements: true,
     });
   });
 });

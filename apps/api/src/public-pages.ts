@@ -207,17 +207,20 @@ export const privacyPage = page(
       </li>
       <li>
         <strong>The Odds API</strong> wird vom Backend für öffentliche Tor- und
-        Assist-Buchmachermärkte einer Begegnung abgefragt.
+        Assist- sowie H/D/A-Buchmachermärkte einer Begegnung abgefragt.
       </li>
       <li>
-        <strong>SportsGameOdds</strong> wird für öffentliche Tor-, Assist- und
-        Tor-oder-Assist-Buchmachermärkte einer Begegnung abgefragt. Bei beiden
-        Quotendiensten werden keine Zugangsdaten,
-        IP-Adressen oder sonstigen Identifikatoren des Extension-Nutzers an den Anbieter
-        übermittelt.
+        <strong>SportsGameOdds</strong> wird für öffentliche Tor-, Assist-,
+        Tor-oder-Assist- und H/D/A-Buchmachermärkte einer Begegnung abgefragt.
+      </li>
+      <li>
+        <strong>Odds-API.io</strong> wird als zusätzliche Quelle für öffentliche
+        Tor- und, in unterstützten Wettbewerben, H/D/A-Buchmachermärkte abgefragt.
       </li>
     </ul>
     <p>
+      An die Quotendienste werden keine Zugangsdaten, IP-Adressen oder sonstigen
+      Identifikatoren des Extension-Nutzers übermittelt.
       Es findet kein Verkauf von Daten statt. Daten werden nicht für personalisierte Werbung,
       Retargeting, Kreditwürdigkeitsprüfung oder den Handel mit Nutzerprofilen verwendet.
     </p>
@@ -243,7 +246,7 @@ export const privacyPage = page(
     <h2>9. Sicherheit und Änderungen</h2>
     <p>
       Die Kommunikation mit dem Backend erfolgt ausschließlich über HTTPS. Secrets und
-      API-Zugangsdaten für Sorare, The Odds API und SportsGameOdds sind nicht Bestandteil der Erweiterung. Änderungen dieser
+      API-Zugangsdaten für Sorare, The Odds API, SportsGameOdds und Odds-API.io sind nicht Bestandteil der Erweiterung. Änderungen dieser
       Erklärung werden auf dieser Seite mit einem neuen Stand veröffentlicht.
     </p>
 
@@ -254,7 +257,7 @@ export const privacyPage = page(
       enabled/disabled setting and the selected bracket side locally. It does not access Sorare credentials, cookies, wallet,
       payment, ownership, lineup, private account or general browsing-history data. Cloudflare
       provides the backend infrastructure. The backend queries Sorare for public football data
-      and the configured odds providers for public goal, assist and goals-or-assists betting markets without forwarding extension-user
+      and the configured odds providers for public goal, assist, goals-or-assists and H/D/A betting markets without forwarding extension-user
       identifiers. Data is used only for the disclosed overlay feature, security and reliability,
       and is never sold or used for personalized advertising.
     </p>

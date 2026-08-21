@@ -17,6 +17,7 @@ import { MockDataSource } from '../mock/mock-data-source.js';
 import { HistoricalGoalscorerProvider } from '../providers/goalscorer-provider.js';
 import {
   MockPlayerMarketOddsProvider,
+  UnavailablePlayerMarketOddsProvider,
   playerMarketOddsKey,
   type PlayerMarketOddsProvider,
 } from '../providers/market-odds-provider.js';
@@ -52,6 +53,147 @@ class FillMissingCache implements Cache<PlayerStats> {
     this.fillMissingCalls += 1;
     return { ...value, displayName: `${value.displayName} (cached form)` };
   }
+}
+
+class TeamAwareFixtureCache extends TtlCache<PlayerFixtureStats> {
+  constructor(
+    private readonly fixturesByTeam: ReadonlyMap<
+      string,
+      NonNullable<PlayerFixtureStats>
+    >,
+  ) {
+    super(60_000);
+  }
+
+  async getTeamFixture(
+    _playerCacheKey: string,
+    teamSlug: string,
+  ): Promise<PlayerFixtureStats | undefined> {
+    return this.fixturesByTeam.get(teamSlug);
+  }
+}
+
+const fixtureRefreshPlayerSlug = 'fixture-refresh-player';
+const fixtureRefreshPlayerKey = `${fixtureRefreshPlayerSlug}:Midfielder:no-low`;
+const heldFixture: NonNullable<PlayerFixtureStats> = {
+  date: '2026-08-08T18:00:00.000Z',
+  homeTeamName: 'Held Home FC',
+  awayTeamName: 'Held Away FC',
+  playerTeamName: 'Held Home FC',
+  opponentTeamName: 'Held Away FC',
+  cleanSheetProbability: null,
+  matchProbabilities: { win: null, draw: null, loss: null },
+};
+const followingFixture: NonNullable<PlayerFixtureStats> = {
+  date: '2026-08-15T18:00:00.000Z',
+  homeTeamName: 'Held Home FC',
+  awayTeamName: 'Following Away FC',
+  playerTeamName: 'Held Home FC',
+  opponentTeamName: 'Following Away FC',
+  cleanSheetProbability: null,
+  matchProbabilities: { win: null, draw: null, loss: null },
+};
+
+interface FixtureRefreshScenarioOptions {
+  fetchNextGames: PlayerStatsDataSource['fetchNextGames'];
+  refreshFixture?: (
+    key: string,
+    value: PlayerFixtureStats,
+  ) => PlayerFixtureStats | Promise<PlayerFixtureStats>;
+}
+
+async function runFixtureRefreshScenario(
+  options: FixtureRefreshScenarioOptions,
+): Promise<{
+  marketRefreshes: PlayerStats[][];
+  matchRefreshes: PlayerStats[][];
+  refreshFixture: ReturnType<typeof vi.fn>;
+}> {
+  let cachedFixture: PlayerFixtureStats = heldFixture;
+  const refreshFixture = vi.fn(
+    async (key: string, value: PlayerFixtureStats) => {
+      const resolved = options.refreshFixture
+        ? await options.refreshFixture(key, value)
+        : value;
+      cachedFixture = resolved;
+      return resolved;
+    },
+  );
+  const fixtureCache: Cache<PlayerFixtureStats> & {
+    claimRefresh(value: PlayerFixtureStats): Promise<boolean>;
+    refresh(
+      key: string,
+      value: PlayerFixtureStats,
+    ): Promise<PlayerFixtureStats>;
+  } = {
+    get: () => cachedFixture,
+    set: (_key, value) => {
+      cachedFixture = value;
+    },
+    fillMissing: (_key, value) => cachedFixture ?? value,
+    claimRefresh: async () => true,
+    refresh: refreshFixture,
+  };
+  const formCache = new TtlCache<PlayerFormStats>(60_000);
+  formCache.set(fixtureRefreshPlayerKey, {
+    slug: fixtureRefreshPlayerSlug,
+    displayName: 'Fixture Refresh Player',
+    position: 'Midfielder',
+    aaL10: { value: 13, sampleSize: 10 },
+    cleanSheetL10: { value: 0.3, sampleSize: 10 },
+    goalL10: { value: 0.2, sampleSize: 10 },
+    excludedLowCoverage: 0,
+  });
+  const cache = new SplitPlayerStatsCache(formCache, fixtureCache);
+  const mock = new MockDataSource();
+  const source: PlayerStatsDataSource = {
+    source: 'sorare',
+    resolvePlayerNames: mock.resolvePlayerNames.bind(mock),
+    fetchPlayers: mock.fetchPlayers.bind(mock),
+    fetchNextGames: options.fetchNextGames,
+  };
+  const marketRefreshes: PlayerStats[][] = [];
+  const marketProvider: PlayerMarketOddsProvider = {
+    supports: () => true,
+    supportsMarket: () => true,
+    load: async (players, loadOptions) => {
+      if (!loadOptions?.cacheOnly) marketRefreshes.push([...players]);
+      return new Map(
+        players.map((player) => [playerMarketOddsKey(player), null]),
+      );
+    },
+  };
+  const matchRefreshes: PlayerStats[][] = [];
+  const matchProvider: FixtureMatchOddsProvider = {
+    supports: () => true,
+    load: async (players, loadOptions) => {
+      if (!loadOptions?.cacheOnly) matchRefreshes.push([...players]);
+      return new Map(
+        players.map((player) => [playerMarketOddsKey(player), null]),
+      );
+    },
+  };
+  const backgroundTasks: Promise<void>[] = [];
+  const service = new StatsService(
+    source,
+    new HistoricalGoalscorerProvider(),
+    cache,
+    true,
+    marketProvider,
+    (task) => backgroundTasks.push(task),
+    DEFAULT_NAME_RESOLUTION_BUDGET_MS,
+    matchProvider,
+  );
+
+  await service.getPlayerStats(
+    PlayerStatsRequestSchema.parse({
+      slugs: [fixtureRefreshPlayerSlug],
+      positions: { [fixtureRefreshPlayerSlug]: 'Midfielder' },
+    }),
+  );
+  await Promise.all(backgroundTasks);
+
+  return { marketRefreshes, matchRefreshes, refreshFixture };
 }
 
 describe('StatsService cache writes', () => {
@@ -199,7 +341,7 @@ describe('StatsService cache writes', () => {
                     allAroundScore: 4.76,
                     goals: 0,
                     assists: 0,
-                    minsPlayed: 20,
+                    minsPlayed: 60,
                     cleanSheet60: 0,
                     lowCoverage: false,
                     position: 'Midfielder',
@@ -346,9 +488,213 @@ describe('StatsService cache writes', () => {
       PlayerStatsRequestSchema.parse({ slugs: ['jude-bellingham'] }),
     );
 
-    expect(load).toHaveBeenCalledWith([], { cacheOnly: true });
+    expect(load).toHaveBeenCalledWith(
+      [],
+      expect.objectContaining({
+        cacheOnly: true,
+        cacheOnlyDeadlineMs: expect.any(Number),
+      }),
+    );
     expect(scheduleBackground).not.toHaveBeenCalled();
     expect(result.data[0]?.pendingRefreshes ?? []).not.toContain('marketOdds');
+  });
+
+  it('does not expose market refreshes for a fresh negative provider cache', async () => {
+    const load = vi.fn<PlayerMarketOddsProvider['load']>(
+      async (players, options) => {
+        if (options?.refreshDueState) {
+          options.refreshDueState.complete = true;
+        }
+        return new Map(
+          players.map((player) => [playerMarketOddsKey(player), null]),
+        );
+      },
+    );
+    const marketOddsProvider: PlayerMarketOddsProvider = {
+      reportsRefreshDue: true,
+      supports: () => true,
+      supportsMarket: () => true,
+      drivesMarketRequest: () => true,
+      load,
+    };
+    const scheduleBackground = vi.fn();
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      marketOddsProvider,
+      scheduleBackground,
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({ slugs: ['jude-bellingham'] }),
+    );
+
+    expect(result.data[0]?.pendingRefreshes ?? []).not.toContain('marketOdds');
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(scheduleBackground).not.toHaveBeenCalled();
+  });
+
+  it('keeps fixture teammates pending while one shared market snapshot warms', async () => {
+    const refreshedPlayers: string[][] = [];
+    const load = vi.fn<PlayerMarketOddsProvider['load']>(
+      async (players, options) => {
+        if (options?.cacheOnly) {
+          if (options.refreshDueState) {
+            options.refreshDueState.complete = true;
+          }
+          const driver = players.find(
+            (player) => player.slug === 'fixture-warmup-driver',
+          );
+          if (driver) {
+            options.refreshDuePlayerKeys?.add(playerMarketOddsKey(driver));
+          }
+          return new Map(
+            players.map((player) => [
+              playerMarketOddsKey(player),
+              player.slug === 'fixture-warmup-teammate'
+                ? {
+                    source: 'odds-api-io' as const,
+                    capturedAt: '2026-08-22T08:00:00.000Z',
+                    goal: { probability: 0.4, bookmakerCount: 1 },
+                    assist: null,
+                    decisive: null,
+                  }
+                : null,
+            ]),
+          );
+        }
+        refreshedPlayers.push(players.map(({ slug }) => slug));
+        return new Map(
+          players.map((player) => [playerMarketOddsKey(player), null]),
+        );
+      },
+    );
+    const marketOddsProvider: PlayerMarketOddsProvider = {
+      reportsRefreshDue: true,
+      supports: () => true,
+      supportsMarket: (_player, market) =>
+        market === 'goal' || market === 'assist',
+      drivesMarketRequest: (_player, market) => market === 'goal',
+      load,
+    };
+    const backgroundTasks: Promise<void>[] = [];
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      marketOddsProvider,
+      (task) => backgroundTasks.push(task),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['fixture-warmup-driver', 'fixture-warmup-teammate'],
+        positions: {
+          'fixture-warmup-driver': 'Forward',
+          'fixture-warmup-teammate': 'Forward',
+        },
+      }),
+    );
+
+    expect(
+      result.data.map(({ slug, pendingRefreshes }) => ({
+        slug,
+        pendingRefreshes,
+      })),
+    ).toEqual([
+      {
+        slug: 'fixture-warmup-driver',
+        pendingRefreshes: ['marketOdds'],
+      },
+      {
+        slug: 'fixture-warmup-teammate',
+        pendingRefreshes: ['marketOdds'],
+      },
+    ]);
+    expect(backgroundTasks).toHaveLength(1);
+    await Promise.all(backgroundTasks);
+    expect(refreshedPlayers).toEqual([['fixture-warmup-driver']]);
+  });
+
+  it('never starts provider work for an explicit odds-cache-only follow-up', async () => {
+    const load = vi.fn<PlayerMarketOddsProvider['load']>(
+      async (players, options) => {
+        if (options?.refreshDueState) options.refreshDueState.complete = true;
+        for (const player of players) {
+          options?.refreshDuePlayerKeys?.add(playerMarketOddsKey(player));
+        }
+        return new Map(
+          players.map((player) => [playerMarketOddsKey(player), null]),
+        );
+      },
+    );
+    const marketOddsProvider: PlayerMarketOddsProvider = {
+      reportsRefreshDue: true,
+      supports: () => true,
+      supportsMarket: () => true,
+      drivesMarketRequest: () => true,
+      load,
+    };
+    const scheduleBackground = vi.fn();
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      marketOddsProvider,
+      scheduleBackground,
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['cache-only-market-player'],
+        positions: { 'cache-only-market-player': 'Forward' },
+        oddsCacheOnly: true,
+      }),
+    );
+
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({ cacheOnly: true }),
+    );
+    expect(scheduleBackground).not.toHaveBeenCalled();
+    expect(result.data[0]?.pendingRefreshes ?? []).not.toContain('marketOdds');
+  });
+
+  it('returns a bounded deferred response while a cold slug warms in background', async () => {
+    const never = new Promise<never>(() => undefined);
+    const source: PlayerStatsDataSource = {
+      source: 'sorare',
+      resolvePlayerNames: async () => [],
+      fetchPlayers: async () => never,
+      fetchNextGames: async () => [],
+    };
+    const backgroundTasks: Promise<void>[] = [];
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      new UnavailablePlayerMarketOddsProvider(),
+      (task) => backgroundTasks.push(task),
+      DEFAULT_NAME_RESOLUTION_BUDGET_MS,
+      new UnavailableFixtureMatchOddsProvider(),
+      50,
+      20,
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({ slugs: ['cold-player'] }),
+    );
+
+    expect(result.data).toEqual([]);
+    expect(result.deferredPlayerSlugs).toEqual(['cold-player']);
+    expect(result.diagnostics.responseBudgetExceeded).toBe(true);
+    expect(backgroundTasks).toHaveLength(1);
   });
 
   it('uses the cache result when filling a partial cache miss', async () => {
@@ -1038,6 +1384,98 @@ describe('StatsService cache writes', () => {
     });
   });
 
+  it.each([
+    {
+      label: 'throws',
+      fetchNextGames: async () => {
+        throw new Error('Temporary Sorare fixture outage');
+      },
+    },
+    {
+      label: 'returns no player row',
+      fetchNextGames: async () => [],
+    },
+  ])(
+    'refreshes both bookmaker paths for the held fixture when Sorare $label',
+    async ({ fetchNextGames }) => {
+      const result = await runFixtureRefreshScenario({ fetchNextGames });
+
+      expect(result.refreshFixture).not.toHaveBeenCalled();
+      expect(result.marketRefreshes).toHaveLength(1);
+      expect(result.matchRefreshes).toHaveLength(1);
+      expect(result.marketRefreshes[0]?.[0]?.nextGame).toEqual(heldFixture);
+      expect(result.matchRefreshes[0]?.[0]?.nextGame).toEqual(heldFixture);
+    },
+  );
+
+  it.each([
+    {
+      label: 'same fixture identity',
+      fetchedFixture: {
+        ...heldFixture,
+        cleanSheetProbability: 0.4,
+      },
+    },
+    {
+      label: 'following fixture held until rollover',
+      fetchedFixture: followingFixture,
+    },
+  ])(
+    'intentionally refreshes the held fixture when the cache keeps it for $label',
+    async ({ fetchedFixture }) => {
+      const result = await runFixtureRefreshScenario({
+        fetchNextGames: async () => [
+          { slug: fixtureRefreshPlayerSlug, nextGame: fetchedFixture },
+        ],
+        refreshFixture: async () => heldFixture,
+      });
+
+      expect(result.refreshFixture).toHaveBeenCalledOnce();
+      expect(result.marketRefreshes).toHaveLength(1);
+      expect(result.matchRefreshes).toHaveLength(1);
+      expect(result.marketRefreshes[0]?.[0]?.nextGame).toEqual(heldFixture);
+      expect(result.matchRefreshes[0]?.[0]?.nextGame).toEqual(heldFixture);
+    },
+  );
+
+  it('refreshes both bookmaker paths exactly once with an accepted new fixture', async () => {
+    const result = await runFixtureRefreshScenario({
+      fetchNextGames: async () => [
+        { slug: fixtureRefreshPlayerSlug, nextGame: followingFixture },
+      ],
+      refreshFixture: async (_key, value) => value,
+    });
+
+    expect(result.refreshFixture).toHaveBeenCalledOnce();
+    expect(result.marketRefreshes).toHaveLength(1);
+    expect(result.matchRefreshes).toHaveLength(1);
+    expect(result.marketRefreshes[0]).toHaveLength(1);
+    expect(result.matchRefreshes[0]).toHaveLength(1);
+    expect(result.marketRefreshes[0]?.[0]?.nextGame).toEqual(followingFixture);
+    expect(result.matchRefreshes[0]?.[0]?.nextGame).toEqual(followingFixture);
+    expect(result.marketRefreshes.flat()).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ nextGame: heldFixture })]),
+    );
+    expect(result.matchRefreshes.flat()).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ nextGame: heldFixture })]),
+    );
+  });
+
+  it('skips bookmaker refreshes when persisting a distinct new fixture fails', async () => {
+    const result = await runFixtureRefreshScenario({
+      fetchNextGames: async () => [
+        { slug: fixtureRefreshPlayerSlug, nextGame: followingFixture },
+      ],
+      refreshFixture: async () => {
+        throw new Error('Fixture write failed');
+      },
+    });
+
+    expect(result.refreshFixture).toHaveBeenCalledOnce();
+    expect(result.marketRefreshes).toEqual([]);
+    expect(result.matchRefreshes).toEqual([]);
+  });
+
   it('hydrates a missing fixture in the follow-up response without relying on the cache write', async () => {
     const formCache = new TtlCache<PlayerFormStats>(60_000);
     const fixtureCache = new TtlCache<PlayerFixtureStats>(60_000);
@@ -1163,6 +1601,388 @@ describe('StatsService cache writes', () => {
         cleanSheetProbability: 0.19,
       });
     }
+  });
+
+  it('fills a missing player fixture from a requested teammate without copying player props', async () => {
+    const cache = new SplitPlayerStatsCache(
+      new TtlCache<PlayerFormStats>(60_000),
+      new TtlCache<PlayerFixtureStats>(60_000),
+    );
+    const sharedFixture: NonNullable<PlayerFixtureStats> = {
+      date: '2026-08-12T02:30:00.000Z',
+      homeTeamName: 'Seattle Sounders FC',
+      awayTeamName: 'Queretaro FC',
+      playerTeamName: 'Seattle Sounders FC',
+      opponentTeamName: 'Queretaro FC',
+      cleanSheetProbability: 0.32,
+      matchProbabilities: { win: 0.51, draw: 0.24, loss: 0.25 },
+    };
+    const form = (slug: string): PlayerFormStats => ({
+      slug,
+      displayName: slug,
+      position: 'Forward',
+      aaL10: { value: 8, sampleSize: 10 },
+      cleanSheetL10: { value: 0.2, sampleSize: 10 },
+      goalL10: { value: 0.3, sampleSize: 10 },
+      excludedLowCoverage: 0,
+    });
+    await cache.set('known-teammate:Forward:no-low', {
+      ...form('known-teammate'),
+      nextGame: sharedFixture,
+    });
+    await cache.setForm(
+      'missing-fixture-teammate:Forward:no-low',
+      form('missing-fixture-teammate'),
+    );
+    const source = new MockDataSource();
+    vi.spyOn(source, 'resolvePlayerNames').mockResolvedValue([
+      {
+        slug: 'known-teammate',
+        position: 'Forward',
+        resolvedFromName: 'Known Teammate',
+        teamSlug: 'seattle-sounders-renton-washington',
+      },
+      {
+        slug: 'missing-fixture-teammate',
+        position: 'Forward',
+        resolvedFromName: 'Missing Fixture Teammate',
+        teamSlug: 'seattle-sounders-renton-washington',
+      },
+    ]);
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      cache,
+      true,
+      new UnavailablePlayerMarketOddsProvider(),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        playerNames: ['Known Teammate', 'Missing Fixture Teammate'],
+        positions: {
+          'Known Teammate': 'Forward',
+          'Missing Fixture Teammate': 'Forward',
+        },
+        playerTeams: {
+          'Known Teammate': 'seattle-sounders-renton-washington',
+          'Missing Fixture Teammate':
+            'seattle-sounders-renton-washington',
+        },
+      }),
+    );
+
+    const missing = result.data.find(
+      (player) => player.slug === 'missing-fixture-teammate',
+    );
+    expect(missing?.nextGame).toMatchObject({
+      date: sharedFixture.date,
+      playerTeamName: 'Seattle Sounders FC',
+      cleanSheetProbability: 0.32,
+      matchProbabilities: { win: 0.51, draw: 0.24, loss: 0.25 },
+      marketOdds: null,
+    });
+  });
+
+  it('serves an isolated cached player from the persistent team fixture without refreshing Sorare', async () => {
+    const teamFixture: NonNullable<PlayerFixtureStats> = {
+      date: '2026-08-12T02:30:00.000Z',
+      homeTeamName: 'Seattle Sounders FC',
+      awayTeamName: 'Queretaro FC',
+      playerTeamName: 'Seattle Sounders FC',
+      opponentTeamName: 'Queretaro FC',
+      playerTeamSlug: 'seattle-sounders-renton-washington',
+      cleanSheetProbability: 0.32,
+      matchProbabilities: { win: 0.51, draw: 0.24, loss: 0.25 },
+    };
+    const fixtureCache = new TeamAwareFixtureCache(
+      new Map([[teamFixture.playerTeamSlug!, teamFixture]]),
+    );
+    const cache = new SplitPlayerStatsCache(
+      new TtlCache<PlayerFormStats>(60_000),
+      fixtureCache,
+    );
+    const key = 'isolated-team-player:Forward:no-low';
+    await cache.setForm(key, {
+      slug: 'isolated-team-player',
+      displayName: 'Isolated Team Player',
+      position: 'Forward',
+      aaL10: { value: 9, sampleSize: 10 },
+      cleanSheetL10: { value: 0.2, sampleSize: 10 },
+      goalL10: { value: 0.3, sampleSize: 10 },
+      excludedLowCoverage: 0,
+    });
+    fixtureCache.set('isolated-team-player:auto-v3:no-low', null);
+    const source = new MockDataSource();
+    const fetchPlayers = vi.spyOn(source, 'fetchPlayers');
+    const fetchNextGames = vi.spyOn(source, 'fetchNextGames');
+    const backgroundTasks: Promise<void>[] = [];
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      cache,
+      true,
+      new UnavailablePlayerMarketOddsProvider(),
+      (task) => backgroundTasks.push(task),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['isolated-team-player'],
+        positions: { 'isolated-team-player': 'Forward' },
+        playerTeams: {
+          'isolated-team-player': 'seattle-sounders-renton-washington',
+        },
+      }),
+    );
+
+    expect(result.data[0]?.nextGame).toMatchObject({
+      playerTeamSlug: 'seattle-sounders-renton-washington',
+      cleanSheetProbability: 0.32,
+      matchProbabilities: { win: 0.51, draw: 0.24, loss: 0.25 },
+      marketOdds: null,
+    });
+    expect(result.data[0]?.pendingRefreshes).toBeUndefined();
+    expect(fetchPlayers).not.toHaveBeenCalled();
+    expect(fetchNextGames).not.toHaveBeenCalled();
+    expect(backgroundTasks).toHaveLength(0);
+    expect(
+      fixtureCache.get('isolated-team-player:auto-v3:no-low'),
+    ).toBeNull();
+  });
+
+  it('repairs a cached fixture side from a server-confirmed name resolution', async () => {
+    const cache = new SplitPlayerStatsCache(
+      new TtlCache<PlayerFormStats>(60_000),
+      new TtlCache<PlayerFixtureStats>(60_000),
+    );
+    const playerKey = 'carlos-henrique-casimiro:Midfielder:no-low';
+    await cache.set(playerKey, {
+      slug: 'carlos-henrique-casimiro',
+      displayName: 'Casemiro',
+      position: 'Midfielder',
+      aaL10: { value: 15.12, sampleSize: 10 },
+      cleanSheetL10: { value: 0.3, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-19T23:30:00.000Z',
+        homeTeamName: 'Philadelphia Union',
+        awayTeamName: 'Inter Miami',
+        homeTeamSlug: 'philadelphia-union-chester-pennsylvania',
+        awayTeamSlug: 'inter-miami',
+        playerTeamName: null,
+        opponentTeamName: null,
+        cleanSheetProbability: null,
+        matchProbabilities: null,
+      },
+      excludedLowCoverage: 0,
+    });
+    const fetchPlayers = vi.fn<PlayerStatsDataSource['fetchPlayers']>();
+    const source: PlayerStatsDataSource = {
+      source: 'sorare',
+      resolvePlayerNames: async () => [
+        {
+          slug: 'carlos-henrique-casimiro',
+          position: 'Midfielder',
+          teamSlug: 'inter-miami',
+          resolvedFromName: 'Casemiro',
+          nameResolution: 'search',
+        },
+      ],
+      fetchPlayers,
+      fetchNextGames: async () => [],
+    };
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      cache,
+      true,
+      new UnavailablePlayerMarketOddsProvider(),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        playerNames: ['Casemiro'],
+        positions: { Casemiro: 'Midfielder' },
+        playerTeams: { Casemiro: 'inter-miami' },
+      }),
+    );
+
+    expect(result.data[0]?.nextGame).toMatchObject({
+      playerTeamName: 'Inter Miami',
+      opponentTeamName: 'Philadelphia Union',
+      playerTeamSlug: 'inter-miami',
+    });
+    expect(fetchPlayers).not.toHaveBeenCalled();
+    await expect(cache.get(playerKey)).resolves.toMatchObject({
+      nextGame: {
+        playerTeamName: 'Inter Miami',
+        playerTeamSlug: 'inter-miami',
+      },
+    });
+  });
+
+  it('prefers a still-active canonical team fixture over a later player nextGame', async () => {
+    const heldFixture: NonNullable<PlayerFixtureStats> = {
+      date: '2026-08-20T00:00:00.000Z',
+      competitionSlug: 'uefa-europa-conference-league',
+      homeTeamName: 'Motherwell',
+      awayTeamName: 'Freiburg',
+      playerTeamName: 'Freiburg',
+      opponentTeamName: 'Motherwell',
+      playerTeamSlug: 'freiburg-freiburg-im-breisgau',
+      cleanSheetProbability: null,
+      matchProbabilities: null,
+    };
+    const fixtureCache = new TeamAwareFixtureCache(
+      new Map([[heldFixture.playerTeamSlug!, heldFixture]]),
+    );
+    const cache = new SplitPlayerStatsCache(
+      new TtlCache<PlayerFormStats>(60_000),
+      fixtureCache,
+    );
+    const playerKey = 'matthias-ginter:Defender:no-low';
+    await cache.set(playerKey, {
+      slug: 'matthias-ginter',
+      displayName: 'Matthias Ginter',
+      position: 'Defender',
+      aaL10: { value: 14.1, sampleSize: 10 },
+      cleanSheetL10: { value: 0.2, sampleSize: 10 },
+      goalL10: { value: 0.2, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-30T13:30:00.000Z',
+        competitionSlug: 'bundesliga-de',
+        homeTeamName: 'Freiburg',
+        awayTeamName: 'Werder Bremen',
+        playerTeamName: 'Freiburg',
+        opponentTeamName: 'Werder Bremen',
+        cleanSheetProbability: null,
+        matchProbabilities: null,
+      },
+      excludedLowCoverage: 0,
+    });
+    const source: PlayerStatsDataSource = {
+      source: 'sorare',
+      resolvePlayerNames: async () => [
+        {
+          slug: 'matthias-ginter',
+          position: 'Defender',
+          teamSlug: 'freiburg-freiburg-im-breisgau',
+          resolvedFromName: 'Matthias Ginter',
+          nameResolution: 'search',
+        },
+      ],
+      fetchPlayers: vi.fn(),
+      fetchNextGames: vi.fn(),
+    };
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      cache,
+      true,
+      new UnavailablePlayerMarketOddsProvider(),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        playerNames: ['Matthias Ginter'],
+        positions: { 'Matthias Ginter': 'Defender' },
+        playerTeams: {
+          'Matthias Ginter': 'freiburg-freiburg-im-breisgau',
+        },
+      }),
+    );
+
+    expect(result.data[0]?.nextGame).toMatchObject({
+      date: heldFixture.date,
+      competitionSlug: 'uefa-europa-conference-league',
+      homeTeamName: 'Motherwell',
+      awayTeamName: 'Freiburg',
+      playerTeamSlug: 'freiburg-freiburg-im-breisgau',
+    });
+    await expect(cache.get(playerKey)).resolves.toMatchObject({
+      nextGame: { date: heldFixture.date },
+    });
+  });
+
+  it('never harmonizes fixtures with different Sorare-confirmed team slugs', async () => {
+    const cache = new SplitPlayerStatsCache(
+      new TtlCache<PlayerFormStats>(60_000),
+      new TtlCache<PlayerFixtureStats>(60_000),
+    );
+    const form = (slug: string): PlayerFormStats => ({
+      slug,
+      displayName: slug,
+      position: 'Defender',
+      aaL10: { value: 10, sampleSize: 10 },
+      cleanSheetL10: { value: 0.3, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      excludedLowCoverage: 0,
+    });
+    await cache.set('team-a-player:Defender:no-low', {
+      ...form('team-a-player'),
+      nextGame: {
+        date: '2026-08-12T18:00:00.000Z',
+        homeTeamName: 'Shared Display Name',
+        awayTeamName: 'Opponent A',
+        playerTeamName: 'Shared Display Name',
+        opponentTeamName: 'Opponent A',
+        playerTeamSlug: 'canonical-team-a',
+        cleanSheetProbability: 0.41,
+        matchProbabilities: { win: 0.55, draw: 0.25, loss: 0.2 },
+      },
+    });
+    await cache.set('team-b-player:Defender:no-low', {
+      ...form('team-b-player'),
+      nextGame: {
+        date: '2026-08-13T18:00:00.000Z',
+        homeTeamName: 'Shared Display Name',
+        awayTeamName: 'Opponent B',
+        playerTeamName: 'Shared Display Name',
+        opponentTeamName: 'Opponent B',
+        playerTeamSlug: 'canonical-team-b',
+        cleanSheetProbability: 0.22,
+        matchProbabilities: { win: 0.33, draw: 0.27, loss: 0.4 },
+      },
+    });
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      cache,
+      true,
+      new UnavailablePlayerMarketOddsProvider(),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['team-a-player', 'team-b-player'],
+        positions: {
+          'team-a-player': 'Defender',
+          'team-b-player': 'Defender',
+        },
+        // Deliberately misleading client hints must not override canonical
+        // identities already confirmed by Sorare.
+        playerTeams: {
+          'team-a-player': 'same-client-hint',
+          'team-b-player': 'same-client-hint',
+        },
+      }),
+    );
+
+    expect(
+      result.data.find(({ slug }) => slug === 'team-a-player')?.nextGame,
+    ).toMatchObject({
+      playerTeamSlug: 'canonical-team-a',
+      opponentTeamName: 'Opponent A',
+      cleanSheetProbability: 0.41,
+    });
+    expect(
+      result.data.find(({ slug }) => slug === 'team-b-player')?.nextGame,
+    ).toMatchObject({
+      playerTeamSlug: 'canonical-team-b',
+      opponentTeamName: 'Opponent B',
+      cleanSheetProbability: 0.22,
+    });
   });
 
   it('never sends goalkeepers to a market-odds provider', async () => {
@@ -1305,13 +2125,16 @@ describe('StatsService cache writes', () => {
     expect(load).toHaveBeenNthCalledWith(
       1,
       expect.any(Array),
-      { cacheOnly: true },
+      expect.objectContaining({
+        cacheOnly: true,
+        cacheOnlyDeadlineMs: expect.any(Number),
+      }),
     );
     expect(load).toHaveBeenNthCalledWith(2, expect.any(Array));
     expect(scheduleBackground).toHaveBeenCalledTimes(1);
   });
 
-  it('fills only missing H-D-A values and keeps Sorare probabilities authoritative', async () => {
+  it('fills missing H-D-A and CS values while keeping Sorare probabilities authoritative', async () => {
     const mock = new MockDataSource();
     const source: PlayerStatsDataSource = {
       source: 'sorare',
@@ -1322,7 +2145,8 @@ describe('StatsService cache writes', () => {
           ...player,
           nextGame: player.nextGame
             ? {
-                ...player.nextGame,
+              ...player.nextGame,
+                cleanSheetProbability: null,
                 matchProbabilities: {
                   win: null,
                   draw: 0.24,
@@ -1332,10 +2156,11 @@ describe('StatsService cache writes', () => {
             : null,
         })),
     };
-    const fallback: MatchProbabilities = {
+    const fallback = {
       win: 0.51,
       draw: 0.22,
       loss: 0.27,
+      cleanSheetProbability: 0.41,
     };
     const fixtureProvider: FixtureMatchOddsProvider = {
       supports: () => true,
@@ -1370,5 +2195,6 @@ describe('StatsService cache writes', () => {
       draw: 0.24,
       loss: 0.27,
     });
+    expect(result.data[0]?.nextGame?.cleanSheetProbability).toBe(0.41);
   });
 });
