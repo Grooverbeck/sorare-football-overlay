@@ -3,6 +3,40 @@
 Alle wichtigen Änderungen am Sorare Football Stats Overlay werden in dieser
 Datei dokumentiert.
 
+## 0.3.4 – 22. August 2026
+
+### Mehr und verlässlichere Quoten
+
+- Je nach Wettbewerb werden Spiel-, Tor- und Assistquoten über verbesserte
+  Anbieter-Routen für Premier League, La Liga, Ligue 1, Ligue 2, Bundesliga,
+  2. Bundesliga, HNL, österreichische Bundesliga, MLS und UEFA-Wettbewerbe
+  ergänzt.
+- Spieler- und Teamzuordnungen berücksichtigen kanonische Sorare-Identitäten,
+  Transfers und abweichende Anbieter-Namen robuster. Dadurch landen Quoten
+  seltener beim falschen Verein oder bleiben wegen einer abweichenden
+  Namensform aus.
+- Bereits gecachte Marktquoten bleiben bei Teilfehlern erhalten und ersetzen
+  historische Ersatzwerte automatisch, sobald die echte Quote verfügbar ist.
+- Laufende Fixture-Abrufe werden für alle betroffenen Teamkollegen erkannt;
+  neue Quoten erscheinen ohne manuelles Neuladen der Sorare-Seite.
+
+### Aussagekräftigere Formwerte
+
+- AA berücksichtigt nur Einsätze mit mindestens 60 gespielten Minuten und
+  basiert dadurch weniger auf kurzen Einwechslungen.
+- Positions- und Namensvarianten desselben Spielers teilen passende Daten,
+  ohne echte abweichende Kartenpositionen miteinander zu vermischen.
+
+### Kompaktere Kartenanzeige
+
+- Die neue optionale Compact View klappt die farbigen Klammern auf Squad- und
+  Lineups-Seiten erst beim Überfahren der Karte aus; der Lineup Builder bleibt
+  vollständig sichtbar.
+- Klammern, Symbole, Schrift und No-Data-Zustände wurden für kleine Karten
+  harmonisiert und besser am Kartenrand ausgerichtet.
+- Lade- und Wiederholungslogik hält vorhandene Werte sichtbar und reduziert
+  breitflächige „nicht verfügbar“-Zustände bei kurzzeitigen Backend-Problemen.
+
 ## 0.3.3 – 30. Juli 2026
 
 ### Mehr verfügbare Quoten
