@@ -16,6 +16,14 @@ vor dem Veröffentlichen ersetzen.
 6. **Entpackte Erweiterung laden** wählen und den Ordner mit `manifest.json`
    auswählen.
 
+Für Firefox:
+
+1. Wenn vorhanden, die signierte Datei
+   `sorare-football-overlay-firefox-<VERSION>.xpi` herunterladen, in Firefox
+   öffnen und die Installation bestätigen.
+2. Die Datei `sorare-football-overlay-firefox-<VERSION>-unsigned.zip` ist nur
+   für temporäre Entwicklungsinstallationen gedacht.
+
 Ausführliche Anleitung:
 [Installation und Updates](https://github.com/Grooverbeck/sorare-football-overlay/blob/main/docs/INSTALLATION.md)
 
@@ -31,7 +39,10 @@ Erweiterungsseite **Neu laden** anklicken und offene Sorare-Tabs aktualisieren.
 
 ## Hinweise
 
-- Unterstützt Google Chrome und Microsoft Edge.
+- Unterstützt Google Chrome, Microsoft Edge und Mozilla Firefox Desktop ab
+  Version 140 (Android ab Version 142).
+- Ein signiertes Firefox-XPI wird über Mozilla AMO signiert; das unsignierte
+  ZIP ist kein dauerhaft installierbares Firefox-Release.
 - Dies ist eine inoffizielle Erweiterung und kein Produkt von Sorare.
 ```
 
@@ -41,6 +52,10 @@ Erweiterungsseite **Neu laden** anklicken und offene Sorare-Tabs aktualisieren.
 - Produktionsbuild und Tests sind erfolgreich.
 - Das Release enthält die installierbare
   `sorare-football-overlay-chrome-web-store-<VERSION>.zip`.
+- Wenn AMO-Signierung konfiguriert ist, enthält das Release zusätzlich
+  `sorare-football-overlay-firefox-<VERSION>.xpi`.
+- Falls kein signiertes XPI vorhanden ist, ist das Firefox-ZIP im Release klar
+  als `-unsigned` gekennzeichnet.
 - Die Asset-Datei wurde testweise entpackt und enthält `manifest.json` auf der
   obersten Ebene.
 - Release-Text enthält Installation, Update, Änderungen und den Link zu dieser

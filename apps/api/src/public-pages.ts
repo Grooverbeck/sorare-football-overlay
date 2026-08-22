@@ -97,7 +97,7 @@ export const homePage = page(
     <div class="cards">
       <section class="card">
         <h2>Ein klarer Zweck</h2>
-        <p>Öffentliche Fußballstatistiken passend zu den auf Sorare sichtbaren Karten anzeigen.</p>
+        <p>Öffentliche Fußballstatistiken passend zu den auf Sorare sichtbaren Karten anzeigen. Die Erweiterung ist für Chrome, Edge und Firefox verfügbar.</p>
       </section>
       <section class="card">
         <h2>Sparsame Berechtigungen</h2>
@@ -123,7 +123,7 @@ export const privacyPage = page(
   'Datenschutzerklärung – Football Stats Overlay',
   'Datenschutzerklärung für das inoffizielle Football Stats Overlay.',
   `
-    <span class="eyebrow">Stand: 24. Juli 2026 · Version 1.1</span>
+    <span class="eyebrow">Stand: 22. August 2026 · Version 1.2</span>
     <h1>Datenschutzerklärung</h1>
     <p class="lead">
       Diese Erklärung beschreibt, welche Daten das inoffizielle Football Stats Overlay
@@ -133,8 +133,8 @@ export const privacyPage = page(
     <h2>1. Verantwortlicher und Kontakt</h2>
     <p>
       Verantwortlich ist der unabhängige Herausgeber <strong>Grooverbeck</strong>.
-      Kontakt ist über die im Chrome Web Store hinterlegte, verifizierte Entwickleradresse
-      beziehungsweise den dort angegebenen Support-Kanal möglich.
+      Kontakt ist über die im Chrome Web Store oder in AMO hinterlegte, verifizierte
+      Entwickleradresse beziehungsweise den dort angegebenen Support-Kanal möglich.
     </p>
 
     <h2>2. Zweck der Erweiterung</h2>
@@ -148,17 +148,26 @@ export const privacyPage = page(
     <h3>Auf sorare.com erkannte Karteninformationen</h3>
     <ul>
       <li>öffentlicher Spielername und/oder öffentlicher Spieler-Slug,</li>
-      <li>Position der angezeigten Karte, soweit auf der Seite erkennbar.</li>
+      <li>Position der angezeigten Karte, soweit auf der Seite erkennbar,</li>
+      <li>öffentlicher Team-Slug, sofern er aus dem sichtbaren Karten-/Fixture-Kontext bekannt ist.</li>
     </ul>
     <p>
       Diese Angaben werden über eine verschlüsselte HTTPS-Verbindung an den eigenen
       Statistikdienst übertragen, damit die passenden Werte zurückgegeben werden können.
+      Im Anfragekörper stehen dafür die Felder <code>slugs</code>,
+      <code>playerNames</code>, <code>positions</code> und optional
+      <code>playerTeams</code>. Boolesche Optionen steuern nur historische Werte,
+      partielle Formdaten, Fixture-Aktualisierung und odds-cache-only-Abfragen.
+      Die Firefox-Version klassifiziert diese sichtbaren Karteninformationen als
+      <code>websiteContent</code>, nicht als allgemeinen Browserverlauf oder
+      <code>websiteActivity</code>.
     </p>
 
     <h3>Lokale Einstellung</h3>
     <p>
-      Im lokalen Chrome-Speicher wird ausschließlich gespeichert, ob das Overlay ein- oder
-      ausgeschaltet ist und ob die Tor-/Assistklammer links oder rechts angezeigt werden soll.
+      Im lokalen Extension-Speicher werden ausschließlich Overlay- und Anzeigeoptionen wie
+      Aktivierung, Klammerseite, kompakte Ansicht, historische Ersatzwerte, Werteformat und
+      bekannte Bildnamen gespeichert.
       Diese Einstellungen verlassen das Gerät nicht.
     </p>
 
@@ -175,7 +184,7 @@ export const privacyPage = page(
     <ul>
       <li>Sorare-E-Mail-Adresse, Passwort, JWT, Cookies oder andere Zugangsdaten,</li>
       <li>Wallet-, Zahlungs-, Kauf- oder Verkaufsdaten,</li>
-      <li>Kartenbesitz, Aufstellungen oder private Kontoinformationen,</li>
+      <li>Kartenbesitz oder private Kontoinformationen,</li>
       <li>Formulareingaben, Nachrichten oder Inhalte außerhalb von sorare.com,</li>
       <li>einen allgemeinen Browserverlauf.</li>
     </ul>
@@ -225,10 +234,12 @@ export const privacyPage = page(
       Retargeting, Kreditwürdigkeitsprüfung oder den Handel mit Nutzerprofilen verwendet.
     </p>
 
-    <h2>7. Chrome Web Store Limited Use</h2>
+    <h2>7. Store- und AMO-Datenschutz</h2>
     <div class="notice">
       Die Nutzung der durch die Erweiterung verarbeiteten Informationen entspricht der
-      Chrome Web Store User Data Policy einschließlich der Limited-Use-Anforderungen.
+      jeweiligen Plattform- und Datenschutzanforderung. Für den Chrome Web Store gelten
+      die User Data Policy einschließlich der Limited-Use-Anforderungen; für Firefox/AMO
+      gelten die Mozilla Add-on Policies und die Angaben in der AMO-Einreichung.
       Die Verarbeitung ist auf die sichtbare Overlay-Funktion sowie deren Betrieb,
       Sicherheit und Zuverlässigkeit beschränkt.
     </div>
@@ -237,7 +248,7 @@ export const privacyPage = page(
     <p>
       Die Verarbeitung erfolgt zur Bereitstellung der vom Nutzer installierten Funktion und
       auf Grundlage des berechtigten Interesses an einem sicheren, zuverlässigen Betrieb.
-      Betroffene können über die im Store angegebene Kontaktadresse Auskunft, Berichtigung,
+      Betroffene können über die im Store oder in AMO angegebene Kontaktadresse Auskunft, Berichtigung,
       Löschung, Einschränkung oder Widerspruch verlangen. Da keine Konten oder dauerhaften
       Nutzerprofile angelegt werden, ist eine Zuordnung technischer Einzelanfragen zu einer
       Person regelmäßig nicht möglich.
@@ -252,8 +263,8 @@ export const privacyPage = page(
 
     <h2>English summary</h2>
     <p>
-      The extension reads only the public player name or slug and the visible card position on
-      sorare.com and sends them via HTTPS to its own statistics service. It stores only the
+      The extension reads only the public player name or slug, visible card position and, when
+      available, public team slug on sorare.com and sends them via HTTPS to its own statistics service. It stores only the
       enabled/disabled setting and the selected bracket side locally. It does not access Sorare credentials, cookies, wallet,
       payment, ownership, lineup, private account or general browsing-history data. Cloudflare
       provides the backend infrastructure. The backend queries Sorare for public football data
@@ -279,8 +290,9 @@ export const supportPage = page(
       mitsenden.
     </div>
     <p>
-      Verwende für eine Support-Anfrage die im Chrome Web Store hinterlegte Kontaktadresse.
-      Die installierte Version findest du unter <strong>chrome://extensions</strong>.
+      Verwende für eine Support-Anfrage die im Chrome Web Store oder in AMO hinterlegte
+      Kontaktadresse. Die installierte Version findest du unter
+      <strong>chrome://extensions</strong> beziehungsweise <strong>about:addons</strong>.
     </p>
     <a class="button" href="/privacy">Datenschutzerklärung</a>
   `,

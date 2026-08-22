@@ -209,8 +209,11 @@ describe('public extension pages', () => {
     const response = await testApp().request('/privacy');
     const html = await response.text();
 
-    expect(html).toContain('Chrome Web Store User Data Policy');
+    expect(html).toContain('User Data Policy');
     expect(html).toContain('Limited-Use-Anforderungen');
+    expect(html).toContain('Mozilla Add-on Policies');
+    expect(html).toContain('websiteContent');
+    expect(html).toContain('playerTeams');
     expect(html).toContain('liest oder überträgt insbesondere nicht');
     expect(html).toContain('Sorare-E-Mail-Adresse, Passwort, JWT, Cookies');
     expect(html).toContain('The Odds API');

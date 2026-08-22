@@ -8,7 +8,7 @@ nicht erforderlich.
 
 - Google Chrome
 - Microsoft Edge
-- Mozilla Firefox Desktop ab Version 142
+- Mozilla Firefox Desktop ab Version 140 (Android ab Version 142)
 
 Die manuell installierte Version wird gegen das öffentliche Backend des
 Projekts gebaut. Zugangsdaten oder Sorare-Passwörter gehören niemals in die
@@ -57,9 +57,9 @@ Statistiken.
 
    Für einen normalen Test gegen das öffentliche Backend verwende
    `npm run package:firefox`. Dieser Befehl baut `dist-firefox` gegen das
-   produktive Cloudflare-Backend und erzeugt zusätzlich eine noch unsignierte
-   ZIP unter `artifacts/`. Diese ZIP ist nicht als Release gedacht und kann in
-   einem normalen Firefox nicht dauerhaft installiert werden.
+   produktive Cloudflare-Backend und erzeugt zusätzlich eine als
+   `-unsigned` markierte ZIP unter `artifacts/`. Diese ZIP ist nicht dauerhaft
+   installierbar.
 
 3. Öffne in Firefox `about:debugging#/runtime/this-firefox`.
 4. Klicke auf **Temporäres Add-on laden**.
@@ -73,8 +73,22 @@ Sorare-Tabs aktualisieren.
 
 Eine dauerhafte Installation in Firefox Release/Beta erfordert ein von Mozilla
 signiertes Add-on. Dafür kann das erzeugte Firefox-Paket später über AMO als
-gelistetes oder nicht gelistetes Add-on signiert werden; dieser Port erstellt
-bewusst noch kein Release.
+gelistetes oder nicht gelistetes Add-on signiert werden; der Release-Workflow
+kann bei konfigurierten AMO-Secrets ein signiertes XPI erzeugen.
+Ohne diese Secrets wird nur das ausdrücklich als `-unsigned` gekennzeichnete
+Entwicklerpaket veröffentlicht.
+
+### Firefox aus einem GitHub-Release installieren
+
+Wenn das Release ein Asset wie
+`sorare-football-overlay-firefox-<VERSION>.xpi` enthält, kann es in einem
+normalen Firefox Release/Beta installiert werden: XPI herunterladen, in
+Firefox öffnen und die Installation bestätigen. Dieses XPI ist über Mozilla
+AMO signiert.
+
+Ein Asset mit dem Namen
+`sorare-football-overlay-firefox-<VERSION>-unsigned.zip` ist dagegen nur für
+die temporäre Installation über `about:debugging` geeignet.
 
 ## Manuelles Update
 

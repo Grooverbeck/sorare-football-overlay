@@ -1,0 +1,110 @@
+name: Build and publish release assets
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build release assets
+    runs-on: ubuntu-latest
+    env:
+      AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+      AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate tag and package version
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag_version" ]; then
+            echo "Package version $version does not match tag $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Run full verification
+        run: npm run verify
+
+      - name: Build Chrome/Edge package
+        run: npm run package:chrome-web-store
+
+      - name: Build Firefox package
+        run: npm run package:firefox
+
+      - name: Lint Firefox package
+        run: npm run lint:firefox
+
+      - name: Sign Firefox package for self-distribution
+        if: ${{ env.AMO_JWT_ISSUER != '' && env.AMO_JWT_SECRET != '' }}
+        shell: bash
+        run: |
+          rm -rf artifacts/firefox-signed
+          npm exec --workspace=@sorare-overlay/extension -- web-ext sign \
+            --channel=unlisted \
+            --source-dir apps/extension/dist-firefox \
+            --api-key "$AMO_JWT_ISSUER" \
+            --api-secret "$AMO_JWT_SECRET" \
+            --artifacts-dir artifacts/firefox-signed
+          signed_file="$(find artifacts/firefox-signed -maxdepth 1 -type f -name '*.xpi' -print -quit)"
+          if [ -z "$signed_file" ]; then
+            echo 'web-ext did not produce a signed Firefox XPI' >&2
+            exit 1
+          fi
+          mv "$signed_file" "artifacts/sorare-football-overlay-firefox-${VERSION}.xpi"
+
+      - name: Explain unsigned Firefox fallback
+        if: ${{ env.AMO_JWT_ISSUER == '' || env.AMO_JWT_SECRET == '' }}
+        run: echo 'AMO_JWT_ISSUER/AMO_JWT_SECRET are not configured; only the unsigned Firefox ZIP will be published.'
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            if [ -f "docs/RELEASE_NOTES_${VERSION}.md" ]; then
+              gh release create "$GITHUB_REF_NAME" \
+                --title "$GITHUB_REF_NAME" \
+                --notes-file "docs/RELEASE_NOTES_${VERSION}.md"
+            else
+              gh release create "$GITHUB_REF_NAME" \
+                --title "$GITHUB_REF_NAME" \
+                --generate-notes
+            fi
+          fi
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            "artifacts/sorare-football-overlay-chrome-web-store-${VERSION}.zip" \
+            "artifacts/sorare-football-overlay-firefox-${VERSION}-unsigned.zip" \
+            --clobber
+          if [ -f "artifacts/sorare-football-overlay-firefox-${VERSION}.xpi" ]; then
+            gh release upload "$GITHUB_REF_NAME" \
+              "artifacts/sorare-football-overlay-firefox-${VERSION}.xpi" \
+              --clobber
+          fi

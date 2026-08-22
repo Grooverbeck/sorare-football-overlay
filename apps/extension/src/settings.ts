@@ -40,7 +40,7 @@ export async function setMarketBracketSide(
 }
 
 export async function getMarketBracketCompactView(): Promise<boolean> {
-  const stored = await chrome.storage.local.get({
+  const stored = await getExtensionApi().storage.local.get({
     [MARKET_BRACKET_COMPACT_VIEW_KEY]: false,
   });
   return stored[MARKET_BRACKET_COMPACT_VIEW_KEY] === true;
@@ -49,7 +49,7 @@ export async function getMarketBracketCompactView(): Promise<boolean> {
 export async function setMarketBracketCompactView(
   enabled: boolean,
 ): Promise<void> {
-  await chrome.storage.local.set({
+  await getExtensionApi().storage.local.set({
     [MARKET_BRACKET_COMPACT_VIEW_KEY]: enabled,
   });
 }

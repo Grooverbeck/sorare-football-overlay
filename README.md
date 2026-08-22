@@ -22,7 +22,7 @@ Die Extension ruft ausschließlich das eigene Backend auf. Sorare-API-Key, JWT u
 
 - Node.js 22 oder neuer
 - npm 11 oder neuer
-- Chrome, Edge oder Firefox (Firefox Desktop ab Version 142) mit aktivierter Erweiterungsentwicklung
+- Chrome, Edge oder Firefox (Desktop ab Version 140, Android ab Version 142) mit aktivierter Erweiterungsentwicklung
 
 ```bash
 npm install
@@ -60,7 +60,7 @@ Bekannte Mock-Slugs sind `kylian-mbappe-lottin`, `virgil-van-dijk`, `manuel-neue
 4. „Entpackte Erweiterung laden“ wählen und `apps/extension/dist` auswählen.
 5. Nach jedem Neubau die Extension auf der Extensions-Seite neu laden.
 
-Über das Extension-Symbol in der Browserleiste öffnet sich ein kleines Popup mit dem Schalter „Overlay aktiviert/deaktiviert“ und der Wahl, ob die Tor-/Assistklammer links oder rechts an der Karte sitzt. Die Klammerwerte lassen sich als Prozent oder als faire Dezimalquote anzeigen. Dort können außerdem historische Ersatzwerte für fehlende Tor- und Assistquoten ein- und ausgeschaltet sowie auf `L10`, `L15` oder `L40` gestellt werden. Die Einstellungen werden über `chrome.storage.local` gespeichert und gelten für alle Sorare-Tabs. Änderungen wirken sofort: Ausschalten entfernt vorhandene Overlays und pausiert den Scanner; Einschalten scannt die aktuell geöffnete Seite erneut.
+Über das Extension-Symbol in der Browserleiste öffnet sich ein kleines Popup mit dem Schalter „Overlay aktiviert/deaktiviert“ und der Wahl, ob die Tor-/Assistklammer links oder rechts an der Karte sitzt. Die Klammerwerte lassen sich als Prozent oder als faire Dezimalquote anzeigen. Dort können außerdem historische Ersatzwerte für fehlende Tor- und Assistquoten ein- und ausgeschaltet sowie auf `L10`, `L15` oder `L40` gestellt werden. Die Einstellungen werden über den jeweiligen lokalen Extension-Speicher gespeichert und gelten für alle Sorare-Tabs. Änderungen wirken sofort: Ausschalten entfernt vorhandene Overlays und pausiert den Scanner; Einschalten scannt die aktuell geöffnete Seite erneut.
 
 ## Extension in Firefox laden
 
@@ -82,10 +82,17 @@ Add-on laden** wählen und `apps/extension/dist-firefox/manifest.json`
 auswählen. Nach einem Neubau das Add-on dort neu laden und die Sorare-Tabs
 aktualisieren. Temporäre Add-ons werden beim Neustart von Firefox entfernt.
 
-`npm run package:firefox` erzeugt optional eine unsignierte ZIP unter
-`artifacts/`. Für eine dauerhafte Installation in Firefox Release/Beta muss
-dieses Paket später von Mozilla signiert werden; dieses Projekt erstellt mit
-dieser Portierung noch kein Release.
+`npm run package:firefox` erzeugt eine ausdrücklich als `-unsigned` markierte
+Entwicklungs-ZIP unter `artifacts/`. Der Release-Workflow lintet diesen Build
+und kann zusätzlich über AMO ein signiertes `.xpi` erzeugen, sobald die
+Repository-Secrets `AMO_JWT_ISSUER` und `AMO_JWT_SECRET` eingerichtet sind.
+Nur das signierte XPI ist für Firefox Release/Beta dauerhaft installierbar.
+
+Für den lokalen Firefox-Lint:
+
+```powershell
+npm run lint:firefox
+```
 
 `EXTENSION_API_BASE_URL` wird beim Build eingebettet und zugleich als eng begrenzte `host_permission` ins generierte Manifest geschrieben. Nach einer URL-Änderung muss neu gebaut und neu geladen werden. In diese Variable gehört nur die URL des eigenen Backends, niemals ein Token.
 

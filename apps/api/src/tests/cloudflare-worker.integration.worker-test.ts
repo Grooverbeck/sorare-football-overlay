@@ -1222,7 +1222,7 @@ describe('Cloudflare Worker', () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/html');
-    await expect(response.text()).resolves.toContain('Chrome Web Store User Data Policy');
+    await expect(response.text()).resolves.toContain('Mozilla Add-on Policies');
   });
 
   it('serves player stats through the Worker runtime and KV binding', async () => {

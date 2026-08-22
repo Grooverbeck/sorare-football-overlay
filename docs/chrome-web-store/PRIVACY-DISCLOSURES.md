@@ -1,7 +1,9 @@
-# Chrome Web Store – Datenschutzangaben
+# Chrome Web Store und Firefox/AMO – Datenschutzangaben
 
 Diese Angaben müssen mit der veröffentlichten Datenschutzerklärung und dem
-tatsächlichen Verhalten der Erweiterung übereinstimmen.
+tatsächlichen Verhalten der Erweiterung übereinstimmen. Die Firefox-/AMO-
+Ergänzungen mit den exakten Nutzdaten stehen in
+`docs/FIREFOX_AMO_PRIVACY.md`.
 
 ## Datentypen im Dashboard
 

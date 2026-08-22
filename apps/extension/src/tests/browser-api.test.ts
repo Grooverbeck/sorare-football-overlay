@@ -93,6 +93,33 @@ describe('cross-browser extension API', () => {
     await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({ ok: true }));
   });
 
+  it('handles Chromium handler rejections without an unhandled promise', async () => {
+    const addListener = vi.fn();
+    vi.stubGlobal('chrome', {
+      runtime: {
+        onMessage: { addListener },
+      },
+    });
+    const warning = vi
+      .spyOn(console, 'warn')
+      .mockImplementation(() => undefined);
+    const handler = vi.fn(async () => {
+      throw new Error('handler failed');
+    });
+
+    registerRuntimeMessageHandler(handler);
+
+    const listener = addListener.mock.calls[0]?.[0] as (
+      message: unknown,
+      sender: chrome.runtime.MessageSender,
+      sendResponse: (response: unknown) => void,
+    ) => boolean;
+    const sendResponse = vi.fn();
+    expect(listener({ type: 'TEST' }, {}, sendResponse)).toBe(true);
+    await vi.waitFor(() => expect(warning).toHaveBeenCalled());
+    expect(sendResponse).not.toHaveBeenCalled();
+  });
+
   it('uses Firefox promise messaging and listener responses', async () => {
     const sendMessage = vi.fn(async () => ({ ok: true }));
     const addListener = vi.fn();

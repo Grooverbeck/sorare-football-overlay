@@ -42,6 +42,12 @@ if (manifest.browser_specific_settings.gecko.strict_min_version !== '140.0') {
   throw new Error('Firefox package must require Firefox 140 or newer');
 }
 if (
+  manifest.browser_specific_settings.gecko_android?.strict_min_version !==
+  '142.0'
+) {
+  throw new Error('Firefox Android package must require Firefox 142 or newer');
+}
+if (
   JSON.stringify(
     manifest.browser_specific_settings.gecko.data_collection_permissions?.required,
   ) !== JSON.stringify(['websiteContent'])

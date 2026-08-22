@@ -10,6 +10,7 @@
     "assets:store": "node scripts/generate-store-assets.mjs",
     "dev": "node scripts/build.mjs --target chromium --watch",
     "dev:firefox": "node scripts/build.mjs --target firefox --watch",
+    "lint:firefox": "web-ext lint --source-dir dist-firefox",
     "package:store": "node scripts/package-store.mjs",
     "package:firefox": "node scripts/package-firefox.mjs",
     "verify:targets": "node scripts/verify-build-targets.mjs",
@@ -28,6 +29,7 @@
     "jsdom": "^26.1.0",
     "sharp": "^0.34.5",
     "typescript": "^5.8.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "web-ext": "10.6.0"
   }
 }
