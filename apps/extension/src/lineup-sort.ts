@@ -112,7 +112,9 @@ function isNativeSortButton(button: HTMLButtonElement): boolean {
   const toolbar = button.parentElement;
   return Boolean(
     button.matches('button[aria-haspopup="dialog"]') &&
-      button.querySelector('svg[data-icon="iconChevronDown"]') &&
+      button.querySelector(
+        'svg[data-icon="iconChevronDown"], svg[data-icon="iconChevronUp"]',
+      ) &&
       toolbar?.querySelector('input[type="search"]') &&
       toolbar.querySelector('svg[data-icon="iconFilter"]'),
   );

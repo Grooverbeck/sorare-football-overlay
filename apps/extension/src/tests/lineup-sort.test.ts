@@ -110,7 +110,10 @@ describe('lineup card sorting', () => {
   it('adds both custom options only while Sorare has its sort dialog open', () => {
     const trigger = document.querySelector<HTMLButtonElement>('[data-native-sort]');
     const dialog = document.querySelector<HTMLElement>('#sort-dialog');
-    if (!trigger || !dialog) throw new Error('Expected native sort controls');
+    const chevron = trigger?.querySelector<SVGElement>('[data-icon]');
+    if (!trigger || !dialog || !chevron) {
+      throw new Error('Expected native sort controls');
+    }
     trigger.setAttribute('aria-expanded', 'false');
     dialog.setAttribute('data-state', 'closed');
 
@@ -121,6 +124,7 @@ describe('lineup card sorting', () => {
     expect(document.querySelector(`[${lineupAaSortOptionAttribute}]`)).toBeNull();
 
     trigger.setAttribute('aria-expanded', 'true');
+    chevron.setAttribute('data-icon', 'iconChevronUp');
     dialog.setAttribute('data-state', 'open');
     sorter.scan(document);
     expect(
