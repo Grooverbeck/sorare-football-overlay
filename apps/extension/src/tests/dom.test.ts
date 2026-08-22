@@ -3703,6 +3703,80 @@ describe('Sorare card DOM discovery', () => {
     view.destroy();
   });
 
+  it('keeps a defender captain overlay visible above Sorare captain decoration', () => {
+    document.body.innerHTML = `
+      <div class="FOOTBALL slots5">
+        <div><button type="button">GK</button></div>
+        <div data-testid="captain-slot">
+          <button type="button" data-testid="captain-card">
+            <img alt="Álvaro Carreras - common" src="/carreras.png">
+          </button>
+          <div data-testid="captain-decoration">
+            <span title="Kapitän">C</span>
+          </div>
+        </div>
+        <div><button type="button">MID</button></div>
+        <div><button type="button">FWD</button></div>
+        <div><button type="button">EXTRA</button></div>
+      </div>
+    `;
+    const card = document.querySelector<HTMLElement>(
+      '[data-testid="captain-card"]',
+    );
+    const image = card?.querySelector<HTMLImageElement>('img');
+    const decoration = document.querySelector<HTMLElement>(
+      '[data-testid="captain-decoration"]',
+    );
+    if (!card || !image || !decoration) {
+      throw new Error('Expected defender captain fixture');
+    }
+    const cardRect = {
+      x: 140,
+      y: 90,
+      top: 90,
+      right: 250,
+      bottom: 268,
+      left: 140,
+      width: 110,
+      height: 178,
+      toJSON: () => ({}),
+    };
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue(cardRect);
+    vi.spyOn(image, 'getBoundingClientRect').mockReturnValue(cardRect);
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true,
+      value: vi.fn(() => decoration),
+    });
+
+    const view = new OverlayView(
+      card,
+      { playerName: 'Álvaro Carreras' },
+      'Defender',
+    );
+    view.render({
+      slug: 'alvaro-carreras',
+      displayName: 'Álvaro Carreras',
+      position: 'Defender',
+      aaL10: { value: 20.64, sampleSize: 10 },
+      cleanSheetL10: { value: 0.4, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-23T15:30:00.000Z',
+        cleanSheetProbability: 0.37,
+        matchProbabilities: null,
+      },
+      excludedLowCoverage: 0,
+    });
+
+    expect(view.host.style.display).toBe('');
+    expect(
+      view.host.shadowRoot?.querySelector(
+        '.clean-sheet-bracket-cell .market-value',
+      )?.textContent,
+    ).toBe('37%');
+    view.destroy();
+  });
+
   it('scales bracket values down for mini but still usable card images', () => {
     document.body.innerHTML = `
       <article data-testid="football-card">

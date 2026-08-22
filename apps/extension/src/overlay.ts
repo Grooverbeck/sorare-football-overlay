@@ -1786,13 +1786,48 @@ function isAnchorExposed(
     [visible.right - width * 0.2, sampleY],
   ];
 
+  const captainDecorationExposesCard = (
+    exposedElement: Element,
+  ): boolean => {
+    const lineup = container.closest<HTMLElement>('[class~="slots5"]');
+    const slot = lineup
+      ? Array.from(lineup.children).find((candidate) =>
+          candidate.contains(container),
+        )
+      : null;
+    if (
+      !(slot instanceof HTMLElement) ||
+      !slot.querySelector(
+        '[title="Kapitän"], [title="Captain"], [aria-label="Kapitän"], [aria-label="Captain"]',
+      ) ||
+      !slot.contains(exposedElement)
+    ) {
+      return false;
+    }
+
+    // Sorare paints the selected captain outline/badge in a sibling layer
+    // above the card button. That layer legitimately wins elementFromPoint at
+    // the card's top edge, but it must not make the whole fixed overlay vanish.
+    // Keep real controls in the same slot (menus, replacement buttons, etc.)
+    // as occluders so this exception remains limited to visual decoration.
+    const interactiveOwner = exposedElement.closest(
+      'button, a, [role="button"]',
+    );
+    return (
+      !interactiveOwner ||
+      interactiveOwner === container ||
+      container.contains(interactiveOwner)
+    );
+  };
+
   return points.some(([x, y]) => {
     const exposedElement = document.elementFromPoint(x, y);
     return Boolean(
       exposedElement &&
         (exposedElement === container ||
           exposedElement === anchor ||
-          container.contains(exposedElement)),
+          container.contains(exposedElement) ||
+          captainDecorationExposesCard(exposedElement)),
     );
   });
 }
