@@ -130,7 +130,7 @@ describe('lineup card sorting', () => {
       '<div><img alt="Lazy Player Two - limited"></div>',
     ];
     const progress: number[] = [];
-    const pulseGridEnd = vi.fn(async () => {
+    const revealGridEnd = vi.fn(async () => {
       const page = pages.shift();
       if (page) grid.insertAdjacentHTML('beforeend', page);
     });
@@ -142,7 +142,7 @@ describe('lineup card sorting', () => {
       },
       {
         getGrid: () => grid,
-        pulseGridEnd,
+        revealGridEnd,
         waitForGrowth: async (_grid, previousCount) =>
           grid.children.length > previousCount,
         maxPulses: 6,
@@ -152,8 +152,69 @@ describe('lineup card sorting', () => {
 
     expect(result).toBe(grid);
     expect(grid.children).toHaveLength(5);
-    expect(pulseGridEnd).toHaveBeenCalledTimes(4);
+    expect(revealGridEnd).toHaveBeenCalledTimes(4);
     expect(progress.at(-1)).toBe(5);
+  });
+
+  it('reveals the lazy-load trigger without moving the visible page', async () => {
+    const grid = document.querySelector<HTMLElement>('[data-player-grid]');
+    const lastCell = document.querySelector<HTMLElement>(
+      '[data-cell="missing"]',
+    );
+    if (!grid || !lastCell) throw new Error('Expected player grid');
+    lastCell.style.order = '7';
+    const originalChildren = Array.from(grid.children);
+    const originalGridMinHeight = grid.style.minHeight;
+    const initialScrollX = window.scrollX;
+    const initialScrollY = window.scrollY;
+    vi.spyOn(lastCell, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 0, y: 1_200, width: 120, height: 260 }),
+    );
+    vi.spyOn(grid, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 24, y: 120, width: 900, height: 1_340 }),
+    );
+    const scrollTo = vi.spyOn(window, 'scrollTo');
+    let stylesWhileTriggered:
+      | { position: string; opacity: string; gridMinHeight: string }
+      | undefined;
+    const scrollEvent = vi.fn(() => {
+      stylesWhileTriggered = {
+        position: lastCell.style.position,
+        opacity: lastCell.style.opacity,
+        gridMinHeight: grid.style.minHeight,
+      };
+    });
+    window.addEventListener('scroll', scrollEvent);
+
+    try {
+      await loadCompleteLineupPool(
+        {
+          isCancelled: () => false,
+          onProgress: () => undefined,
+        },
+        {
+          getGrid: () => grid,
+          waitForGrowth: async () => false,
+          maxPulses: 1,
+          stableMissesRequired: 1,
+        },
+      );
+    } finally {
+      window.removeEventListener('scroll', scrollEvent);
+    }
+
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(scrollEvent).toHaveBeenCalled();
+    expect(stylesWhileTriggered).toEqual({
+      position: 'fixed',
+      opacity: '0',
+      gridMinHeight: '1340px',
+    });
+    expect(window.scrollX).toBe(initialScrollX);
+    expect(window.scrollY).toBe(initialScrollY);
+    expect(Array.from(grid.children)).toEqual(originalChildren);
+    expect(lastCell.style.order).toBe('7');
+    expect(grid.style.minHeight).toBe(originalGridMinHeight);
   });
 
   it('adds both custom options only while Sorare has its sort dialog open', () => {

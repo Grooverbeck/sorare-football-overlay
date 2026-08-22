@@ -79,7 +79,7 @@ export type LineupPoolLoader = (
 
 interface LineupPoolLoadOptions {
   getGrid?: () => HTMLElement | null;
-  pulseGridEnd?: (grid: HTMLElement) => Promise<void>;
+  revealGridEnd?: (grid: HTMLElement) => Promise<void>;
   waitForGrowth?: (
     grid: HTMLElement,
     previousCount: number,
@@ -384,37 +384,107 @@ async function animationFrames(count: number): Promise<void> {
   }
 }
 
-async function pulseGridEnd(grid: HTMLElement): Promise<void> {
-  const scrollingElement = document.scrollingElement;
-  if (!scrollingElement) return;
-  const savedX = window.scrollX;
-  const savedY = window.scrollY;
-  const gridBottom = savedY + grid.getBoundingClientRect().bottom;
-  const maximumY = Math.max(0, scrollingElement.scrollHeight - window.innerHeight);
-  const targetY = Math.min(maximumY, Math.max(savedY, gridBottom - window.innerHeight + 48));
-  if (targetY <= savedY) {
+interface InlineStyleValue {
+  property: string;
+  value: string;
+  priority: string;
+}
+
+function preserveInlineStyles(
+  element: HTMLElement,
+  properties: readonly string[],
+): InlineStyleValue[] {
+  return properties.map((property) => ({
+    property,
+    value: element.style.getPropertyValue(property),
+    priority: element.style.getPropertyPriority(property),
+  }));
+}
+
+function restoreInlineStyles(
+  element: HTMLElement,
+  values: readonly InlineStyleValue[],
+): void {
+  for (const { property, value, priority } of values) {
+    if (value) {
+      element.style.setProperty(property, value, priority);
+    } else {
+      element.style.removeProperty(property);
+    }
+  }
+}
+
+async function revealGridEndSilently(grid: HTMLElement): Promise<void> {
+  const trigger = gridCardCells(grid).at(-1);
+  if (!trigger?.isConnected) {
     await animationFrames(2);
     return;
   }
 
-  const root = document.documentElement;
-  const previousBehavior = root.style.getPropertyValue('scroll-behavior');
-  const previousPriority = root.style.getPropertyPriority('scroll-behavior');
-  root.style.setProperty('scroll-behavior', 'auto', 'important');
+  const rectangle = trigger.getBoundingClientRect();
+  if (rectangle.width <= 0 || rectangle.height <= 0) {
+    await animationFrames(2);
+    return;
+  }
+
+  const isAlreadyVisible =
+    rectangle.bottom > 0 &&
+    rectangle.top < window.innerHeight &&
+    rectangle.right > 0 &&
+    rectangle.left < window.innerWidth;
+  if (isAlreadyVisible) {
+    window.dispatchEvent(new Event('scroll'));
+    document.dispatchEvent(new Event('scroll'));
+    await animationFrames(5);
+    return;
+  }
+
+  const overriddenProperties = [
+    'position',
+    'top',
+    'right',
+    'bottom',
+    'left',
+    'width',
+    'height',
+    'opacity',
+    'pointer-events',
+    'transform',
+    'z-index',
+  ] as const;
+  const originalStyles = preserveInlineStyles(trigger, overriddenProperties);
+  const originalGridMinHeight = preserveInlineStyles(grid, ['min-height']);
+  const gridRectangle = grid.getBoundingClientRect();
+  const viewportLeft = Math.max(
+    0,
+    Math.min(
+      Math.max(0, window.innerWidth - rectangle.width),
+      gridRectangle.left,
+    ),
+  );
   try {
-    window.scrollTo(savedX, targetY);
+    grid.style.setProperty(
+      'min-height',
+      `${gridRectangle.height}px`,
+      'important',
+    );
+    trigger.style.setProperty('position', 'fixed', 'important');
+    trigger.style.setProperty('top', '0', 'important');
+    trigger.style.setProperty('right', 'auto', 'important');
+    trigger.style.setProperty('bottom', 'auto', 'important');
+    trigger.style.setProperty('left', `${viewportLeft}px`, 'important');
+    trigger.style.setProperty('width', `${rectangle.width}px`, 'important');
+    trigger.style.setProperty('height', `${rectangle.height}px`, 'important');
+    trigger.style.setProperty('opacity', '0', 'important');
+    trigger.style.setProperty('pointer-events', 'none', 'important');
+    trigger.style.setProperty('transform', 'none', 'important');
+    trigger.style.setProperty('z-index', '-2147483647', 'important');
+    window.dispatchEvent(new Event('scroll'));
+    document.dispatchEvent(new Event('scroll'));
     await animationFrames(5);
   } finally {
-    window.scrollTo(savedX, savedY);
-    if (previousBehavior) {
-      root.style.setProperty(
-        'scroll-behavior',
-        previousBehavior,
-        previousPriority,
-      );
-    } else {
-      root.style.removeProperty('scroll-behavior');
-    }
+    restoreInlineStyles(trigger, originalStyles);
+    restoreInlineStyles(grid, originalGridMinHeight);
   }
 }
 
@@ -438,7 +508,7 @@ export async function loadCompleteLineupPool(
   options: LineupPoolLoadOptions = {},
 ): Promise<HTMLElement | null> {
   const getGrid = options.getGrid ?? lineupPlayerGrid;
-  const revealEnd = options.pulseGridEnd ?? pulseGridEnd;
+  const revealEnd = options.revealGridEnd ?? revealGridEndSilently;
   const waitForGrowth = options.waitForGrowth ?? waitForGridGrowth;
   const maxPulses = options.maxPulses ?? 32;
   const stableMissesRequired = options.stableMissesRequired ?? 2;
