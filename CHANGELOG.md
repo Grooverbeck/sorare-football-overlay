@@ -3,6 +3,18 @@
 Alle wichtigen Änderungen am Sorare Football Stats Overlay werden in dieser
 Datei dokumentiert.
 
+## 0.4.1 – 22. August 2026
+
+### Hotfix für Captain-Karten
+
+- Sorare legt bei ausgewählten Captains eine eigene Dekoration über die Karte.
+  Diese wurde von der Erweiterung fälschlich als verdeckende Oberfläche
+  behandelt und konnte dadurch sämtliche Klammern des Captains ausblenden.
+- Captain-Karten bleiben nun sichtbar. Bei Torhütern und Verteidigern wird
+  dadurch insbesondere die Clean-Sheet-Wahrscheinlichkeit wieder angezeigt.
+- Tatsächlich verdeckte Karten bleiben weiterhin ausgeblendet, damit Klammern
+  nicht über fixierten Menüs oder anderen Sorare-Oberflächen schweben.
+
 ## 0.4.0 – 22. August 2026
 
 ### Spieler im Lineup Builder besser vergleichen
