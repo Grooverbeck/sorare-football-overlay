@@ -3,6 +3,28 @@
 Alle wichtigen Änderungen am Sorare Football Stats Overlay werden in dieser
 Datei dokumentiert.
 
+## 0.4.0 – 22. August 2026
+
+### Spieler im Lineup Builder besser vergleichen
+
+- Im vorhandenen Sorare-Sortiermenü stehen jetzt zusätzlich **Torquote** und
+  **AA** zur Auswahl.
+- **Torquote** vergleicht echte Marktquoten und historische Ersatzwerte in
+  einer gemeinsamen Reihenfolge. Spieler ohne Marktquote verschwinden dadurch
+  nicht automatisch am Ende der Liste.
+- **AA** sortiert nach dem durchschnittlichen All-Around Score der letzten zehn
+  gültigen Spiele. Es zählen nur Einsätze mit mindestens 60 Minuten.
+- Fehlende Werte bleiben am Listenende. Neu eintreffende Daten aktualisieren
+  die Reihenfolge automatisch.
+- Beim Wechsel zurück zu einer Sorare-Sortierung wird die ursprüngliche
+  Reihenfolge zuverlässig wiederhergestellt.
+
+### Ruhigere Anzeige beim Scrollen
+
+- Klammern werden ausgeblendet, sobald das zugehörige Kartenbild hinter einer
+  fixierten Sorare-Leiste oder einem abgeschnittenen Bereich verschwindet.
+  Dadurch schweben Werte nicht mehr über anderen Bedienelementen.
+
 ## 0.3.4 – 22. August 2026
 
 ### Mehr und verlässlichere Quoten
