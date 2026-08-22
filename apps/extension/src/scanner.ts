@@ -32,6 +32,7 @@ const discoveryAttributes = new Set([
   'alt',
   'src',
   'aria-label',
+  'aria-expanded',
   'data-position',
   'data-card-position',
 ]);
@@ -1144,6 +1145,7 @@ export class SorareCardScanner {
         'inert',
         'aria-hidden',
         'aria-label',
+        'aria-expanded',
         'data-position',
         'data-card-position',
       ],

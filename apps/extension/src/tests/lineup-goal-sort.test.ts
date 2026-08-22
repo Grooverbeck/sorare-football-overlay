@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   LineupGoalOddsSorter,
-  lineupGoalSortControlAttribute,
+  lineupGoalSortOptionAttribute,
   lineupGoalSortProbabilityAttribute,
   lineupGoalSortSourceAttribute,
   setLineupGoalSortValue,
@@ -13,15 +13,53 @@ function lineupBuilderMarkup(): string {
     <header>
       <div data-picker-toolbar>
         <input type="search" placeholder="Spieler suchen">
-        <button type="button" aria-haspopup="dialog" data-native-sort>
-          Durchschnittsbewertung
-          <svg data-icon="iconChevronDown"></svg>
+        <button
+          type="button"
+          aria-haspopup="dialog"
+          aria-expanded="true"
+          aria-controls="sort-dialog"
+          data-native-sort
+        >
+          <span><div>
+            <div data-native-trigger-label>Durchschnittsbewertung</div>
+            <svg data-icon="iconChevronDown"></svg>
+          </div></span>
         </button>
         <button type="button" aria-haspopup="dialog" data-native-filter>
           <svg data-icon="iconFilter"></svg>
         </button>
       </div>
     </header>
+    <div id="sort-dialog" role="dialog" data-state="open">
+      <form>
+        <div>
+          <div>Sortieren nach</div>
+          <div data-native-options>
+            <button type="button" data-native-option="average">
+              <div>
+                <div><span><svg viewBox="0 0 24 24" fill="var(--c-blue-400)"><circle></circle><circle></circle></svg><input type="radio" checked></span></div>
+                <div>Durchschnittsbewertung</div>
+              </div>
+              <div>Letzte 10 Wertungen (L10)</div>
+            </button>
+            <button type="button" data-native-option="soon">
+              <div>
+                <div><span><svg viewBox="0 0 24 24" fill="none"><circle></circle><circle></circle></svg><input type="radio"></span></div>
+                <div>Spielt bald</div>
+              </div>
+              <div>Zeitpunkt der ersten Partie</div>
+            </button>
+            <button type="button" data-native-option="edition">
+              <div>
+                <div><span><svg viewBox="0 0 24 24" fill="none"><circle></circle><circle></circle></svg><input type="radio"></span></div>
+                <div>Sonderedition</div>
+              </div>
+              <div>Seltenste Editionen zuerst</div>
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
     <div data-player-grid style="display: grid">
       <div data-cell="market">
         <article data-player="market">
@@ -66,6 +104,26 @@ describe('lineup goal-odds sorting', () => {
     );
   });
 
+  it('adds the option only while Sorare has its sort dialog open', () => {
+    const trigger = document.querySelector<HTMLButtonElement>('[data-native-sort]');
+    const dialog = document.querySelector<HTMLElement>('#sort-dialog');
+    if (!trigger || !dialog) throw new Error('Expected native sort controls');
+    trigger.setAttribute('aria-expanded', 'false');
+    dialog.setAttribute('data-state', 'closed');
+
+    sorter.start();
+    expect(
+      document.querySelector(`[${lineupGoalSortOptionAttribute}]`),
+    ).toBeNull();
+
+    trigger.setAttribute('aria-expanded', 'true');
+    dialog.setAttribute('data-state', 'open');
+    sorter.scan(document);
+    expect(
+      document.querySelector(`[${lineupGoalSortOptionAttribute}]`),
+    ).not.toBeNull();
+  });
+
   it('mixes market and historical probabilities in one descending order', async () => {
     const market = document.querySelector<HTMLElement>('[data-player="market"]');
     const historical = document.querySelector<HTMLElement>(
@@ -76,11 +134,18 @@ describe('lineup goal-odds sorting', () => {
     setLineupGoalSortValue(historical, 0.5, 'historical');
 
     sorter.start();
-    const control = document.querySelector<HTMLButtonElement>(
-      `[${lineupGoalSortControlAttribute}]`,
+    const option = document.querySelector<HTMLButtonElement>(
+      `[${lineupGoalSortOptionAttribute}]`,
     );
-    expect(control).not.toBeNull();
-    control!.click();
+    expect(option).not.toBeNull();
+    expect(option?.closest('[data-native-options]')).not.toBeNull();
+    expect(
+      document.querySelector(
+        `[data-picker-toolbar] > [${lineupGoalSortOptionAttribute}]`,
+      ),
+    ).toBeNull();
+    expect(option?.textContent).toContain('Markt & Historie gemeinsam');
+    option!.click();
 
     await vi.waitFor(() => {
       expect(
@@ -94,8 +159,17 @@ describe('lineup goal-odds sorting', () => {
     expect(
       document.querySelector<HTMLElement>('[data-cell="missing"]')?.style.order,
     ).toBe('-1');
-    expect(control?.getAttribute('aria-pressed')).toBe('true');
-    expect(control?.textContent).toContain('Torquote ↓');
+    expect(option?.querySelector<HTMLInputElement>('input[type="radio"]')?.checked)
+      .toBe(true);
+    expect(
+      document.querySelector<HTMLElement>('[data-native-trigger-label]')
+        ?.textContent,
+    ).toBe('Torquote');
+    expect(
+      document.querySelector<HTMLInputElement>(
+        '[data-native-option="average"] input[type="radio"]',
+      )?.checked,
+    ).toBe(false);
   });
 
   it('re-sorts when a late historical value arrives and restores Sorare order', async () => {
@@ -107,8 +181,10 @@ describe('lineup goal-odds sorting', () => {
     const historicalCell = document.querySelector<HTMLElement>(
       '[data-cell="historical"]',
     );
-    const nativeSort = document.querySelector<HTMLButtonElement>('[data-native-sort]');
-    if (!market || !historical || !marketCell || !historicalCell || !nativeSort) {
+    const nativeOption = document.querySelector<HTMLButtonElement>(
+      '[data-native-option="soon"]',
+    );
+    if (!market || !historical || !marketCell || !historicalCell || !nativeOption) {
       throw new Error('Expected lineup sorting fixture');
     }
     marketCell.style.setProperty('order', '7', 'important');
@@ -116,7 +192,7 @@ describe('lineup goal-odds sorting', () => {
     setLineupGoalSortValue(historical, 0.2, 'historical');
     sorter.start();
     document
-      .querySelector<HTMLButtonElement>(`[${lineupGoalSortControlAttribute}]`)
+      .querySelector<HTMLButtonElement>(`[${lineupGoalSortOptionAttribute}]`)
       ?.click();
     await vi.waitFor(() => expect(marketCell.style.order).toBe('-3'));
 
@@ -129,9 +205,18 @@ describe('lineup goal-odds sorting', () => {
       'historical',
     );
 
-    nativeSort.click();
+    nativeOption.click();
     expect(marketCell.style.getPropertyValue('order')).toBe('7');
     expect(marketCell.style.getPropertyPriority('order')).toBe('important');
     expect(historicalCell.style.order).toBe('');
+    expect(
+      document.querySelector<HTMLElement>('[data-native-trigger-label]')
+        ?.textContent,
+    ).toBe('Durchschnittsbewertung');
+    expect(
+      document.querySelector<HTMLInputElement>(
+        `[${lineupGoalSortOptionAttribute}] input[type="radio"]`,
+      )?.checked,
+    ).toBe(false);
   });
 });

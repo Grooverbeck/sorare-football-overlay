@@ -1,5 +1,5 @@
-export const lineupGoalSortControlAttribute =
-  'data-sorare-overlay-goal-sort-control';
+export const lineupGoalSortOptionAttribute =
+  'data-sorare-overlay-goal-sort-option';
 export const lineupGoalSortProbabilityAttribute =
   'data-sorare-overlay-goal-sort-probability';
 export const lineupGoalSortSourceAttribute =
@@ -11,6 +11,12 @@ export type LineupGoalSortSource = 'market' | 'historical';
 
 const cardImageSelector =
   'img[src*="/cardsamplepicture/"], img[alt$=" - common" i], img[alt$=" - limited" i], img[alt$=" - rare" i], img[alt$=" - super rare" i], img[alt$=" - unique" i]';
+const nativeTriggerLabelAttribute =
+  'data-sorare-overlay-goal-sort-trigger-label';
+const nativeMenuActiveAttribute =
+  'data-sorare-overlay-goal-sort-active';
+const nativeMenuOptionAttribute =
+  'data-sorare-overlay-native-sort-option';
 
 interface OriginalOrder {
   value: string;
@@ -73,37 +79,71 @@ function nativeSortButton(): HTMLButtonElement | null {
   );
 }
 
-function createBallIcon(): SVGSVGElement {
-  const namespace = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(namespace, 'svg');
-  svg.setAttribute('viewBox', '0 0 16 16');
-  svg.setAttribute('aria-hidden', 'true');
-  svg.setAttribute('focusable', 'false');
+function nativeSortDialog(trigger: HTMLButtonElement): HTMLElement | null {
+  const controls = trigger.getAttribute('aria-controls');
+  if (!controls) return null;
+  const dialog = document.getElementById(controls);
+  return dialog?.getAttribute('role') === 'dialog' &&
+    dialog.getAttribute('data-state') !== 'closed'
+    ? dialog
+    : null;
+}
 
-  const circle = document.createElementNS(namespace, 'circle');
-  circle.setAttribute('cx', '8');
-  circle.setAttribute('cy', '8');
-  circle.setAttribute('r', '6.5');
-  circle.setAttribute('fill', 'none');
-  circle.setAttribute('stroke', 'currentColor');
-  circle.setAttribute('stroke-width', '1.4');
-
-  const center = document.createElementNS(namespace, 'path');
-  center.setAttribute('d', 'M8 4.4 10.2 6 9.35 8.6H6.65L5.8 6Z');
-  center.setAttribute('fill', 'currentColor');
-
-  const seams = document.createElementNS(namespace, 'path');
-  seams.setAttribute(
-    'd',
-    'M8 4.4V1.6M5.8 6 3.15 5.15M6.65 8.6 5.05 11.05M9.35 8.6 10.95 11.05M10.2 6 12.85 5.15',
+function nativeSortOptions(dialog: HTMLElement): HTMLButtonElement[] {
+  return Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).filter(
+    (button) =>
+      !button.hasAttribute(lineupGoalSortOptionAttribute) &&
+      Boolean(button.querySelector('input[type="radio"]')),
   );
-  seams.setAttribute('fill', 'none');
-  seams.setAttribute('stroke', 'currentColor');
-  seams.setAttribute('stroke-width', '1.1');
-  seams.setAttribute('stroke-linecap', 'round');
+}
 
-  svg.append(circle, center, seams);
-  return svg;
+function nativeSortTriggerLabel(
+  trigger: HTMLButtonElement,
+): HTMLElement | null {
+  const leaves = Array.from(trigger.querySelectorAll<HTMLElement>('div')).filter(
+    (element) =>
+      element.children.length === 0 && Boolean(element.textContent?.trim()),
+  );
+  return leaves[0] ?? null;
+}
+
+function setRadioVisual(button: HTMLButtonElement, checked: boolean): void {
+  const radio = button.querySelector<HTMLInputElement>('input[type="radio"]');
+  if (radio) {
+    radio.checked = checked;
+    radio.toggleAttribute('checked', checked);
+  }
+  const graphic = button.querySelector<SVGSVGElement>('svg');
+  const circles = graphic?.querySelectorAll<SVGCircleElement>('circle');
+  if (!graphic || !circles || circles.length < 2) return;
+  const tone = 'var(--c-blue-400)';
+  graphic.setAttribute('fill', checked ? tone : 'none');
+  circles[0]?.setAttribute('stroke', checked ? tone : 'currentColor');
+  circles[0]?.setAttribute('fill', 'transparent');
+  circles[1]?.setAttribute('fill', checked ? tone : 'transparent');
+}
+
+function createNativeGoalSortOption(
+  template: HTMLButtonElement,
+): HTMLButtonElement | null {
+  const option = template.cloneNode(true) as HTMLButtonElement;
+  option.setAttribute(lineupGoalSortOptionAttribute, 'true');
+  option.title =
+    'Nach Torwahrscheinlichkeit sortieren – Marktquoten und historische Werte werden gemeinsam verglichen.';
+  for (const element of option.querySelectorAll<HTMLElement>('[id]')) {
+    element.removeAttribute('id');
+  }
+  const textLeaves = Array.from(option.querySelectorAll<HTMLElement>('div')).filter(
+    (element) =>
+      element.children.length === 0 && Boolean(element.textContent?.trim()),
+  );
+  const label = textLeaves[0];
+  const description = textLeaves[textLeaves.length - 1];
+  if (!label || !description || label === description) return null;
+  label.textContent = 'Torquote';
+  description.textContent = 'Markt & Historie gemeinsam';
+  setRadioVisual(option, false);
+  return option;
 }
 
 function directGridCell(container: HTMLElement): HTMLElement | null {
@@ -166,7 +206,12 @@ function sortableGrid(): HTMLElement | null {
 
 export class LineupGoalOddsSorter {
   private root: HTMLElement | null = null;
-  private control: HTMLButtonElement | null = null;
+  private nativeTrigger: HTMLButtonElement | null = null;
+  private nativeTriggerLabel: HTMLElement | null = null;
+  private originalTriggerLabel = '';
+  private nativeMenu: HTMLElement | null = null;
+  private menuOption: HTMLButtonElement | null = null;
+  private readonly nativeRadioStates = new Map<HTMLInputElement, boolean>();
   private active = false;
   private sortFrame: number | undefined;
   private readonly originalOrders = new Map<HTMLElement, OriginalOrder>();
@@ -178,7 +223,12 @@ export class LineupGoalOddsSorter {
   private readonly handleDocumentClick = (event: Event): void => {
     if (!this.active || !(event.target instanceof Element)) return;
     const button = event.target.closest<HTMLButtonElement>('button');
-    if (button && button !== this.control && isNativeSortButton(button)) {
+    if (
+      button &&
+      button !== this.menuOption &&
+      this.nativeMenu?.contains(button) &&
+      button.querySelector('input[type="radio"]')
+    ) {
       this.setActive(false);
     }
   };
@@ -212,74 +262,154 @@ export class LineupGoalOddsSorter {
     window.removeEventListener('hashchange', this.handleRouteChange);
     this.cancelSortFrame();
     this.setActive(false);
-    this.removeControl();
+    this.removeMenuOption();
+    this.restoreNativeTrigger();
     this.root = null;
   }
 
   scan(_root: ParentNode): void {
     if (!supportsLineupGoalSortPath(window.location.pathname)) {
       this.setActive(false);
-      this.removeControl();
+      this.removeMenuOption();
+      this.restoreNativeTrigger();
       return;
     }
-    this.mountControl();
+    this.syncNativeSortUi();
     if (this.active) this.scheduleSort();
   }
 
-  private mountControl(): void {
-    const nativeSort = nativeSortButton();
-    if (!nativeSort?.parentElement) return;
-    if (
-      this.control?.isConnected &&
-      this.control.parentElement === nativeSort.parentElement
-    ) {
+  private syncNativeSortUi(): void {
+    const trigger = nativeSortButton();
+    if (!trigger) {
+      this.removeMenuOption();
+      this.restoreNativeTrigger();
       return;
     }
-    this.removeControl();
-
-    const control = document.createElement('button');
-    control.type = 'button';
-    control.setAttribute(lineupGoalSortControlAttribute, 'true');
-    control.setAttribute('aria-pressed', 'false');
-    control.title =
-      'Nach Torwahrscheinlichkeit sortieren – Marktquoten und historische Werte werden gemeinsam verglichen.';
-    const label = document.createElement('span');
-    label.dataset.sorareOverlayGoalSortLabel = 'true';
-    label.textContent = 'Torquote';
-    control.append(createBallIcon(), label);
-    control.addEventListener('click', () => this.setActive(!this.active));
-    nativeSort.insertAdjacentElement('afterend', control);
-    this.control = control;
-    this.updateControl();
+    this.syncNativeTrigger(trigger);
+    const dialog = nativeSortDialog(trigger);
+    if (!dialog) {
+      this.removeMenuOption();
+      return;
+    }
+    this.mountMenuOption(dialog, trigger);
   }
 
-  private removeControl(): void {
-    this.control?.remove();
-    this.control = null;
+  private syncNativeTrigger(trigger: HTMLButtonElement): void {
+    if (trigger !== this.nativeTrigger) {
+      this.restoreNativeTrigger();
+      this.nativeTrigger = trigger;
+    }
+    const label = nativeSortTriggerLabel(trigger);
+    if (!label) return;
+    if (label !== this.nativeTriggerLabel) {
+      this.nativeTriggerLabel = label;
+      this.originalTriggerLabel = label.textContent?.trim() ?? '';
+    }
+    if (this.active) {
+      if (!label.hasAttribute(nativeTriggerLabelAttribute)) {
+        this.originalTriggerLabel = label.textContent?.trim() ?? '';
+      }
+      label.setAttribute(nativeTriggerLabelAttribute, 'true');
+      label.textContent = 'Torquote';
+    } else if (label.hasAttribute(nativeTriggerLabelAttribute)) {
+      label.textContent = this.originalTriggerLabel;
+      label.removeAttribute(nativeTriggerLabelAttribute);
+    } else {
+      this.originalTriggerLabel = label.textContent?.trim() ?? '';
+    }
+  }
+
+  private restoreNativeTrigger(): void {
+    if (this.nativeTriggerLabel?.hasAttribute(nativeTriggerLabelAttribute)) {
+      this.nativeTriggerLabel.textContent = this.originalTriggerLabel;
+      this.nativeTriggerLabel.removeAttribute(nativeTriggerLabelAttribute);
+    }
+    this.nativeTrigger = null;
+    this.nativeTriggerLabel = null;
+    this.originalTriggerLabel = '';
+  }
+
+  private mountMenuOption(
+    dialog: HTMLElement,
+    trigger: HTMLButtonElement,
+  ): void {
+    if (this.menuOption?.isConnected && this.nativeMenu === dialog) {
+      this.updateMenuSelection();
+      return;
+    }
+    this.removeMenuOption();
+    const nativeOptions = nativeSortOptions(dialog);
+    const template = nativeOptions[nativeOptions.length - 1];
+    const parent = template?.parentElement;
+    if (!template || !parent) return;
+    const option = createNativeGoalSortOption(template);
+    if (!option) return;
+    option.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.setActive(true);
+      if (trigger.getAttribute('aria-expanded') === 'true') trigger.click();
+    });
+    parent.append(option);
+    this.nativeMenu = dialog;
+    this.menuOption = option;
+    this.updateMenuSelection();
+  }
+
+  private updateMenuSelection(): void {
+    if (!this.nativeMenu || !this.menuOption) return;
+    this.nativeMenu.toggleAttribute(nativeMenuActiveAttribute, this.active);
+    setRadioVisual(this.menuOption, this.active);
+    if (this.active) {
+      for (const button of nativeSortOptions(this.nativeMenu)) {
+        button.setAttribute(nativeMenuOptionAttribute, 'true');
+        const radio = button.querySelector<HTMLInputElement>(
+          'input[type="radio"]',
+        );
+        if (!radio) continue;
+        if (!this.nativeRadioStates.has(radio)) {
+          this.nativeRadioStates.set(radio, radio.checked);
+        }
+        radio.checked = false;
+      }
+    } else {
+      this.restoreNativeRadioStates();
+    }
+  }
+
+  private restoreNativeRadioStates(): void {
+    for (const [radio, checked] of this.nativeRadioStates) {
+      if (radio.isConnected) radio.checked = checked;
+    }
+    this.nativeRadioStates.clear();
+    for (const button of this.nativeMenu?.querySelectorAll<HTMLElement>(
+      `[${nativeMenuOptionAttribute}]`,
+    ) ?? []) {
+      button.removeAttribute(nativeMenuOptionAttribute);
+    }
+    this.nativeMenu?.removeAttribute(nativeMenuActiveAttribute);
+  }
+
+  private removeMenuOption(): void {
+    this.restoreNativeRadioStates();
+    this.menuOption?.remove();
+    this.menuOption = null;
+    this.nativeMenu = null;
   }
 
   private setActive(active: boolean): void {
     if (this.active === active) {
-      this.updateControl();
+      this.syncNativeSortUi();
       return;
     }
     this.active = active;
-    this.updateControl();
+    this.syncNativeSortUi();
     if (active) {
       this.scheduleSort();
     } else {
       this.cancelSortFrame();
       this.restoreOriginalOrders();
     }
-  }
-
-  private updateControl(): void {
-    if (!this.control) return;
-    this.control.setAttribute('aria-pressed', String(this.active));
-    const label = this.control.querySelector<HTMLElement>(
-      '[data-sorare-overlay-goal-sort-label]',
-    );
-    if (label) label.textContent = this.active ? 'Torquote ↓' : 'Torquote';
   }
 
   private scheduleSort(): void {
