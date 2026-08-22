@@ -13,7 +13,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace=@sorare-overlay/shared && npm run build --workspace=@sorare-overlay/api && npm run build --workspace=@sorare-overlay/extension",
+    "build": "npm run build --workspace=@sorare-overlay/shared && npm run build --workspace=@sorare-overlay/api && npm run build --workspace=@sorare-overlay/extension && npm run build --workspace=@sorare-overlay/landing",
     "benchmark:mls-aa": "npm run benchmark:mls-aa --workspace=@sorare-overlay/api",
     "benchmark:mls-cs": "npm run benchmark:mls-cs --workspace=@sorare-overlay/api",
     "benchmark:mls-market": "npm run benchmark:mls-market --workspace=@sorare-overlay/api",
@@ -26,11 +26,12 @@
     "dev:api": "npm run dev --workspace=@sorare-overlay/api",
     "dev:cloudflare": "npm run cf:dev --workspace=@sorare-overlay/api",
     "dev:extension": "npm run dev --workspace=@sorare-overlay/extension",
+    "dev:landing": "npm run dev --workspace=@sorare-overlay/landing",
     "deploy:cloudflare:dry-run": "npm run cf:dry-run --workspace=@sorare-overlay/api",
     "package:chrome-web-store": "npm run package:store --workspace=@sorare-overlay/extension",
     "schema:pull": "npm run schema:pull --workspace=@sorare-overlay/api",
     "usage:sports-game-odds": "npm run build --workspace=@sorare-overlay/shared && npm run usage:sports-game-odds --workspace=@sorare-overlay/api",
-    "test": "npm run build --workspace=@sorare-overlay/shared && npm run test --workspace=@sorare-overlay/shared && npm run test --workspace=@sorare-overlay/api && npm run test --workspace=@sorare-overlay/extension",
+    "test": "npm run build --workspace=@sorare-overlay/shared && npm run test --workspace=@sorare-overlay/shared && npm run test --workspace=@sorare-overlay/api && npm run test --workspace=@sorare-overlay/extension && npm run test --workspace=@sorare-overlay/landing",
     "test:watch": "npm run test:watch --workspaces --if-present",
     "typecheck": "npm run build --workspace=@sorare-overlay/shared && npm run typecheck --workspace=@sorare-overlay/api && npm run typecheck --workspace=@sorare-overlay/extension",
     "verify": "npm run codegen && npm run typecheck && npm run test && npm run build"

@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#080b11">
+    <meta name="color-scheme" content="dark">
+    <meta name="description" content="Das inoffizielle Sorare Football Overlay ergänzt Karten direkt um AA, Tor-, Assist-, Clean-Sheet- und Spielwahrscheinlichkeiten.">
+    <meta property="og:locale" content="de_DE">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="Sorare Football Overlay — Mehr Informationen auf jeder Karte">
+    <meta property="og:description" content="AA, Quoten und Spielwahrscheinlichkeiten direkt auf deinen Sorare-Karten. Ohne eigene API-Schlüssel oder Sorare-Zugangsdaten.">
+    <meta property="og:image" content="/assets/og.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="Sorare Football Overlay — Mehr Informationen direkt auf deinen Karten">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Sorare Football Overlay">
+    <meta name="twitter:description" content="Mehr Informationen direkt auf deinen Sorare-Karten.">
+    <meta name="twitter:image" content="/assets/og.png">
+    <title>Sorare Football Overlay — Mehr Kontext auf jeder Karte</title>
+    <link rel="icon" href="/assets/icon-128.png" type="image/png">
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/site.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Zum Inhalt springen</a>
+
+    <header class="site-header" data-header>
+      <div class="header-inner">
+        <a class="brand" href="#top" aria-label="Sorare Football Overlay – Startseite">
+          <img src="/assets/icon-128.png" alt="" width="40" height="40">
+          <span class="brand-name">Sorare Football Overlay</span>
+          <span class="version">v0.4.0</span>
+        </a>
+
+        <button class="menu-toggle" type="button" aria-label="Navigation öffnen" aria-expanded="false" aria-controls="site-nav" data-menu-toggle>
+          <span></span><span></span>
+          <span class="sr-only">Navigation öffnen</span>
+        </button>
+
+        <nav id="site-nav" aria-label="Hauptnavigation" data-nav>
+          <a href="#features">Features</a>
+          <a href="#screenshots">Screenshots</a>
+          <a href="#installation">Installation</a>
+          <a href="#faq">FAQ</a>
+          <a class="nav-download" href="https://github.com/Grooverbeck/sorare-football-overlay/releases/latest">Download <span aria-hidden="true">↗</span></a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top">
+        <div class="hero-copy reveal">
+          <p class="eyebrow"><span></span> Dein nächster Lineup-Vorteil</p>
+          <h1>Mehr Informationen.<br><em>Direkt auf deinen Karten.</em></h1>
+          <p class="hero-lede">AA, Tor- und Assistquoten sowie Spielwahrscheinlichkeiten erscheinen dort, wo du entscheidest — verständlich, farbcodiert und automatisch aktuell.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="https://github.com/Grooverbeck/sorare-football-overlay/releases/latest">
+              Extension herunterladen <span aria-hidden="true">↗</span>
+            </a>
+            <a class="button button-secondary" href="#features">Features ansehen <span aria-hidden="true">↓</span></a>
+          </div>
+          <div class="trust-strip" aria-label="Wichtige Hinweise">
+            <span><i aria-hidden="true">✓</i> Keine eigenen API-Schlüssel</span>
+            <span><i aria-hidden="true">✓</i> Keine Sorare-Zugangsdaten</span>
+            <span><i aria-hidden="true">✓</i> Chrome &amp; Edge</span>
+          </div>
+        </div>
+
+        <figure class="hero-visual reveal" data-delay="1">
+          <div class="window-bar" aria-hidden="true">
+            <span></span><span></span><span></span>
+            <p>sorare.com · Lineup Builder</p>
+            <b>Overlay aktiv</b>
+          </div>
+          <img src="/assets/screenshots/lineup-builder-live.webp" alt="Echter Sorare Lineup Builder mit farbcodierten AA-, Tor-, Assist- und Spielwahrscheinlichkeiten auf mehreren Karten" width="900" height="720">
+          <figcaption><span></span> Live im Lineup Builder · echte Daten, keine Mockups</figcaption>
+        </figure>
+      </section>
+
+      <section class="proof-bar" aria-label="Produktvorteile">
+        <div>
+          <strong>60+ Min.</strong>
+          <span>für jeden gültigen AA-Einsatz</span>
+        </div>
+        <div>
+          <strong>2 neue Sortierungen</strong>
+          <span>Torquote und AA in Sorare</span>
+        </div>
+        <div>
+          <strong>0 eigene Schlüssel</strong>
+          <span>installieren und loslegen</span>
+        </div>
+        <div>
+          <strong>Automatisch</strong>
+          <span>neue Quoten ohne Seiten-Reload</span>
+        </div>
+      </section>
+
+      <section class="section section-features" id="features">
+        <div class="section-heading reveal">
+          <div>
+            <p class="eyebrow"><span></span> Alles im Blick</p>
+            <h2>Aus Karten werden<br><em>klare Entscheidungen.</em></h2>
+          </div>
+          <p>Das Overlay ergänzt genau den Kontext, der beim Vergleichen fehlt — direkt an der Karte, ohne extra Tabs oder Zahlensalat.</p>
+        </div>
+
+        <div class="metric-showcase">
+          <div class="single-card-stage reveal">
+            <div class="stage-glow" aria-hidden="true"></div>
+            <p class="stage-label">Echte Kartenansicht</p>
+            <img src="/assets/screenshots/messi-card-live.webp" alt="Lionel-Messi-Karte mit Sorare-Startelfanzeige, AA 19,7, Torquote 70 Prozent, Assistquote 50 Prozent und Spielwahrscheinlichkeiten" width="165" height="325">
+            <div class="card-callout callout-aa">
+              <span>AA L10</span>
+              <strong>nur 60+ Minuten</strong>
+            </div>
+            <div class="card-callout callout-market">
+              <span>Tor &amp; Assist</span>
+              <strong>echte Marktquoten</strong>
+            </div>
+            <div class="card-callout callout-match">
+              <span>Spielchance</span>
+              <strong>Sieg · Remis · Niederlage</strong>
+            </div>
+          </div>
+
+          <div class="feature-list">
+            <article class="feature-row reveal">
+              <span class="feature-number">01</span>
+              <div>
+                <h3>AA, der kurze Einsätze ausblendet</h3>
+                <p>AA L10 zählt bis zu zehn Spiele beim aktuellen Verein — und nur Einsätze mit mindestens 60 Minuten. So verzerren kurze Einwechslungen deinen Vergleich nicht.</p>
+              </div>
+              <span class="metric-chip metric-purple">AA 19.7</span>
+            </article>
+            <article class="feature-row reveal" data-delay="1">
+              <span class="feature-number">02</span>
+              <div>
+                <h3>Tor- und Assistchance getrennt</h3>
+                <p>Echte Buchmacherwerte werden als verständliche Wahrscheinlichkeit gezeigt. Fehlt ein Markt, kann optional ein klar gekennzeichneter historischer Wert einspringen.</p>
+              </div>
+              <span class="metric-chip metric-green">70% · 50%</span>
+            </article>
+            <article class="feature-row reveal" data-delay="2">
+              <span class="feature-number">03</span>
+              <div>
+                <h3>Die nächste Partie sofort einordnen</h3>
+                <p>Sieg, Remis und Niederlage bilden einen proportionalen Balken. Torhüter und Verteidiger erhalten zusätzlich die Clean-Sheet-Wahrscheinlichkeit.</p>
+              </div>
+              <span class="metric-chip metric-blue">69 · 17 · 14</span>
+            </article>
+          </div>
+        </div>
+
+        <div class="feature-grid">
+          <article class="feature-card reveal">
+            <span class="card-icon icon-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <h3>Farben statt Grübeln</h3>
+            <p>Rot bis Lila ordnet schwache und starke Werte auf einen Blick ein. Die AA- und Clean-Sheet-Vergleiche basieren überwiegend auf MLS-Benchmarks.</p>
+          </article>
+          <article class="feature-card reveal" data-delay="1">
+            <span class="card-icon icon-refresh" aria-hidden="true">↻</span>
+            <h3>Neue Quoten kommen zu dir</h3>
+            <p>Sobald neue Marktdaten eintreffen, aktualisieren sich sichtbare Karten automatisch. Vorhandene Werte bleiben bei kurzen Störungen stehen.</p>
+          </article>
+          <article class="feature-card reveal" data-delay="2">
+            <span class="card-icon icon-start" aria-hidden="true">XI</span>
+            <h3>Startelfchance bleibt sichtbar</h3>
+            <p>Die bereits von Sorare angezeigte Startelfwahrscheinlichkeit wird farblich hervorgehoben. Das Overlay berechnet dafür keine eigene Prognose.</p>
+          </article>
+          <article class="feature-card reveal">
+            <span class="card-icon icon-compact" aria-hidden="true">↔</span>
+            <h3>Compact View auf Wunsch</h3>
+            <p>Auf Squad- und Lineups-Seiten bleiben zunächst nur kleine Farbsignale stehen. Beim Überfahren klappt der vollständige Wert auf.</p>
+          </article>
+          <article class="feature-card reveal" data-delay="1">
+            <span class="card-icon icon-sort" aria-hidden="true">⇅</span>
+            <h3>Sortieren nach Torquote oder AA</h3>
+            <p>Die zwei neuen Optionen sitzen im bekannten Sorare-Menü. Treffen Daten später ein, wird die Reihenfolge selbstständig nachgezogen.</p>
+          </article>
+          <article class="feature-card feature-card-honest reveal" data-delay="2">
+            <span class="card-icon icon-honest" aria-hidden="true">i</span>
+            <h3>Was wirklich angezeigt wird</h3>
+            <p>Tor und Assist erscheinen getrennt. Eine kombinierte Tor-oder-Assistquote wird im aktuellen Overlay nicht als eigener Wert eingeblendet.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section source-section">
+        <div class="source-copy reveal">
+          <p class="eyebrow"><span></span> Die beste verfügbare Quelle</p>
+          <h2>Marktdaten zuerst.<br><em>Historie nur als Ersatz.</em></h2>
+          <p>Es wird nichts künstlich zusammengerechnet. Für jeden Spieler hat eine echte Marktquote Vorrang. Nur wenn sie fehlt und du den Ersatz aktivierst, erscheint ein historischer Wert in Klammern.</p>
+        </div>
+        <ol class="source-flow reveal" data-delay="1">
+          <li>
+            <span class="flow-index">1</span>
+            <div><strong>Markt prüfen</strong><small>Ist eine echte Quote verfügbar?</small></div>
+            <b class="flow-state state-live">Live</b>
+          </li>
+          <li>
+            <span class="flow-index">2</span>
+            <div><strong>Lücke sinnvoll füllen</strong><small>Optional mit L10, L15 oder L40.</small></div>
+            <b class="flow-state state-history">Historie</b>
+          </li>
+          <li>
+            <span class="flow-index">3</span>
+            <div><strong>Automatisch ersetzen</strong><small>Neue Marktquote schlägt den Ersatzwert.</small></div>
+            <b class="flow-state state-refresh">Aktuell</b>
+          </li>
+        </ol>
+      </section>
+
+      <section class="section screenshot-section" id="screenshots">
+        <div class="section-heading reveal">
+          <div>
+            <p class="eyebrow"><span></span> Echte Produktscreenshots</p>
+            <h2>Sieh, was du<br><em>wirklich bekommst.</em></h2>
+          </div>
+          <p>Die Sorare-Ausschnitte 01 bis 03 stammen aus echten Seiten und enthalten keine Nutzernamen, Wallet-Daten, Kontostände oder privaten Lineups. Motiv 04 ist klar als UI-Darstellung gekennzeichnet.</p>
+        </div>
+
+        <div class="screenshot-grid">
+          <figure class="shot shot-wide reveal">
+            <div class="shot-frame">
+              <img src="/assets/screenshots/lineup-builder-live.webp" alt="Mehrere bekannte Spieler im Sorare Lineup Builder mit AA-, Tor-, Assist-, Startelf- und Spielwerten" width="900" height="720" loading="lazy">
+            </div>
+            <figcaption><span>01</span><div><strong>Direktvergleich im Lineup Builder</strong><small>AA, Tor, Assist und H/D/A über mehrere Karten hinweg.</small></div></figcaption>
+          </figure>
+
+          <figure class="shot shot-sort reveal" data-delay="1">
+            <div class="shot-frame">
+              <img src="/assets/screenshots/sort-menu.webp" alt="Sorare-Sortiermenü mit den neuen Optionen Torquote und AA" width="1553" height="1023" loading="lazy">
+            </div>
+            <figcaption><span>02</span><div><strong>Zwei neue Sortierungen</strong><small>Torquote und AA sitzen im vertrauten Sorare-Menü.</small></div></figcaption>
+          </figure>
+
+          <figure class="shot shot-grid reveal">
+            <div class="shot-frame">
+              <img src="/assets/screenshots/defender-forward-live.webp" alt="Aktueller Sorare-Kartenausschnitt mit Defender und Forward sowie AA-, Clean-Sheet-, Tor-, Assist- und Spielwerten" width="330" height="405" loading="lazy">
+            </div>
+            <figcaption><span>03</span><div><strong>Defender und Forward im Vergleich</strong><small>AA, Clean Sheet, Tor, Assist und Matchbalken in einer aktuellen Ansicht.</small></div></figcaption>
+          </figure>
+
+          <div class="shot shot-settings reveal" data-delay="1">
+            <div class="settings-preview" aria-label="Darstellung der Extension-Einstellungen">
+              <div class="settings-title"><strong>Sorare Overlay</strong><i>UI-Darstellung</i></div>
+              <fieldset disabled>
+                <label class="setting-line"><span><strong>Overlay aktiviert</strong><small>Gilt auf allen geöffneten Sorare-Seiten.</small></span><input type="checkbox" checked><i></i></label>
+                <div class="setting-block"><span>Tor-/Assistklammer</span><div class="segmented"><b>Links</b><b class="selected">Rechts</b></div></div>
+                <div class="setting-block"><span>Werte anzeigen als</span><div class="segmented"><b class="selected">Prozent</b><b>Quote</b></div></div>
+                <p class="popup-help">„Quote“ zeigt die faire Dezimalquote aus der angezeigten Wahrscheinlichkeit.</p>
+                <div class="setting-legend">Darstellung</div>
+                <label class="setting-line compact-setting"><span><strong>Compact View</strong><small>Farbsymbole klappen beim Überfahren auf.</small></span><input type="checkbox" checked><i></i></label>
+                <div class="setting-legend">Fehlende Tor-/Assistquote</div>
+                <label class="setting-line compact-setting"><span><strong>Historische Werte verwenden</strong><small>Nur wenn die echte Buchmacherquote fehlt.</small></span><input type="checkbox" checked><i></i></label>
+                <div class="history-pills"><b>L10</b><b class="selected">L15</b><b>L40</b></div>
+              </fieldset>
+            </div>
+            <div class="shot-caption"><span>04</span><div><strong>Einstellungen im Popup</strong><small>Nach dem aktuellen Popup-Code dargestellt · kein Screenshot.</small></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section compact-section">
+        <div class="compact-copy reveal">
+          <p class="eyebrow"><span></span> Mehr Ruhe in großen Listen</p>
+          <h2>Compact, bis du<br><em>mehr wissen willst.</em></h2>
+          <p>Auf Squad- und Lineups-Seiten reduziert Compact View die seitlichen Werte auf kleine Farbsignale. Sobald du die Karte überfährst, klappt der volle Kontext auf. Im Lineup Builder bleibt alles dauerhaft sichtbar.</p>
+          <div class="route-note"><span aria-hidden="true">◎</span><p><strong>Genau dort, wo es hilft.</strong><br>Compact View verändert nicht den Lineup Builder.</p></div>
+        </div>
+
+        <div class="compact-demo reveal" data-delay="1">
+          <p class="demo-disclaimer">UI-Darstellung des Verhaltens · kein Screenshot</p>
+          <div class="compact-state is-folded">
+            <span class="state-label">Eingeklappt</span>
+            <div class="demo-card">
+              <div class="player-silhouette" aria-hidden="true"><span></span></div>
+              <div class="demo-name"><small>FW · 38</small><strong>SPIELER<br>BEISPIEL</strong></div>
+              <div class="bracket bracket-folded" aria-label="Nur Farbsignale sichtbar"><i class="purple"></i><i class="violet"></i><i class="green"></i></div>
+            </div>
+          </div>
+          <div class="compact-arrow" aria-hidden="true"><span>Hover</span>→</div>
+          <div class="compact-state is-open">
+            <span class="state-label">Aufgeklappt</span>
+            <div class="demo-card">
+              <div class="player-silhouette" aria-hidden="true"><span></span></div>
+              <div class="demo-name"><small>FW · 38</small><strong>SPIELER<br>BEISPIEL</strong></div>
+              <div class="bracket bracket-open" aria-label="AA 19,7, Tor 70 Prozent, Assist 50 Prozent"><b class="purple">AA&nbsp; 19.7</b><b class="violet">◉&nbsp; 70%</b><b class="green">◆&nbsp; 50%</b></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section sort-section">
+        <div class="sort-visual reveal">
+          <img src="/assets/screenshots/sort-menu.webp" alt="Sorare-Sortiermenü mit Torquote und AA" width="1553" height="1023" loading="lazy">
+        </div>
+        <div class="sort-copy reveal" data-delay="1">
+          <p class="eyebrow"><span></span> Neu in Version 0.4.0</p>
+          <h2>Die besten Optionen.<br><em>Oben in der Liste.</em></h2>
+          <p>Sortiere deine Auswahl direkt nach Torquote oder AA. Spieler ohne Wert bleiben am Ende. Kommen Quoten später dazu, aktualisiert sich die Reihenfolge automatisch.</p>
+          <ul class="check-list">
+            <li><i aria-hidden="true">✓</i><span><strong>Torquote:</strong> Marktwert zuerst, optional Historie als Ersatz.</span></li>
+            <li><i aria-hidden="true">✓</i><span><strong>AA:</strong> Durchschnitt der letzten gültigen 60+-Minuten-Einsätze.</span></li>
+            <li><i aria-hidden="true">✓</i><span>Zurück zu einer Sorare-Sortierung — und die ursprüngliche Reihenfolge ist wieder da.</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="section install-section" id="installation">
+        <div class="install-intro reveal">
+          <p class="eyebrow"><span></span> In wenigen Minuten startklar</p>
+          <h2>Installieren.<br><em>Sorare aktualisieren. Fertig.</em></h2>
+          <p>Bis zur Veröffentlichung im Chrome Web Store wird die Extension manuell aus dem neuesten GitHub Release geladen.</p>
+          <a class="button button-primary" href="https://github.com/Grooverbeck/sorare-football-overlay/releases/latest">Release v0.4.0 öffnen <span aria-hidden="true">↗</span></a>
+          <a class="text-link" href="https://github.com/Grooverbeck/sorare-football-overlay/blob/main/docs/INSTALLATION.md">Ausführliche Anleitung lesen <span aria-hidden="true">→</span></a>
+        </div>
+
+        <ol class="install-steps">
+          <li class="reveal">
+            <span>01</span>
+            <div><h3>ZIP herunterladen</h3><p>Im neuesten Release unter „Assets“ die Datei <code>sorare-football-overlay-chrome-web-store-0.4.0.zip</code> wählen — nicht „Source code“.</p></div>
+          </li>
+          <li class="reveal" data-delay="1">
+            <span>02</span>
+            <div><h3>Dauerhaft entpacken</h3><p>Die ZIP in einen festen Ordner entpacken. In diesem Ordner muss anschließend die <code>manifest.json</code> liegen.</p></div>
+          </li>
+          <li class="reveal" data-delay="2">
+            <span>03</span>
+            <div><h3>Entwicklermodus aktivieren</h3><p>Die Erweiterungsseite deines Browsers öffnen und oben rechts den Entwicklermodus einschalten.</p><div class="browser-addresses"><code>chrome://extensions</code><code>edge://extensions</code></div></div>
+          </li>
+          <li class="reveal">
+            <span>04</span>
+            <div><h3>Entpackte Erweiterung laden</h3><p>„Entpackte Erweiterung laden“ wählen und genau den Ordner mit der <code>manifest.json</code> öffnen.</p></div>
+          </li>
+          <li class="reveal" data-delay="1">
+            <span>05</span>
+            <div><h3>Sorare aktualisieren</h3><p>Bereits geöffnete Sorare-Seiten einmal neu laden. Das Overlay erscheint danach automatisch auf unterstützten Fußballkarten.</p></div>
+          </li>
+        </ol>
+      </section>
+
+      <section class="trust-section">
+        <div class="trust-inner">
+          <div class="trust-heading reveal">
+            <p class="eyebrow"><span></span> Klar und transparent</p>
+            <h2>Dein Account bleibt<br><em>dein Account.</em></h2>
+            <p>Die Extension benötigt weder deine Sorare-Zugangsdaten noch eigene API-Schlüssel. Sie fordert keine Cookie-, Browserhistorien-, Wallet- oder Account-Berechtigung an.</p>
+          </div>
+          <div class="trust-cards">
+            <article class="reveal"><span aria-hidden="true">⌁</span><h3>Kein Sorare-Passwort</h3><p>Die Extension liest und überträgt keine Sorare-Zugangsdaten.</p></article>
+            <article class="reveal" data-delay="1"><span aria-hidden="true">{ }</span><h3>Keine eigenen Schlüssel</h3><p>Statistik- und Anbieterzugänge laufen über das Projekt-Backend.</p></article>
+            <article class="reveal" data-delay="2"><span aria-hidden="true">C·E</span><h3>Chrome &amp; Edge</h3><p>Unterstützt werden aktuelle Desktop-Versionen beider Browser.</p></article>
+            <article class="reveal"><span aria-hidden="true">◇</span><h3>Community-Projekt</h3><p>Inoffiziell, unabhängig und kein Produkt von Sorare.</p></article>
+          </div>
+          <div class="privacy-note reveal">
+            <span aria-hidden="true">i</span>
+            <p><strong>Was für Statistiken übertragen wird:</strong> Öffentliche Spieler- und Kartenangaben wie Name, Slug, Position und gegebenenfalls Verein gehen an das Projekt-Backend. Lokale Einstellungen und Spielerzuordnungen werden im Browser gespeichert. Keine Sorare-Cookies oder Login-Daten.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section faq-section" id="faq">
+        <div class="faq-heading reveal">
+          <p class="eyebrow"><span></span> Häufige Fragen</p>
+          <h2>Kurz gefragt.<br><em>Klar beantwortet.</em></h2>
+        </div>
+
+        <div class="faq-list">
+          <details class="reveal">
+            <summary><span>01</span> Funktioniert die Extension automatisch?<i aria-hidden="true">+</i></summary>
+            <div><p>Ja. Nach Installation und Seiten-Reload erkennt sie unterstützte Sorare-Fußballkarten automatisch — auch Karten, die beim Scrollen dynamisch hinzukommen. Über das Popup kannst du das Overlay jederzeit ausschalten.</p></div>
+          </details>
+          <details class="reveal">
+            <summary><span>02</span> Benötige ich ein Sorare-Abonnement?<i aria-hidden="true">+</i></summary>
+            <div><p>Nein, die Extension selbst verlangt kein Sorare-Abonnement. Welche Seiten und Wettbewerbe du auf Sorare nutzen kannst, richtet sich weiterhin nach deinem Sorare-Zugang.</p></div>
+          </details>
+          <details class="reveal">
+            <summary><span>03</span> Warum sind manchmal historische Werte zu sehen?<i aria-hidden="true">+</i></summary>
+            <div><p>Für manche Spiele oder Spieler gibt es noch keine passende Marktquote. Wenn du den historischen Ersatz aktivierst, zeigt das Overlay stattdessen einen klar gekennzeichneten L10-, L15- oder L40-Wert in Klammern. Trifft später eine Marktquote ein, ersetzt sie den historischen Wert.</p></div>
+          </details>
+          <details class="reveal">
+            <summary><span>04</span> Welche Wettbewerbe und Märkte werden unterstützt?<i aria-hidden="true">+</i></summary>
+            <div><p>Gezielt unterstützt werden unter anderem MLS, Premier League, La Liga, Ligue 1 und 2, Bundesliga und 2. Bundesliga, HNL, österreichische Bundesliga sowie ausgewählte UEFA-Wettbewerbe. Verfügbar sind je nach Spiel H/D/A-, Clean-Sheet-, Tor- und Assistmärkte. Umfang und Zeitpunkt hängen vom Wettbewerb und Anbieter ab.</p></div>
+          </details>
+          <details class="reveal">
+            <summary><span>05</span> Wie aktualisiere ich die Extension?<i aria-hidden="true">+</i></summary>
+            <div><p>Die neue Release-ZIP herunterladen, im bisherigen Ordner ersetzen, auf <code>chrome://extensions</code> oder <code>edge://extensions</code> bei der Extension „Neu laden“ wählen und offene Sorare-Tabs aktualisieren. Manuell installierte Versionen aktualisieren sich nicht von selbst.</p></div>
+          </details>
+          <details class="reveal">
+            <summary><span>06</span> Werden meine Sorare-Zugangsdaten übertragen?<i aria-hidden="true">+</i></summary>
+            <div><p>Nein. Die Extension benötigt keine Sorare-Zugangsdaten und fordert keine Cookie- oder Account-Berechtigung an. Für Statistikabfragen werden nur öffentliche Angaben der sichtbaren Karte an das Projekt-Backend gesendet.</p></div>
+          </details>
+        </div>
+      </section>
+
+      <section class="final-cta">
+        <div class="cta-glow" aria-hidden="true"></div>
+        <div class="reveal">
+          <p class="eyebrow"><span></span> Bereit für mehr Kontext?</p>
+          <h2>Dein nächstes Lineup<br><em>beginnt mit besseren Daten.</em></h2>
+          <p>Version 0.4.0 für Google Chrome und Microsoft Edge.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="https://github.com/Grooverbeck/sorare-football-overlay/releases/latest">Extension herunterladen <span aria-hidden="true">↗</span></a>
+            <a class="button button-secondary" href="https://github.com/Grooverbeck/sorare-football-overlay">GitHub ansehen <span aria-hidden="true">↗</span></a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="footer-brand">
+        <img src="/assets/icon-128.png" alt="" width="36" height="36">
+        <div><strong>Sorare Football Overlay</strong><small>Inoffizielle Community-Extension</small></div>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/Grooverbeck/sorare-football-overlay/releases/latest">Release</a>
+        <a href="https://github.com/Grooverbeck/sorare-football-overlay/blob/main/docs/INSTALLATION.md">Installation</a>
+        <a href="https://github.com/Grooverbeck/sorare-football-overlay/blob/main/CHANGELOG.md">Changelog</a>
+        <a href="https://sorare-football-overlay-api.grooverbeck.workers.dev/privacy">Datenschutz</a>
+        <a href="https://sorare-football-overlay-api.grooverbeck.workers.dev/support">Support</a>
+      </div>
+      <p>© <span data-year>2026</span> Sorare Football Overlay. Kein Produkt von Sorare.</p>
+    </footer>
+  </body>
+</html>

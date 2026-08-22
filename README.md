@@ -12,9 +12,29 @@ Produktionsnahes TypeScript-Monorepo für eine Chrome-/Edge-Manifest-V3-Extensio
 apps/
   api/          Hono-Backend, Sorare-GraphQL-Client, Cache, Provider, Mock-Daten
   extension/    MV3-Content-Script, Service Worker, DOM-Scanner, Shadow-DOM-UI
+  landing/      Statische Produkt-Landingpage mit lokalen Produktscreenshots
 packages/
   shared/       Zod-API-Verträge, gemeinsame Typen und Statistikberechnungen
 ```
+
+## Produkt-Landingpage lokal ansehen
+
+Die responsive Landingpage liegt als eigenständige Workspace-App unter
+`apps/landing`. Sie benötigt keine zusätzlichen Laufzeitabhängigkeiten:
+
+```bash
+npm run dev:landing
+```
+
+Der statische Produktions-Build wird nach `apps/landing/dist` geschrieben:
+
+```bash
+npm run build --workspace=@sorare-overlay/landing
+```
+
+Der zuletzt visuell geprüfte Desktop-Stand ist unter
+[`apps/landing/preview/landing-page-desktop.png`](apps/landing/preview/landing-page-desktop.png)
+abgelegt.
 
 Die Extension ruft ausschließlich das eigene Backend auf. Sorare-API-Key, JWT und andere Secrets werden nur vom Backend gelesen und gelangen nicht in Manifest oder Browser-Bundle.
 
