@@ -5519,6 +5519,7 @@ describe('Sorare card DOM discovery', () => {
     expect(card.getAttribute('data-sorare-overlay-goal-sort-source')).toBe(
       'historical',
     );
+    expect(card.getAttribute('data-sorare-overlay-aa-sort-value')).toBe('12');
     expect(view.host.shadowRoot?.querySelector('.player-market-tooltip')?.textContent)
       .toContain('Assist · historisch L15');
     expect(view.host.shadowRoot?.querySelector('.player-market-tooltip')?.textContent)

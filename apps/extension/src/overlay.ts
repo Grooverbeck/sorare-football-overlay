@@ -11,7 +11,10 @@ import {
 } from '@sorare-overlay/shared';
 import { supportsCompactViewPath } from './compact-view-route.js';
 import { isScoreDetailsDialogTarget } from './dom.js';
-import { setLineupGoalSortValue } from './lineup-goal-sort.js';
+import {
+  setLineupAaSortValue,
+  setLineupGoalSortValue,
+} from './lineup-sort.js';
 import type {
   HistoricalAssistWindow,
   MarketBracketSide,
@@ -2698,6 +2701,7 @@ export class OverlayView {
     if (this.destroyed) return;
     this.destroyed = true;
     setLineupGoalSortValue(this.container, null);
+    setLineupAaSortValue(this.container, null);
     this.stopPackBracketSettling();
     if (this.packMotionProbeFrame !== undefined) {
       cancelPositionFrame(this.packMotionProbeFrame);
@@ -2737,6 +2741,8 @@ export class OverlayView {
   }
 
   noData(): void {
+    setLineupGoalSortValue(this.container, null);
+    setLineupAaSortValue(this.container, null);
     this.clearLineupOdds();
     this.clearPlayerMarketTooltip();
     this.state('Keine L10-Daten', 'no-data');
@@ -2761,6 +2767,7 @@ export class OverlayView {
       sortValue?.probability ?? null,
       sortValue?.source,
     );
+    setLineupAaSortValue(this.container, stats.aaL10.value);
     this.renderLineupOdds(stats.nextGame);
     this.renderPlayerMarketTooltip(stats);
     this.panel.replaceChildren();

@@ -4,17 +4,52 @@ export const lineupGoalSortProbabilityAttribute =
   'data-sorare-overlay-goal-sort-probability';
 export const lineupGoalSortSourceAttribute =
   'data-sorare-overlay-goal-sort-source';
-export const lineupGoalSortValueChangedEvent =
-  'sorare-overlay:goal-sort-value-changed';
+export const lineupAaSortOptionAttribute =
+  'data-sorare-overlay-aa-sort-option';
+export const lineupAaSortValueAttribute =
+  'data-sorare-overlay-aa-sort-value';
+export const lineupSortValueChangedEvent =
+  'sorare-overlay:lineup-sort-value-changed';
 
 export type LineupGoalSortSource = 'market' | 'historical';
+export type LineupSortMode = 'goal' | 'aa';
+
+interface LineupSortConfig {
+  mode: LineupSortMode;
+  label: string;
+  description: string;
+  title: string;
+  optionAttribute: string;
+  valueAttribute: string;
+}
+
+const lineupSortConfigs: Record<LineupSortMode, LineupSortConfig> = {
+  goal: {
+    mode: 'goal',
+    label: 'Torquote',
+    description: 'Markt & Historie gemeinsam',
+    title:
+      'Nach Torwahrscheinlichkeit sortieren – Marktquoten und historische Werte werden gemeinsam verglichen.',
+    optionAttribute: lineupGoalSortOptionAttribute,
+    valueAttribute: lineupGoalSortProbabilityAttribute,
+  },
+  aa: {
+    mode: 'aa',
+    label: 'AA',
+    description: 'L10 · mindestens 60 Minuten',
+    title:
+      'Nach dem durchschnittlichen All-Around Score der letzten zehn Spiele mit mindestens 60 Minuten sortieren.',
+    optionAttribute: lineupAaSortOptionAttribute,
+    valueAttribute: lineupAaSortValueAttribute,
+  },
+};
 
 const cardImageSelector =
   'img[src*="/cardsamplepicture/"], img[alt$=" - common" i], img[alt$=" - limited" i], img[alt$=" - rare" i], img[alt$=" - super rare" i], img[alt$=" - unique" i]';
 const nativeTriggerLabelAttribute =
-  'data-sorare-overlay-goal-sort-trigger-label';
+  'data-sorare-overlay-lineup-sort-trigger-label';
 const nativeMenuActiveAttribute =
-  'data-sorare-overlay-goal-sort-active';
+  'data-sorare-overlay-lineup-sort-active';
 const nativeMenuOptionAttribute =
   'data-sorare-overlay-native-sort-option';
 
@@ -26,10 +61,10 @@ interface OriginalOrder {
 interface SortableCell {
   cell: HTMLElement;
   originalIndex: number;
-  probability: number | null;
+  value: number | null;
 }
 
-export function supportsLineupGoalSortPath(pathname: string): boolean {
+export function supportsLineupSortPath(pathname: string): boolean {
   return /\/compose-team(?:\/|$)/i.test(pathname);
 }
 
@@ -55,7 +90,21 @@ export function setLineupGoalSortValue(
     container.setAttribute(lineupGoalSortSourceAttribute, source);
   }
   container.dispatchEvent(
-    new CustomEvent(lineupGoalSortValueChangedEvent, { bubbles: true }),
+    new CustomEvent(lineupSortValueChangedEvent, { bubbles: true }),
+  );
+}
+
+export function setLineupAaSortValue(
+  container: HTMLElement,
+  value: number | null,
+): void {
+  if (value === null || !Number.isFinite(value)) {
+    container.removeAttribute(lineupAaSortValueAttribute);
+  } else {
+    container.setAttribute(lineupAaSortValueAttribute, value.toString());
+  }
+  container.dispatchEvent(
+    new CustomEvent(lineupSortValueChangedEvent, { bubbles: true }),
   );
 }
 
@@ -93,6 +142,7 @@ function nativeSortOptions(dialog: HTMLElement): HTMLButtonElement[] {
   return Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).filter(
     (button) =>
       !button.hasAttribute(lineupGoalSortOptionAttribute) &&
+      !button.hasAttribute(lineupAaSortOptionAttribute) &&
       Boolean(button.querySelector('input[type="radio"]')),
   );
 }
@@ -123,13 +173,13 @@ function setRadioVisual(button: HTMLButtonElement, checked: boolean): void {
   circles[1]?.setAttribute('fill', checked ? tone : 'transparent');
 }
 
-function createNativeGoalSortOption(
+function createNativeSortOption(
   template: HTMLButtonElement,
+  config: LineupSortConfig,
 ): HTMLButtonElement | null {
   const option = template.cloneNode(true) as HTMLButtonElement;
-  option.setAttribute(lineupGoalSortOptionAttribute, 'true');
-  option.title =
-    'Nach Torwahrscheinlichkeit sortieren – Marktquoten und historische Werte werden gemeinsam verglichen.';
+  option.setAttribute(config.optionAttribute, 'true');
+  option.title = config.title;
   for (const element of option.querySelectorAll<HTMLElement>('[id]')) {
     element.removeAttribute('id');
   }
@@ -140,8 +190,8 @@ function createNativeGoalSortOption(
   const label = textLeaves[0];
   const description = textLeaves[textLeaves.length - 1];
   if (!label || !description || label === description) return null;
-  label.textContent = 'Torquote';
-  description.textContent = 'Markt & Historie gemeinsam';
+  label.textContent = config.label;
+  description.textContent = config.description;
   setRadioVisual(option, false);
   return option;
 }
@@ -163,26 +213,20 @@ function directGridCell(container: HTMLElement): HTMLElement | null {
   return null;
 }
 
-function probabilityForCell(cell: HTMLElement): number | null {
+function valueForCell(cell: HTMLElement, valueAttribute: string): number | null {
   const values = Array.from(
-    cell.querySelectorAll<HTMLElement>(
-      `[${lineupGoalSortProbabilityAttribute}]`,
-    ),
+    cell.querySelectorAll<HTMLElement>(`[${valueAttribute}]`),
   ).flatMap((container) => {
-    const probability = Number(
-      container.getAttribute(lineupGoalSortProbabilityAttribute),
-    );
-    return Number.isFinite(probability) && probability >= 0 && probability <= 1
-      ? [probability]
-      : [];
+    const value = Number(container.getAttribute(valueAttribute));
+    return Number.isFinite(value) ? [value] : [];
   });
   return values.length > 0 ? Math.max(...values) : null;
 }
 
-function sortableGrid(): HTMLElement | null {
+function sortableGrid(valueAttribute: string): HTMLElement | null {
   const trackedByGrid = new Map<HTMLElement, Set<HTMLElement>>();
   for (const container of document.querySelectorAll<HTMLElement>(
-    `[${lineupGoalSortProbabilityAttribute}]`,
+    `[${valueAttribute}]`,
   )) {
     const cell = directGridCell(container);
     const grid = cell?.parentElement;
@@ -204,32 +248,37 @@ function sortableGrid(): HTMLElement | null {
   );
 }
 
-export class LineupGoalOddsSorter {
+export class LineupCardSorter {
   private root: HTMLElement | null = null;
   private nativeTrigger: HTMLButtonElement | null = null;
   private nativeTriggerLabel: HTMLElement | null = null;
   private originalTriggerLabel = '';
   private nativeMenu: HTMLElement | null = null;
-  private menuOption: HTMLButtonElement | null = null;
+  private readonly menuOptions = new Map<
+    LineupSortMode,
+    HTMLButtonElement
+  >();
   private readonly nativeRadioStates = new Map<HTMLInputElement, boolean>();
-  private active = false;
+  private activeMode: LineupSortMode | null = null;
   private sortFrame: number | undefined;
   private readonly originalOrders = new Map<HTMLElement, OriginalOrder>();
 
-  private readonly handleGoalValueChange = (): void => {
-    if (this.active) this.scheduleSort();
+  private readonly handleSortValueChange = (): void => {
+    if (this.activeMode) this.scheduleSort();
   };
 
   private readonly handleDocumentClick = (event: Event): void => {
-    if (!this.active || !(event.target instanceof Element)) return;
+    if (!this.activeMode || !(event.target instanceof Element)) return;
     const button = event.target.closest<HTMLButtonElement>('button');
+    if ([...this.menuOptions.values()].includes(button as HTMLButtonElement)) {
+      return;
+    }
     if (
       button &&
-      button !== this.menuOption &&
       this.nativeMenu?.contains(button) &&
       button.querySelector('input[type="radio"]')
     ) {
-      this.setActive(false);
+      this.setActiveMode(null);
     }
   };
 
@@ -241,8 +290,8 @@ export class LineupGoalOddsSorter {
     if (this.root) return;
     this.root = root;
     root.addEventListener(
-      lineupGoalSortValueChangedEvent,
-      this.handleGoalValueChange,
+      lineupSortValueChangedEvent,
+      this.handleSortValueChange,
     );
     document.addEventListener('click', this.handleDocumentClick, true);
     window.addEventListener('popstate', this.handleRouteChange);
@@ -253,45 +302,45 @@ export class LineupGoalOddsSorter {
   stop(): void {
     if (this.root) {
       this.root.removeEventListener(
-        lineupGoalSortValueChangedEvent,
-        this.handleGoalValueChange,
+        lineupSortValueChangedEvent,
+        this.handleSortValueChange,
       );
     }
     document.removeEventListener('click', this.handleDocumentClick, true);
     window.removeEventListener('popstate', this.handleRouteChange);
     window.removeEventListener('hashchange', this.handleRouteChange);
     this.cancelSortFrame();
-    this.setActive(false);
-    this.removeMenuOption();
+    this.setActiveMode(null);
+    this.removeMenuOptions();
     this.restoreNativeTrigger();
     this.root = null;
   }
 
   scan(_root: ParentNode): void {
-    if (!supportsLineupGoalSortPath(window.location.pathname)) {
-      this.setActive(false);
-      this.removeMenuOption();
+    if (!supportsLineupSortPath(window.location.pathname)) {
+      this.setActiveMode(null);
+      this.removeMenuOptions();
       this.restoreNativeTrigger();
       return;
     }
     this.syncNativeSortUi();
-    if (this.active) this.scheduleSort();
+    if (this.activeMode) this.scheduleSort();
   }
 
   private syncNativeSortUi(): void {
     const trigger = nativeSortButton();
     if (!trigger) {
-      this.removeMenuOption();
+      this.removeMenuOptions();
       this.restoreNativeTrigger();
       return;
     }
     this.syncNativeTrigger(trigger);
     const dialog = nativeSortDialog(trigger);
     if (!dialog) {
-      this.removeMenuOption();
+      this.removeMenuOptions();
       return;
     }
-    this.mountMenuOption(dialog, trigger);
+    this.mountMenuOptions(dialog, trigger);
   }
 
   private syncNativeTrigger(trigger: HTMLButtonElement): void {
@@ -305,12 +354,12 @@ export class LineupGoalOddsSorter {
       this.nativeTriggerLabel = label;
       this.originalTriggerLabel = label.textContent?.trim() ?? '';
     }
-    if (this.active) {
+    if (this.activeMode) {
       if (!label.hasAttribute(nativeTriggerLabelAttribute)) {
         this.originalTriggerLabel = label.textContent?.trim() ?? '';
       }
       label.setAttribute(nativeTriggerLabelAttribute, 'true');
-      label.textContent = 'Torquote';
+      label.textContent = lineupSortConfigs[this.activeMode].label;
     } else if (label.hasAttribute(nativeTriggerLabelAttribute)) {
       label.textContent = this.originalTriggerLabel;
       label.removeAttribute(nativeTriggerLabelAttribute);
@@ -329,38 +378,49 @@ export class LineupGoalOddsSorter {
     this.originalTriggerLabel = '';
   }
 
-  private mountMenuOption(
+  private mountMenuOptions(
     dialog: HTMLElement,
     trigger: HTMLButtonElement,
   ): void {
-    if (this.menuOption?.isConnected && this.nativeMenu === dialog) {
+    if (
+      this.nativeMenu === dialog &&
+      this.menuOptions.size === Object.keys(lineupSortConfigs).length &&
+      [...this.menuOptions.values()].every((option) => option.isConnected)
+    ) {
       this.updateMenuSelection();
       return;
     }
-    this.removeMenuOption();
+    this.removeMenuOptions();
     const nativeOptions = nativeSortOptions(dialog);
     const template = nativeOptions[nativeOptions.length - 1];
     const parent = template?.parentElement;
     if (!template || !parent) return;
-    const option = createNativeGoalSortOption(template);
-    if (!option) return;
-    option.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      this.setActive(true);
-      if (trigger.getAttribute('aria-expanded') === 'true') trigger.click();
-    });
-    parent.append(option);
     this.nativeMenu = dialog;
-    this.menuOption = option;
+    for (const config of Object.values(lineupSortConfigs)) {
+      const option = createNativeSortOption(template, config);
+      if (!option) continue;
+      option.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.setActiveMode(config.mode);
+        if (trigger.getAttribute('aria-expanded') === 'true') trigger.click();
+      });
+      parent.append(option);
+      this.menuOptions.set(config.mode, option);
+    }
     this.updateMenuSelection();
   }
 
   private updateMenuSelection(): void {
-    if (!this.nativeMenu || !this.menuOption) return;
-    this.nativeMenu.toggleAttribute(nativeMenuActiveAttribute, this.active);
-    setRadioVisual(this.menuOption, this.active);
-    if (this.active) {
+    if (!this.nativeMenu || this.menuOptions.size === 0) return;
+    this.nativeMenu.toggleAttribute(
+      nativeMenuActiveAttribute,
+      this.activeMode !== null,
+    );
+    for (const [mode, option] of this.menuOptions) {
+      setRadioVisual(option, mode === this.activeMode);
+    }
+    if (this.activeMode) {
       for (const button of nativeSortOptions(this.nativeMenu)) {
         button.setAttribute(nativeMenuOptionAttribute, 'true');
         const radio = button.querySelector<HTMLInputElement>(
@@ -390,30 +450,31 @@ export class LineupGoalOddsSorter {
     this.nativeMenu?.removeAttribute(nativeMenuActiveAttribute);
   }
 
-  private removeMenuOption(): void {
+  private removeMenuOptions(): void {
     this.restoreNativeRadioStates();
-    this.menuOption?.remove();
-    this.menuOption = null;
+    for (const option of this.menuOptions.values()) option.remove();
+    this.menuOptions.clear();
     this.nativeMenu = null;
   }
 
-  private setActive(active: boolean): void {
-    if (this.active === active) {
+  private setActiveMode(mode: LineupSortMode | null): void {
+    if (this.activeMode === mode) {
       this.syncNativeSortUi();
       return;
     }
-    this.active = active;
+    this.cancelSortFrame();
+    if (this.activeMode) this.restoreOriginalOrders();
+    this.activeMode = mode;
     this.syncNativeSortUi();
-    if (active) {
+    if (mode) {
       this.scheduleSort();
     } else {
-      this.cancelSortFrame();
       this.restoreOriginalOrders();
     }
   }
 
   private scheduleSort(): void {
-    if (!this.active || this.sortFrame !== undefined) return;
+    if (!this.activeMode || this.sortFrame !== undefined) return;
     const callback = (): void => {
       this.sortFrame = undefined;
       this.applySort();
@@ -435,9 +496,13 @@ export class LineupGoalOddsSorter {
   }
 
   private applySort(): void {
-    if (!this.active) return;
-    const grid = sortableGrid();
-    if (!grid) return;
+    if (!this.activeMode) return;
+    const config = lineupSortConfigs[this.activeMode];
+    const grid = sortableGrid(config.valueAttribute);
+    if (!grid) {
+      this.restoreOriginalOrders();
+      return;
+    }
 
     const cells: SortableCell[] = Array.from(grid.children).flatMap(
       (child, originalIndex) =>
@@ -446,12 +511,15 @@ export class LineupGoalOddsSorter {
               {
                 cell: child,
                 originalIndex,
-                probability: probabilityForCell(child),
+                value: valueForCell(child, config.valueAttribute),
               },
             ]
           : [],
     );
-    if (cells.length < 2) return;
+    if (cells.length < 2) {
+      this.restoreOriginalOrders();
+      return;
+    }
 
     for (const { cell } of cells) {
       if (!this.originalOrders.has(cell)) {
@@ -462,11 +530,14 @@ export class LineupGoalOddsSorter {
       }
     }
 
-    cells.sort(
-      (left, right) =>
-        (right.probability ?? -1) - (left.probability ?? -1) ||
-        left.originalIndex - right.originalIndex,
-    );
+    cells.sort((left, right) => {
+      if (left.value === null && right.value === null) {
+        return left.originalIndex - right.originalIndex;
+      }
+      if (left.value === null) return 1;
+      if (right.value === null) return -1;
+      return right.value - left.value || left.originalIndex - right.originalIndex;
+    });
     const firstOrder = -cells.length;
     cells.forEach(({ cell }, index) => {
       const order = String(firstOrder + index);

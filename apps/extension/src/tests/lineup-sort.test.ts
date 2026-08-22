@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  LineupGoalOddsSorter,
+  LineupCardSorter,
+  lineupAaSortOptionAttribute,
+  lineupAaSortValueAttribute,
   lineupGoalSortOptionAttribute,
   lineupGoalSortProbabilityAttribute,
   lineupGoalSortSourceAttribute,
+  setLineupAaSortValue,
   setLineupGoalSortValue,
-  supportsLineupGoalSortPath,
-} from '../lineup-goal-sort.js';
+  supportsLineupSortPath,
+} from '../lineup-sort.js';
 
 function lineupBuilderMarkup(): string {
   return `
@@ -80,14 +83,14 @@ function lineupBuilderMarkup(): string {
   `;
 }
 
-describe('lineup goal-odds sorting', () => {
-  let sorter: LineupGoalOddsSorter;
+describe('lineup card sorting', () => {
+  let sorter: LineupCardSorter;
 
   beforeEach(() => {
     vi.restoreAllMocks();
     document.body.innerHTML = lineupBuilderMarkup();
     window.history.replaceState({}, '', '/de/football/series/test/compose-team/lineup');
-    sorter = new LineupGoalOddsSorter();
+    sorter = new LineupCardSorter();
   });
 
   afterEach(() => {
@@ -97,14 +100,14 @@ describe('lineup goal-odds sorting', () => {
 
   it('supports compose-team routes only', () => {
     expect(
-      supportsLineupGoalSortPath('/de/football/series/test/compose-team/lineup'),
+      supportsLineupSortPath('/de/football/series/test/compose-team/lineup'),
     ).toBe(true);
-    expect(supportsLineupGoalSortPath('/de/football/lineups/lineup')).toBe(
+    expect(supportsLineupSortPath('/de/football/lineups/lineup')).toBe(
       false,
     );
   });
 
-  it('adds the option only while Sorare has its sort dialog open', () => {
+  it('adds both custom options only while Sorare has its sort dialog open', () => {
     const trigger = document.querySelector<HTMLButtonElement>('[data-native-sort]');
     const dialog = document.querySelector<HTMLElement>('#sort-dialog');
     if (!trigger || !dialog) throw new Error('Expected native sort controls');
@@ -115,12 +118,16 @@ describe('lineup goal-odds sorting', () => {
     expect(
       document.querySelector(`[${lineupGoalSortOptionAttribute}]`),
     ).toBeNull();
+    expect(document.querySelector(`[${lineupAaSortOptionAttribute}]`)).toBeNull();
 
     trigger.setAttribute('aria-expanded', 'true');
     dialog.setAttribute('data-state', 'open');
     sorter.scan(document);
     expect(
       document.querySelector(`[${lineupGoalSortOptionAttribute}]`),
+    ).not.toBeNull();
+    expect(
+      document.querySelector(`[${lineupAaSortOptionAttribute}]`),
     ).not.toBeNull();
   });
 
@@ -170,6 +177,55 @@ describe('lineup goal-odds sorting', () => {
         '[data-native-option="average"] input[type="radio"]',
       )?.checked,
     ).toBe(false);
+  });
+
+  it('sorts by AA, keeps missing values last, and switches custom modes', async () => {
+    const market = document.querySelector<HTMLElement>('[data-player="market"]');
+    const historical = document.querySelector<HTMLElement>(
+      '[data-player="historical"]',
+    );
+    const marketCell = document.querySelector<HTMLElement>('[data-cell="market"]');
+    const historicalCell = document.querySelector<HTMLElement>(
+      '[data-cell="historical"]',
+    );
+    const missingCell = document.querySelector<HTMLElement>('[data-cell="missing"]');
+    if (!market || !historical || !marketCell || !historicalCell || !missingCell) {
+      throw new Error('Expected lineup sorting fixture');
+    }
+    setLineupGoalSortValue(market, 0.35, 'market');
+    setLineupGoalSortValue(historical, 0.5, 'historical');
+    setLineupAaSortValue(market, -5);
+    setLineupAaSortValue(historical, -10);
+
+    sorter.start();
+    const goalOption = document.querySelector<HTMLButtonElement>(
+      `[${lineupGoalSortOptionAttribute}]`,
+    );
+    const aaOption = document.querySelector<HTMLButtonElement>(
+      `[${lineupAaSortOptionAttribute}]`,
+    );
+    expect(aaOption?.textContent).toContain('L10 · mindestens 60 Minuten');
+
+    goalOption?.click();
+    await vi.waitFor(() => expect(historicalCell.style.order).toBe('-3'));
+    aaOption?.click();
+    await vi.waitFor(() => expect(marketCell.style.order).toBe('-3'));
+    expect(historicalCell.style.order).toBe('-2');
+    expect(missingCell.style.order).toBe('-1');
+    expect(
+      document.querySelector<HTMLElement>('[data-native-trigger-label]')
+        ?.textContent,
+    ).toBe('AA');
+    expect(
+      goalOption?.querySelector<HTMLInputElement>('input[type="radio"]')?.checked,
+    ).toBe(false);
+    expect(
+      aaOption?.querySelector<HTMLInputElement>('input[type="radio"]')?.checked,
+    ).toBe(true);
+
+    setLineupAaSortValue(historical, 12.5);
+    await vi.waitFor(() => expect(historicalCell.style.order).toBe('-3'));
+    expect(historical.getAttribute(lineupAaSortValueAttribute)).toBe('12.5');
   });
 
   it('re-sorts when a late historical value arrives and restores Sorare order', async () => {

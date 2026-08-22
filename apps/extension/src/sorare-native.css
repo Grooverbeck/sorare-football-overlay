@@ -109,20 +109,20 @@
   clip-path: polygon(0 0, 100% 0, 100% 100%) !important;
 }
 
-[data-sorare-overlay-goal-sort-active]
+[data-sorare-overlay-lineup-sort-active]
   [data-sorare-overlay-native-sort-option]
   svg {
   fill: none !important;
 }
 
-[data-sorare-overlay-goal-sort-active]
+[data-sorare-overlay-lineup-sort-active]
   [data-sorare-overlay-native-sort-option]
   svg circle:first-of-type {
   fill: transparent !important;
   stroke: currentColor !important;
 }
 
-[data-sorare-overlay-goal-sort-active]
+[data-sorare-overlay-lineup-sort-active]
   [data-sorare-overlay-native-sort-option]
   svg circle:nth-of-type(2) {
   fill: transparent !important;
