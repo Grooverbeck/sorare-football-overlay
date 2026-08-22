@@ -3,6 +3,18 @@
 Alle wichtigen Änderungen am Sorare Football Stats Overlay werden in dieser
 Datei dokumentiert.
 
+## 0.4.2 – 22. August 2026
+
+### Hotfix für die Sortierung im Lineup Builder
+
+- Die zusätzlichen Sortierungen **Torquote** und **AA** erscheinen wieder im
+  vorhandenen Sorare-Menü **Sortieren nach**.
+- Sorare ändert beim Öffnen des Menüs die Richtung des Pfeilsymbols. Die
+  Erweiterung erkennt nun sowohl den geschlossenen als auch den geöffneten
+  Zustand zuverlässig.
+- Ein Regressionstest bildet die aktuelle Sorare-Menüstruktur ab und schützt
+  die Sortieroptionen vor diesem Fehlerbild.
+
 ## 0.4.1 – 22. August 2026
 
 ### Hotfix für Captain-Karten
