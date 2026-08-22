@@ -3,7 +3,13 @@
 Mit dieser Version kannst du Spieler im Lineup Builder direkt nach ihrer
 Torwahrscheinlichkeit oder ihrem AA-Wert sortieren.
 
-![Neue Sortierung nach Torquote und AA](https://github.com/Grooverbeck/sorare-football-overlay/releases/download/v0.4.0/github-release-0.4.0-sort-menu.png)
+<p align="center">
+  <img
+    src="https://github.com/Grooverbeck/sorare-football-overlay/releases/download/v0.4.0/github-release-0.4.0-sort-menu.png"
+    alt="Neue Sortierung nach Torquote und AA"
+    width="760"
+  >
+</p>
 
 ## Das ist neu
 
