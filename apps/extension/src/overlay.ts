@@ -14,6 +14,7 @@ import { isScoreDetailsDialogTarget } from './dom.js';
 import {
   setLineupAaSortValue,
   setLineupGoalSortValue,
+  setLineupSortPosition,
 } from './lineup-sort.js';
 import type {
   HistoricalAssistWindow,
@@ -2737,6 +2738,7 @@ export class OverlayView {
     this.destroyed = true;
     setLineupGoalSortValue(this.container, null);
     setLineupAaSortValue(this.container, null);
+    setLineupSortPosition(this.container, null);
     this.stopPackBracketSettling();
     if (this.packMotionProbeFrame !== undefined) {
       cancelPositionFrame(this.packMotionProbeFrame);
@@ -2792,6 +2794,7 @@ export class OverlayView {
       this.host.dataset.packDataPending === 'true';
     delete this.host.dataset.packDataPending;
     this.host.dataset.position = stats.position;
+    setLineupSortPosition(this.container, stats.position);
     if (!hasAnyDisplayData(stats)) {
       this.noData();
       return;

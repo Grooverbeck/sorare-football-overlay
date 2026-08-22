@@ -1,3 +1,5 @@
+import type { FootballPosition } from '@sorare-overlay/shared';
+
 export const lineupGoalSortOptionAttribute =
   'data-sorare-overlay-goal-sort-option';
 export const lineupGoalSortProbabilityAttribute =
@@ -8,6 +10,8 @@ export const lineupAaSortOptionAttribute =
   'data-sorare-overlay-aa-sort-option';
 export const lineupAaSortValueAttribute =
   'data-sorare-overlay-aa-sort-value';
+export const lineupSortPositionAttribute =
+  'data-sorare-overlay-sort-position';
 export const lineupSortValueChangedEvent =
   'sorare-overlay:lineup-sort-value-changed';
 
@@ -64,6 +68,44 @@ interface SortableCell {
   value: number | null;
 }
 
+export interface LineupPoolLoadContext {
+  isCancelled: () => boolean;
+  onProgress: (cardCount: number) => void;
+}
+
+export type LineupPoolLoader = (
+  context: LineupPoolLoadContext,
+) => Promise<HTMLElement | null>;
+
+interface LineupPoolLoadOptions {
+  getGrid?: () => HTMLElement | null;
+  pulseGridEnd?: (grid: HTMLElement) => Promise<void>;
+  waitForGrowth?: (
+    grid: HTMLElement,
+    previousCount: number,
+    isCancelled: () => boolean,
+  ) => Promise<boolean>;
+  maxPulses?: number;
+  stableMissesRequired?: number;
+}
+
+const lineupPositionAliases: Readonly<
+  Record<string, FootballPosition | null>
+> = {
+  gk: 'Goalkeeper',
+  tw: 'Goalkeeper',
+  def: 'Defender',
+  df: 'Defender',
+  ver: 'Defender',
+  mid: 'Midfielder',
+  mf: 'Midfielder',
+  fwd: 'Forward',
+  fw: 'Forward',
+  st: 'Forward',
+  ex: null,
+  extra: null,
+};
+
 export function supportsLineupSortPath(pathname: string): boolean {
   return /\/compose-team(?:\/|$)/i.test(pathname);
 }
@@ -106,6 +148,41 @@ export function setLineupAaSortValue(
   container.dispatchEvent(
     new CustomEvent(lineupSortValueChangedEvent, { bubbles: true }),
   );
+}
+
+export function setLineupSortPosition(
+  container: HTMLElement,
+  position: FootballPosition | null,
+): void {
+  if (position) {
+    container.setAttribute(lineupSortPositionAttribute, position);
+  } else {
+    container.removeAttribute(lineupSortPositionAttribute);
+  }
+}
+
+function lineupPositionFromButton(
+  button: HTMLButtonElement | null,
+): FootballPosition | null | undefined {
+  if (!button || button.closest('[role="dialog"]')) return undefined;
+  const marker = button.textContent?.trim().toLocaleLowerCase() ?? '';
+  if (!(marker in lineupPositionAliases)) return undefined;
+  return lineupPositionAliases[marker];
+}
+
+function activeLineupPosition(): FootballPosition | null | undefined {
+  const positions = new Set<FootballPosition | null>();
+  for (const button of document.querySelectorAll<HTMLButtonElement>('button')) {
+    const position = lineupPositionFromButton(button);
+    if (position === undefined) continue;
+    const active =
+      button.getAttribute('aria-pressed') === 'true' ||
+      button.dataset.state === 'active' ||
+      button.classList.contains('active') ||
+      button.classList.contains('highlighted');
+    if (active) positions.add(position);
+  }
+  return positions.size === 1 ? [...positions][0] : undefined;
 }
 
 function isNativeSortButton(button: HTMLButtonElement): boolean {
@@ -225,12 +302,23 @@ function valueForCell(cell: HTMLElement, valueAttribute: string): number | null 
   return values.length > 0 ? Math.max(...values) : null;
 }
 
-function sortableGrid(valueAttribute: string): HTMLElement | null {
+function gridCardCells(grid: HTMLElement): HTMLElement[] {
+  return Array.from(grid.children).filter(
+    (child): child is HTMLElement =>
+      child instanceof HTMLElement && Boolean(child.querySelector(cardImageSelector)),
+  );
+}
+
+function gridCardCount(grid: HTMLElement): number {
+  return gridCardCells(grid).length;
+}
+
+function lineupPlayerGrid(): HTMLElement | null {
   const trackedByGrid = new Map<HTMLElement, Set<HTMLElement>>();
-  for (const container of document.querySelectorAll<HTMLElement>(
-    `[${valueAttribute}]`,
+  for (const image of document.querySelectorAll<HTMLImageElement>(
+    cardImageSelector,
   )) {
-    const cell = directGridCell(container);
+    const cell = directGridCell(image);
     const grid = cell?.parentElement;
     if (!cell || !grid) continue;
     const cells = trackedByGrid.get(grid) ?? new Set<HTMLElement>();
@@ -240,7 +328,7 @@ function sortableGrid(valueAttribute: string): HTMLElement | null {
 
   return (
     [...trackedByGrid]
-      .filter(([grid]) => grid.querySelectorAll(cardImageSelector).length > 1)
+      .filter(([, cells]) => cells.size > 1)
       .sort(
         ([leftGrid, leftCells], [rightGrid, rightCells]) =>
           rightCells.size - leftCells.size ||
@@ -248,6 +336,148 @@ function sortableGrid(valueAttribute: string): HTMLElement | null {
             leftGrid.querySelectorAll(cardImageSelector).length,
       )[0]?.[0] ?? null
   );
+}
+
+function cellPosition(cell: HTMLElement): FootballPosition | undefined {
+  const positions = new Set(
+    Array.from(
+      cell.querySelectorAll<HTMLElement>(`[${lineupSortPositionAttribute}]`),
+    )
+      .map((container) =>
+        container.getAttribute(lineupSortPositionAttribute),
+      )
+      .filter(
+        (position): position is FootballPosition =>
+          position === 'Goalkeeper' ||
+          position === 'Defender' ||
+          position === 'Midfielder' ||
+          position === 'Forward',
+      ),
+  );
+  return positions.size === 1 ? [...positions][0] : undefined;
+}
+
+function gridMatchesPosition(
+  grid: HTMLElement,
+  position: FootballPosition | null | undefined,
+): boolean {
+  if (!position) return true;
+  return gridCardCells(grid).every((cell) => {
+    const concretePosition = cellPosition(cell);
+    return !concretePosition || concretePosition === position;
+  });
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function animationFrames(count: number): Promise<void> {
+  for (let frame = 0; frame < count; frame += 1) {
+    await new Promise<void>((resolve) => {
+      if (typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(() => resolve());
+      } else {
+        window.setTimeout(resolve, 16);
+      }
+    });
+  }
+}
+
+async function pulseGridEnd(grid: HTMLElement): Promise<void> {
+  const scrollingElement = document.scrollingElement;
+  if (!scrollingElement) return;
+  const savedX = window.scrollX;
+  const savedY = window.scrollY;
+  const gridBottom = savedY + grid.getBoundingClientRect().bottom;
+  const maximumY = Math.max(0, scrollingElement.scrollHeight - window.innerHeight);
+  const targetY = Math.min(maximumY, Math.max(savedY, gridBottom - window.innerHeight + 48));
+  if (targetY <= savedY) {
+    await animationFrames(2);
+    return;
+  }
+
+  const root = document.documentElement;
+  const previousBehavior = root.style.getPropertyValue('scroll-behavior');
+  const previousPriority = root.style.getPropertyPriority('scroll-behavior');
+  root.style.setProperty('scroll-behavior', 'auto', 'important');
+  try {
+    window.scrollTo(savedX, targetY);
+    await animationFrames(5);
+  } finally {
+    window.scrollTo(savedX, savedY);
+    if (previousBehavior) {
+      root.style.setProperty(
+        'scroll-behavior',
+        previousBehavior,
+        previousPriority,
+      );
+    } else {
+      root.style.removeProperty('scroll-behavior');
+    }
+  }
+}
+
+async function waitForGridGrowth(
+  grid: HTMLElement,
+  previousCount: number,
+  isCancelled: () => boolean,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await delay(90);
+    if (isCancelled()) return false;
+    const currentGrid = lineupPlayerGrid();
+    if (currentGrid && currentGrid !== grid) return true;
+    if (currentGrid && gridCardCount(currentGrid) > previousCount) return true;
+  }
+  return false;
+}
+
+export async function loadCompleteLineupPool(
+  context: LineupPoolLoadContext,
+  options: LineupPoolLoadOptions = {},
+): Promise<HTMLElement | null> {
+  const getGrid = options.getGrid ?? lineupPlayerGrid;
+  const revealEnd = options.pulseGridEnd ?? pulseGridEnd;
+  const waitForGrowth = options.waitForGrowth ?? waitForGridGrowth;
+  const maxPulses = options.maxPulses ?? 32;
+  const stableMissesRequired = options.stableMissesRequired ?? 2;
+  let stableMisses = 0;
+
+  for (let pulse = 0; pulse < maxPulses; pulse += 1) {
+    if (context.isCancelled()) return null;
+    const grid = getGrid();
+    if (!grid) {
+      await delay(100);
+      continue;
+    }
+    const previousCount = gridCardCount(grid);
+    context.onProgress(previousCount);
+    await revealEnd(grid);
+    if (context.isCancelled()) return null;
+    const grew = await waitForGrowth(
+      grid,
+      previousCount,
+      context.isCancelled,
+    );
+    if (context.isCancelled()) return null;
+    const currentGrid = getGrid();
+    if (
+      grew ||
+      (currentGrid && currentGrid !== grid) ||
+      (currentGrid && gridCardCount(currentGrid) > previousCount)
+    ) {
+      stableMisses = 0;
+      continue;
+    }
+    stableMisses += 1;
+    if (stableMisses >= stableMissesRequired) {
+      context.onProgress(previousCount);
+      return grid;
+    }
+  }
+
+  return null;
 }
 
 export class LineupCardSorter {
@@ -263,15 +493,33 @@ export class LineupCardSorter {
   private readonly nativeRadioStates = new Map<HTMLInputElement, boolean>();
   private activeMode: LineupSortMode | null = null;
   private sortFrame: number | undefined;
+  private poolStartTimer: number | undefined;
+  private poolGeneration = 0;
+  private poolLoading = false;
+  private poolLoadFailed = false;
+  private poolCardCount = 0;
+  private completedGrid: HTMLElement | null = null;
+  private completedCells = new Set<HTMLElement>();
+  private requestedPosition: FootballPosition | null | undefined;
   private readonly originalOrders = new Map<HTMLElement, OriginalOrder>();
 
+  constructor(
+    private readonly poolLoader: LineupPoolLoader = loadCompleteLineupPool,
+  ) {}
+
   private readonly handleSortValueChange = (): void => {
-    if (this.activeMode) this.scheduleSort();
+    if (this.activeMode && !this.poolLoading) this.scheduleSort();
   };
 
   private readonly handleDocumentClick = (event: Event): void => {
     if (!this.activeMode || !(event.target instanceof Element)) return;
     const button = event.target.closest<HTMLButtonElement>('button');
+    const requestedPosition = lineupPositionFromButton(button);
+    if (requestedPosition !== undefined) {
+      this.requestedPosition = requestedPosition;
+      this.restartCompleteSort(120);
+      return;
+    }
     if ([...this.menuOptions.values()].includes(button as HTMLButtonElement)) {
       return;
     }
@@ -312,6 +560,7 @@ export class LineupCardSorter {
     window.removeEventListener('popstate', this.handleRouteChange);
     window.removeEventListener('hashchange', this.handleRouteChange);
     this.cancelSortFrame();
+    this.cancelPoolLoad();
     this.setActiveMode(null);
     this.removeMenuOptions();
     this.restoreNativeTrigger();
@@ -326,7 +575,19 @@ export class LineupCardSorter {
       return;
     }
     this.syncNativeSortUi();
-    if (this.activeMode) this.scheduleSort();
+    if (!this.activeMode || this.poolLoading) return;
+    const grid = lineupPlayerGrid();
+    if (!grid) return;
+    const cells = gridCardCells(grid);
+    const sameCompletedPool =
+      grid === this.completedGrid &&
+      cells.length === this.completedCells.size &&
+      cells.every((cell) => this.completedCells.has(cell));
+    if (!sameCompletedPool) {
+      this.restartCompleteSort(80);
+      return;
+    }
+    this.scheduleSort();
   }
 
   private syncNativeSortUi(): void {
@@ -361,7 +622,12 @@ export class LineupCardSorter {
         this.originalTriggerLabel = label.textContent?.trim() ?? '';
       }
       label.setAttribute(nativeTriggerLabelAttribute, 'true');
-      label.textContent = lineupSortConfigs[this.activeMode].label;
+      const baseLabel = lineupSortConfigs[this.activeMode].label;
+      label.textContent = this.poolLoading
+        ? `${baseLabel} lädt${this.poolCardCount > 0 ? ` ${this.poolCardCount}` : ''}…`
+        : this.poolLoadFailed
+          ? `${baseLabel} erneut`
+          : baseLabel;
     } else if (label.hasAttribute(nativeTriggerLabelAttribute)) {
       label.textContent = this.originalTriggerLabel;
       label.removeAttribute(nativeTriggerLabelAttribute);
@@ -462,21 +728,102 @@ export class LineupCardSorter {
   private setActiveMode(mode: LineupSortMode | null): void {
     if (this.activeMode === mode) {
       this.syncNativeSortUi();
+      if (mode) this.restartCompleteSort();
       return;
     }
     this.cancelSortFrame();
     if (this.activeMode) this.restoreOriginalOrders();
+    this.cancelPoolLoad();
     this.activeMode = mode;
+    this.requestedPosition = mode ? activeLineupPosition() : undefined;
     this.syncNativeSortUi();
     if (mode) {
-      this.scheduleSort();
+      this.restartCompleteSort();
     } else {
       this.restoreOriginalOrders();
     }
   }
 
+  private cancelPoolLoad(): void {
+    this.poolGeneration += 1;
+    if (this.poolStartTimer !== undefined) {
+      window.clearTimeout(this.poolStartTimer);
+      this.poolStartTimer = undefined;
+    }
+    this.poolLoading = false;
+    this.poolCardCount = 0;
+    this.completedGrid = null;
+    this.completedCells.clear();
+  }
+
+  private restartCompleteSort(delayMs = 0): void {
+    if (!this.activeMode) return;
+    this.cancelSortFrame();
+    this.restoreOriginalOrders();
+    this.cancelPoolLoad();
+    this.poolLoading = true;
+    this.poolLoadFailed = false;
+    const generation = this.poolGeneration;
+    this.syncNativeSortUi();
+    this.poolStartTimer = window.setTimeout(() => {
+      this.poolStartTimer = undefined;
+      void this.completePoolAndSort(generation);
+    }, delayMs);
+  }
+
+  private async completePoolAndSort(generation: number): Promise<void> {
+    const isCancelled = (): boolean =>
+      generation !== this.poolGeneration || !this.activeMode;
+    const grid = await this.poolLoader({
+      isCancelled,
+      onProgress: (cardCount) => {
+        if (isCancelled()) return;
+        this.poolCardCount = cardCount;
+        this.syncNativeSortUi();
+      },
+    });
+    if (isCancelled()) return;
+    this.poolLoading = false;
+    if (!grid) {
+      this.poolLoadFailed = true;
+      this.syncNativeSortUi();
+      return;
+    }
+
+    const activePosition = activeLineupPosition();
+    if (
+      this.requestedPosition !== undefined &&
+      activePosition !== undefined &&
+      this.requestedPosition !== activePosition
+    ) {
+      this.requestedPosition = activePosition;
+      this.restartCompleteSort(120);
+      return;
+    }
+    const expectedPosition = this.requestedPosition ?? activePosition;
+    if (!gridMatchesPosition(grid, expectedPosition)) {
+      this.poolLoadFailed = true;
+      this.restoreOriginalOrders();
+      this.syncNativeSortUi();
+      return;
+    }
+
+    this.poolLoadFailed = false;
+    this.completedGrid = grid;
+    this.completedCells = new Set(gridCardCells(grid));
+    this.syncNativeSortUi();
+    this.scheduleSort();
+  }
+
   private scheduleSort(): void {
-    if (!this.activeMode || this.sortFrame !== undefined) return;
+    if (
+      !this.activeMode ||
+      this.poolLoading ||
+      !this.completedGrid ||
+      this.sortFrame !== undefined
+    ) {
+      return;
+    }
     const callback = (): void => {
       this.sortFrame = undefined;
       this.applySort();
@@ -500,24 +847,34 @@ export class LineupCardSorter {
   private applySort(): void {
     if (!this.activeMode) return;
     const config = lineupSortConfigs[this.activeMode];
-    const grid = sortableGrid(config.valueAttribute);
-    if (!grid) {
+    const grid = this.completedGrid;
+    if (!grid?.isConnected) {
       this.restoreOriginalOrders();
+      this.restartCompleteSort(80);
       return;
     }
 
-    const cells: SortableCell[] = Array.from(grid.children).flatMap(
-      (child, originalIndex) =>
-        child instanceof HTMLElement && child.querySelector(cardImageSelector)
-          ? [
-              {
-                cell: child,
-                originalIndex,
-                value: valueForCell(child, config.valueAttribute),
-              },
-            ]
-          : [],
-    );
+    const currentCells = gridCardCells(grid);
+    if (
+      currentCells.length !== this.completedCells.size ||
+      currentCells.some((cell) => !this.completedCells.has(cell))
+    ) {
+      this.restartCompleteSort(80);
+      return;
+    }
+    const expectedPosition = this.requestedPosition ?? activeLineupPosition();
+    if (!gridMatchesPosition(grid, expectedPosition)) {
+      this.restoreOriginalOrders();
+      this.poolLoadFailed = true;
+      this.syncNativeSortUi();
+      return;
+    }
+
+    const cells: SortableCell[] = currentCells.map((cell, originalIndex) => ({
+      cell,
+      originalIndex,
+      value: valueForCell(cell, config.valueAttribute),
+    }));
     if (cells.length < 2) {
       this.restoreOriginalOrders();
       return;

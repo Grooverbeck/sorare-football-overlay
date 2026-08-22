@@ -6,9 +6,12 @@ import {
   lineupGoalSortOptionAttribute,
   lineupGoalSortProbabilityAttribute,
   lineupGoalSortSourceAttribute,
+  loadCompleteLineupPool,
   setLineupAaSortValue,
   setLineupGoalSortValue,
+  setLineupSortPosition,
   supportsLineupSortPath,
+  type LineupPoolLoader,
 } from '../lineup-sort.js';
 
 function lineupBuilderMarkup(): string {
@@ -63,6 +66,12 @@ function lineupBuilderMarkup(): string {
         </div>
       </form>
     </div>
+    <nav data-lineup-positions>
+      <button type="button" class="highlighted"><span>VER</span></button>
+      <button type="button"><span>MF</span></button>
+      <button type="button"><span>FWD</span></button>
+      <button type="button"><span>EX</span></button>
+    </nav>
     <div data-player-grid style="display: grid">
       <div data-cell="market">
         <article data-player="market">
@@ -83,6 +92,12 @@ function lineupBuilderMarkup(): string {
   `;
 }
 
+const immediatePoolLoader: LineupPoolLoader = async ({ onProgress }) => {
+  const grid = document.querySelector<HTMLElement>('[data-player-grid]');
+  if (grid) onProgress(grid.children.length);
+  return grid;
+};
+
 describe('lineup card sorting', () => {
   let sorter: LineupCardSorter;
 
@@ -90,7 +105,7 @@ describe('lineup card sorting', () => {
     vi.restoreAllMocks();
     document.body.innerHTML = lineupBuilderMarkup();
     window.history.replaceState({}, '', '/de/football/series/test/compose-team/lineup');
-    sorter = new LineupCardSorter();
+    sorter = new LineupCardSorter(immediatePoolLoader);
   });
 
   afterEach(() => {
@@ -105,6 +120,40 @@ describe('lineup card sorting', () => {
     expect(supportsLineupSortPath('/de/football/lineups/lineup')).toBe(
       false,
     );
+  });
+
+  it('loads every lazy Sorare page before declaring the player pool complete', async () => {
+    const grid = document.querySelector<HTMLElement>('[data-player-grid]');
+    if (!grid) throw new Error('Expected player grid');
+    const pages = [
+      '<div><img alt="Lazy Player One - limited"></div>',
+      '<div><img alt="Lazy Player Two - limited"></div>',
+    ];
+    const progress: number[] = [];
+    const pulseGridEnd = vi.fn(async () => {
+      const page = pages.shift();
+      if (page) grid.insertAdjacentHTML('beforeend', page);
+    });
+
+    const result = await loadCompleteLineupPool(
+      {
+        isCancelled: () => false,
+        onProgress: (count) => progress.push(count),
+      },
+      {
+        getGrid: () => grid,
+        pulseGridEnd,
+        waitForGrowth: async (_grid, previousCount) =>
+          grid.children.length > previousCount,
+        maxPulses: 6,
+        stableMissesRequired: 2,
+      },
+    );
+
+    expect(result).toBe(grid);
+    expect(grid.children).toHaveLength(5);
+    expect(pulseGridEnd).toHaveBeenCalledTimes(4);
+    expect(progress.at(-1)).toBe(5);
   });
 
   it('adds both custom options only while Sorare has its sort dialog open', () => {
@@ -181,6 +230,43 @@ describe('lineup card sorting', () => {
         '[data-native-option="average"] input[type="radio"]',
       )?.checked,
     ).toBe(false);
+  });
+
+  it('waits for lazy cards and includes them in the first complete sort', async () => {
+    sorter.stop();
+    const grid = document.querySelector<HTMLElement>('[data-player-grid]');
+    if (!grid) throw new Error('Expected player grid');
+    sorter = new LineupCardSorter(async ({ onProgress }) => {
+      const lateCell = document.createElement('div');
+      lateCell.dataset.cell = 'late';
+      lateCell.innerHTML =
+        '<article data-player="late"><img alt="Late Player - limited"></article>';
+      grid.append(lateCell);
+      const latePlayer = lateCell.querySelector<HTMLElement>('[data-player="late"]');
+      if (!latePlayer) throw new Error('Expected late player');
+      setLineupAaSortValue(latePlayer, 30);
+      onProgress(grid.children.length);
+      return grid;
+    });
+    const market = document.querySelector<HTMLElement>('[data-player="market"]');
+    const historical = document.querySelector<HTMLElement>(
+      '[data-player="historical"]',
+    );
+    if (!market || !historical) throw new Error('Expected player containers');
+    setLineupAaSortValue(market, 10);
+    setLineupAaSortValue(historical, 20);
+
+    sorter.start();
+    document
+      .querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)
+      ?.click();
+
+    await vi.waitFor(() => {
+      expect(
+        document.querySelector<HTMLElement>('[data-cell="late"]')?.style.order,
+      ).toBe('-4');
+    });
+    expect(grid.children).toHaveLength(4);
   });
 
   it('sorts by AA, keeps missing values last, and switches custom modes', async () => {
@@ -278,5 +364,88 @@ describe('lineup card sorting', () => {
         `[${lineupGoalSortOptionAttribute}] input[type="radio"]`,
       )?.checked,
     ).toBe(false);
+  });
+
+  it('restores the old grid before loading and sorting a newly selected position', async () => {
+    sorter.stop();
+    const grid = document.querySelector<HTMLElement>('[data-player-grid]');
+    const market = document.querySelector<HTMLElement>('[data-player="market"]');
+    const historical = document.querySelector<HTMLElement>(
+      '[data-player="historical"]',
+    );
+    const marketCell = document.querySelector<HTMLElement>('[data-cell="market"]');
+    const defenderButton = document.querySelector<HTMLButtonElement>(
+      '[data-lineup-positions] button:first-child',
+    );
+    const midfielderButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[data-lineup-positions] button'),
+    ).find((button) => button.textContent?.trim() === 'MF');
+    if (
+      !grid ||
+      !market ||
+      !historical ||
+      !marketCell ||
+      !defenderButton ||
+      !midfielderButton
+    ) {
+      throw new Error('Expected lineup position fixture');
+    }
+    setLineupAaSortValue(market, 20);
+    setLineupAaSortValue(historical, 10);
+
+    let loadCalls = 0;
+    let resolveNewPosition: ((value: HTMLElement | null) => void) | undefined;
+    const newPositionPool = new Promise<HTMLElement | null>((resolve) => {
+      resolveNewPosition = resolve;
+    });
+    sorter = new LineupCardSorter(async ({ onProgress }) => {
+      loadCalls += 1;
+      onProgress(grid.children.length);
+      return loadCalls === 1 ? grid : newPositionPool;
+    });
+    midfielderButton.addEventListener('click', () => {
+      defenderButton.classList.remove('highlighted');
+      midfielderButton.classList.add('highlighted');
+    });
+
+    sorter.start();
+    document
+      .querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)
+      ?.click();
+    await vi.waitFor(() => expect(marketCell.style.order).toBe('-3'));
+
+    midfielderButton.click();
+    expect(marketCell.style.order).toBe('');
+    await vi.waitFor(() => expect(loadCalls).toBe(2));
+    resolveNewPosition?.(grid);
+    await vi.waitFor(() => expect(marketCell.style.order).toBe('-3'));
+  });
+
+  it('refuses to sort a stale grid from a different active position', async () => {
+    const market = document.querySelector<HTMLElement>('[data-player="market"]');
+    const historical = document.querySelector<HTMLElement>(
+      '[data-player="historical"]',
+    );
+    const marketCell = document.querySelector<HTMLElement>('[data-cell="market"]');
+    if (!market || !historical || !marketCell) {
+      throw new Error('Expected lineup sorting fixture');
+    }
+    setLineupSortPosition(market, 'Midfielder');
+    setLineupSortPosition(historical, 'Midfielder');
+    setLineupAaSortValue(market, 20);
+    setLineupAaSortValue(historical, 10);
+
+    sorter.start();
+    document
+      .querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)
+      ?.click();
+
+    await vi.waitFor(() => {
+      expect(
+        document.querySelector<HTMLElement>('[data-native-trigger-label]')
+          ?.textContent,
+      ).toBe('AA erneut');
+    });
+    expect(marketCell.style.order).toBe('');
   });
 });
