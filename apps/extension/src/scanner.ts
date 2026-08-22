@@ -13,6 +13,7 @@ import {
   type CardTarget,
 } from './dom.js';
 import { OverlayView } from './overlay.js';
+import { LineupGoalOddsSorter } from './lineup-goal-sort.js';
 import {
   clearNativeSorareLineupProbabilityDecorations,
   decorateNativeSorareLineupProbabilities,
@@ -1060,6 +1061,7 @@ export class SorareCardScanner {
   private readonly pendingScanRoots = new Set<Element>();
   private mutationFrame: number | undefined;
   private shouldRefreshPositions = false;
+  private readonly lineupGoalSorter = new LineupGoalOddsSorter();
 
   constructor(
     private readonly coordinator = new StatsBatchCoordinator(),
@@ -1085,6 +1087,7 @@ export class SorareCardScanner {
   start(): void {
     if (this.observer) return;
     const root = document.body ?? document.documentElement;
+    this.lineupGoalSorter.start(root);
     this.startVisibilityObserver();
     this.scan(root);
     this.observer = new MutationObserver((mutations) => {
@@ -1162,6 +1165,7 @@ export class SorareCardScanner {
     }
     this.pendingScanRoots.clear();
     this.shouldRefreshPositions = false;
+    this.lineupGoalSorter.stop();
     for (const { view } of this.overlays.values()) view.destroy();
     this.overlays.clear();
     clearNativeSorareLineupProbabilityDecorations();
@@ -1169,6 +1173,7 @@ export class SorareCardScanner {
 
   scan(root: ParentNode): void {
     decorateNativeSorareLineupProbabilities(root);
+    this.lineupGoalSorter.scan(root);
     const targets = findCardTargets(root);
     const discoveredPictureNames = drainDiscoveredCardPictureNames();
     if (Object.keys(discoveredPictureNames).length > 0) {

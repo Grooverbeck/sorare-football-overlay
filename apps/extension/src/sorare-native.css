@@ -108,3 +108,63 @@
   background: var(--sorare-overlay-lineup-tone) !important;
   clip-path: polygon(0 0, 100% 0, 100% 100%) !important;
 }
+
+[data-sorare-overlay-goal-sort-control="true"] {
+  display: inline-flex !important;
+  box-sizing: border-box !important;
+  height: 32px !important;
+  min-height: 32px !important;
+  margin: 0 !important;
+  padding: 0 12px !important;
+  border: 1px solid rgba(255, 255, 255, 0.17) !important;
+  border-radius: 8px !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 7px !important;
+  background: rgb(14, 14, 14) !important;
+  box-shadow: none !important;
+  color: rgb(255, 255, 255) !important;
+  cursor: pointer !important;
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    Oxygen,
+    Ubuntu,
+    Cantarell,
+    "Fira Sans",
+    "Droid Sans",
+    "Helvetica Neue",
+    sans-serif !important;
+  font-size: 16px !important;
+  font-weight: 700 !important;
+  line-height: 20px !important;
+  white-space: nowrap !important;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease,
+    color 120ms ease !important;
+}
+
+[data-sorare-overlay-goal-sort-control="true"] svg {
+  width: 16px !important;
+  min-width: 16px !important;
+  height: 16px !important;
+}
+
+[data-sorare-overlay-goal-sort-control="true"]:hover {
+  border-color: rgba(255, 255, 255, 0.34) !important;
+  background: rgb(28, 28, 28) !important;
+}
+
+[data-sorare-overlay-goal-sort-control="true"]:focus-visible {
+  outline: 2px solid #b8f995 !important;
+  outline-offset: 2px !important;
+}
+
+[data-sorare-overlay-goal-sort-control="true"][aria-pressed="true"] {
+  border-color: rgba(184, 249, 149, 0.72) !important;
+  background: rgb(25, 37, 22) !important;
+  color: #b8f995 !important;
+}

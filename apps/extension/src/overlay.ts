@@ -11,6 +11,7 @@ import {
 } from '@sorare-overlay/shared';
 import { supportsCompactViewPath } from './compact-view-route.js';
 import { isScoreDetailsDialogTarget } from './dom.js';
+import { setLineupGoalSortValue } from './lineup-goal-sort.js';
 import type {
   HistoricalAssistWindow,
   MarketBracketSide,
@@ -1397,6 +1398,25 @@ function selectedHistoricalMarket(
     : { window: historicalAssistWindow, metric };
 }
 
+function goalSortValue(
+  stats: PlayerStats,
+): { probability: number; source: 'market' | 'historical' } | null {
+  if (stats.position === 'Goalkeeper') return null;
+  const marketProbability = stats.nextGame?.marketOdds?.goal?.probability;
+  if (marketProbability !== null && marketProbability !== undefined) {
+    return { probability: marketProbability, source: 'market' };
+  }
+
+  const selectedHistory = selectedHistoricalMarket(stats, 'goal')?.metric;
+  const historicalMetric =
+    selectedHistory?.value !== null && selectedHistory?.value !== undefined
+      ? selectedHistory
+      : stats.goalL10;
+  return historicalMetric.value !== null && historicalMetric.sampleSize > 0
+    ? { probability: historicalMetric.value, source: 'historical' }
+    : null;
+}
+
 function marketBracketNode(stats: PlayerStats): HTMLElement | null {
   const marketOdds = stats.nextGame?.marketOdds;
   const canShowMarkets = stats.position !== 'Goalkeeper';
@@ -1692,21 +1712,75 @@ function cleanSheetBracketCellNode(
   return cell;
 }
 
-function isContainerExposed(container: HTMLElement, rect: DOMRect): boolean {
+interface VisibleRect {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+function clipsOverflow(value: string): boolean {
+  return /^(?:auto|clip|hidden|scroll)$/.test(value);
+}
+
+function clippedAnchorRect(
+  anchor: HTMLElement,
+  rect: DOMRect,
+): VisibleRect | null {
+  const visible: VisibleRect = {
+    left: Math.max(0, rect.left),
+    right: Math.min(window.innerWidth, rect.right),
+    top: Math.max(0, rect.top),
+    bottom: Math.min(window.innerHeight, rect.bottom),
+  };
+
+  for (let ancestor = anchor.parentElement; ancestor; ancestor = ancestor.parentElement) {
+    const style = getComputedStyle(ancestor);
+    const clipsX = clipsOverflow(style.overflowX || style.overflow);
+    const clipsY = clipsOverflow(style.overflowY || style.overflow);
+    if (!clipsX && !clipsY) continue;
+    const ancestorRect = ancestor.getBoundingClientRect();
+    if (clipsX) {
+      visible.left = Math.max(visible.left, ancestorRect.left);
+      visible.right = Math.min(visible.right, ancestorRect.right);
+    }
+    if (clipsY) {
+      visible.top = Math.max(visible.top, ancestorRect.top);
+      visible.bottom = Math.min(visible.bottom, ancestorRect.bottom);
+    }
+  }
+
+  return visible.right > visible.left && visible.bottom > visible.top
+    ? visible
+    : null;
+}
+
+function isAnchorExposed(
+  container: HTMLElement,
+  anchor: HTMLElement,
+  rect: DOMRect,
+): boolean {
   if (typeof document.elementFromPoint !== 'function') return true;
 
-  const left = Math.max(0, rect.left);
-  const right = Math.min(window.innerWidth, rect.right);
-  const top = Math.max(0, rect.top);
-  const bottom = Math.min(window.innerHeight, rect.bottom);
-  if (right <= left || bottom <= top) return false;
+  const visible = clippedAnchorRect(anchor, rect);
+  if (!visible) return false;
+
+  // The bracket is attached to the card's top edge. If that edge has already
+  // moved behind a scroll clip, keeping the fixed overlay visible would make
+  // it float above Sorare's sticky toolbar while only the card footer remains.
+  const topEdgeTolerance = 1;
+  if (visible.top > rect.top + topEdgeTolerance) return false;
+
+  const width = visible.right - visible.left;
+  const sampleY = Math.min(
+    visible.bottom - 0.5,
+    Math.max(visible.top + 0.5, rect.top + Math.min(3, rect.height / 2)),
+  );
 
   const points: ReadonlyArray<readonly [number, number]> = [
-    [(left + right) / 2, (top + bottom) / 2],
-    [left + (right - left) * 0.2, top + (bottom - top) * 0.2],
-    [right - (right - left) * 0.2, top + (bottom - top) * 0.2],
-    [left + (right - left) * 0.2, bottom - (bottom - top) * 0.2],
-    [right - (right - left) * 0.2, bottom - (bottom - top) * 0.2],
+    [visible.left + width / 2, sampleY],
+    [visible.left + width * 0.2, sampleY],
+    [visible.right - width * 0.2, sampleY],
   ];
 
   return points.some(([x, y]) => {
@@ -1714,8 +1788,8 @@ function isContainerExposed(container: HTMLElement, rect: DOMRect): boolean {
     return Boolean(
       exposedElement &&
         (exposedElement === container ||
-          container.contains(exposedElement) ||
-          exposedElement.contains(container)),
+          exposedElement === anchor ||
+          container.contains(exposedElement)),
     );
   });
 }
@@ -1948,6 +2022,7 @@ function packHeaderSafeAnchorTop(
 function isVisiblyRendered(
   container: HTMLElement,
   rect: DOMRect,
+  anchor: HTMLElement = container,
   modalScope = activeModalScope(),
 ): boolean {
   if (
@@ -1966,7 +2041,7 @@ function isVisiblyRendered(
     if (!container.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) {
       return false;
     }
-    return isContainerExposed(container, rect);
+    return isAnchorExposed(container, anchor, rect);
   }
   for (let node: HTMLElement | null = container; node; node = node.parentElement) {
     const style = getComputedStyle(node);
@@ -1979,7 +2054,7 @@ function isVisiblyRendered(
       return false;
     }
   }
-  return isContainerExposed(container, rect);
+  return isAnchorExposed(container, anchor, rect);
 }
 
 interface OverlayPositionContext {
@@ -1990,6 +2065,7 @@ interface PositionedOverlay {
   readonly host: HTMLElement;
   isViewportPriorityActive(): boolean;
   refreshPositionNow(context: OverlayPositionContext): void;
+  hideUntilPositionRefresh?(): void;
   handleLayoutMotionStart?(event: Event): void;
 }
 
@@ -2174,9 +2250,11 @@ function scheduleOverlayPosition(view: PositionedOverlay): void {
   ensurePositionFrame();
 }
 
-function scheduleAllOverlayPositions(): void {
+function scheduleAllOverlayPositions(event?: Event): void {
   for (const view of positionedOverlays) {
-    if (view.isViewportPriorityActive()) pendingPositionedOverlays.add(view);
+    if (!view.isViewportPriorityActive()) continue;
+    if (event?.type === 'scroll') view.hideUntilPositionRefresh?.();
+    pendingPositionedOverlays.add(view);
   }
   ensurePositionFrame();
 }
@@ -2313,11 +2391,25 @@ export class OverlayView {
         return;
       }
       const rect = this.container.getBoundingClientRect();
-      const isVisible = isVisiblyRendered(
-        this.container,
-        rect,
-        context?.modalScope,
-      );
+      const cardImage = visibleCardImage(this.container);
+      const packScope = packRevealScope(this.container);
+      const wasPrimaryPackCard = this.host.dataset.packPrimary === 'true';
+      const isPrimaryPackCard =
+        !packScope ||
+        !cardImage ||
+        isPrimarySinglePackCard(this.container, cardImage);
+      this.host.dataset.packReveal = String(Boolean(packScope));
+      this.host.dataset.packPrimary = String(isPrimaryPackCard);
+      const visibilityAnchor = cardImage?.image ?? this.container;
+      const visibilityRect = cardImage?.rect ?? rect;
+      const isVisible =
+        isPrimaryPackCard &&
+        isVisiblyRendered(
+          this.container,
+          visibilityRect,
+          visibilityAnchor,
+          context?.modalScope,
+        );
       this.host.style.display = isVisible ? '' : 'none';
       if (!isVisible) {
         this.lineupOddsHost.hidden = true;
@@ -2357,8 +2449,6 @@ export class OverlayView {
           }
         }
       }
-      const packScope = packRevealScope(this.container);
-      const wasPrimaryPackCard = this.host.dataset.packPrimary === 'true';
       const nextPackLayoutPhase = !packScope
         ? 'none'
         : isPackResultScope(packScope)
@@ -2368,7 +2458,6 @@ export class OverlayView {
         nextPackLayoutPhase !== this.packLayoutPhase;
       this.packLayoutPhase = nextPackLayoutPhase;
       if (!packScope) this.lastStablePackRect = null;
-      this.host.dataset.packReveal = String(Boolean(packScope));
       if (packScope) {
         this.closePlayerMarketTooltip();
         if (
@@ -2379,13 +2468,7 @@ export class OverlayView {
           this.startPackBracketSettling();
         }
       }
-      const cardImage = visibleCardImage(this.container);
       const cardImageRect = cardImage?.rect ?? null;
-      const isPrimaryPackCard =
-        !packScope ||
-        !cardImage ||
-        isPrimarySinglePackCard(this.container, cardImage);
-      this.host.dataset.packPrimary = String(isPrimaryPackCard);
       if (
         packScope &&
         isPrimaryPackCard &&
@@ -2560,6 +2643,14 @@ export class OverlayView {
     }
   }
 
+  hideUntilPositionRefresh(): void {
+    if (this.destroyed || !this.viewportPriorityActive) return;
+    this.host.style.display = 'none';
+    this.lineupOddsHost.hidden = true;
+    this.closePlayerMarketTooltip();
+    this.closeLineupTooltip();
+  }
+
   handleLayoutMotionStart(event: Event): void {
     if (
       this.destroyed ||
@@ -2606,6 +2697,7 @@ export class OverlayView {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    setLineupGoalSortValue(this.container, null);
     this.stopPackBracketSettling();
     if (this.packMotionProbeFrame !== undefined) {
       cancelPositionFrame(this.packMotionProbeFrame);
@@ -2663,6 +2755,12 @@ export class OverlayView {
       this.noData();
       return;
     }
+    const sortValue = goalSortValue(stats);
+    setLineupGoalSortValue(
+      this.container,
+      sortValue?.probability ?? null,
+      sortValue?.source,
+    );
     this.renderLineupOdds(stats.nextGame);
     this.renderPlayerMarketTooltip(stats);
     this.panel.replaceChildren();
@@ -3026,6 +3124,7 @@ export class OverlayView {
     title?: string,
   ): void {
     if (this.destroyed) return;
+    setLineupGoalSortValue(this.container, null);
     this.stopPackBracketSettling();
     this.panel.replaceChildren();
     if (modifier === 'no-data') {

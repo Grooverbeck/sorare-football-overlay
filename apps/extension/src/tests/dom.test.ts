@@ -3651,6 +3651,58 @@ describe('Sorare card DOM discovery', () => {
     view.destroy();
   });
 
+  it('hides a fixed bracket when the card image is covered but its footer remains visible', () => {
+    document.body.innerHTML = `
+      <header data-sticky-toolbar></header>
+      <article data-testid="football-card">
+        <img alt="Noel Caliskan - limited" src="https://assets.sorare.com/card.png">
+        <footer data-card-footer></footer>
+      </article>
+    `;
+    const card = document.querySelector<HTMLElement>('article');
+    const image = document.querySelector<HTMLImageElement>('img');
+    const footer = document.querySelector<HTMLElement>('[data-card-footer]');
+    const toolbar = document.querySelector<HTMLElement>('[data-sticky-toolbar]');
+    if (!card || !image || !footer || !toolbar) {
+      throw new Error('Expected partially covered card fixture');
+    }
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue({
+      x: 100,
+      y: 80,
+      top: 80,
+      right: 230,
+      bottom: 300,
+      left: 100,
+      width: 130,
+      height: 220,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(image, 'getBoundingClientRect').mockReturnValue({
+      x: 100,
+      y: 80,
+      top: 80,
+      right: 230,
+      bottom: 250,
+      left: 100,
+      width: 130,
+      height: 170,
+      toJSON: () => ({}),
+    });
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true,
+      value: vi.fn((_x: number, y: number) => (y <= 250 ? toolbar : footer)),
+    });
+
+    const view = new OverlayView(
+      card,
+      { playerName: 'Noel Caliskan' },
+      'Midfielder',
+    );
+
+    expect(view.host.style.display).toBe('none');
+    view.destroy();
+  });
+
   it('scales bracket values down for mini but still usable card images', () => {
     document.body.innerHTML = `
       <article data-testid="football-card">
@@ -5089,9 +5141,11 @@ describe('Sorare card DOM discovery', () => {
     window.dispatchEvent(new Event('scroll'));
 
     expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+    expect(views.every((view) => view.host.style.display === 'none')).toBe(true);
     expect(rectSpies.every((spy) => spy.mock.calls.length === 0)).toBe(true);
     frameCallbacks.shift()?.(performance.now());
     expect(rectSpies.map((spy) => spy.mock.calls.length)).toEqual([1, 1]);
+    expect(views.every((view) => view.host.style.display === '')).toBe(true);
 
     views.forEach((view) => view.destroy());
     vi.unstubAllGlobals();
@@ -5459,6 +5513,12 @@ describe('Sorare card DOM discovery', () => {
     expect(goal?.getAttribute('aria-label')).toBe(
       'Historisches Tor L15: 40 Prozent, n=15; keine Marktquote',
     );
+    expect(
+      card.getAttribute('data-sorare-overlay-goal-sort-probability'),
+    ).toBe('0.4');
+    expect(card.getAttribute('data-sorare-overlay-goal-sort-source')).toBe(
+      'historical',
+    );
     expect(view.host.shadowRoot?.querySelector('.player-market-tooltip')?.textContent)
       .toContain('Assist · historisch L15');
     expect(view.host.shadowRoot?.querySelector('.player-market-tooltip')?.textContent)
@@ -5524,6 +5584,12 @@ describe('Sorare card DOM discovery', () => {
     );
     expect(goal?.textContent).toBe('34%');
     expect(goal?.dataset.source).toBeUndefined();
+    expect(
+      card.getAttribute('data-sorare-overlay-goal-sort-probability'),
+    ).toBe('0.34');
+    expect(card.getAttribute('data-sorare-overlay-goal-sort-source')).toBe(
+      'market',
+    );
 
     applyMarketValueFormat('decimal');
     view.render({
