@@ -79,7 +79,7 @@ export type LineupPoolLoader = (
 
 interface LineupPoolLoadOptions {
   getGrid?: () => HTMLElement | null;
-  revealGridEnd?: (grid: HTMLElement) => Promise<void>;
+  revealGridEnd?: (grid: HTMLElement) => Promise<boolean>;
   waitForGrowth?: (
     grid: HTMLElement,
     previousCount: number,
@@ -414,17 +414,17 @@ function restoreInlineStyles(
   }
 }
 
-async function revealGridEndSilently(grid: HTMLElement): Promise<void> {
+async function revealGridEndSilently(grid: HTMLElement): Promise<boolean> {
   const trigger = gridCardCells(grid).at(-1);
   if (!trigger?.isConnected) {
     await animationFrames(2);
-    return;
+    return false;
   }
 
   const rectangle = trigger.getBoundingClientRect();
   if (rectangle.width <= 0 || rectangle.height <= 0) {
     await animationFrames(2);
-    return;
+    return false;
   }
 
   const isAlreadyVisible =
@@ -436,7 +436,7 @@ async function revealGridEndSilently(grid: HTMLElement): Promise<void> {
     window.dispatchEvent(new Event('scroll'));
     document.dispatchEvent(new Event('scroll'));
     await animationFrames(5);
-    return;
+    return true;
   }
 
   const overriddenProperties = [
@@ -486,6 +486,7 @@ async function revealGridEndSilently(grid: HTMLElement): Promise<void> {
     restoreInlineStyles(trigger, originalStyles);
     restoreInlineStyles(grid, originalGridMinHeight);
   }
+  return false;
 }
 
 async function waitForGridGrowth(
@@ -513,6 +514,7 @@ export async function loadCompleteLineupPool(
   const maxPulses = options.maxPulses ?? 32;
   const stableMissesRequired = options.stableMissesRequired ?? 2;
   let stableMisses = 0;
+  let observedGrowth = false;
 
   for (let pulse = 0; pulse < maxPulses; pulse += 1) {
     if (context.isCancelled()) return null;
@@ -523,7 +525,7 @@ export async function loadCompleteLineupPool(
     }
     const previousCount = gridCardCount(grid);
     context.onProgress(previousCount);
-    await revealEnd(grid);
+    const endWasAlreadyVisible = await revealEnd(grid);
     if (context.isCancelled()) return null;
     const grew = await waitForGrowth(
       grid,
@@ -532,6 +534,9 @@ export async function loadCompleteLineupPool(
     );
     if (context.isCancelled()) return null;
     const currentGrid = getGrid();
+    if (currentGrid && gridCardCount(currentGrid) > previousCount) {
+      observedGrowth = true;
+    }
     if (
       grew ||
       (currentGrid && currentGrid !== grid) ||
@@ -542,6 +547,7 @@ export async function loadCompleteLineupPool(
     }
     stableMisses += 1;
     if (stableMisses >= stableMissesRequired) {
+      if (!observedGrowth && !endWasAlreadyVisible) return null;
       context.onProgress(previousCount);
       return grid;
     }

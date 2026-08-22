@@ -133,6 +133,7 @@ describe('lineup card sorting', () => {
     const revealGridEnd = vi.fn(async () => {
       const page = pages.shift();
       if (page) grid.insertAdjacentHTML('beforeend', page);
+      return false;
     });
 
     const result = await loadCompleteLineupPool(
@@ -187,7 +188,7 @@ describe('lineup card sorting', () => {
     window.addEventListener('scroll', scrollEvent);
 
     try {
-      await loadCompleteLineupPool(
+      const result = await loadCompleteLineupPool(
         {
           isCancelled: () => false,
           onProgress: () => undefined,
@@ -199,6 +200,7 @@ describe('lineup card sorting', () => {
           stableMissesRequired: 1,
         },
       );
+      expect(result).toBeNull();
     } finally {
       window.removeEventListener('scroll', scrollEvent);
     }
@@ -215,6 +217,32 @@ describe('lineup card sorting', () => {
     expect(Array.from(grid.children)).toEqual(originalChildren);
     expect(lastCell.style.order).toBe('7');
     expect(grid.style.minHeight).toBe(originalGridMinHeight);
+  });
+
+  it('accepts a stable pool whose final card is already visible', async () => {
+    const grid = document.querySelector<HTMLElement>('[data-player-grid]');
+    const lastCell = document.querySelector<HTMLElement>(
+      '[data-cell="missing"]',
+    );
+    if (!grid || !lastCell) throw new Error('Expected player grid');
+    vi.spyOn(lastCell, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 24, y: 120, width: 120, height: 260 }),
+    );
+
+    const result = await loadCompleteLineupPool(
+      {
+        isCancelled: () => false,
+        onProgress: () => undefined,
+      },
+      {
+        getGrid: () => grid,
+        waitForGrowth: async () => false,
+        maxPulses: 1,
+        stableMissesRequired: 1,
+      },
+    );
+
+    expect(result).toBe(grid);
   });
 
   it('adds both custom options only while Sorare has its sort dialog open', () => {
