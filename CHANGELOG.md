@@ -3,6 +3,18 @@
 Alle wichtigen Änderungen am Sorare Football Stats Overlay werden in dieser
 Datei dokumentiert.
 
+## 0.4.4 – 23. August 2026
+
+### Zuverlässige Sortierung für jede Spielerlistengröße
+
+- Die Sortierung nach **Torquote** oder **AA** erkennt zuverlässig, sobald alle
+  passenden Spieler bereitstehen – unabhängig davon, ob Sorare die Liste in
+  einem oder mehreren Schritten lädt.
+- Auch kleinere Spielerlisten werden vollständig nach dem gewählten Wert
+  geordnet.
+- Die Vorbereitung läuft weiterhin ruhig im Hintergrund, ohne die Seite zu
+  verschieben.
+
 ## 0.4.3 – 23. August 2026
 
 ### Spieler einfacher vergleichen
