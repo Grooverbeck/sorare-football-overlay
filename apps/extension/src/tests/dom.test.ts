@@ -245,6 +245,48 @@ describe('Sorare card DOM discovery', () => {
     ]);
   });
 
+  it('finds the active lineup position through Sorare\'s deeply nested grid', () => {
+    document.body.innerHTML = `
+      <section data-testid="lineup-builder">
+        <nav aria-label="Positionen">
+          <button type="button"><span>TW</span></button>
+          <button type="button"><span>VER</span></button>
+          <button type="button"><span>MF</span></button>
+          <button type="button" class="highlighted"><span>FWD</span></button>
+        </nav>
+        ${'<div>'.repeat(9)}
+          <button type="button">
+            <img
+              alt="Ismael Saibari - common"
+              src="https://assets.sorare.com/image-resize/cardsamplepicture/saibari/picture/card.png"
+            >
+          </button>
+        ${'</div>'.repeat(9)}
+      </section>
+    `;
+
+    expect(findCardTargets(document)).toMatchObject([
+      { playerName: 'Ismael Saibari', position: 'Forward' },
+    ]);
+  });
+
+  it('does not mistake the St. in St. Louis for the striker marker ST', () => {
+    document.body.innerHTML = `
+      <button type="button">
+        <span>St. Louis City SC</span>
+        <span>Verteidiger</span>
+        <img
+          alt="Timo Baumgartl - common"
+          src="https://assets.sorare.com/image-resize/cardsamplepicture/baumgartl/picture/card.png"
+        >
+      </button>
+    `;
+
+    expect(findCardTargets(document)).toMatchObject([
+      { playerName: 'Timo Baumgartl', position: 'Defender' },
+    ]);
+  });
+
   it('uses Sorare\'s highlighted native team to disambiguate an image-only namesake', async () => {
     document.body.innerHTML = `
       <div data-testid="player-row">
@@ -1073,6 +1115,205 @@ describe('Sorare card DOM discovery', () => {
       document.querySelectorAll('[data-sorare-overlay-companion="lineup-odds"]'),
     ).toHaveLength(1);
     scanner.stop();
+  });
+
+  it('aligns the player win segment with Sorare\'s canonical team order', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/de/football/series/test-series/compose-team',
+    );
+    document.body.innerHTML = `
+      <section>
+        <button data-testid="safonov-card">
+          <img alt="Matvey Safonov - common" src="/safonov.png">
+        </button>
+        <button>
+          <div data-testid="ren-psg-teams">
+            <div aria-label="Team">
+              <img alt="rennes-rennes" src="/rennes.png">
+              <span>REN</span>
+            </div>
+            <div aria-label="Team" class="highlighted">
+              <img alt="psg-paris" src="/psg.png">
+              <span>PSG</span>
+            </div>
+          </div>
+        </button>
+      </section>
+    `;
+    const card = document.querySelector<HTMLElement>(
+      '[data-testid="safonov-card"]',
+    );
+    const teamRow = document.querySelector<HTMLElement>(
+      '[data-testid="ren-psg-teams"]',
+    );
+    if (!card || !teamRow) throw new Error('Expected REN–PSG fixture');
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue({
+      x: 40,
+      y: 100,
+      top: 100,
+      right: 150,
+      bottom: 278,
+      left: 40,
+      width: 110,
+      height: 178,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(teamRow, 'getBoundingClientRect').mockReturnValue({
+      x: 40,
+      y: 300,
+      top: 300,
+      right: 150,
+      bottom: 320,
+      left: 40,
+      width: 110,
+      height: 20,
+      toJSON: () => ({}),
+    });
+
+    const view = new OverlayView(
+      card,
+      { playerName: 'Matvey Safonov' },
+      'Goalkeeper',
+    );
+    view.render({
+      slug: 'matvey-safonov',
+      displayName: 'Matvey Safonov',
+      position: 'Goalkeeper',
+      aaL10: { value: 12.3, sampleSize: 10 },
+      cleanSheetL10: { value: 0.5, sampleSize: 10 },
+      goalL10: { value: 0, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-23T18:45:00.000Z',
+        homeTeamName: 'PSG',
+        awayTeamName: 'Rennes',
+        playerTeamName: 'PSG',
+        opponentTeamName: 'Rennes',
+        playerTeamSlug: 'psg-paris',
+        cleanSheetProbability: 0.38,
+        matchProbabilities: { win: 0.67, draw: 0.19, loss: 0.14 },
+      },
+      excludedLowCoverage: 0,
+    });
+
+    const companion = document.querySelector<HTMLElement>(
+      '[data-sorare-overlay-companion="lineup-odds"]',
+    );
+    const bar = companion?.shadowRoot?.querySelector<HTMLElement>(
+      '.lineup-odds-bar',
+    );
+    expect(bar?.textContent).toBe('14%19%67%');
+    expect(
+      bar?.querySelector(
+        '[data-outcome="home"][data-role="opponent"]',
+      )?.textContent,
+    ).toBe('14%');
+    expect(
+      bar?.querySelector(
+        '[data-outcome="away"][data-role="player"]',
+      )?.textContent,
+    ).toBe('67%');
+    expect(
+      companion?.shadowRoot?.querySelector('.tooltip-fixture')?.textContent,
+    ).toBe('Rennes–PSG');
+    expect(
+      companion?.shadowRoot?.querySelector('.tooltip-odds')?.textContent,
+    ).toBe('H 14%D 19%A 67%');
+    view.destroy();
+  });
+
+  it('does not attach cached odds from a different opponent to Sorare\'s visible fixture', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/de/football/series/test-series/compose-team',
+    );
+    document.body.innerHTML = `
+      <section>
+        <button data-testid="bond-card">
+          <img alt="Jonathan Bond - common" src="/bond.png">
+        </button>
+        <button>
+          <div data-testid="hou-sj-teams">
+            <div aria-label="Team" class="highlighted">
+              <img alt="houston-dynamo-houston-texas" src="/houston.png">
+              <span>HOU</span>
+            </div>
+            <div aria-label="Team">
+              <img alt="sj-earthquakes-santa-clara-california" src="/sj.png">
+              <span>SJ</span>
+            </div>
+          </div>
+        </button>
+      </section>
+    `;
+    const card = document.querySelector<HTMLElement>(
+      '[data-testid="bond-card"]',
+    );
+    const teamRow = document.querySelector<HTMLElement>(
+      '[data-testid="hou-sj-teams"]',
+    );
+    if (!card || !teamRow) throw new Error('Expected HOU–SJ fixture');
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue({
+      x: 40,
+      y: 100,
+      top: 100,
+      right: 150,
+      bottom: 278,
+      left: 40,
+      width: 110,
+      height: 178,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(teamRow, 'getBoundingClientRect').mockReturnValue({
+      x: 40,
+      y: 300,
+      top: 300,
+      right: 150,
+      bottom: 320,
+      left: 40,
+      width: 110,
+      height: 20,
+      toJSON: () => ({}),
+    });
+
+    const view = new OverlayView(
+      card,
+      { playerName: 'Jonathan Bond' },
+      'Goalkeeper',
+    );
+    view.render({
+      slug: 'jonathan-bond',
+      displayName: 'Jonathan Bond',
+      position: 'Goalkeeper',
+      aaL10: { value: 13.4, sampleSize: 10 },
+      cleanSheetL10: { value: 0.6, sampleSize: 10 },
+      goalL10: { value: 0, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-23T00:30:00.000Z',
+        homeTeamName: 'St. Louis City',
+        awayTeamName: 'Houston Dynamo',
+        homeTeamSlug: 'st-louis-city-st-louis-missouri',
+        awayTeamSlug: 'houston-dynamo-houston-texas',
+        playerTeamName: 'Houston Dynamo',
+        opponentTeamName: 'St. Louis City',
+        playerTeamSlug: 'houston-dynamo-houston-texas',
+        cleanSheetProbability: 0.23,
+        matchProbabilities: { win: 0.28, draw: 0.26, loss: 0.46 },
+      },
+      excludedLowCoverage: 0,
+    });
+
+    expect(
+      document.querySelector(
+        '[data-sorare-overlay-companion="lineup-odds"]',
+      ),
+    ).toBeNull();
+    expect(
+      view.host.shadowRoot?.querySelector('.clean-sheet-bracket-cell'),
+    ).not.toBeNull();
+    view.destroy();
   });
 
   it('reuses known team fixture odds when a teammate response is temporarily incomplete', async () => {

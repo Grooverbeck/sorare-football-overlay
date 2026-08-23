@@ -950,30 +950,191 @@ function score(metric: Metric): string {
   return metric.value === null ? '—' : metric.value.toFixed(1);
 }
 
-interface HomeAwayProbabilities {
+interface LineupOddsPresentation {
   home: number | null;
   draw: number | null;
   away: number | null;
   playerIsHome: boolean;
   playerIsAway: boolean;
+  homeTeamName: string;
+  awayTeamName: string;
+}
+
+interface LineupTeamSide {
+  slug?: string;
+  label: string;
+  selected: boolean;
+}
+
+const canonicalTeamSlug = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const genericTeamTokens = new Set([
+  'afc',
+  'cf',
+  'city',
+  'club',
+  'de',
+  'fc',
+  'football',
+  'futbol',
+  'la',
+  'real',
+  'sc',
+  'united',
+]);
+
+function normalizedTeamReference(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function teamReferencesLikelyMatch(
+  candidate: string | null | undefined,
+  expected: string | null | undefined,
+): boolean {
+  if (!candidate || !expected) return false;
+  const candidateNormalized = normalizedTeamReference(candidate);
+  const expectedNormalized = normalizedTeamReference(expected);
+  if (!candidateNormalized || !expectedNormalized) return false;
+  if (candidateNormalized === expectedNormalized) return true;
+
+  const candidateCompact = candidateNormalized.replaceAll(' ', '');
+  const expectedCompact = expectedNormalized.replaceAll(' ', '');
+  const compactMinimum = Math.min(
+    candidateCompact.length,
+    expectedCompact.length,
+  );
+  if (
+    compactMinimum >= 3 &&
+    (candidateCompact.startsWith(expectedCompact) ||
+      expectedCompact.startsWith(candidateCompact))
+  ) {
+    return true;
+  }
+
+  const candidateTokens = new Set(
+    candidateNormalized
+      .split(' ')
+      .filter((token) => token.length >= 4 && !genericTeamTokens.has(token)),
+  );
+  return expectedNormalized
+    .split(' ')
+    .some(
+      (token) =>
+        token.length >= 4 &&
+        !genericTeamTokens.has(token) &&
+        candidateTokens.has(token),
+    );
+}
+
+function teamSlugsLikelyMatch(
+  candidate: string | undefined,
+  expected: string | undefined,
+): boolean {
+  if (!candidate || !expected) return false;
+  const candidateNormalized = candidate.trim().toLowerCase();
+  const expectedNormalized = expected.trim().toLowerCase();
+  return (
+    candidateNormalized === expectedNormalized ||
+    candidateNormalized.startsWith(`${expectedNormalized}-`) ||
+    expectedNormalized.startsWith(`${candidateNormalized}-`)
+  );
+}
+
+function lineupTeamSides(teamRow: HTMLElement): LineupTeamSide[] | null {
+  const teamNodes = Array.from(
+    teamRow.querySelectorAll<HTMLElement>(':scope > [aria-label="Team"]'),
+  );
+  if (teamNodes.length !== 2) return null;
+  return teamNodes.map((teamNode) => {
+    const slugs = new Set(
+      Array.from(teamNode.querySelectorAll<HTMLImageElement>('img[alt]'))
+        .map((image) => image.alt.trim().toLowerCase())
+        .filter((alt) => canonicalTeamSlug.test(alt)),
+    );
+    const slug = slugs.size === 1 ? [...slugs][0] : undefined;
+    return {
+      ...(slug ? { slug } : {}),
+      label: teamNode.textContent?.trim() ?? '',
+      selected:
+        teamNode.classList.contains('highlighted') ||
+        teamNode.getAttribute('aria-current') === 'true' ||
+        teamNode.getAttribute('aria-selected') === 'true' ||
+        teamNode.dataset.state === 'active',
+    };
+  });
+}
+
+function lineupTeamSideMatches(
+  side: LineupTeamSide,
+  expectedSlug: string | undefined,
+  expectedName: string | null | undefined,
+): boolean | null {
+  if (expectedSlug && side.slug) {
+    return teamSlugsLikelyMatch(side.slug, expectedSlug);
+  }
+  if (!expectedName) return null;
+  const references = [side.slug, side.label].filter(
+    (value): value is string => Boolean(value),
+  );
+  return references.length === 0
+    ? null
+    : references.some((reference) =>
+        teamReferencesLikelyMatch(reference, expectedName),
+      );
+}
+
+function fixturePlayerSide(
+  nextGame: PlayerStats['nextGame'],
+): 'home' | 'away' | null {
+  if (!nextGame) return null;
+  if (nextGame.playerTeamSlug) {
+    const home = teamSlugsLikelyMatch(
+      nextGame.homeTeamSlug,
+      nextGame.playerTeamSlug,
+    );
+    const away = teamSlugsLikelyMatch(
+      nextGame.awayTeamSlug,
+      nextGame.playerTeamSlug,
+    );
+    if (home !== away) return home ? 'home' : 'away';
+  }
+  const home = teamReferencesLikelyMatch(
+    nextGame.homeTeamName,
+    nextGame.playerTeamName,
+  );
+  const away = teamReferencesLikelyMatch(
+    nextGame.awayTeamName,
+    nextGame.playerTeamName,
+  );
+  return home === away ? null : home ? 'home' : 'away';
+}
+
+function fixtureOpponentSlug(
+  nextGame: NonNullable<PlayerStats['nextGame']>,
+): string | undefined {
+  const playerSide = fixturePlayerSide(nextGame);
+  return playerSide === 'home'
+    ? nextGame.awayTeamSlug
+    : playerSide === 'away'
+      ? nextGame.homeTeamSlug
+      : undefined;
 }
 
 function homeAwayProbabilities(
   nextGame: PlayerStats['nextGame'],
-): HomeAwayProbabilities | null {
+): LineupOddsPresentation | null {
   const probabilities = nextGame?.matchProbabilities;
-  if (!probabilities) return null;
-  const playerIsHome = Boolean(
-    nextGame.playerTeamName &&
-      nextGame.homeTeamName &&
-      nextGame.playerTeamName === nextGame.homeTeamName,
-  );
-  const playerIsAway = Boolean(
-    nextGame.playerTeamName &&
-      nextGame.awayTeamName &&
-      nextGame.playerTeamName === nextGame.awayTeamName,
-  );
-  if (!playerIsHome && !playerIsAway) return null;
+  const playerSide = fixturePlayerSide(nextGame);
+  if (!nextGame || !probabilities || !playerSide) return null;
+  const playerIsHome = playerSide === 'home';
+  const playerIsAway = playerSide === 'away';
 
   return {
     home: playerIsHome ? probabilities.win : probabilities.loss,
@@ -981,6 +1142,88 @@ function homeAwayProbabilities(
     away: playerIsAway ? probabilities.win : probabilities.loss,
     playerIsHome,
     playerIsAway,
+    homeTeamName: nextGame.homeTeamName ?? 'Heimteam',
+    awayTeamName: nextGame.awayTeamName ?? 'Auswärtsteam',
+  };
+}
+
+function visualLineupProbabilities(
+  nextGame: PlayerStats['nextGame'],
+  teamRow: HTMLElement | null,
+): LineupOddsPresentation | null {
+  const probabilities = nextGame?.matchProbabilities;
+  const sides = teamRow ? lineupTeamSides(teamRow) : null;
+  if (!nextGame || !probabilities || !sides) {
+    return homeAwayProbabilities(nextGame);
+  }
+
+  let playerIndex: number | undefined;
+  if (nextGame.playerTeamSlug && sides.every(({ slug }) => Boolean(slug))) {
+    const canonicalMatches = sides
+      .map(({ slug }, index) =>
+        teamSlugsLikelyMatch(slug, nextGame.playerTeamSlug) ? index : -1,
+      )
+      .filter((index) => index >= 0);
+    // A canonical mismatch means this row shows a different fixture/player.
+    // Never attach its odds merely because a visual highlight happens to exist.
+    if (canonicalMatches.length !== 1) return null;
+    playerIndex = canonicalMatches[0];
+  }
+
+  if (playerIndex === undefined) {
+    const selected = sides
+      .map((side, index) => (side.selected ? index : -1))
+      .filter((index) => index >= 0);
+    if (selected.length === 1) playerIndex = selected[0];
+  }
+
+  if (playerIndex === undefined) {
+    const nameMatches = sides
+      .map((side, index) =>
+        lineupTeamSideMatches(
+          side,
+          nextGame.playerTeamSlug,
+          nextGame.playerTeamName,
+        ) === true
+          ? index
+          : -1,
+      )
+      .filter((index) => index >= 0);
+    if (nameMatches.length === 1) playerIndex = nameMatches[0];
+  }
+
+  if (playerIndex === undefined) return homeAwayProbabilities(nextGame);
+  const opponentIndex = playerIndex === 0 ? 1 : 0;
+  const playerMatches = lineupTeamSideMatches(
+    sides[playerIndex]!,
+    nextGame.playerTeamSlug,
+    nextGame.playerTeamName,
+  );
+  const opponentMatches = lineupTeamSideMatches(
+    sides[opponentIndex]!,
+    fixtureOpponentSlug(nextGame),
+    nextGame.opponentTeamName,
+  );
+  // Sorare can already show the following game week while its `nextGame`
+  // response/cache still points to the current fixture. Showing those odds
+  // under a different opponent is worse than omitting the bar temporarily.
+  if (playerMatches === false || opponentMatches === false) return null;
+
+  const playerIsHome = playerIndex === 0;
+  return {
+    home: playerIsHome ? probabilities.win : probabilities.loss,
+    draw: probabilities.draw,
+    away: playerIsHome ? probabilities.loss : probabilities.win,
+    playerIsHome,
+    playerIsAway: !playerIsHome,
+    homeTeamName:
+      ((playerIsHome ? nextGame.playerTeamName : nextGame.opponentTeamName) ??
+        sides[0]!.label) ||
+      'Heimteam',
+    awayTeamName:
+      ((playerIsHome ? nextGame.opponentTeamName : nextGame.playerTeamName) ??
+        sides[1]!.label) ||
+      'Auswärtsteam',
   };
 }
 
@@ -2813,7 +3056,10 @@ export class OverlayView {
     );
     setLineupAaSortValue(this.container, stats.aaL10.value);
     setLineupSortDataReady(this.container, true);
-    this.renderLineupOdds(stats.nextGame);
+    this.renderLineupOdds(
+      stats.nextGame,
+      lineupBuilderTeamRow(this.container),
+    );
     this.renderPlayerMarketTooltip(stats);
     this.panel.replaceChildren();
     this.panel.classList.add('bracket-only');
@@ -2920,8 +3166,11 @@ export class OverlayView {
     this.packSettleFrame = requestPositionFrame(checkStability);
   }
 
-  private renderLineupOdds(nextGame: PlayerStats['nextGame']): void {
-    const probabilities = homeAwayProbabilities(nextGame);
+  private renderLineupOdds(
+    nextGame: PlayerStats['nextGame'],
+    teamRow: HTMLElement | null,
+  ): void {
+    const probabilities = visualLineupProbabilities(nextGame, teamRow);
     if (
       !probabilities ||
       probabilities.home === null ||
@@ -2982,12 +3231,12 @@ export class OverlayView {
     homeTeam.className = 'tooltip-team';
     homeTeam.dataset.outcome = 'home';
     homeTeam.dataset.role = probabilities.playerIsHome ? 'player' : 'opponent';
-    homeTeam.textContent = nextGame?.homeTeamName ?? 'Heimteam';
+    homeTeam.textContent = probabilities.homeTeamName;
     const awayTeam = document.createElement('span');
     awayTeam.className = 'tooltip-team';
     awayTeam.dataset.outcome = 'away';
     awayTeam.dataset.role = probabilities.playerIsAway ? 'player' : 'opponent';
-    awayTeam.textContent = nextGame?.awayTeamName ?? 'Auswärtsteam';
+    awayTeam.textContent = probabilities.awayTeamName;
     const separator = document.createElement('span');
     separator.className = 'tooltip-separator';
     separator.textContent = '–';
