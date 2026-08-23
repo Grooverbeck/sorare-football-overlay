@@ -17,6 +17,7 @@ import {
   OverlayView,
 } from '../overlay.js';
 import {
+  lineupGoalSortOptionAttribute,
   lineupPoolReadyEvent,
   lineupSortDataReadyAttribute,
 } from '../lineup-sort.js';
@@ -5750,6 +5751,39 @@ describe('Sorare card DOM discovery', () => {
 
     await vi.waitFor(() => expect(requestAnimationFrame).toHaveBeenCalledTimes(1));
     frameCallbacks.shift()?.(performance.now());
+    expect(scan).not.toHaveBeenCalled();
+
+    scanner.stop();
+    vi.unstubAllGlobals();
+  });
+
+  it('ignores native sort option mutations owned by the extension', async () => {
+    const frameCallbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      frameCallbacks.push(callback);
+      return frameCallbacks.length;
+    });
+    vi.stubGlobal('requestAnimationFrame', requestAnimationFrame);
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    document.body.innerHTML = '<div data-native-options></div>';
+    const options = document.querySelector<HTMLElement>(
+      '[data-native-options]',
+    );
+    if (!options) throw new Error('Expected native sort options');
+    const scanner = new SorareCardScanner();
+    const scan = vi.spyOn(scanner, 'scan');
+    scanner.start();
+    scan.mockClear();
+    requestAnimationFrame.mockClear();
+
+    const customOption = document.createElement('button');
+    customOption.setAttribute(lineupGoalSortOptionAttribute, 'true');
+    options.append(customOption);
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    customOption.remove();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
     expect(scan).not.toHaveBeenCalled();
 
     scanner.stop();

@@ -15,6 +15,8 @@ import {
 import { OverlayView } from './overlay.js';
 import {
   LineupCardSorter,
+  lineupAaSortOptionAttribute,
+  lineupGoalSortOptionAttribute,
   lineupPoolReadyEvent,
 } from './lineup-sort.js';
 import {
@@ -30,6 +32,10 @@ import {
 type StatsFetcher = (request: PlayerStatsRequest) => Promise<PlayerStatsSuccessResponse>;
 const extensionMountSelector =
   '[data-sorare-overlay-root], [data-sorare-overlay-companion]';
+const extensionMutationSelector =
+  `${extensionMountSelector}, ` +
+  `[${lineupGoalSortOptionAttribute}], ` +
+  `[${lineupAaSortOptionAttribute}]`;
 const discoveryAttributes = new Set([
   'href',
   'alt',
@@ -1110,19 +1116,25 @@ export class SorareCardScanner {
     this.observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         const mutationElement = mutation.target instanceof Element ? mutation.target : null;
-        if (mutationElement?.closest(extensionMountSelector)) continue;
+        if (mutationElement?.closest(extensionMutationSelector)) continue;
         const externalAddedNodes =
           mutation.type === 'childList'
             ? [...mutation.addedNodes].filter(
                 (node) =>
-                  !(node instanceof Element && node.closest(extensionMountSelector)),
+                  !(
+                    node instanceof Element &&
+                    node.closest(extensionMutationSelector)
+                  ),
               )
             : [];
         const externalRemovedNodes =
           mutation.type === 'childList'
             ? [...mutation.removedNodes].filter(
                 (node) =>
-                  !(node instanceof Element && node.matches(extensionMountSelector)),
+                  !(
+                    node instanceof Element &&
+                    node.matches(extensionMutationSelector)
+                  ),
               )
             : [];
         if (

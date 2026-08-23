@@ -151,6 +151,30 @@ describe('lineup card sorting', () => {
     );
   });
 
+  it('leaves Sorare sort controls untouched on unsupported squad-builder routes', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/de/football/series/squad/compose/BoardStep%3Atest',
+    );
+    const options = document.querySelector<HTMLElement>(
+      '[data-native-options]',
+    );
+    if (!options) throw new Error('Expected native sort options');
+    const append = vi.spyOn(options, 'append');
+
+    sorter.start();
+    sorter.scan(document);
+
+    expect(append).not.toHaveBeenCalled();
+    expect(
+      document.querySelector(`[${lineupGoalSortOptionAttribute}]`),
+    ).toBeNull();
+    expect(
+      document.querySelector(`[${lineupAaSortOptionAttribute}]`),
+    ).toBeNull();
+  });
+
   it('loads every lazy Sorare page before declaring the player pool complete', async () => {
     const grid = document.querySelector<HTMLElement>('[data-player-grid]');
     if (!grid) throw new Error('Expected player grid');

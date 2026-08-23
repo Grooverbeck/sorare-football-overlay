@@ -662,6 +662,7 @@ export async function loadCompleteLineupPool(
 
 export class LineupCardSorter {
   private root: HTMLElement | null = null;
+  private supportedPathActive = false;
   private nativeTrigger: HTMLButtonElement | null = null;
   private nativeTriggerLabel: HTMLElement | null = null;
   private originalTriggerLabel = '';
@@ -751,21 +752,24 @@ export class LineupCardSorter {
     document.removeEventListener('click', this.handleDocumentClick, true);
     window.removeEventListener('popstate', this.handleRouteChange);
     window.removeEventListener('hashchange', this.handleRouteChange);
-    this.cancelSortFrame();
-    this.cancelPoolLoad();
-    this.setActiveMode(null);
+    this.deactivateWithoutNativeSync();
     this.removeMenuOptions();
     this.restoreNativeTrigger();
+    this.supportedPathActive = false;
     this.root = null;
   }
 
   scan(_root: ParentNode): void {
     if (!supportsLineupSortPath(window.location.pathname)) {
-      this.setActiveMode(null);
-      this.removeMenuOptions();
-      this.restoreNativeTrigger();
+      if (this.supportedPathActive) {
+        this.deactivateWithoutNativeSync();
+        this.removeMenuOptions();
+        this.restoreNativeTrigger();
+        this.supportedPathActive = false;
+      }
       return;
     }
+    this.supportedPathActive = true;
     this.syncNativeSortUi();
     if (!this.activeMode) return;
     if (nativeFilterIsOpen()) {
@@ -967,6 +971,15 @@ export class LineupCardSorter {
       return null;
     }
     return grid;
+  }
+
+  private deactivateWithoutNativeSync(): void {
+    this.cancelSortFrame();
+    if (this.activeMode) this.restoreOriginalOrders();
+    this.cancelPoolLoad();
+    this.activeMode = null;
+    this.filterSuspended = false;
+    this.requestedPosition = undefined;
   }
 
   private setActiveMode(mode: LineupSortMode | null): void {
