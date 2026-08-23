@@ -3,6 +3,18 @@
 Alle wichtigen Änderungen am Sorare Football Stats Overlay werden in dieser
 Datei dokumentiert.
 
+## 0.4.5 – 23. August 2026
+
+### Ruhiges Sortiermenü im Squad Builder
+
+- Das Sorare-Sortiermenü lässt sich im Squad Lineup Builder wieder flüssig
+  öffnen und bedienen.
+- Die zusätzlichen Sortierungen **Torquote** und **AA** greifen weiterhin nur
+  im dafür vorgesehenen Lineup Builder. Auf anderen Seiten bleibt das
+  Sorare-Menü vollständig unverändert.
+- Eigene Menüelemente der Erweiterung werden nicht mehr unnötig erneut
+  verarbeitet.
+
 ## 0.4.4 – 23. August 2026
 
 ### Zuverlässige Sortierung für jede Spielerlistengröße
