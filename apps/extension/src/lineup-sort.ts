@@ -586,7 +586,10 @@ async function revealGridEndSilently(grid: HTMLElement): Promise<boolean> {
       grid.removeAttribute('style');
     }
   }
-  return Boolean(loadingCell);
+  // Reaching either Sorare's loading cell or the current final card proves
+  // that the end-of-grid probe ran. A loading cell that is still present after
+  // the stability wait is rejected separately by loadCompleteLineupPool.
+  return true;
 }
 
 async function waitForGridGrowth(
@@ -625,7 +628,7 @@ export async function loadCompleteLineupPool(
     }
     const previousCount = gridCardCount(grid);
     context.onProgress(previousCount);
-    const endWasReached = await revealEnd(grid);
+    const endWasRevealed = await revealEnd(grid);
     if (context.isCancelled()) return null;
     const grew = await waitForGrowth(
       grid,
@@ -648,7 +651,7 @@ export async function loadCompleteLineupPool(
     stableMisses += 1;
     if (stableMisses >= stableMissesRequired) {
       if (currentGrid && gridLoadingCell(currentGrid)) return null;
-      if (!observedGrowth && !endWasReached) return null;
+      if (!observedGrowth && !endWasRevealed) return null;
       context.onProgress(previousCount);
       return grid;
     }

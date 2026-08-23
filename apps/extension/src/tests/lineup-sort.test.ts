@@ -320,6 +320,44 @@ describe('lineup card sorting', () => {
     });
   });
 
+  it('accepts a stable one-page pool without a Sorare loading cell', async () => {
+    const grid = document.querySelector<HTMLElement>('[data-player-grid]');
+    const lastCell = document.querySelector<HTMLElement>(
+      '[data-cell="missing"]',
+    );
+    if (!grid || !lastCell) throw new Error('Expected player grid');
+    const progress: number[] = [];
+    vi.spyOn(lastCell, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 100, y: 1_200, width: 120, height: 280 }),
+    );
+    vi.spyOn(grid, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 100, y: 100, width: 900, height: 1_380 }),
+    );
+    vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(800);
+    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1_200);
+    const scrollTo = vi.spyOn(window, 'scrollTo');
+
+    const result = await loadCompleteLineupPool(
+      {
+        isCancelled: () => false,
+        onProgress: (count) => progress.push(count),
+      },
+      {
+        getGrid: () => grid,
+        waitForGrowth: async () => false,
+        maxPulses: 2,
+        stableMissesRequired: 2,
+      },
+    );
+
+    expect(result).toBe(grid);
+    expect(progress).toEqual([3, 3, 3]);
+    expect(grid.querySelector('[aria-busy="true"]')).toBeNull();
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(lastCell.getAttribute('style')).toBeNull();
+    expect(grid.style.minHeight).toBe('');
+  });
+
   it('nudges the Sorare loading cell into view without scrolling', async () => {
     const grid = document.querySelector<HTMLElement>('[data-player-grid]');
     if (!grid) throw new Error('Expected player grid');
