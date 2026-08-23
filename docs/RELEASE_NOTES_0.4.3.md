@@ -1,25 +1,25 @@
 # Sorare Football Overlay 0.4.3
 
-Diese Version macht die neuen Sortierfunktionen im Lineup Builder vollständiger
-und behebt vertauschte oder unpassende Spielquoten-Balken.
+Mit Version 0.4.3 findest du im Lineup Builder schneller die interessantesten
+Spieler. Die Sortierung berücksichtigt deine gesamte gefilterte Auswahl und die
+Spielquoten lassen sich noch leichter den beiden Teams zuordnen.
 
-## Das ist neu
+## Das ist verbessert
 
-- **Alle passenden Spieler werden einsortiert:** Vor einer Sortierung nach
-  **Torquote** oder **AA** lädt die Erweiterung auch die Spieler nach, die Sorare
-  zunächst außerhalb des sichtbaren Bereichs zurückhält.
-- **Keine störenden Scrollsprünge:** Das Nachladen läuft im Hintergrund. Ein
-  verständlicher Fortschrittsstatus zeigt, was gerade passiert.
-- **Sorare-Filter funktionieren wie gewohnt:** Das geöffnete Filtermenü hat
-  Vorrang. Nach dem Schließen wird die gewählte Sortierung automatisch auf die
-  gefilterte Liste angewendet.
-- **Positionen bleiben sauber getrennt:** Beim Wechsel des Lineup-Platzes werden
-  beispielsweise keine Verteidiger mehr in eine Mittelfeld-Auswahl übernommen.
-- **Spielbalken stehen auf der richtigen Seite:** Heim-, Unentschieden- und
-  Auswärtssieg werden passend zur sichtbaren Teamreihenfolge angezeigt.
-- **Keine Quoten aus der falschen Begegnung:** Passt eine gespeicherte Begegnung
-  nicht zum sichtbaren Gegner, bleibt der Balken ausgeblendet, statt irreführende
-  Werte zu zeigen.
+- **Mehr Spieler im Vergleich:** Die Sortierung nach **Torquote** oder **AA**
+  berücksichtigt alle Spieler, die zu deiner gewählten Position und deinen
+  Sorare-Filtern passen – auch wenn sie anfangs noch nicht sichtbar sind.
+- **Angenehmes Nachladen:** Die Spielerliste wird im Hintergrund vorbereitet,
+  ohne dass die Seite dabei hin- und herspringt. Eine klare Anzeige informiert
+  dich über den Fortschritt.
+- **Filtern und sortieren:** Du kannst die gewohnten Sorare-Filter verwenden und
+  die gefilterte Auswahl anschließend direkt nach **Torquote** oder **AA**
+  sortieren.
+- **Passende Auswahl für jeden Platz:** Beim Wechsel zwischen Torwart,
+  Verteidigung, Mittelfeld und Angriff zeigt die Sortierung die Spieler für den
+  aktuell gewählten Lineup-Platz.
+- **Übersichtliche Spielquoten:** Die Wahrscheinlichkeiten für die beiden Teams
+  stehen passend zur sichtbaren Begegnung auf der jeweiligen Seite.
 
 ## Vorhandene Installation aktualisieren
 

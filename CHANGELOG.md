@@ -5,28 +5,24 @@ Datei dokumentiert.
 
 ## 0.4.3 – 23. August 2026
 
-### Vollständiger und ruhiger sortieren
+### Spieler einfacher vergleichen
 
-- Vor einer Sortierung nach **Torquote** oder **AA** lädt die Erweiterung alle
-  Spieler des aktuell gewählten Sorare-Filters nach. Dadurch werden auch
-  Spieler berücksichtigt, die Sorare erst beim Scrollen laden würde.
-- Das Nachladen erfolgt ohne sichtbare Scrollsprünge. Ein verständlicher
-  Fortschrittsstatus zeigt, ob Spieler gesucht oder ihre Werte geladen werden.
-- Sorare-Filter bleiben vollständig bedienbar. Solange das Filtermenü geöffnet
-  ist, greift die Erweiterung nicht in die Liste ein; danach wird die gewählte
-  Sortierung automatisch wieder angewendet.
-- Beim Wechsel zwischen Torwart, Verteidigung, Mittelfeld und Angriff werden
-  nur Spieler der passenden Position übernommen. Unvollständige oder nicht
-  eindeutig geprüfte Listen werden nicht als vollständiges Ergebnis angezeigt.
+- Die Sortierung nach **Torquote** oder **AA** berücksichtigt alle Spieler, die
+  zur gewählten Position und zu den aktiven Sorare-Filtern passen – auch wenn
+  sie anfangs noch nicht sichtbar sind.
+- Die Spielerliste wird ruhig im Hintergrund vorbereitet. Eine verständliche
+  Anzeige informiert dabei über den Fortschritt.
+- Sorare-Filter und die zusätzlichen Sortierungen lassen sich direkt
+  miteinander kombinieren.
+- Beim Wechsel zwischen Torwart, Verteidigung, Mittelfeld und Angriff passt
+  sich die sortierte Auswahl automatisch an den gewählten Lineup-Platz an.
 
-### Spielquoten passend zur sichtbaren Begegnung
+### Übersichtliche Spielquoten
 
-- Die Balken für Heim-, Unentschieden- und Auswärtssieg folgen nun zuverlässig
-  der Teamreihenfolge, die Sorare auf der Karte anzeigt.
-- Gespeicherte Quoten einer anderen Begegnung werden nicht mehr versehentlich
-  an die aktuell sichtbare Karte angeheftet.
-- Die Positionserkennung im Lineup Builder ist robuster gegenüber verschachtelten
-  Sorare-Elementen und Teamnamen wie **St. Louis**.
+- Die Wahrscheinlichkeiten für die beiden Teams stehen passend zur sichtbaren
+  Begegnung auf der jeweiligen Seite.
+- Die Erweiterung erkennt den gewählten Lineup-Platz und die angezeigten Teams
+  noch zuverlässiger.
 
 ## 0.4.2 – 22. August 2026
 
