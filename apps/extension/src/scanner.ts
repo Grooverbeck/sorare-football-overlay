@@ -13,7 +13,10 @@ import {
   type CardTarget,
 } from './dom.js';
 import { OverlayView } from './overlay.js';
-import { LineupCardSorter } from './lineup-sort.js';
+import {
+  LineupCardSorter,
+  lineupPoolReadyEvent,
+} from './lineup-sort.js';
 import {
   clearNativeSorareLineupProbabilityDecorations,
   decorateNativeSorareLineupProbabilities,
@@ -1058,11 +1061,22 @@ export class StatsBatchCoordinator {
 export class SorareCardScanner {
   private observer: MutationObserver | undefined;
   private visibilityObserver: IntersectionObserver | undefined;
+  private root: HTMLElement | null = null;
   private readonly overlays = new Map<HTMLElement, MountedOverlay>();
   private readonly pendingScanRoots = new Set<Element>();
   private mutationFrame: number | undefined;
   private shouldRefreshPositions = false;
   private readonly lineupSorter = new LineupCardSorter();
+  private readonly handleLineupPoolReady = (event: Event): void => {
+    const grid = event.target;
+    if (!(grid instanceof HTMLElement)) return;
+    this.scan(grid);
+    for (const [container, mounted] of this.overlays) {
+      if (grid.contains(container)) {
+        this.requestStats(mounted, viewportPriorityNearby);
+      }
+    }
+  };
 
   constructor(
     private readonly coordinator = new StatsBatchCoordinator(),
@@ -1088,6 +1102,8 @@ export class SorareCardScanner {
   start(): void {
     if (this.observer) return;
     const root = document.body ?? document.documentElement;
+    this.root = root;
+    root.addEventListener(lineupPoolReadyEvent, this.handleLineupPoolReady);
     this.lineupSorter.start(root);
     this.startVisibilityObserver();
     this.scan(root);
@@ -1153,6 +1169,11 @@ export class SorareCardScanner {
   }
 
   stop(): void {
+    this.root?.removeEventListener(
+      lineupPoolReadyEvent,
+      this.handleLineupPoolReady,
+    );
+    this.root = null;
     this.observer?.disconnect();
     this.observer = undefined;
     this.visibilityObserver?.disconnect();

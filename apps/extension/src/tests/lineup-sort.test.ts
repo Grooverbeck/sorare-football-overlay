@@ -6,9 +6,12 @@ import {
   lineupGoalSortOptionAttribute,
   lineupGoalSortProbabilityAttribute,
   lineupGoalSortSourceAttribute,
+  lineupPoolReadyEvent,
+  lineupSortDataReadyAttribute,
   loadCompleteLineupPool,
   setLineupAaSortValue,
   setLineupGoalSortValue,
+  setLineupSortDataReady,
   setLineupSortPosition,
   supportsLineupSortPath,
   type LineupPoolLoader,
@@ -31,7 +34,13 @@ function lineupBuilderMarkup(): string {
             <svg data-icon="iconChevronDown"></svg>
           </div></span>
         </button>
-        <button type="button" aria-haspopup="dialog" data-native-filter>
+        <button
+          type="button"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+          aria-controls="filter-dialog"
+          data-native-filter
+        >
           <svg data-icon="iconFilter"></svg>
         </button>
       </div>
@@ -66,6 +75,9 @@ function lineupBuilderMarkup(): string {
         </div>
       </form>
     </div>
+    <div id="filter-dialog" role="dialog" data-state="closed" aria-hidden="true">
+      <button type="button"><span>Nur spielberechtigt</span></button>
+    </div>
     <nav data-lineup-positions>
       <button type="button" class="highlighted"><span>VER</span></button>
       <button type="button"><span>MF</span></button>
@@ -74,17 +86,17 @@ function lineupBuilderMarkup(): string {
     </nav>
     <div data-player-grid style="display: grid">
       <div data-cell="market">
-        <article data-player="market">
+        <article data-player="market" data-sorare-overlay-sort-data-ready="true">
           <img alt="Market Player - limited">
         </article>
       </div>
       <div data-cell="historical">
-        <article data-player="historical">
+        <article data-player="historical" data-sorare-overlay-sort-data-ready="true">
           <img alt="Historical Player - limited">
         </article>
       </div>
       <div data-cell="missing">
-        <article data-player="missing">
+        <article data-player="missing" data-sorare-overlay-sort-data-ready="true">
           <img alt="Missing Player - limited">
         </article>
       </div>
@@ -97,6 +109,23 @@ const immediatePoolLoader: LineupPoolLoader = async ({ onProgress }) => {
   if (grid) onProgress(grid.children.length);
   return grid;
 };
+
+function appendLoadingCell(grid: HTMLElement): HTMLElement {
+  const loadingCell = document.createElement('div');
+  loadingCell.dataset.loadingCell = 'true';
+  loadingCell.innerHTML =
+    '<div role="progressbar" aria-busy="true"></div>';
+  grid.append(loadingCell);
+  vi.spyOn(loadingCell, 'getBoundingClientRect').mockReturnValue(
+    DOMRect.fromRect({ x: 900, y: 1_200, width: 120, height: 280 }),
+  );
+  vi.spyOn(grid, 'getBoundingClientRect').mockReturnValue(
+    DOMRect.fromRect({ x: 100, y: 100, width: 900, height: 1_380 }),
+  );
+  vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(800);
+  vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1_200);
+  return loadingCell;
+}
 
 describe('lineup card sorting', () => {
   let sorter: LineupCardSorter;
@@ -157,32 +186,160 @@ describe('lineup card sorting', () => {
     expect(progress.at(-1)).toBe(5);
   });
 
-  it('reveals the lazy-load trigger without moving the visible page', async () => {
+  it('announces the complete pool so offscreen cards can be hydrated', async () => {
     const grid = document.querySelector<HTMLElement>('[data-player-grid]');
-    const lastCell = document.querySelector<HTMLElement>(
-      '[data-cell="missing"]',
+    if (!grid) throw new Error('Expected player grid');
+    const ready = vi.fn();
+    grid.addEventListener(lineupPoolReadyEvent, ready);
+
+    sorter.start();
+    document
+      .querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)
+      ?.click();
+
+    await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
+    expect(ready.mock.calls[0]?.[0].target).toBe(grid);
+  });
+
+  it('shows separate progress for player loading and value hydration', async () => {
+    const market = document.querySelector<HTMLElement>('[data-player="market"]');
+    const historical = document.querySelector<HTMLElement>(
+      '[data-player="historical"]',
     );
-    if (!grid || !lastCell) throw new Error('Expected player grid');
-    lastCell.style.order = '7';
-    const originalChildren = Array.from(grid.children);
-    const originalGridMinHeight = grid.style.minHeight;
-    const initialScrollX = window.scrollX;
-    const initialScrollY = window.scrollY;
-    vi.spyOn(lastCell, 'getBoundingClientRect').mockReturnValue(
-      DOMRect.fromRect({ x: 0, y: 1_200, width: 120, height: 260 }),
+    const missing = document.querySelector<HTMLElement>('[data-player="missing"]');
+    const label = document.querySelector<HTMLElement>(
+      '[data-native-trigger-label]',
     );
-    vi.spyOn(grid, 'getBoundingClientRect').mockReturnValue(
-      DOMRect.fromRect({ x: 24, y: 120, width: 900, height: 1_340 }),
+    if (!market || !historical || !missing || !label) {
+      throw new Error('Expected lineup loading fixture');
+    }
+    setLineupSortDataReady(historical, false);
+    setLineupSortDataReady(missing, false);
+
+    sorter.start();
+    document
+      .querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)
+      ?.click();
+
+    expect(label.textContent).toBe('AA · Spieler laden');
+    expect(label.hasAttribute('data-sorare-overlay-lineup-sort-loading')).toBe(
+      true,
     );
+    await vi.waitFor(() => {
+      expect(label.textContent).toBe('AA · Werte laden (1/3)');
+    });
+
+    setLineupSortDataReady(historical, true);
+    setLineupSortDataReady(missing, true);
+    await vi.waitFor(() => expect(label.textContent).toBe('AA'));
+    expect(label.hasAttribute('data-sorare-overlay-lineup-sort-loading')).toBe(
+      false,
+    );
+    expect(market.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+  });
+
+  it('gives Sorare exclusive control while its native filter is open', async () => {
+    sorter.stop();
+    let loadCalls = 0;
+    sorter = new LineupCardSorter(async (context) => {
+      loadCalls += 1;
+      return immediatePoolLoader(context);
+    });
+    const market = document.querySelector<HTMLElement>('[data-player="market"]');
+    const historical = document.querySelector<HTMLElement>(
+      '[data-player="historical"]',
+    );
+    const marketCell = document.querySelector<HTMLElement>('[data-cell="market"]');
+    const historicalCell = document.querySelector<HTMLElement>(
+      '[data-cell="historical"]',
+    );
+    const missingCell = document.querySelector<HTMLElement>('[data-cell="missing"]');
+    const filterTrigger = document.querySelector<HTMLButtonElement>(
+      '[data-native-filter]',
+    );
+    const filterDialog = document.querySelector<HTMLElement>('#filter-dialog');
+    if (
+      !market ||
+      !historical ||
+      !marketCell ||
+      !historicalCell ||
+      !missingCell ||
+      !filterTrigger ||
+      !filterDialog
+    ) {
+      throw new Error('Expected native filter fixture');
+    }
+    setLineupAaSortValue(market, 30);
+    setLineupAaSortValue(historical, 20);
+
+    sorter.start();
+    document
+      .querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)
+      ?.click();
+    await vi.waitFor(() => expect(marketCell.style.order).toBe('-3'));
+    expect(loadCalls).toBe(1);
+
+    filterTrigger.setAttribute('aria-expanded', 'true');
+    filterDialog.setAttribute('data-state', 'open');
+    filterDialog.removeAttribute('aria-hidden');
+    sorter.scan(document);
+    expect(marketCell.style.order).toBe('');
+    expect(historicalCell.style.order).toBe('');
+
+    historicalCell.remove();
+    sorter.scan(document);
+    await new Promise((resolve) => window.setTimeout(resolve, 150));
+    expect(loadCalls).toBe(1);
+
+    filterTrigger.setAttribute('aria-expanded', 'false');
+    filterDialog.setAttribute('data-state', 'closed');
+    filterDialog.setAttribute('aria-hidden', 'true');
+    sorter.scan(document);
+    await vi.waitFor(() => expect(loadCalls).toBe(2));
+    await vi.waitFor(() => expect(marketCell.style.order).toBe('-2'));
+    expect(missingCell.style.order).toBe('-1');
+  });
+
+  it('closes Sorare\'s sort dialog after selecting a custom option', async () => {
+    const trigger = document.querySelector<HTMLButtonElement>('[data-native-sort]');
+    const dialog = document.querySelector<HTMLElement>('#sort-dialog');
+    if (!trigger || !dialog) throw new Error('Expected native sort controls');
+    trigger.addEventListener('click', () => {
+      trigger.setAttribute('aria-expanded', 'false');
+      dialog.setAttribute('data-state', 'closed');
+    });
+
+    sorter.start();
+    document
+      .querySelector<HTMLButtonElement>(`[${lineupGoalSortOptionAttribute}]`)
+      ?.click();
+
+    await vi.waitFor(() => {
+      expect(trigger.getAttribute('aria-expanded')).toBe('false');
+      expect(dialog.getAttribute('data-state')).toBe('closed');
+    });
+  });
+
+  it('nudges the Sorare loading cell into view without scrolling', async () => {
+    const grid = document.querySelector<HTMLElement>('[data-player-grid]');
+    if (!grid) throw new Error('Expected player grid');
+    const loadingCell = appendLoadingCell(grid);
+    const originalLoadingStyle = loadingCell.getAttribute('style');
     const scrollTo = vi.spyOn(window, 'scrollTo');
     let stylesWhileTriggered:
-      | { position: string; opacity: string; gridMinHeight: string }
+      | {
+          position: string;
+          top: string;
+          opacity: string;
+          minHeight: string;
+        }
       | undefined;
     const scrollEvent = vi.fn(() => {
       stylesWhileTriggered = {
-        position: lastCell.style.position,
-        opacity: lastCell.style.opacity,
-        gridMinHeight: grid.style.minHeight,
+        position: loadingCell.style.position,
+        top: loadingCell.style.top,
+        opacity: loadingCell.style.opacity,
+        minHeight: grid.style.minHeight,
       };
     });
     window.addEventListener('scroll', scrollEvent);
@@ -209,40 +366,54 @@ describe('lineup card sorting', () => {
     expect(scrollEvent).toHaveBeenCalled();
     expect(stylesWhileTriggered).toEqual({
       position: 'fixed',
+      top: '0px',
       opacity: '0',
-      gridMinHeight: '1340px',
+      minHeight: '1380px',
     });
-    expect(window.scrollX).toBe(initialScrollX);
-    expect(window.scrollY).toBe(initialScrollY);
-    expect(Array.from(grid.children)).toEqual(originalChildren);
-    expect(lastCell.style.order).toBe('7');
-    expect(grid.style.minHeight).toBe(originalGridMinHeight);
+    expect(loadingCell.getAttribute('style')).toBe(originalLoadingStyle);
+    expect(grid.style.display).toBe('grid');
+    expect(grid.style.minHeight).toBe('');
   });
 
-  it('accepts a stable pool whose final card is already visible', async () => {
+  it('loads the next page through the hidden Sorare loading cell', async () => {
     const grid = document.querySelector<HTMLElement>('[data-player-grid]');
-    const lastCell = document.querySelector<HTMLElement>(
-      '[data-cell="missing"]',
-    );
-    if (!grid || !lastCell) throw new Error('Expected player grid');
-    vi.spyOn(lastCell, 'getBoundingClientRect').mockReturnValue(
-      DOMRect.fromRect({ x: 24, y: 120, width: 120, height: 260 }),
-    );
+    if (!grid) throw new Error('Expected player grid');
+    const loadingCell = appendLoadingCell(grid);
+    const scrollTo = vi.spyOn(window, 'scrollTo');
+    const handleScroll = (): void => {
+      if (!loadingCell.isConnected) return;
+      const loadedCell = document.createElement('div');
+      loadedCell.innerHTML = '<img alt="Loaded Player - limited">';
+      vi.spyOn(loadedCell, 'getBoundingClientRect').mockReturnValue(
+        DOMRect.fromRect({ x: 100, y: 100, width: 120, height: 280 }),
+      );
+      loadingCell.replaceWith(loadedCell);
+    };
+    window.addEventListener('scroll', handleScroll);
 
-    const result = await loadCompleteLineupPool(
-      {
-        isCancelled: () => false,
-        onProgress: () => undefined,
-      },
-      {
-        getGrid: () => grid,
-        waitForGrowth: async () => false,
-        maxPulses: 1,
-        stableMissesRequired: 1,
-      },
-    );
+    let result: HTMLElement | null;
+    try {
+      result = await loadCompleteLineupPool(
+        {
+          isCancelled: () => false,
+          onProgress: () => undefined,
+        },
+        {
+          getGrid: () => grid,
+          waitForGrowth: async (_currentGrid, previousCount) =>
+            grid.querySelectorAll('img').length > previousCount,
+          maxPulses: 2,
+          stableMissesRequired: 1,
+        },
+      );
+    } finally {
+      window.removeEventListener('scroll', handleScroll);
+    }
 
     expect(result).toBe(grid);
+    expect(grid.querySelectorAll('img')).toHaveLength(4);
+    expect(grid.querySelector('[aria-busy="true"]')).toBeNull();
+    expect(scrollTo).not.toHaveBeenCalled();
   });
 
   it('adds both custom options only while Sorare has its sort dialog open', () => {
@@ -359,6 +530,12 @@ describe('lineup card sorting', () => {
   });
 
   it('sorts by AA, keeps missing values last, and switches custom modes', async () => {
+    sorter.stop();
+    let loadCalls = 0;
+    sorter = new LineupCardSorter(async (context) => {
+      loadCalls += 1;
+      return immediatePoolLoader(context);
+    });
     const market = document.querySelector<HTMLElement>('[data-player="market"]');
     const historical = document.querySelector<HTMLElement>(
       '[data-player="historical"]',
@@ -387,8 +564,10 @@ describe('lineup card sorting', () => {
 
     goalOption?.click();
     await vi.waitFor(() => expect(historicalCell.style.order).toBe('-3'));
+    expect(loadCalls).toBe(1);
     aaOption?.click();
     await vi.waitFor(() => expect(marketCell.style.order).toBe('-3'));
+    expect(loadCalls).toBe(1);
     expect(historicalCell.style.order).toBe('-2');
     expect(missingCell.style.order).toBe('-1');
     expect(
@@ -533,8 +712,42 @@ describe('lineup card sorting', () => {
       expect(
         document.querySelector<HTMLElement>('[data-native-trigger-label]')
           ?.textContent,
-      ).toBe('AA erneut');
+      ).toBe('AA · Erneut versuchen');
     });
     expect(marketCell.style.order).toBe('');
+  });
+
+  it('does not retry an unchanged failed pool until its cards change', async () => {
+    sorter.stop();
+    const grid = document.querySelector<HTMLElement>('[data-player-grid]');
+    if (!grid) throw new Error('Expected player grid');
+    let loadCalls = 0;
+    sorter = new LineupCardSorter(async () => {
+      loadCalls += 1;
+      return null;
+    });
+
+    sorter.start();
+    document
+      .querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)
+      ?.click();
+    await vi.waitFor(() => expect(loadCalls).toBe(1));
+    await vi.waitFor(() => {
+      expect(
+        document.querySelector<HTMLElement>('[data-native-trigger-label]')
+          ?.textContent,
+      ).toBe('AA · Erneut versuchen');
+    });
+
+    sorter.scan(document);
+    await new Promise((resolve) => window.setTimeout(resolve, 120));
+    expect(loadCalls).toBe(1);
+
+    grid.insertAdjacentHTML(
+      'beforeend',
+      '<div><img alt="Newly loaded player - limited"></div>',
+    );
+    sorter.scan(document);
+    await vi.waitFor(() => expect(loadCalls).toBe(2));
   });
 });

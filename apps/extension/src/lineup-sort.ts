@@ -12,8 +12,12 @@ export const lineupAaSortValueAttribute =
   'data-sorare-overlay-aa-sort-value';
 export const lineupSortPositionAttribute =
   'data-sorare-overlay-sort-position';
+export const lineupSortDataReadyAttribute =
+  'data-sorare-overlay-sort-data-ready';
 export const lineupSortValueChangedEvent =
   'sorare-overlay:lineup-sort-value-changed';
+export const lineupPoolReadyEvent =
+  'sorare-overlay:lineup-pool-ready';
 
 export type LineupGoalSortSource = 'market' | 'historical';
 export type LineupSortMode = 'goal' | 'aa';
@@ -52,6 +56,8 @@ const cardImageSelector =
   'img[src*="/cardsamplepicture/"], img[alt$=" - common" i], img[alt$=" - limited" i], img[alt$=" - rare" i], img[alt$=" - super rare" i], img[alt$=" - unique" i]';
 const nativeTriggerLabelAttribute =
   'data-sorare-overlay-lineup-sort-trigger-label';
+const nativeTriggerLoadingAttribute =
+  'data-sorare-overlay-lineup-sort-loading';
 const nativeMenuActiveAttribute =
   'data-sorare-overlay-lineup-sort-active';
 const nativeMenuOptionAttribute =
@@ -161,6 +167,24 @@ export function setLineupSortPosition(
   }
 }
 
+export function setLineupSortDataReady(
+  container: HTMLElement,
+  ready: boolean | null,
+): void {
+  const nextValue = ready === null ? null : String(ready);
+  if (container.getAttribute(lineupSortDataReadyAttribute) === nextValue) {
+    return;
+  }
+  if (nextValue === null) {
+    container.removeAttribute(lineupSortDataReadyAttribute);
+  } else {
+    container.setAttribute(lineupSortDataReadyAttribute, nextValue);
+  }
+  container.dispatchEvent(
+    new CustomEvent(lineupSortValueChangedEvent, { bubbles: true }),
+  );
+}
+
 function lineupPositionFromButton(
   button: HTMLButtonElement | null,
 ): FootballPosition | null | undefined {
@@ -204,6 +228,42 @@ function nativeSortButton(): HTMLButtonElement | null {
         'button[aria-haspopup="dialog"]',
       ),
     ).find(isNativeSortButton) ?? null
+  );
+}
+
+function isNativeFilterButton(button: HTMLButtonElement): boolean {
+  const toolbar = button.parentElement;
+  return Boolean(
+    button.matches('button[aria-haspopup="dialog"]') &&
+      button.querySelector('svg[data-icon="iconFilter"]') &&
+      toolbar?.querySelector('input[type="search"]') &&
+      toolbar.querySelector(
+        'svg[data-icon="iconChevronDown"], svg[data-icon="iconChevronUp"]',
+      ),
+  );
+}
+
+function nativeFilterButton(): HTMLButtonElement | null {
+  return (
+    Array.from(
+      document.querySelectorAll<HTMLButtonElement>(
+        'button[aria-haspopup="dialog"]',
+      ),
+    ).find(isNativeFilterButton) ?? null
+  );
+}
+
+function nativeFilterIsOpen(): boolean {
+  const trigger = nativeFilterButton();
+  if (!trigger) return false;
+  if (trigger.getAttribute('aria-expanded') === 'true') return true;
+  const controls = trigger.getAttribute('aria-controls');
+  if (!controls) return false;
+  const dialog = document.getElementById(controls);
+  return Boolean(
+    dialog?.getAttribute('role') === 'dialog' &&
+      dialog.getAttribute('data-state') !== 'closed' &&
+      dialog.getAttribute('aria-hidden') !== 'true',
   );
 }
 
@@ -313,6 +373,34 @@ function gridCardCount(grid: HTMLElement): number {
   return gridCardCells(grid).length;
 }
 
+function cellSortDataIsReady(cell: HTMLElement): boolean {
+  const states = Array.from(
+    cell.querySelectorAll<HTMLElement>(`[${lineupSortDataReadyAttribute}]`),
+  );
+  return (
+    states.length > 0 &&
+    states.every(
+      (container) =>
+        container.getAttribute(lineupSortDataReadyAttribute) === 'true',
+    )
+  );
+}
+
+function gridLoadingCell(grid: HTMLElement): HTMLElement | null {
+  return (
+    Array.from(grid.children).find(
+      (child): child is HTMLElement =>
+        child instanceof HTMLElement &&
+        !child.querySelector(cardImageSelector) &&
+        Boolean(
+          child.querySelector(
+            '[role="progressbar"][aria-busy="true"]',
+          ),
+        ),
+    ) ?? null
+  );
+}
+
 function lineupPlayerGrid(): HTMLElement | null {
   const trackedByGrid = new Map<HTMLElement, Set<HTMLElement>>();
   for (const image of document.querySelectorAll<HTMLImageElement>(
@@ -415,7 +503,8 @@ function restoreInlineStyles(
 }
 
 async function revealGridEndSilently(grid: HTMLElement): Promise<boolean> {
-  const trigger = gridCardCells(grid).at(-1);
+  const loadingCell = gridLoadingCell(grid);
+  const trigger = loadingCell ?? gridCardCells(grid).at(-1);
   if (!trigger?.isConnected) {
     await animationFrames(2);
     return false;
@@ -435,7 +524,7 @@ async function revealGridEndSilently(grid: HTMLElement): Promise<boolean> {
   if (isAlreadyVisible) {
     window.dispatchEvent(new Event('scroll'));
     document.dispatchEvent(new Event('scroll'));
-    await animationFrames(5);
+    await animationFrames(8);
     return true;
   }
 
@@ -452,8 +541,13 @@ async function revealGridEndSilently(grid: HTMLElement): Promise<boolean> {
     'transform',
     'z-index',
   ] as const;
-  const originalStyles = preserveInlineStyles(trigger, overriddenProperties);
+  const originalStyles = preserveInlineStyles(
+    trigger,
+    overriddenProperties,
+  );
   const originalGridMinHeight = preserveInlineStyles(grid, ['min-height']);
+  const triggerHadStyleAttribute = trigger.hasAttribute('style');
+  const gridHadStyleAttribute = grid.hasAttribute('style');
   const gridRectangle = grid.getBoundingClientRect();
   const viewportLeft = Math.max(
     0,
@@ -481,12 +575,18 @@ async function revealGridEndSilently(grid: HTMLElement): Promise<boolean> {
     trigger.style.setProperty('z-index', '-2147483647', 'important');
     window.dispatchEvent(new Event('scroll'));
     document.dispatchEvent(new Event('scroll'));
-    await animationFrames(5);
+    await animationFrames(8);
   } finally {
     restoreInlineStyles(trigger, originalStyles);
     restoreInlineStyles(grid, originalGridMinHeight);
+    if (!triggerHadStyleAttribute && trigger.getAttribute('style') === '') {
+      trigger.removeAttribute('style');
+    }
+    if (!gridHadStyleAttribute && grid.getAttribute('style') === '') {
+      grid.removeAttribute('style');
+    }
   }
-  return false;
+  return Boolean(loadingCell);
 }
 
 async function waitForGridGrowth(
@@ -525,7 +625,7 @@ export async function loadCompleteLineupPool(
     }
     const previousCount = gridCardCount(grid);
     context.onProgress(previousCount);
-    const endWasAlreadyVisible = await revealEnd(grid);
+    const endWasReached = await revealEnd(grid);
     if (context.isCancelled()) return null;
     const grew = await waitForGrowth(
       grid,
@@ -547,7 +647,8 @@ export async function loadCompleteLineupPool(
     }
     stableMisses += 1;
     if (stableMisses >= stableMissesRequired) {
-      if (!observedGrowth && !endWasAlreadyVisible) return null;
+      if (currentGrid && gridLoadingCell(currentGrid)) return null;
+      if (!observedGrowth && !endWasReached) return null;
       context.onProgress(previousCount);
       return grid;
     }
@@ -574,9 +675,14 @@ export class LineupCardSorter {
   private poolLoading = false;
   private poolLoadFailed = false;
   private poolCardCount = 0;
+  private poolHydrating = false;
+  private poolReadyCount = 0;
   private completedGrid: HTMLElement | null = null;
   private completedCells = new Set<HTMLElement>();
+  private failedGrid: HTMLElement | null = null;
+  private failedCells = new Set<HTMLElement>();
   private requestedPosition: FootballPosition | null | undefined;
+  private filterSuspended = false;
   private readonly originalOrders = new Map<HTMLElement, OriginalOrder>();
 
   constructor(
@@ -584,12 +690,19 @@ export class LineupCardSorter {
   ) {}
 
   private readonly handleSortValueChange = (): void => {
-    if (this.activeMode && !this.poolLoading) this.scheduleSort();
+    if (!this.activeMode || this.poolLoading || this.filterSuspended) return;
+    this.refreshHydrationProgress();
+    this.syncNativeSortUi();
+    this.scheduleSort();
   };
 
   private readonly handleDocumentClick = (event: Event): void => {
     if (!this.activeMode || !(event.target instanceof Element)) return;
     const button = event.target.closest<HTMLButtonElement>('button');
+    if (button && isNativeFilterButton(button)) {
+      window.setTimeout(() => this.scan(document), 0);
+      return;
+    }
     const requestedPosition = lineupPositionFromButton(button);
     if (requestedPosition !== undefined) {
       this.requestedPosition = requestedPosition;
@@ -651,7 +764,23 @@ export class LineupCardSorter {
       return;
     }
     this.syncNativeSortUi();
-    if (!this.activeMode || this.poolLoading) return;
+    if (!this.activeMode) return;
+    if (nativeFilterIsOpen()) {
+      if (!this.filterSuspended) {
+        this.filterSuspended = true;
+        this.cancelSortFrame();
+        this.cancelPoolLoad();
+        this.restoreOriginalOrders();
+        this.syncNativeSortUi();
+      }
+      return;
+    }
+    if (this.filterSuspended) {
+      this.filterSuspended = false;
+      this.restartCompleteSort(120);
+      return;
+    }
+    if (this.poolLoading) return;
     const grid = lineupPlayerGrid();
     if (!grid) return;
     const cells = gridCardCells(grid);
@@ -659,10 +788,18 @@ export class LineupCardSorter {
       grid === this.completedGrid &&
       cells.length === this.completedCells.size &&
       cells.every((cell) => this.completedCells.has(cell));
+    const sameFailedPool =
+      this.poolLoadFailed &&
+      grid === this.failedGrid &&
+      cells.length === this.failedCells.size &&
+      cells.every((cell) => this.failedCells.has(cell));
+    if (sameFailedPool) return;
     if (!sameCompletedPool) {
       this.restartCompleteSort(80);
       return;
     }
+    this.refreshHydrationProgress();
+    this.syncNativeSortUi();
     this.scheduleSort();
   }
 
@@ -699,14 +836,20 @@ export class LineupCardSorter {
       }
       label.setAttribute(nativeTriggerLabelAttribute, 'true');
       const baseLabel = lineupSortConfigs[this.activeMode].label;
-      label.textContent = this.poolLoading
-        ? `${baseLabel} lädt${this.poolCardCount > 0 ? ` ${this.poolCardCount}` : ''}…`
-        : this.poolLoadFailed
-          ? `${baseLabel} erneut`
-          : baseLabel;
+      const loading = this.poolLoading || this.poolHydrating;
+      label.toggleAttribute(nativeTriggerLoadingAttribute, loading);
+      const nextLabel = this.poolLoading
+        ? `${baseLabel} · Spieler laden${this.poolCardCount > 0 ? ` (${this.poolCardCount})` : ''}`
+        : this.poolHydrating
+          ? `${baseLabel} · Werte laden (${this.poolReadyCount}/${this.poolCardCount})`
+          : this.poolLoadFailed
+            ? `${baseLabel} · Erneut versuchen`
+            : baseLabel;
+      if (label.textContent !== nextLabel) label.textContent = nextLabel;
     } else if (label.hasAttribute(nativeTriggerLabelAttribute)) {
       label.textContent = this.originalTriggerLabel;
       label.removeAttribute(nativeTriggerLabelAttribute);
+      label.removeAttribute(nativeTriggerLoadingAttribute);
     } else {
       this.originalTriggerLabel = label.textContent?.trim() ?? '';
     }
@@ -716,6 +859,7 @@ export class LineupCardSorter {
     if (this.nativeTriggerLabel?.hasAttribute(nativeTriggerLabelAttribute)) {
       this.nativeTriggerLabel.textContent = this.originalTriggerLabel;
       this.nativeTriggerLabel.removeAttribute(nativeTriggerLabelAttribute);
+      this.nativeTriggerLabel.removeAttribute(nativeTriggerLoadingAttribute);
     }
     this.nativeTrigger = null;
     this.nativeTriggerLabel = null;
@@ -747,7 +891,14 @@ export class LineupCardSorter {
         event.preventDefault();
         event.stopPropagation();
         this.setActiveMode(config.mode);
-        if (trigger.getAttribute('aria-expanded') === 'true') trigger.click();
+        window.setTimeout(() => {
+          if (
+            trigger.isConnected &&
+            trigger.getAttribute('aria-expanded') === 'true'
+          ) {
+            trigger.click();
+          }
+        }, 0);
       });
       parent.append(option);
       this.menuOptions.set(config.mode, option);
@@ -801,21 +952,48 @@ export class LineupCardSorter {
     this.nativeMenu = null;
   }
 
+  private reusableCompletedGrid(): HTMLElement | null {
+    const grid = this.completedGrid;
+    if (!grid?.isConnected) return null;
+    const cells = gridCardCells(grid);
+    if (
+      cells.length !== this.completedCells.size ||
+      cells.some((cell) => !this.completedCells.has(cell)) ||
+      !gridMatchesPosition(grid, activeLineupPosition())
+    ) {
+      return null;
+    }
+    return grid;
+  }
+
   private setActiveMode(mode: LineupSortMode | null): void {
+    const reusableGrid = mode ? this.reusableCompletedGrid() : null;
     if (this.activeMode === mode) {
+      if (reusableGrid) this.refreshHydrationProgress();
       this.syncNativeSortUi();
-      if (mode) this.restartCompleteSort();
+      if (mode) {
+        if (reusableGrid) this.scheduleSort();
+        else this.restartCompleteSort();
+      }
       return;
     }
     this.cancelSortFrame();
     if (this.activeMode) this.restoreOriginalOrders();
     this.cancelPoolLoad();
     this.activeMode = mode;
+    this.filterSuspended = false;
     this.requestedPosition = mode ? activeLineupPosition() : undefined;
-    this.syncNativeSortUi();
-    if (mode) {
+    if (mode && reusableGrid) {
+      this.completedGrid = reusableGrid;
+      this.completedCells = new Set(gridCardCells(reusableGrid));
+      this.refreshHydrationProgress();
+      this.syncNativeSortUi();
+      this.scheduleSort();
+    } else if (mode) {
+      this.syncNativeSortUi();
       this.restartCompleteSort();
     } else {
+      this.syncNativeSortUi();
       this.restoreOriginalOrders();
     }
   }
@@ -828,8 +1006,20 @@ export class LineupCardSorter {
     }
     this.poolLoading = false;
     this.poolCardCount = 0;
+    this.poolHydrating = false;
+    this.poolReadyCount = 0;
     this.completedGrid = null;
     this.completedCells.clear();
+    this.failedGrid = null;
+    this.failedCells.clear();
+  }
+
+  private rememberFailedPool(grid = lineupPlayerGrid()): void {
+    this.poolLoadFailed = true;
+    this.poolHydrating = false;
+    this.poolReadyCount = 0;
+    this.failedGrid = grid;
+    this.failedCells = new Set(grid ? gridCardCells(grid) : []);
   }
 
   private restartCompleteSort(delayMs = 0): void {
@@ -861,7 +1051,7 @@ export class LineupCardSorter {
     if (isCancelled()) return;
     this.poolLoading = false;
     if (!grid) {
-      this.poolLoadFailed = true;
+      this.rememberFailedPool();
       this.syncNativeSortUi();
       return;
     }
@@ -878,7 +1068,7 @@ export class LineupCardSorter {
     }
     const expectedPosition = this.requestedPosition ?? activePosition;
     if (!gridMatchesPosition(grid, expectedPosition)) {
-      this.poolLoadFailed = true;
+      this.rememberFailedPool(grid);
       this.restoreOriginalOrders();
       this.syncNativeSortUi();
       return;
@@ -887,8 +1077,27 @@ export class LineupCardSorter {
     this.poolLoadFailed = false;
     this.completedGrid = grid;
     this.completedCells = new Set(gridCardCells(grid));
+    this.poolCardCount = this.completedCells.size;
+    grid.dispatchEvent(
+      new CustomEvent(lineupPoolReadyEvent, { bubbles: true }),
+    );
+    this.refreshHydrationProgress();
     this.syncNativeSortUi();
     this.scheduleSort();
+  }
+
+  private refreshHydrationProgress(): void {
+    const grid = this.completedGrid;
+    if (!grid?.isConnected) {
+      this.poolHydrating = false;
+      this.poolReadyCount = 0;
+      return;
+    }
+    const cells = gridCardCells(grid);
+    this.poolCardCount = cells.length;
+    this.poolReadyCount = cells.filter(cellSortDataIsReady).length;
+    this.poolHydrating =
+      this.poolCardCount > 0 && this.poolReadyCount < this.poolCardCount;
   }
 
   private scheduleSort(): void {
@@ -941,7 +1150,7 @@ export class LineupCardSorter {
     const expectedPosition = this.requestedPosition ?? activeLineupPosition();
     if (!gridMatchesPosition(grid, expectedPosition)) {
       this.restoreOriginalOrders();
-      this.poolLoadFailed = true;
+      this.rememberFailedPool(grid);
       this.syncNativeSortUi();
       return;
     }

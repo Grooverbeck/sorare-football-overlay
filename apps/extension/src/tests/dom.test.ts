@@ -16,6 +16,10 @@ import {
   applyMarketValueFormat,
   OverlayView,
 } from '../overlay.js';
+import {
+  lineupPoolReadyEvent,
+  lineupSortDataReadyAttribute,
+} from '../lineup-sort.js';
 import { SorareCardScanner, StatsBatchCoordinator } from '../scanner.js';
 
 describe('Sorare card DOM discovery', () => {
@@ -171,6 +175,47 @@ describe('Sorare card DOM discovery', () => {
       positions: { 'Matt Turner': 'Goalkeeper' },
       supportsPartialFormHistory: true,
     });
+  });
+
+  it('exposes whether lineup sort values are still loading', () => {
+    document.body.innerHTML = `
+      <article data-testid="sort-ready-card">
+        <img alt="Sort Ready Player - limited" src="/card.png">
+      </article>
+    `;
+    const card = document.querySelector<HTMLElement>(
+      '[data-testid="sort-ready-card"]',
+    );
+    if (!card) throw new Error('Expected sort readiness card');
+    const view = new OverlayView(
+      card,
+      { playerName: 'Sort Ready Player' },
+      'Midfielder',
+    );
+    const stats: PlayerStats = {
+      slug: 'sort-ready-player',
+      displayName: 'Sort Ready Player',
+      position: 'Midfielder',
+      aaL10: { value: 12.5, sampleSize: 10 },
+      cleanSheetL10: { value: 0.2, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      nextGame: null,
+      excludedLowCoverage: 0,
+    };
+
+    expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('false');
+    view.render(stats);
+    expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    view.retrying();
+    expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('false');
+    view.error();
+    expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    view.loading();
+    expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('false');
+    view.noData();
+    expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    view.destroy();
+    expect(card.hasAttribute(lineupSortDataReadyAttribute)).toBe(false);
   });
 
   it('uses the uniquely active lineup position for an image-only player card', () => {
@@ -2343,6 +2388,102 @@ describe('Sorare card DOM discovery', () => {
     expect(fetcher.mock.calls[1]?.[0].slugs).toEqual(['far-player']);
     scanner.stop();
     expect(unobserve).not.toHaveBeenCalled();
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
+  it('hydrates far-offscreen cards when a complete lineup pool is ready', async () => {
+    const observe = vi.fn();
+    const disconnect = vi.fn();
+    class TestIntersectionObserver {
+      readonly root = null;
+      readonly rootMargin = '';
+      readonly thresholds: readonly number[] = [];
+
+      constructor(_callback: IntersectionObserverCallback) {}
+
+      observe = observe;
+      unobserve = vi.fn();
+      disconnect = disconnect;
+      takeRecords(): IntersectionObserverEntry[] {
+        return [];
+      }
+    }
+    vi.stubGlobal('IntersectionObserver', TestIntersectionObserver);
+    document.body.innerHTML = `
+      <div data-testid="complete-lineup-pool">
+        <article data-testid="visible-lineup-card" data-position="Midfielder">
+          <a href="/football/players/visible-lineup-player">Visible player</a>
+        </article>
+        <article data-testid="offscreen-lineup-card" data-position="Midfielder">
+          <a href="/football/players/offscreen-lineup-player">Offscreen player</a>
+        </article>
+      </div>
+    `;
+    const pool = document.querySelector<HTMLElement>(
+      '[data-testid="complete-lineup-pool"]',
+    );
+    const visibleCard = document.querySelector<HTMLElement>(
+      '[data-testid="visible-lineup-card"]',
+    );
+    const offscreenCard = document.querySelector<HTMLElement>(
+      '[data-testid="offscreen-lineup-card"]',
+    );
+    if (!pool || !visibleCard || !offscreenCard) {
+      throw new Error('Expected complete lineup pool');
+    }
+    vi.spyOn(visibleCard, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 20, y: 100, width: 120, height: 194 }),
+    );
+    vi.spyOn(offscreenCard, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 20, y: 4_000, width: 120, height: 194 }),
+    );
+    const fetcher = vi.fn(
+      async (
+        request: PlayerStatsRequest,
+      ): Promise<PlayerStatsSuccessResponse> => ({
+        data: request.slugs.map((slug) => ({
+          slug,
+          displayName: slug,
+          position: 'Midfielder',
+          aaL10: { value: 10, sampleSize: 10 },
+          cleanSheetL10: { value: 0.2, sampleSize: 10 },
+          goalL10: { value: 0.1, sampleSize: 10 },
+          nextGame: null,
+          excludedLowCoverage: 0,
+        })),
+        meta: {
+          requested: request.slugs.length,
+          returned: request.slugs.length,
+          cacheHits: 0,
+          source: 'sorare',
+        },
+      }),
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const scanner = new SorareCardScanner(coordinator);
+
+    scanner.start();
+    await coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0]?.[0].slugs).toEqual([
+      'visible-lineup-player',
+    ]);
+
+    pool.dispatchEvent(
+      new CustomEvent(lineupPoolReadyEvent, { bubbles: true }),
+    );
+    await coordinator.flush();
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[1]?.[0].slugs).toEqual([
+      'offscreen-lineup-player',
+    ]);
+    expect(
+      offscreenCard.getAttribute('data-sorare-overlay-aa-sort-value'),
+    ).toBe('10');
+    scanner.stop();
+    expect(observe).toHaveBeenCalledTimes(2);
     expect(disconnect).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
   });

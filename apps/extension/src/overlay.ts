@@ -14,6 +14,7 @@ import { isScoreDetailsDialogTarget } from './dom.js';
 import {
   setLineupAaSortValue,
   setLineupGoalSortValue,
+  setLineupSortDataReady,
   setLineupSortPosition,
 } from './lineup-sort.js';
 import type {
@@ -2739,6 +2740,7 @@ export class OverlayView {
     setLineupGoalSortValue(this.container, null);
     setLineupAaSortValue(this.container, null);
     setLineupSortPosition(this.container, null);
+    setLineupSortDataReady(this.container, null);
     this.stopPackBracketSettling();
     if (this.packMotionProbeFrame !== undefined) {
       cancelPositionFrame(this.packMotionProbeFrame);
@@ -2752,12 +2754,14 @@ export class OverlayView {
   }
 
   loading(): void {
+    setLineupSortDataReady(this.container, false);
     this.clearLineupOdds();
     this.clearPlayerMarketTooltip();
     this.state('Lade L10 …', 'pulse');
   }
 
   retrying(): void {
+    setLineupSortDataReady(this.container, false);
     this.clearLineupOdds();
     this.clearPlayerMarketTooltip();
     this.state(
@@ -2775,6 +2779,7 @@ export class OverlayView {
       'error',
       'Die zuletzt angefragten Daten konnten nicht geladen werden. Die Extension versucht es automatisch erneut.',
     );
+    setLineupSortDataReady(this.container, true);
   }
 
   noData(): void {
@@ -2783,6 +2788,7 @@ export class OverlayView {
     this.clearLineupOdds();
     this.clearPlayerMarketTooltip();
     this.state('Keine L10-Daten', 'no-data');
+    setLineupSortDataReady(this.container, true);
   }
 
   render(stats: PlayerStats): void {
@@ -2806,6 +2812,7 @@ export class OverlayView {
       sortValue?.source,
     );
     setLineupAaSortValue(this.container, stats.aaL10.value);
+    setLineupSortDataReady(this.container, true);
     this.renderLineupOdds(stats.nextGame);
     this.renderPlayerMarketTooltip(stats);
     this.panel.replaceChildren();
