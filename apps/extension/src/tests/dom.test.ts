@@ -3725,7 +3725,15 @@ describe('Sorare card DOM discovery', () => {
     });
     const bracket =
       view.host.shadowRoot?.querySelector<HTMLElement>('.market-bracket');
-    expect(bracket?.querySelector('.aa-bracket-cell')).toBeNull();
+    const unavailableAa =
+      bracket?.querySelector<HTMLElement>('.aa-bracket-cell');
+    expect(unavailableAa?.textContent).toBe('AA—');
+    expect(unavailableAa?.dataset.available).toBe('false');
+    expect(unavailableAa?.dataset.tone).toBe('unavailable');
+    expect(unavailableAa?.getAttribute('aria-label')).toBe(
+      'AA L10: noch keine gültigen Spiele mit mindestens 60 Minuten beim aktuellen Verein',
+    );
+    expect(unavailableAa?.querySelector('.aa-sample-warning')).toBeNull();
     expect(
       bracket?.querySelector('.clean-sheet-bracket-cell .market-value')
         ?.textContent,

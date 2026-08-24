@@ -1725,13 +1725,9 @@ function marketBracketNode(stats: PlayerStats): HTMLElement | null {
   );
   if (preview) bracket.dataset.preview = 'true';
   if (stats.position !== 'Goalkeeper') {
-    if (stats.aaL10.value !== null) {
-      const aaCell = aaStatNode(stats, 'top');
-      aaCell.dataset.bracketSlot = 'aa';
-      bracket.append(aaCell);
-    } else {
-      bracket.append(marketBracketSlotSpacer('aa', true));
-    }
+    const aaCell = aaStatNode(stats, 'top');
+    aaCell.dataset.bracketSlot = 'aa';
+    bracket.append(aaCell);
   } else {
     bracket.append(marketBracketSlotSpacer('aa', true));
   }
@@ -1808,18 +1804,20 @@ function aaStatNode(
   stats: PlayerStats,
   placement: 'top' | 'bottom' | 'single',
 ): HTMLElement {
+  const hasAaValue = stats.aaL10.value !== null;
   const stat = document.createElement('span');
   stat.className = `market-cell market-last aa-percentile aa-bracket-cell${
     placement === 'single' ? '' : ` aa-bracket-${placement}`
   }`;
-  stat.dataset.available = String(stats.aaL10.value !== null);
-  const fallbackTopPlayer = getMlsAaTopPlayer(
-    stats.position,
-    stats.slug,
-  );
-  const topRank = stats.mlsAaContext
-    ? stats.mlsAaContext.rank
-    : (fallbackTopPlayer?.rank ?? null);
+  stat.dataset.available = String(hasAaValue);
+  const fallbackTopPlayer = hasAaValue
+    ? getMlsAaTopPlayer(stats.position, stats.slug)
+    : null;
+  const topRank = hasAaValue
+    ? stats.mlsAaContext
+      ? stats.mlsAaContext.rank
+      : (fallbackTopPlayer?.rank ?? null)
+    : null;
   const icon = document.createElement('span');
   icon.className = 'market-icon aa-market-icon';
   icon.textContent = topRank ? `#${topRank}` : 'AA';
@@ -1828,7 +1826,7 @@ function aaStatNode(
   value.className = 'market-value';
   value.textContent = score(stats.aaL10);
   stat.append(icon, value);
-  const limitedClubSample = stats.aaL10.sampleSize < 10;
+  const limitedClubSample = hasAaValue && stats.aaL10.sampleSize < 10;
   if (limitedClubSample) {
     const sampleWarningReason =
       `AA ${score(stats.aaL10)} · Datenbasis: ${stats.aaL10.sampleSize}/10 gültige ` +
@@ -1897,11 +1895,13 @@ function aaStatNode(
     stat.dataset.tone = 'unavailable';
     stat.setAttribute(
       'aria-label',
-      `AA L10 ${score(stats.aaL10)}: keine belastbare MLS-Perzentileinstufung${
-        limitedClubSample
-          ? `; Warnung: nur ${stats.aaL10.sampleSize} Vereinsspiele mit mindestens 60 Minuten`
-          : ''
-      }`,
+      hasAaValue
+        ? `AA L10 ${score(stats.aaL10)}: keine belastbare MLS-Perzentileinstufung${
+            limitedClubSample
+              ? `; Warnung: nur ${stats.aaL10.sampleSize} Vereinsspiele mit mindestens 60 Minuten`
+              : ''
+          }`
+        : 'AA L10: noch keine gültigen Spiele mit mindestens 60 Minuten beim aktuellen Verein',
     );
     return stat;
   }
