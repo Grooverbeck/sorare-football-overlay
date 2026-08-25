@@ -142,31 +142,103 @@ describe('lineup card sorting', () => {
     document.body.replaceChildren();
   });
 
-  it('supports compose-team routes only', () => {
+  it('supports regular and squad compose routes only', () => {
     expect(
       supportsLineupSortPath('/de/football/series/test/compose-team/lineup'),
+    ).toBe(true);
+    expect(
+      supportsLineupSortPath(
+        '/de/football/series/squad/compose/BoardStep%3Atest',
+      ),
     ).toBe(true);
     expect(supportsLineupSortPath('/de/football/lineups/lineup')).toBe(
       false,
     );
+    expect(
+      supportsLineupSortPath(
+        '/de/football/series/squad/lineups/BoardStep%3Atest',
+      ),
+    ).toBe(false);
   });
 
-  it('leaves Sorare sort controls untouched on unsupported squad-builder routes', () => {
+  it('sorts in the squad builder without repeatedly mounting menu options', async () => {
     window.history.replaceState(
       {},
       '',
       '/de/football/series/squad/compose/BoardStep%3Atest',
+    );
+    document.querySelector('[data-lineup-positions]')?.remove();
+    document.querySelector('[data-player-grid]')?.insertAdjacentHTML(
+      'beforebegin',
+      `
+        <div class="slots5" data-selected-squad style="display: grid">
+          <div><img src="/cardsamplepicture/selected-1.png" alt=""></div>
+          <div><img src="/cardsamplepicture/selected-2.png" alt=""></div>
+          <div><img src="/cardsamplepicture/selected-3.png" alt=""></div>
+          <div><img src="/cardsamplepicture/selected-4.png" alt=""></div>
+          <div><img src="/cardsamplepicture/selected-5.png" alt=""></div>
+        </div>
+      `,
     );
     const options = document.querySelector<HTMLElement>(
       '[data-native-options]',
     );
     if (!options) throw new Error('Expected native sort options');
     const append = vi.spyOn(options, 'append');
+    const market = document.querySelector<HTMLElement>(
+      '[data-player="market"]',
+    );
+    const historical = document.querySelector<HTMLElement>(
+      '[data-player="historical"]',
+    );
+    const marketCell = document.querySelector<HTMLElement>(
+      '[data-cell="market"]',
+    );
+    const historicalCell = document.querySelector<HTMLElement>(
+      '[data-cell="historical"]',
+    );
+    if (!market || !historical || !marketCell || !historicalCell) {
+      throw new Error('Expected squad sorting fixture');
+    }
+    setLineupAaSortValue(market, 12);
+    setLineupAaSortValue(historical, 24);
+
+    sorter.start();
+    expect(append).toHaveBeenCalledTimes(2);
+    document
+      .querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)
+      ?.click();
+
+    await vi.waitFor(() => expect(historicalCell.style.order).toBe('-3'));
+    expect(marketCell.style.order).toBe('-2');
+    expect(
+      Array.from(
+        document.querySelectorAll<HTMLElement>('[data-selected-squad] > div'),
+      ).every((cell) => cell.style.order === ''),
+    ).toBe(true);
+
+    sorter.scan(document);
+    sorter.scan(document);
+
+    expect(append).toHaveBeenCalledTimes(2);
+    expect(
+      document.querySelector(`[${lineupGoalSortOptionAttribute}]`),
+    ).not.toBeNull();
+    expect(
+      document.querySelector(`[${lineupAaSortOptionAttribute}]`),
+    ).not.toBeNull();
+  });
+
+  it('leaves squad overview and submitted lineup pages untouched', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/de/football/series/squad/lineups/BoardStep%3Atest',
+    );
 
     sorter.start();
     sorter.scan(document);
 
-    expect(append).not.toHaveBeenCalled();
     expect(
       document.querySelector(`[${lineupGoalSortOptionAttribute}]`),
     ).toBeNull();

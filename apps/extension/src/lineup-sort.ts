@@ -113,7 +113,10 @@ const lineupPositionAliases: Readonly<
 };
 
 export function supportsLineupSortPath(pathname: string): boolean {
-  return /\/compose-team(?:\/|$)/i.test(pathname);
+  return (
+    /\/compose-team(?:\/|$)/i.test(pathname) ||
+    /\/series\/squad\/compose(?:\/|$)/i.test(pathname)
+  );
 }
 
 export function setLineupGoalSortValue(
