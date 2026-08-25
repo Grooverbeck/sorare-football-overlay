@@ -430,17 +430,23 @@ describe('lineup card sorting', () => {
     if (!option) throw new Error('Expected custom AA option');
 
     const replacement = trigger.cloneNode(true) as HTMLButtonElement;
-    replacement.addEventListener('click', () => {
+    const handleEscape = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return;
       replacement.setAttribute('aria-expanded', 'false');
       dialog.setAttribute('data-state', 'closed');
-    });
+    };
+    document.addEventListener('keydown', handleEscape);
     option.addEventListener('click', () => trigger.replaceWith(replacement));
-    option.click();
+    try {
+      option.click();
 
-    await vi.waitFor(() => {
-      expect(replacement.getAttribute('aria-expanded')).toBe('false');
-      expect(dialog.getAttribute('data-state')).toBe('closed');
-    });
+      await vi.waitFor(() => {
+        expect(replacement.getAttribute('aria-expanded')).toBe('false');
+        expect(dialog.getAttribute('data-state')).toBe('closed');
+      });
+    } finally {
+      document.removeEventListener('keydown', handleEscape);
+    }
   });
 
   it('accepts a stable one-page pool without a Sorare loading cell', async () => {

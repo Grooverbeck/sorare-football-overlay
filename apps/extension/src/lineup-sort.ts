@@ -280,6 +280,36 @@ function nativeSortDialog(trigger: HTMLButtonElement): HTMLElement | null {
     : null;
 }
 
+function dismissNativeSortDialog(): void {
+  const trigger = nativeSortButton();
+  if (!trigger || !nativeSortDialog(trigger)) return;
+
+  // Radix listens for Escape on the document and can dismiss the current
+  // popover even when React replaces its trigger while we update the label.
+  document.dispatchEvent(
+    new KeyboardEvent('keydown', {
+      key: 'Escape',
+      code: 'Escape',
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+
+  // Keep a delayed click fallback for Sorare variants that do not expose the
+  // Radix escape listener. Resolve the trigger again so React replacements do
+  // not leave us holding a disconnected element.
+  window.setTimeout(() => {
+    const currentTrigger = nativeSortButton();
+    if (
+      currentTrigger?.isConnected &&
+      currentTrigger.getAttribute('aria-expanded') === 'true' &&
+      nativeSortDialog(currentTrigger)
+    ) {
+      currentTrigger.click();
+    }
+  }, 80);
+}
+
 function nativeSortOptions(dialog: HTMLElement): HTMLButtonElement[] {
   return Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).filter(
     (button) =>
@@ -898,15 +928,7 @@ export class LineupCardSorter {
         event.preventDefault();
         event.stopPropagation();
         this.setActiveMode(config.mode);
-        window.setTimeout(() => {
-          const currentTrigger = nativeSortButton();
-          if (
-            currentTrigger?.isConnected &&
-            currentTrigger.getAttribute('aria-expanded') === 'true'
-          ) {
-            currentTrigger.click();
-          }
-        }, 0);
+        window.setTimeout(dismissNativeSortDialog, 0);
       });
       parent.append(option);
       this.menuOptions.set(config.mode, option);
