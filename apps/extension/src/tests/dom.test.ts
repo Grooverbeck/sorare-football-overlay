@@ -4168,6 +4168,70 @@ describe('Sorare card DOM discovery', () => {
     view.destroy();
   });
 
+  it('keeps brackets visible above non-interactive live match decorations', () => {
+    document.body.innerHTML = `
+      <div data-testid="live-card-shell">
+        <button type="button" data-testid="live-card">
+          <img alt="Morgan Rogers - common" src="/morgan-rogers.png">
+        </button>
+        <div data-testid="match-event-decoration">
+          <img alt="" title="Tore" src="/goal.svg">
+          <img alt="" title="Auswechslung" src="/substitution.svg">
+        </div>
+      </div>
+    `;
+    const card = document.querySelector<HTMLElement>('[data-testid="live-card"]');
+    const image = card?.querySelector<HTMLImageElement>(
+      'img[alt="Morgan Rogers - common"]',
+    );
+    const decoration = document.querySelector<HTMLElement>(
+      '[data-testid="match-event-decoration"]',
+    );
+    if (!card || !image || !decoration) {
+      throw new Error('Expected live match card fixture');
+    }
+    const cardRect = {
+      x: 548,
+      y: 283,
+      top: 283,
+      right: 650,
+      bottom: 447,
+      left: 548,
+      width: 102,
+      height: 164,
+      toJSON: () => ({}),
+    };
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue(cardRect);
+    vi.spyOn(image, 'getBoundingClientRect').mockReturnValue(cardRect);
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true,
+      value: vi.fn(() => decoration),
+    });
+
+    const view = new OverlayView(
+      card,
+      { playerName: 'Morgan Rogers' },
+      'Midfielder',
+    );
+    view.render({
+      slug: 'morgan-rogers',
+      displayName: 'Morgan Rogers',
+      position: 'Midfielder',
+      aaL10: { value: null, sampleSize: 0 },
+      cleanSheetL10: { value: null, sampleSize: 0 },
+      goalL10: { value: 2 / 15, sampleSize: 15 },
+      nextGame: null,
+      excludedLowCoverage: 0,
+    });
+
+    expect(view.host.style.display).toBe('');
+    expect(
+      view.host.shadowRoot?.querySelector('[data-bracket-slot="aa"]')
+        ?.textContent,
+    ).toContain('—');
+    view.destroy();
+  });
+
   it('scales bracket values down for mini but still usable card images', () => {
     document.body.innerHTML = `
       <article data-testid="football-card">

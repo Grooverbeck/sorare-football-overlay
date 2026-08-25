@@ -2065,6 +2065,40 @@ function isAnchorExposed(
     );
   };
 
+  const localCardDecorationExposesCard = (
+    exposedElement: Element,
+  ): boolean => {
+    const interactiveOwner = exposedElement.closest(
+      'button, a, input, select, textarea, [role="button"], [role="link"], [contenteditable="true"]',
+    );
+    if (
+      interactiveOwner &&
+      interactiveOwner !== container &&
+      !container.contains(interactiveOwner)
+    ) {
+      return false;
+    }
+
+    // Live lineups paint goals, substitutions and similar match events in a
+    // transparent sibling layer above the card button. Accept only a
+    // non-interactive layer that still belongs to the nearest shell containing
+    // exactly this one card image. The search stops as soon as another card is
+    // present, so neighbouring cards and page-level overlays remain occluders.
+    let scope = container.parentElement;
+    for (let depth = 0; scope && depth < 8; depth += 1) {
+      if (scope === document.body || scope === document.documentElement) {
+        return false;
+      }
+      const cardImages = Array.from(
+        scope.querySelectorAll<HTMLImageElement>('img[alt]'),
+      ).filter((image) => sorareCardImageAlt.test(image.alt));
+      if (cardImages.length !== 1) return false;
+      if (scope.contains(exposedElement)) return true;
+      scope = scope.parentElement;
+    }
+    return false;
+  };
+
   return points.some(([x, y]) => {
     const exposedElement = document.elementFromPoint(x, y);
     return Boolean(
@@ -2072,7 +2106,8 @@ function isAnchorExposed(
         (exposedElement === container ||
           exposedElement === anchor ||
           container.contains(exposedElement) ||
-          captainDecorationExposesCard(exposedElement)),
+          captainDecorationExposesCard(exposedElement) ||
+          localCardDecorationExposesCard(exposedElement)),
     );
   });
 }
