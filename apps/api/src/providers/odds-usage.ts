@@ -201,6 +201,23 @@ export function protectionForProviderUsage(
   now: number = Date.now(),
 ): OddsUsageProtection {
   const protection = protectionForUsage(usage, now);
+  if (
+    provider === 'the-odds-api' &&
+    protection.level === 'stopped' &&
+    protection.ratio !== null &&
+    protection.ratio < 1
+  ) {
+    // Spend the remaining monthly credits on missing first snapshots instead
+    // of going fully cache-only at 90 %. Regional fallbacks and supplement
+    // passes stay disabled; the hard stop now reflects actual exhaustion.
+    return {
+      level: 'essential-only',
+      ratio: protection.ratio,
+      allowExternalRequests: true,
+      allowRegionalFallback: false,
+      allowSnapshotSupplements: false,
+    };
+  }
   if (provider !== 'sports-game-odds') return protection;
   // SportsGameOdds is currently a free allocation. Keep its object usage as
   // telemetry, but let the provider's real HTTP 429 response be the only
