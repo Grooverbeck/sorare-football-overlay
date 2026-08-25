@@ -826,7 +826,7 @@ export class LineupCardSorter {
       this.removeMenuOptions();
       return;
     }
-    this.mountMenuOptions(dialog, trigger);
+    this.mountMenuOptions(dialog);
   }
 
   private syncNativeTrigger(trigger: HTMLButtonElement): void {
@@ -876,10 +876,7 @@ export class LineupCardSorter {
     this.originalTriggerLabel = '';
   }
 
-  private mountMenuOptions(
-    dialog: HTMLElement,
-    trigger: HTMLButtonElement,
-  ): void {
+  private mountMenuOptions(dialog: HTMLElement): void {
     if (
       this.nativeMenu === dialog &&
       this.menuOptions.size === Object.keys(lineupSortConfigs).length &&
@@ -902,11 +899,12 @@ export class LineupCardSorter {
         event.stopPropagation();
         this.setActiveMode(config.mode);
         window.setTimeout(() => {
+          const currentTrigger = nativeSortButton();
           if (
-            trigger.isConnected &&
-            trigger.getAttribute('aria-expanded') === 'true'
+            currentTrigger?.isConnected &&
+            currentTrigger.getAttribute('aria-expanded') === 'true'
           ) {
-            trigger.click();
+            currentTrigger.click();
           }
         }, 0);
       });

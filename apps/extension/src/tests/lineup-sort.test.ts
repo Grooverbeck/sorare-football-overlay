@@ -416,6 +416,33 @@ describe('lineup card sorting', () => {
     });
   });
 
+  it('closes the current sort dialog when Sorare replaces its trigger', async () => {
+    const trigger = document.querySelector<HTMLButtonElement>(
+      '[data-native-sort]',
+    );
+    const dialog = document.querySelector<HTMLElement>('#sort-dialog');
+    if (!trigger || !dialog) throw new Error('Expected native sort controls');
+
+    sorter.start();
+    const option = document.querySelector<HTMLButtonElement>(
+      `[${lineupAaSortOptionAttribute}]`,
+    );
+    if (!option) throw new Error('Expected custom AA option');
+
+    const replacement = trigger.cloneNode(true) as HTMLButtonElement;
+    replacement.addEventListener('click', () => {
+      replacement.setAttribute('aria-expanded', 'false');
+      dialog.setAttribute('data-state', 'closed');
+    });
+    option.addEventListener('click', () => trigger.replaceWith(replacement));
+    option.click();
+
+    await vi.waitFor(() => {
+      expect(replacement.getAttribute('aria-expanded')).toBe('false');
+      expect(dialog.getAttribute('data-state')).toBe('closed');
+    });
+  });
+
   it('accepts a stable one-page pool without a Sorare loading cell', async () => {
     const grid = document.querySelector<HTMLElement>('[data-player-grid]');
     const lastCell = document.querySelector<HTMLElement>(
