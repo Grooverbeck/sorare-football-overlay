@@ -884,6 +884,76 @@ describe('lineup card sorting', () => {
     expect(marketCell.style.order).toBe('');
   });
 
+  it('accepts isolated current-player position changes in a valid card pool', async () => {
+    const market = document.querySelector<HTMLElement>(
+      '[data-player="market"]',
+    );
+    const historical = document.querySelector<HTMLElement>(
+      '[data-player="historical"]',
+    );
+    const missing = document.querySelector<HTMLElement>(
+      '[data-player="missing"]',
+    );
+    const marketCell = document.querySelector<HTMLElement>(
+      '[data-cell="market"]',
+    );
+    if (!market || !historical || !missing || !marketCell) {
+      throw new Error('Expected lineup sorting fixture');
+    }
+    setLineupSortPosition(market, 'Defender');
+    setLineupSortPosition(historical, 'Defender');
+    setLineupSortPosition(missing, 'Forward');
+    setLineupAaSortValue(market, 20);
+    setLineupAaSortValue(historical, 10);
+
+    sorter.start();
+    document
+      .querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)
+      ?.click();
+
+    await vi.waitFor(() => expect(marketCell.style.order).toBe('-3'));
+    expect(
+      document.querySelector<HTMLElement>('[data-native-trigger-label]')
+        ?.textContent,
+    ).toBe('AA');
+  });
+
+  it('still rejects a pool whose known positions are mostly stale', async () => {
+    const market = document.querySelector<HTMLElement>(
+      '[data-player="market"]',
+    );
+    const historical = document.querySelector<HTMLElement>(
+      '[data-player="historical"]',
+    );
+    const missing = document.querySelector<HTMLElement>(
+      '[data-player="missing"]',
+    );
+    const marketCell = document.querySelector<HTMLElement>(
+      '[data-cell="market"]',
+    );
+    if (!market || !historical || !missing || !marketCell) {
+      throw new Error('Expected lineup sorting fixture');
+    }
+    setLineupSortPosition(market, 'Midfielder');
+    setLineupSortPosition(historical, 'Midfielder');
+    setLineupSortPosition(missing, 'Defender');
+    setLineupAaSortValue(market, 20);
+    setLineupAaSortValue(historical, 10);
+
+    sorter.start();
+    document
+      .querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)
+      ?.click();
+
+    await vi.waitFor(() => {
+      expect(
+        document.querySelector<HTMLElement>('[data-native-trigger-label]')
+          ?.textContent,
+      ).toBe('AA · Erneut versuchen');
+    });
+    expect(marketCell.style.order).toBe('');
+  });
+
   it('does not retry an unchanged failed pool until its cards change', async () => {
     sorter.stop();
     const grid = document.querySelector<HTMLElement>('[data-player-grid]');

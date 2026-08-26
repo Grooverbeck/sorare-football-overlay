@@ -483,10 +483,21 @@ function gridMatchesPosition(
   position: FootballPosition | null | undefined,
 ): boolean {
   if (!position) return true;
-  return gridCardCells(grid).every((cell) => {
+  const concretePositions = gridCardCells(grid).flatMap((cell) => {
     const concretePosition = cellPosition(cell);
-    return !concretePosition || concretePosition === position;
+    return concretePosition ? [concretePosition] : [];
   });
+  if (concretePositions.length === 0) return true;
+
+  // Sorare selects by the card's playable position, while our stats contain
+  // the player's current position. Those can legitimately differ after a
+  // position change, so one conflicting player must not invalidate the pool.
+  // A stale grid from the previously selected slot still has a conflicting
+  // majority and is therefore rejected.
+  const matchingPositions = concretePositions.filter(
+    (concretePosition) => concretePosition === position,
+  ).length;
+  return matchingPositions > concretePositions.length / 2;
 }
 
 function delay(milliseconds: number): Promise<void> {
