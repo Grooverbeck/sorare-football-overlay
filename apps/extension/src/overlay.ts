@@ -1083,11 +1083,28 @@ function lineupTeamSideMatches(
   const references = [side.slug, side.label].filter(
     (value): value is string => Boolean(value),
   );
-  return references.length === 0
-    ? null
-    : references.some((reference) =>
-        teamReferencesLikelyMatch(reference, expectedName),
-      );
+  if (references.length === 0) return null;
+  if (
+    references.some((reference) =>
+      teamReferencesLikelyMatch(reference, expectedName),
+    )
+  ) {
+    return true;
+  }
+
+  // Sorare occasionally omits one club crest and leaves only an opaque team
+  // code such as `FB`, `RMA` or `LAFC`. Without the crest's canonical slug,
+  // that code cannot prove that the cached fixture is stale. The caller may
+  // still rely on the canonically matched/highlighted player side. Full team
+  // labels and canonical slugs remain conclusive mismatch evidence.
+  const label = side.label.trim();
+  const isOpaqueTeamCode =
+    !side.slug &&
+    label.length > 0 &&
+    [...label].length <= 4 &&
+    !/\s/u.test(label) &&
+    label === label.toLocaleUpperCase();
+  return isOpaqueTeamCode ? null : false;
 }
 
 function fixturePlayerSide(

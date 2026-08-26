@@ -1224,6 +1224,116 @@ describe('Sorare card DOM discovery', () => {
     view.destroy();
   });
 
+  it('keeps lineup odds when Sorare exposes only an opaque opponent code', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/de/football/series/test-series/compose-team',
+    );
+    document.body.innerHTML = `
+      <section>
+        <button data-testid="fofana-card">
+          <img alt="Malick Fofana - common" src="/fofana.png">
+        </button>
+        <button>
+          <div data-testid="ol-fb-teams">
+            <div aria-label="Team" class="highlighted">
+              <img alt="olympique-lyonnais-lyon" src="/lyon.png">
+              <span>OL</span>
+            </div>
+            <div aria-label="Team">
+              <span>FB</span>
+            </div>
+          </div>
+        </button>
+      </section>
+    `;
+    const card = document.querySelector<HTMLElement>(
+      '[data-testid="fofana-card"]',
+    );
+    const teamRow = document.querySelector<HTMLElement>(
+      '[data-testid="ol-fb-teams"]',
+    );
+    if (!card || !teamRow) throw new Error('Expected OL–FB fixture');
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue({
+      x: 40,
+      y: 100,
+      top: 100,
+      right: 150,
+      bottom: 278,
+      left: 40,
+      width: 110,
+      height: 178,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(teamRow, 'getBoundingClientRect').mockReturnValue({
+      x: 40,
+      y: 300,
+      top: 300,
+      right: 150,
+      bottom: 320,
+      left: 40,
+      width: 110,
+      height: 20,
+      toJSON: () => ({}),
+    });
+
+    const view = new OverlayView(
+      card,
+      { playerName: 'Malick Fofana' },
+      'Forward',
+    );
+    const stats = {
+      slug: 'malick-fofana',
+      displayName: 'Malick Fofana',
+      position: 'Forward' as const,
+      aaL10: { value: 13.1, sampleSize: 10 },
+      cleanSheetL10: { value: 0, sampleSize: 10 },
+      goalL10: { value: 0.2, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-26T19:00:00.000Z',
+        homeTeamName: 'Olympique Lyonnais',
+        awayTeamName: 'Fenerbahçe',
+        homeTeamSlug: 'olympique-lyonnais-lyon',
+        awayTeamSlug: 'fenerbahce-istanbul',
+        playerTeamName: 'Olympique Lyonnais',
+        opponentTeamName: 'Fenerbahçe',
+        playerTeamSlug: 'olympique-lyonnais-lyon',
+        cleanSheetProbability: 0.38,
+        matchProbabilities: { win: 0.46, draw: 0.28, loss: 0.26 },
+      },
+      excludedLowCoverage: 0,
+    };
+    view.render(stats);
+
+    const companion = document.querySelector<HTMLElement>(
+      '[data-sorare-overlay-companion="lineup-odds"]',
+    );
+    expect(
+      companion?.shadowRoot?.querySelector('.lineup-odds-bar')?.textContent,
+    ).toBe('46%28%26%');
+    expect(
+      companion?.shadowRoot?.querySelector(
+        '[data-outcome="home"][data-role="player"]',
+      )?.textContent,
+    ).toBe('46%');
+
+    const opponent = teamRow.querySelectorAll<HTMLElement>(
+      ':scope > [aria-label="Team"]',
+    )[1];
+    if (!opponent) throw new Error('Expected opponent side');
+    opponent.textContent = 'Galatasaray';
+    view.render(stats);
+    const staleCompanion = document.querySelector<HTMLElement>(
+      '[data-sorare-overlay-companion="lineup-odds"]',
+    );
+    expect(staleCompanion?.hidden).toBe(true);
+    expect(
+      staleCompanion?.shadowRoot?.querySelector('.lineup-odds-bar')?.textContent,
+    ).toBe('');
+    view.destroy();
+  });
+
   it('does not attach cached odds from a different opponent to Sorare\'s visible fixture', () => {
     window.history.replaceState(
       {},
