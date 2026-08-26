@@ -14,6 +14,12 @@ import {
 } from './dom.js';
 import { OverlayView } from './overlay.js';
 import {
+  LineupCardSorter,
+  lineupAaSortOptionAttribute,
+  lineupGoalSortOptionAttribute,
+  lineupPoolReadyEvent,
+} from './lineup-sort.js';
+import {
   clearNativeSorareLineupProbabilityDecorations,
   decorateNativeSorareLineupProbabilities,
 } from './sorare-native-ui.js';
@@ -26,11 +32,16 @@ import {
 type StatsFetcher = (request: PlayerStatsRequest) => Promise<PlayerStatsSuccessResponse>;
 const extensionMountSelector =
   '[data-sorare-overlay-root], [data-sorare-overlay-companion]';
+const extensionMutationSelector =
+  `${extensionMountSelector}, ` +
+  `[${lineupGoalSortOptionAttribute}], ` +
+  `[${lineupAaSortOptionAttribute}]`;
 const discoveryAttributes = new Set([
   'href',
   'alt',
   'src',
   'aria-label',
+  'aria-expanded',
   'data-position',
   'data-card-position',
 ]);
@@ -1056,10 +1067,22 @@ export class StatsBatchCoordinator {
 export class SorareCardScanner {
   private observer: MutationObserver | undefined;
   private visibilityObserver: IntersectionObserver | undefined;
+  private root: HTMLElement | null = null;
   private readonly overlays = new Map<HTMLElement, MountedOverlay>();
   private readonly pendingScanRoots = new Set<Element>();
   private mutationFrame: number | undefined;
   private shouldRefreshPositions = false;
+  private readonly lineupSorter = new LineupCardSorter();
+  private readonly handleLineupPoolReady = (event: Event): void => {
+    const grid = event.target;
+    if (!(grid instanceof HTMLElement)) return;
+    this.scan(grid);
+    for (const [container, mounted] of this.overlays) {
+      if (grid.contains(container)) {
+        this.requestStats(mounted, viewportPriorityNearby);
+      }
+    }
+  };
 
   constructor(
     private readonly coordinator = new StatsBatchCoordinator(),
@@ -1085,24 +1108,33 @@ export class SorareCardScanner {
   start(): void {
     if (this.observer) return;
     const root = document.body ?? document.documentElement;
+    this.root = root;
+    root.addEventListener(lineupPoolReadyEvent, this.handleLineupPoolReady);
+    this.lineupSorter.start(root);
     this.startVisibilityObserver();
     this.scan(root);
     this.observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         const mutationElement = mutation.target instanceof Element ? mutation.target : null;
-        if (mutationElement?.closest(extensionMountSelector)) continue;
+        if (mutationElement?.closest(extensionMutationSelector)) continue;
         const externalAddedNodes =
           mutation.type === 'childList'
             ? [...mutation.addedNodes].filter(
                 (node) =>
-                  !(node instanceof Element && node.closest(extensionMountSelector)),
+                  !(
+                    node instanceof Element &&
+                    node.closest(extensionMutationSelector)
+                  ),
               )
             : [];
         const externalRemovedNodes =
           mutation.type === 'childList'
             ? [...mutation.removedNodes].filter(
                 (node) =>
-                  !(node instanceof Element && node.matches(extensionMountSelector)),
+                  !(
+                    node instanceof Element &&
+                    node.matches(extensionMutationSelector)
+                  ),
               )
             : [];
         if (
@@ -1141,6 +1173,7 @@ export class SorareCardScanner {
         'inert',
         'aria-hidden',
         'aria-label',
+        'aria-expanded',
         'data-position',
         'data-card-position',
       ],
@@ -1148,6 +1181,11 @@ export class SorareCardScanner {
   }
 
   stop(): void {
+    this.root?.removeEventListener(
+      lineupPoolReadyEvent,
+      this.handleLineupPoolReady,
+    );
+    this.root = null;
     this.observer?.disconnect();
     this.observer = undefined;
     this.visibilityObserver?.disconnect();
@@ -1162,6 +1200,7 @@ export class SorareCardScanner {
     }
     this.pendingScanRoots.clear();
     this.shouldRefreshPositions = false;
+    this.lineupSorter.stop();
     for (const { view } of this.overlays.values()) view.destroy();
     this.overlays.clear();
     clearNativeSorareLineupProbabilityDecorations();
@@ -1169,6 +1208,7 @@ export class SorareCardScanner {
 
   scan(root: ParentNode): void {
     decorateNativeSorareLineupProbabilities(root);
+    this.lineupSorter.scan(root);
     const targets = findCardTargets(root);
     const discoveredPictureNames = drainDiscoveredCardPictureNames();
     if (Object.keys(discoveredPictureNames).length > 0) {

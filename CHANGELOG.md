@@ -3,6 +3,97 @@
 Alle wichtigen Änderungen am Sorare Football Stats Overlay werden in dieser
 Datei dokumentiert.
 
+## 0.4.5 – 23. August 2026
+
+### Ruhiges Sortiermenü im Squad Builder
+
+- Das Sorare-Sortiermenü lässt sich im Squad Lineup Builder wieder flüssig
+  öffnen und bedienen.
+- Die zusätzlichen Sortierungen **Torquote** und **AA** greifen weiterhin nur
+  im dafür vorgesehenen Lineup Builder. Auf anderen Seiten bleibt das
+  Sorare-Menü vollständig unverändert.
+- Eigene Menüelemente der Erweiterung werden nicht mehr unnötig erneut
+  verarbeitet.
+
+## 0.4.4 – 23. August 2026
+
+### Zuverlässige Sortierung für jede Spielerlistengröße
+
+- Die Sortierung nach **Torquote** oder **AA** erkennt zuverlässig, sobald alle
+  passenden Spieler bereitstehen – unabhängig davon, ob Sorare die Liste in
+  einem oder mehreren Schritten lädt.
+- Auch kleinere Spielerlisten werden vollständig nach dem gewählten Wert
+  geordnet.
+- Die Vorbereitung läuft weiterhin ruhig im Hintergrund, ohne die Seite zu
+  verschieben.
+
+## 0.4.3 – 23. August 2026
+
+### Spieler einfacher vergleichen
+
+- Die Sortierung nach **Torquote** oder **AA** berücksichtigt alle Spieler, die
+  zur gewählten Position und zu den aktiven Sorare-Filtern passen – auch wenn
+  sie anfangs noch nicht sichtbar sind.
+- Die Spielerliste wird ruhig im Hintergrund vorbereitet. Eine verständliche
+  Anzeige informiert dabei über den Fortschritt.
+- Sorare-Filter und die zusätzlichen Sortierungen lassen sich direkt
+  miteinander kombinieren.
+- Beim Wechsel zwischen Torwart, Verteidigung, Mittelfeld und Angriff passt
+  sich die sortierte Auswahl automatisch an den gewählten Lineup-Platz an.
+
+### Übersichtliche Spielquoten
+
+- Die Wahrscheinlichkeiten für die beiden Teams stehen passend zur sichtbaren
+  Begegnung auf der jeweiligen Seite.
+- Die Erweiterung erkennt den gewählten Lineup-Platz und die angezeigten Teams
+  noch zuverlässiger.
+
+## 0.4.2 – 22. August 2026
+
+### Hotfix für die Sortierung im Lineup Builder
+
+- Die zusätzlichen Sortierungen **Torquote** und **AA** erscheinen wieder im
+  vorhandenen Sorare-Menü **Sortieren nach**.
+- Sorare ändert beim Öffnen des Menüs die Richtung des Pfeilsymbols. Die
+  Erweiterung erkennt nun sowohl den geschlossenen als auch den geöffneten
+  Zustand zuverlässig.
+- Ein Regressionstest bildet die aktuelle Sorare-Menüstruktur ab und schützt
+  die Sortieroptionen vor diesem Fehlerbild.
+
+## 0.4.1 – 22. August 2026
+
+### Hotfix für Captain-Karten
+
+- Sorare legt bei ausgewählten Captains eine eigene Dekoration über die Karte.
+  Diese wurde von der Erweiterung fälschlich als verdeckende Oberfläche
+  behandelt und konnte dadurch sämtliche Klammern des Captains ausblenden.
+- Captain-Karten bleiben nun sichtbar. Bei Torhütern und Verteidigern wird
+  dadurch insbesondere die Clean-Sheet-Wahrscheinlichkeit wieder angezeigt.
+- Tatsächlich verdeckte Karten bleiben weiterhin ausgeblendet, damit Klammern
+  nicht über fixierten Menüs oder anderen Sorare-Oberflächen schweben.
+
+## 0.4.0 – 22. August 2026
+
+### Spieler im Lineup Builder besser vergleichen
+
+- Im vorhandenen Sorare-Sortiermenü stehen jetzt zusätzlich **Torquote** und
+  **AA** zur Auswahl.
+- **Torquote** vergleicht echte Marktquoten und historische Ersatzwerte in
+  einer gemeinsamen Reihenfolge. Spieler ohne Marktquote verschwinden dadurch
+  nicht automatisch am Ende der Liste.
+- **AA** sortiert nach dem durchschnittlichen All-Around Score der letzten zehn
+  gültigen Spiele. Es zählen nur Einsätze mit mindestens 60 Minuten.
+- Fehlende Werte bleiben am Listenende. Neu eintreffende Daten aktualisieren
+  die Reihenfolge automatisch.
+- Beim Wechsel zurück zu einer Sorare-Sortierung wird die ursprüngliche
+  Reihenfolge zuverlässig wiederhergestellt.
+
+### Ruhigere Anzeige beim Scrollen
+
+- Klammern werden ausgeblendet, sobald das zugehörige Kartenbild hinter einer
+  fixierten Sorare-Leiste oder einem abgeschnittenen Bereich verschwindet.
+  Dadurch schweben Werte nicht mehr über anderen Bedienelementen.
+
 ## 0.3.4 – 22. August 2026
 
 ### Mehr und verlässlichere Quoten

@@ -71,6 +71,28 @@ describe('bookmaker quota protection', () => {
     });
   });
 
+  it('keeps essential The Odds API requests enabled until the quota is exhausted', () => {
+    expect(
+      protectionForProviderUsage('the-odds-api', usage(0.95), now),
+    ).toMatchObject({
+      level: 'essential-only',
+      ratio: 0.95,
+      allowExternalRequests: true,
+      allowRegionalFallback: false,
+      allowSnapshotSupplements: false,
+    });
+
+    expect(
+      protectionForProviderUsage('the-odds-api', usage(1), now),
+    ).toMatchObject({
+      level: 'stopped',
+      ratio: 1,
+      allowExternalRequests: false,
+      allowRegionalFallback: false,
+      allowSnapshotSupplements: false,
+    });
+  });
+
   it('keeps SportsGameOdds usage as telemetry without proactive protection stages', () => {
     const highUsage = quotaUsage(
       'sports-game-odds',

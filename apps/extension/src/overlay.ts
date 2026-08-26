@@ -11,6 +11,12 @@ import {
 } from '@sorare-overlay/shared';
 import { supportsCompactViewPath } from './compact-view-route.js';
 import { isScoreDetailsDialogTarget } from './dom.js';
+import {
+  setLineupAaSortValue,
+  setLineupGoalSortValue,
+  setLineupSortDataReady,
+  setLineupSortPosition,
+} from './lineup-sort.js';
 import type {
   HistoricalAssistWindow,
   MarketBracketSide,
@@ -944,30 +950,208 @@ function score(metric: Metric): string {
   return metric.value === null ? '—' : metric.value.toFixed(1);
 }
 
-interface HomeAwayProbabilities {
+interface LineupOddsPresentation {
   home: number | null;
   draw: number | null;
   away: number | null;
   playerIsHome: boolean;
   playerIsAway: boolean;
+  homeTeamName: string;
+  awayTeamName: string;
+}
+
+interface LineupTeamSide {
+  slug?: string;
+  label: string;
+  selected: boolean;
+}
+
+const canonicalTeamSlug = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const genericTeamTokens = new Set([
+  'afc',
+  'cf',
+  'city',
+  'club',
+  'de',
+  'fc',
+  'football',
+  'futbol',
+  'la',
+  'real',
+  'sc',
+  'united',
+]);
+
+function normalizedTeamReference(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function teamReferencesLikelyMatch(
+  candidate: string | null | undefined,
+  expected: string | null | undefined,
+): boolean {
+  if (!candidate || !expected) return false;
+  const candidateNormalized = normalizedTeamReference(candidate);
+  const expectedNormalized = normalizedTeamReference(expected);
+  if (!candidateNormalized || !expectedNormalized) return false;
+  if (candidateNormalized === expectedNormalized) return true;
+
+  const candidateCompact = candidateNormalized.replaceAll(' ', '');
+  const expectedCompact = expectedNormalized.replaceAll(' ', '');
+  const compactMinimum = Math.min(
+    candidateCompact.length,
+    expectedCompact.length,
+  );
+  if (
+    compactMinimum >= 3 &&
+    (candidateCompact.startsWith(expectedCompact) ||
+      expectedCompact.startsWith(candidateCompact))
+  ) {
+    return true;
+  }
+
+  const candidateTokens = new Set(
+    candidateNormalized
+      .split(' ')
+      .filter((token) => token.length >= 4 && !genericTeamTokens.has(token)),
+  );
+  return expectedNormalized
+    .split(' ')
+    .some(
+      (token) =>
+        token.length >= 4 &&
+        !genericTeamTokens.has(token) &&
+        candidateTokens.has(token),
+    );
+}
+
+function teamSlugsLikelyMatch(
+  candidate: string | undefined,
+  expected: string | undefined,
+): boolean {
+  if (!candidate || !expected) return false;
+  const candidateNormalized = candidate.trim().toLowerCase();
+  const expectedNormalized = expected.trim().toLowerCase();
+  return (
+    candidateNormalized === expectedNormalized ||
+    candidateNormalized.startsWith(`${expectedNormalized}-`) ||
+    expectedNormalized.startsWith(`${candidateNormalized}-`)
+  );
+}
+
+function lineupTeamSides(teamRow: HTMLElement): LineupTeamSide[] | null {
+  const teamNodes = Array.from(
+    teamRow.querySelectorAll<HTMLElement>(':scope > [aria-label="Team"]'),
+  );
+  if (teamNodes.length !== 2) return null;
+  return teamNodes.map((teamNode) => {
+    const slugs = new Set(
+      Array.from(teamNode.querySelectorAll<HTMLImageElement>('img[alt]'))
+        .map((image) => image.alt.trim().toLowerCase())
+        .filter((alt) => canonicalTeamSlug.test(alt)),
+    );
+    const slug = slugs.size === 1 ? [...slugs][0] : undefined;
+    return {
+      ...(slug ? { slug } : {}),
+      label: teamNode.textContent?.trim() ?? '',
+      selected:
+        teamNode.classList.contains('highlighted') ||
+        teamNode.getAttribute('aria-current') === 'true' ||
+        teamNode.getAttribute('aria-selected') === 'true' ||
+        teamNode.dataset.state === 'active',
+    };
+  });
+}
+
+function lineupTeamSideMatches(
+  side: LineupTeamSide,
+  expectedSlug: string | undefined,
+  expectedName: string | null | undefined,
+): boolean | null {
+  if (expectedSlug && side.slug) {
+    return teamSlugsLikelyMatch(side.slug, expectedSlug);
+  }
+  if (!expectedName) return null;
+  const references = [side.slug, side.label].filter(
+    (value): value is string => Boolean(value),
+  );
+  if (references.length === 0) return null;
+  if (
+    references.some((reference) =>
+      teamReferencesLikelyMatch(reference, expectedName),
+    )
+  ) {
+    return true;
+  }
+
+  // Sorare occasionally omits one club crest and leaves only an opaque team
+  // code such as `FB`, `RMA` or `LAFC`. Without the crest's canonical slug,
+  // that code cannot prove that the cached fixture is stale. The caller may
+  // still rely on the canonically matched/highlighted player side. Full team
+  // labels and canonical slugs remain conclusive mismatch evidence.
+  const label = side.label.trim();
+  const isOpaqueTeamCode =
+    !side.slug &&
+    label.length > 0 &&
+    [...label].length <= 4 &&
+    !/\s/u.test(label) &&
+    label === label.toLocaleUpperCase();
+  return isOpaqueTeamCode ? null : false;
+}
+
+function fixturePlayerSide(
+  nextGame: PlayerStats['nextGame'],
+): 'home' | 'away' | null {
+  if (!nextGame) return null;
+  if (nextGame.playerTeamSlug) {
+    const home = teamSlugsLikelyMatch(
+      nextGame.homeTeamSlug,
+      nextGame.playerTeamSlug,
+    );
+    const away = teamSlugsLikelyMatch(
+      nextGame.awayTeamSlug,
+      nextGame.playerTeamSlug,
+    );
+    if (home !== away) return home ? 'home' : 'away';
+  }
+  const home = teamReferencesLikelyMatch(
+    nextGame.homeTeamName,
+    nextGame.playerTeamName,
+  );
+  const away = teamReferencesLikelyMatch(
+    nextGame.awayTeamName,
+    nextGame.playerTeamName,
+  );
+  return home === away ? null : home ? 'home' : 'away';
+}
+
+function fixtureOpponentSlug(
+  nextGame: NonNullable<PlayerStats['nextGame']>,
+): string | undefined {
+  const playerSide = fixturePlayerSide(nextGame);
+  return playerSide === 'home'
+    ? nextGame.awayTeamSlug
+    : playerSide === 'away'
+      ? nextGame.homeTeamSlug
+      : undefined;
 }
 
 function homeAwayProbabilities(
   nextGame: PlayerStats['nextGame'],
-): HomeAwayProbabilities | null {
+): LineupOddsPresentation | null {
   const probabilities = nextGame?.matchProbabilities;
-  if (!probabilities) return null;
-  const playerIsHome = Boolean(
-    nextGame.playerTeamName &&
-      nextGame.homeTeamName &&
-      nextGame.playerTeamName === nextGame.homeTeamName,
-  );
-  const playerIsAway = Boolean(
-    nextGame.playerTeamName &&
-      nextGame.awayTeamName &&
-      nextGame.playerTeamName === nextGame.awayTeamName,
-  );
-  if (!playerIsHome && !playerIsAway) return null;
+  const playerSide = fixturePlayerSide(nextGame);
+  if (!nextGame || !probabilities || !playerSide) return null;
+  const playerIsHome = playerSide === 'home';
+  const playerIsAway = playerSide === 'away';
 
   return {
     home: playerIsHome ? probabilities.win : probabilities.loss,
@@ -975,6 +1159,88 @@ function homeAwayProbabilities(
     away: playerIsAway ? probabilities.win : probabilities.loss,
     playerIsHome,
     playerIsAway,
+    homeTeamName: nextGame.homeTeamName ?? 'Heimteam',
+    awayTeamName: nextGame.awayTeamName ?? 'Auswärtsteam',
+  };
+}
+
+function visualLineupProbabilities(
+  nextGame: PlayerStats['nextGame'],
+  teamRow: HTMLElement | null,
+): LineupOddsPresentation | null {
+  const probabilities = nextGame?.matchProbabilities;
+  const sides = teamRow ? lineupTeamSides(teamRow) : null;
+  if (!nextGame || !probabilities || !sides) {
+    return homeAwayProbabilities(nextGame);
+  }
+
+  let playerIndex: number | undefined;
+  if (nextGame.playerTeamSlug && sides.every(({ slug }) => Boolean(slug))) {
+    const canonicalMatches = sides
+      .map(({ slug }, index) =>
+        teamSlugsLikelyMatch(slug, nextGame.playerTeamSlug) ? index : -1,
+      )
+      .filter((index) => index >= 0);
+    // A canonical mismatch means this row shows a different fixture/player.
+    // Never attach its odds merely because a visual highlight happens to exist.
+    if (canonicalMatches.length !== 1) return null;
+    playerIndex = canonicalMatches[0];
+  }
+
+  if (playerIndex === undefined) {
+    const selected = sides
+      .map((side, index) => (side.selected ? index : -1))
+      .filter((index) => index >= 0);
+    if (selected.length === 1) playerIndex = selected[0];
+  }
+
+  if (playerIndex === undefined) {
+    const nameMatches = sides
+      .map((side, index) =>
+        lineupTeamSideMatches(
+          side,
+          nextGame.playerTeamSlug,
+          nextGame.playerTeamName,
+        ) === true
+          ? index
+          : -1,
+      )
+      .filter((index) => index >= 0);
+    if (nameMatches.length === 1) playerIndex = nameMatches[0];
+  }
+
+  if (playerIndex === undefined) return homeAwayProbabilities(nextGame);
+  const opponentIndex = playerIndex === 0 ? 1 : 0;
+  const playerMatches = lineupTeamSideMatches(
+    sides[playerIndex]!,
+    nextGame.playerTeamSlug,
+    nextGame.playerTeamName,
+  );
+  const opponentMatches = lineupTeamSideMatches(
+    sides[opponentIndex]!,
+    fixtureOpponentSlug(nextGame),
+    nextGame.opponentTeamName,
+  );
+  // Sorare can already show the following game week while its `nextGame`
+  // response/cache still points to the current fixture. Showing those odds
+  // under a different opponent is worse than omitting the bar temporarily.
+  if (playerMatches === false || opponentMatches === false) return null;
+
+  const playerIsHome = playerIndex === 0;
+  return {
+    home: playerIsHome ? probabilities.win : probabilities.loss,
+    draw: probabilities.draw,
+    away: playerIsHome ? probabilities.loss : probabilities.win,
+    playerIsHome,
+    playerIsAway: !playerIsHome,
+    homeTeamName:
+      ((playerIsHome ? nextGame.playerTeamName : nextGame.opponentTeamName) ??
+        sides[0]!.label) ||
+      'Heimteam',
+    awayTeamName:
+      ((playerIsHome ? nextGame.opponentTeamName : nextGame.playerTeamName) ??
+        sides[1]!.label) ||
+      'Auswärtsteam',
   };
 }
 
@@ -1397,6 +1663,25 @@ function selectedHistoricalMarket(
     : { window: historicalAssistWindow, metric };
 }
 
+function goalSortValue(
+  stats: PlayerStats,
+): { probability: number; source: 'market' | 'historical' } | null {
+  if (stats.position === 'Goalkeeper') return null;
+  const marketProbability = stats.nextGame?.marketOdds?.goal?.probability;
+  if (marketProbability !== null && marketProbability !== undefined) {
+    return { probability: marketProbability, source: 'market' };
+  }
+
+  const selectedHistory = selectedHistoricalMarket(stats, 'goal')?.metric;
+  const historicalMetric =
+    selectedHistory?.value !== null && selectedHistory?.value !== undefined
+      ? selectedHistory
+      : stats.goalL10;
+  return historicalMetric.value !== null && historicalMetric.sampleSize > 0
+    ? { probability: historicalMetric.value, source: 'historical' }
+    : null;
+}
+
 function marketBracketNode(stats: PlayerStats): HTMLElement | null {
   const marketOdds = stats.nextGame?.marketOdds;
   const canShowMarkets = stats.position !== 'Goalkeeper';
@@ -1457,13 +1742,9 @@ function marketBracketNode(stats: PlayerStats): HTMLElement | null {
   );
   if (preview) bracket.dataset.preview = 'true';
   if (stats.position !== 'Goalkeeper') {
-    if (stats.aaL10.value !== null) {
-      const aaCell = aaStatNode(stats, 'top');
-      aaCell.dataset.bracketSlot = 'aa';
-      bracket.append(aaCell);
-    } else {
-      bracket.append(marketBracketSlotSpacer('aa', true));
-    }
+    const aaCell = aaStatNode(stats, 'top');
+    aaCell.dataset.bracketSlot = 'aa';
+    bracket.append(aaCell);
   } else {
     bracket.append(marketBracketSlotSpacer('aa', true));
   }
@@ -1540,18 +1821,20 @@ function aaStatNode(
   stats: PlayerStats,
   placement: 'top' | 'bottom' | 'single',
 ): HTMLElement {
+  const hasAaValue = stats.aaL10.value !== null;
   const stat = document.createElement('span');
   stat.className = `market-cell market-last aa-percentile aa-bracket-cell${
     placement === 'single' ? '' : ` aa-bracket-${placement}`
   }`;
-  stat.dataset.available = String(stats.aaL10.value !== null);
-  const fallbackTopPlayer = getMlsAaTopPlayer(
-    stats.position,
-    stats.slug,
-  );
-  const topRank = stats.mlsAaContext
-    ? stats.mlsAaContext.rank
-    : (fallbackTopPlayer?.rank ?? null);
+  stat.dataset.available = String(hasAaValue);
+  const fallbackTopPlayer = hasAaValue
+    ? getMlsAaTopPlayer(stats.position, stats.slug)
+    : null;
+  const topRank = hasAaValue
+    ? stats.mlsAaContext
+      ? stats.mlsAaContext.rank
+      : (fallbackTopPlayer?.rank ?? null)
+    : null;
   const icon = document.createElement('span');
   icon.className = 'market-icon aa-market-icon';
   icon.textContent = topRank ? `#${topRank}` : 'AA';
@@ -1560,7 +1843,7 @@ function aaStatNode(
   value.className = 'market-value';
   value.textContent = score(stats.aaL10);
   stat.append(icon, value);
-  const limitedClubSample = stats.aaL10.sampleSize < 10;
+  const limitedClubSample = hasAaValue && stats.aaL10.sampleSize < 10;
   if (limitedClubSample) {
     const sampleWarningReason =
       `AA ${score(stats.aaL10)} · Datenbasis: ${stats.aaL10.sampleSize}/10 gültige ` +
@@ -1629,11 +1912,13 @@ function aaStatNode(
     stat.dataset.tone = 'unavailable';
     stat.setAttribute(
       'aria-label',
-      `AA L10 ${score(stats.aaL10)}: keine belastbare MLS-Perzentileinstufung${
-        limitedClubSample
-          ? `; Warnung: nur ${stats.aaL10.sampleSize} Vereinsspiele mit mindestens 60 Minuten`
-          : ''
-      }`,
+      hasAaValue
+        ? `AA L10 ${score(stats.aaL10)}: keine belastbare MLS-Perzentileinstufung${
+            limitedClubSample
+              ? `; Warnung: nur ${stats.aaL10.sampleSize} Vereinsspiele mit mindestens 60 Minuten`
+              : ''
+          }`
+        : 'AA L10: noch keine gültigen Spiele mit mindestens 60 Minuten beim aktuellen Verein',
     );
     return stat;
   }
@@ -1692,30 +1977,154 @@ function cleanSheetBracketCellNode(
   return cell;
 }
 
-function isContainerExposed(container: HTMLElement, rect: DOMRect): boolean {
+interface VisibleRect {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+function clipsOverflow(value: string): boolean {
+  return /^(?:auto|clip|hidden|scroll)$/.test(value);
+}
+
+function clippedAnchorRect(
+  anchor: HTMLElement,
+  rect: DOMRect,
+): VisibleRect | null {
+  const visible: VisibleRect = {
+    left: Math.max(0, rect.left),
+    right: Math.min(window.innerWidth, rect.right),
+    top: Math.max(0, rect.top),
+    bottom: Math.min(window.innerHeight, rect.bottom),
+  };
+
+  for (let ancestor = anchor.parentElement; ancestor; ancestor = ancestor.parentElement) {
+    const style = getComputedStyle(ancestor);
+    const clipsX = clipsOverflow(style.overflowX || style.overflow);
+    const clipsY = clipsOverflow(style.overflowY || style.overflow);
+    if (!clipsX && !clipsY) continue;
+    const ancestorRect = ancestor.getBoundingClientRect();
+    if (clipsX) {
+      visible.left = Math.max(visible.left, ancestorRect.left);
+      visible.right = Math.min(visible.right, ancestorRect.right);
+    }
+    if (clipsY) {
+      visible.top = Math.max(visible.top, ancestorRect.top);
+      visible.bottom = Math.min(visible.bottom, ancestorRect.bottom);
+    }
+  }
+
+  return visible.right > visible.left && visible.bottom > visible.top
+    ? visible
+    : null;
+}
+
+function isAnchorExposed(
+  container: HTMLElement,
+  anchor: HTMLElement,
+  rect: DOMRect,
+): boolean {
   if (typeof document.elementFromPoint !== 'function') return true;
 
-  const left = Math.max(0, rect.left);
-  const right = Math.min(window.innerWidth, rect.right);
-  const top = Math.max(0, rect.top);
-  const bottom = Math.min(window.innerHeight, rect.bottom);
-  if (right <= left || bottom <= top) return false;
+  const visible = clippedAnchorRect(anchor, rect);
+  if (!visible) return false;
+
+  // The bracket is attached to the card's top edge. If that edge has already
+  // moved behind a scroll clip, keeping the fixed overlay visible would make
+  // it float above Sorare's sticky toolbar while only the card footer remains.
+  const topEdgeTolerance = 1;
+  if (visible.top > rect.top + topEdgeTolerance) return false;
+
+  const width = visible.right - visible.left;
+  const sampleY = Math.min(
+    visible.bottom - 0.5,
+    Math.max(visible.top + 0.5, rect.top + Math.min(3, rect.height / 2)),
+  );
 
   const points: ReadonlyArray<readonly [number, number]> = [
-    [(left + right) / 2, (top + bottom) / 2],
-    [left + (right - left) * 0.2, top + (bottom - top) * 0.2],
-    [right - (right - left) * 0.2, top + (bottom - top) * 0.2],
-    [left + (right - left) * 0.2, bottom - (bottom - top) * 0.2],
-    [right - (right - left) * 0.2, bottom - (bottom - top) * 0.2],
+    [visible.left + width / 2, sampleY],
+    [visible.left + width * 0.2, sampleY],
+    [visible.right - width * 0.2, sampleY],
   ];
+
+  const captainDecorationExposesCard = (
+    exposedElement: Element,
+  ): boolean => {
+    const lineup = container.closest<HTMLElement>('[class~="slots5"]');
+    const slot = lineup
+      ? Array.from(lineup.children).find((candidate) =>
+          candidate.contains(container),
+        )
+      : null;
+    if (
+      !(slot instanceof HTMLElement) ||
+      !slot.querySelector(
+        '[title="Kapitän"], [title="Captain"], [aria-label="Kapitän"], [aria-label="Captain"]',
+      ) ||
+      !slot.contains(exposedElement)
+    ) {
+      return false;
+    }
+
+    // Sorare paints the selected captain outline/badge in a sibling layer
+    // above the card button. That layer legitimately wins elementFromPoint at
+    // the card's top edge, but it must not make the whole fixed overlay vanish.
+    // Keep real controls in the same slot (menus, replacement buttons, etc.)
+    // as occluders so this exception remains limited to visual decoration.
+    const interactiveOwner = exposedElement.closest(
+      'button, a, [role="button"]',
+    );
+    return (
+      !interactiveOwner ||
+      interactiveOwner === container ||
+      container.contains(interactiveOwner)
+    );
+  };
+
+  const localCardDecorationExposesCard = (
+    exposedElement: Element,
+  ): boolean => {
+    const interactiveOwner = exposedElement.closest(
+      'button, a, input, select, textarea, [role="button"], [role="link"], [contenteditable="true"]',
+    );
+    if (
+      interactiveOwner &&
+      interactiveOwner !== container &&
+      !container.contains(interactiveOwner)
+    ) {
+      return false;
+    }
+
+    // Live lineups paint goals, substitutions and similar match events in a
+    // transparent sibling layer above the card button. Accept only a
+    // non-interactive layer that still belongs to the nearest shell containing
+    // exactly this one card image. The search stops as soon as another card is
+    // present, so neighbouring cards and page-level overlays remain occluders.
+    let scope = container.parentElement;
+    for (let depth = 0; scope && depth < 8; depth += 1) {
+      if (scope === document.body || scope === document.documentElement) {
+        return false;
+      }
+      const cardImages = Array.from(
+        scope.querySelectorAll<HTMLImageElement>('img[alt]'),
+      ).filter((image) => sorareCardImageAlt.test(image.alt));
+      if (cardImages.length !== 1) return false;
+      if (scope.contains(exposedElement)) return true;
+      scope = scope.parentElement;
+    }
+    return false;
+  };
 
   return points.some(([x, y]) => {
     const exposedElement = document.elementFromPoint(x, y);
     return Boolean(
       exposedElement &&
         (exposedElement === container ||
+          exposedElement === anchor ||
           container.contains(exposedElement) ||
-          exposedElement.contains(container)),
+          captainDecorationExposesCard(exposedElement) ||
+          localCardDecorationExposesCard(exposedElement)),
     );
   });
 }
@@ -1948,6 +2357,7 @@ function packHeaderSafeAnchorTop(
 function isVisiblyRendered(
   container: HTMLElement,
   rect: DOMRect,
+  anchor: HTMLElement = container,
   modalScope = activeModalScope(),
 ): boolean {
   if (
@@ -1966,7 +2376,7 @@ function isVisiblyRendered(
     if (!container.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) {
       return false;
     }
-    return isContainerExposed(container, rect);
+    return isAnchorExposed(container, anchor, rect);
   }
   for (let node: HTMLElement | null = container; node; node = node.parentElement) {
     const style = getComputedStyle(node);
@@ -1979,7 +2389,7 @@ function isVisiblyRendered(
       return false;
     }
   }
-  return isContainerExposed(container, rect);
+  return isAnchorExposed(container, anchor, rect);
 }
 
 interface OverlayPositionContext {
@@ -1990,6 +2400,7 @@ interface PositionedOverlay {
   readonly host: HTMLElement;
   isViewportPriorityActive(): boolean;
   refreshPositionNow(context: OverlayPositionContext): void;
+  hideUntilPositionRefresh?(): void;
   handleLayoutMotionStart?(event: Event): void;
 }
 
@@ -2174,9 +2585,11 @@ function scheduleOverlayPosition(view: PositionedOverlay): void {
   ensurePositionFrame();
 }
 
-function scheduleAllOverlayPositions(): void {
+function scheduleAllOverlayPositions(event?: Event): void {
   for (const view of positionedOverlays) {
-    if (view.isViewportPriorityActive()) pendingPositionedOverlays.add(view);
+    if (!view.isViewportPriorityActive()) continue;
+    if (event?.type === 'scroll') view.hideUntilPositionRefresh?.();
+    pendingPositionedOverlays.add(view);
   }
   ensurePositionFrame();
 }
@@ -2313,11 +2726,25 @@ export class OverlayView {
         return;
       }
       const rect = this.container.getBoundingClientRect();
-      const isVisible = isVisiblyRendered(
-        this.container,
-        rect,
-        context?.modalScope,
-      );
+      const cardImage = visibleCardImage(this.container);
+      const packScope = packRevealScope(this.container);
+      const wasPrimaryPackCard = this.host.dataset.packPrimary === 'true';
+      const isPrimaryPackCard =
+        !packScope ||
+        !cardImage ||
+        isPrimarySinglePackCard(this.container, cardImage);
+      this.host.dataset.packReveal = String(Boolean(packScope));
+      this.host.dataset.packPrimary = String(isPrimaryPackCard);
+      const visibilityAnchor = cardImage?.image ?? this.container;
+      const visibilityRect = cardImage?.rect ?? rect;
+      const isVisible =
+        isPrimaryPackCard &&
+        isVisiblyRendered(
+          this.container,
+          visibilityRect,
+          visibilityAnchor,
+          context?.modalScope,
+        );
       this.host.style.display = isVisible ? '' : 'none';
       if (!isVisible) {
         this.lineupOddsHost.hidden = true;
@@ -2357,8 +2784,6 @@ export class OverlayView {
           }
         }
       }
-      const packScope = packRevealScope(this.container);
-      const wasPrimaryPackCard = this.host.dataset.packPrimary === 'true';
       const nextPackLayoutPhase = !packScope
         ? 'none'
         : isPackResultScope(packScope)
@@ -2368,7 +2793,6 @@ export class OverlayView {
         nextPackLayoutPhase !== this.packLayoutPhase;
       this.packLayoutPhase = nextPackLayoutPhase;
       if (!packScope) this.lastStablePackRect = null;
-      this.host.dataset.packReveal = String(Boolean(packScope));
       if (packScope) {
         this.closePlayerMarketTooltip();
         if (
@@ -2379,13 +2803,7 @@ export class OverlayView {
           this.startPackBracketSettling();
         }
       }
-      const cardImage = visibleCardImage(this.container);
       const cardImageRect = cardImage?.rect ?? null;
-      const isPrimaryPackCard =
-        !packScope ||
-        !cardImage ||
-        isPrimarySinglePackCard(this.container, cardImage);
-      this.host.dataset.packPrimary = String(isPrimaryPackCard);
       if (
         packScope &&
         isPrimaryPackCard &&
@@ -2560,6 +2978,14 @@ export class OverlayView {
     }
   }
 
+  hideUntilPositionRefresh(): void {
+    if (this.destroyed || !this.viewportPriorityActive) return;
+    this.host.style.display = 'none';
+    this.lineupOddsHost.hidden = true;
+    this.closePlayerMarketTooltip();
+    this.closeLineupTooltip();
+  }
+
   handleLayoutMotionStart(event: Event): void {
     if (
       this.destroyed ||
@@ -2606,6 +3032,10 @@ export class OverlayView {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    setLineupGoalSortValue(this.container, null);
+    setLineupAaSortValue(this.container, null);
+    setLineupSortPosition(this.container, null);
+    setLineupSortDataReady(this.container, null);
     this.stopPackBracketSettling();
     if (this.packMotionProbeFrame !== undefined) {
       cancelPositionFrame(this.packMotionProbeFrame);
@@ -2619,12 +3049,14 @@ export class OverlayView {
   }
 
   loading(): void {
+    setLineupSortDataReady(this.container, false);
     this.clearLineupOdds();
     this.clearPlayerMarketTooltip();
     this.state('Lade L10 …', 'pulse');
   }
 
   retrying(): void {
+    setLineupSortDataReady(this.container, false);
     this.clearLineupOdds();
     this.clearPlayerMarketTooltip();
     this.state(
@@ -2642,12 +3074,16 @@ export class OverlayView {
       'error',
       'Die zuletzt angefragten Daten konnten nicht geladen werden. Die Extension versucht es automatisch erneut.',
     );
+    setLineupSortDataReady(this.container, true);
   }
 
   noData(): void {
+    setLineupGoalSortValue(this.container, null);
+    setLineupAaSortValue(this.container, null);
     this.clearLineupOdds();
     this.clearPlayerMarketTooltip();
     this.state('Keine L10-Daten', 'no-data');
+    setLineupSortDataReady(this.container, true);
   }
 
   render(stats: PlayerStats): void {
@@ -2659,11 +3095,23 @@ export class OverlayView {
       this.host.dataset.packDataPending === 'true';
     delete this.host.dataset.packDataPending;
     this.host.dataset.position = stats.position;
+    setLineupSortPosition(this.container, stats.position);
     if (!hasAnyDisplayData(stats)) {
       this.noData();
       return;
     }
-    this.renderLineupOdds(stats.nextGame);
+    const sortValue = goalSortValue(stats);
+    setLineupGoalSortValue(
+      this.container,
+      sortValue?.probability ?? null,
+      sortValue?.source,
+    );
+    setLineupAaSortValue(this.container, stats.aaL10.value);
+    setLineupSortDataReady(this.container, true);
+    this.renderLineupOdds(
+      stats.nextGame,
+      lineupBuilderTeamRow(this.container),
+    );
     this.renderPlayerMarketTooltip(stats);
     this.panel.replaceChildren();
     this.panel.classList.add('bracket-only');
@@ -2770,8 +3218,11 @@ export class OverlayView {
     this.packSettleFrame = requestPositionFrame(checkStability);
   }
 
-  private renderLineupOdds(nextGame: PlayerStats['nextGame']): void {
-    const probabilities = homeAwayProbabilities(nextGame);
+  private renderLineupOdds(
+    nextGame: PlayerStats['nextGame'],
+    teamRow: HTMLElement | null,
+  ): void {
+    const probabilities = visualLineupProbabilities(nextGame, teamRow);
     if (
       !probabilities ||
       probabilities.home === null ||
@@ -2832,12 +3283,12 @@ export class OverlayView {
     homeTeam.className = 'tooltip-team';
     homeTeam.dataset.outcome = 'home';
     homeTeam.dataset.role = probabilities.playerIsHome ? 'player' : 'opponent';
-    homeTeam.textContent = nextGame?.homeTeamName ?? 'Heimteam';
+    homeTeam.textContent = probabilities.homeTeamName;
     const awayTeam = document.createElement('span');
     awayTeam.className = 'tooltip-team';
     awayTeam.dataset.outcome = 'away';
     awayTeam.dataset.role = probabilities.playerIsAway ? 'player' : 'opponent';
-    awayTeam.textContent = nextGame?.awayTeamName ?? 'Auswärtsteam';
+    awayTeam.textContent = probabilities.awayTeamName;
     const separator = document.createElement('span');
     separator.className = 'tooltip-separator';
     separator.textContent = '–';
@@ -3026,6 +3477,7 @@ export class OverlayView {
     title?: string,
   ): void {
     if (this.destroyed) return;
+    setLineupGoalSortValue(this.container, null);
     this.stopPackBracketSettling();
     this.panel.replaceChildren();
     if (modifier === 'no-data') {

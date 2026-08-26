@@ -41,6 +41,8 @@ const positionAliases: Readonly<Record<string, FootballPosition>> = {
 const compactPositionAliases = new Set(['gk', 'tw', 'def', 'df', 'ver', 'mid', 'mf', 'fwd', 'fw', 'st']);
 const positionToken =
   /\b(?:goalkeeper|keeper|torwart|gk|tw|defender|verteidiger|def|df|ver|midfielder|mittelfeld|mid|mf|forward|striker|stuermer|sturmer|fwd|fw|st)\b/i;
+const fullPositionToken =
+  /\b(?:goalkeeper|keeper|torwart|defender|verteidiger|midfielder|mittelfeld|forward|striker|stuermer|sturmer)\b/i;
 const packPositionIsolationText =
   /\b(?:deine\s+karten|your\s+cards|neuverpflichtungen|new\s+signings)\b/i;
 
@@ -71,6 +73,13 @@ function findPositionToken(value: string | null | undefined): FootballPosition |
   return match ? positionAliases[match[0]] : undefined;
 }
 
+function findFullPositionToken(
+  value: string | null | undefined,
+): FootballPosition | undefined {
+  const match = normalizePositionText(value).match(fullPositionToken);
+  return match ? positionAliases[match[0]] : undefined;
+}
+
 export function inferCardPosition(container: HTMLElement): FootballPosition | undefined {
   const direct = normalizePosition(container.dataset.cardPosition ?? container.dataset.position);
   if (direct) return direct;
@@ -90,7 +99,10 @@ export function inferCardPosition(container: HTMLElement): FootballPosition | un
     }
   }
 
-  const visiblePosition = findPositionToken(container.textContent);
+  // Compact markers such as "ST" are only reliable in structured position
+  // fields. In arbitrary card text they can also be team-name fragments, for
+  // example the "St." in "St. Louis City SC".
+  const visiblePosition = findFullPositionToken(container.textContent);
   if (visiblePosition) return visiblePosition;
 
   for (const node of stablePositionNodes) {
@@ -112,7 +124,10 @@ function inferActivePositionSelection(
   container: HTMLElement,
 ): FootballPosition | undefined {
   const body = container.ownerDocument.body;
-  const maxPositionScopeDepth = 5;
+  // Sorare's current lineup builder nests a card grid nine levels below the
+  // shared position navigation. Stop at the lineup root rather than falling
+  // back to a player's general API position while a card skeleton is loading.
+  const maxPositionScopeDepth = 10;
   if (container.closest('[role="dialog"]')) return undefined;
   let packScope: HTMLElement | null = container;
   for (let depth = 0; packScope && packScope !== body && depth < 8; depth += 1) {
@@ -128,20 +143,29 @@ function inferActivePositionSelection(
     scope && scope !== body && depth < maxPositionScopeDepth;
     depth += 1
   ) {
-    const positions = new Set<FootballPosition>();
+    const availablePositions = new Set<FootballPosition>();
+    const activePositions = new Set<FootballPosition>();
     for (const button of scope.querySelectorAll<HTMLButtonElement>('button')) {
+      const marker = normalizePositionText(button.textContent);
+      if (!compactPositionAliases.has(marker)) continue;
+      const position = normalizePosition(marker);
+      if (!position) continue;
+      availablePositions.add(position);
       const isActive =
         button.getAttribute('aria-pressed') === 'true' ||
         button.dataset.state === 'active' ||
         button.classList.contains('highlighted');
       if (!isActive) continue;
-      const marker = normalizePositionText(button.textContent);
-      if (!compactPositionAliases.has(marker)) continue;
-      const position = normalizePosition(marker);
-      if (position) positions.add(position);
+      activePositions.add(position);
     }
-    if (positions.size === 1) return [...positions][0];
-    if (positions.size > 1) return undefined;
+    // A lone highlighted "MF" elsewhere in the app is not enough. Sorare's
+    // lineup picker exposes the complete GK/DEF/MID/FWD navigation together.
+    if (availablePositions.size < 3) {
+      scope = scope.parentElement;
+      continue;
+    }
+    if (activePositions.size === 1) return [...activePositions][0];
+    if (activePositions.size > 1) return undefined;
     scope = scope.parentElement;
   }
   return undefined;

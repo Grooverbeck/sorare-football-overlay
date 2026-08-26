@@ -16,6 +16,11 @@ import {
   applyMarketValueFormat,
   OverlayView,
 } from '../overlay.js';
+import {
+  lineupGoalSortOptionAttribute,
+  lineupPoolReadyEvent,
+  lineupSortDataReadyAttribute,
+} from '../lineup-sort.js';
 import { SorareCardScanner, StatsBatchCoordinator } from '../scanner.js';
 
 describe('Sorare card DOM discovery', () => {
@@ -173,6 +178,47 @@ describe('Sorare card DOM discovery', () => {
     });
   });
 
+  it('exposes whether lineup sort values are still loading', () => {
+    document.body.innerHTML = `
+      <article data-testid="sort-ready-card">
+        <img alt="Sort Ready Player - limited" src="/card.png">
+      </article>
+    `;
+    const card = document.querySelector<HTMLElement>(
+      '[data-testid="sort-ready-card"]',
+    );
+    if (!card) throw new Error('Expected sort readiness card');
+    const view = new OverlayView(
+      card,
+      { playerName: 'Sort Ready Player' },
+      'Midfielder',
+    );
+    const stats: PlayerStats = {
+      slug: 'sort-ready-player',
+      displayName: 'Sort Ready Player',
+      position: 'Midfielder',
+      aaL10: { value: 12.5, sampleSize: 10 },
+      cleanSheetL10: { value: 0.2, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      nextGame: null,
+      excludedLowCoverage: 0,
+    };
+
+    expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('false');
+    view.render(stats);
+    expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    view.retrying();
+    expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('false');
+    view.error();
+    expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    view.loading();
+    expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('false');
+    view.noData();
+    expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    view.destroy();
+    expect(card.hasAttribute(lineupSortDataReadyAttribute)).toBe(false);
+  });
+
   it('uses the uniquely active lineup position for an image-only player card', () => {
     document.body.innerHTML = `
       <section data-testid="lineup-builder">
@@ -197,6 +243,48 @@ describe('Sorare card DOM discovery', () => {
 
     expect(findCardTargets(document)).toMatchObject([
       { playerName: 'Ederson', position: 'Goalkeeper' },
+    ]);
+  });
+
+  it('finds the active lineup position through Sorare\'s deeply nested grid', () => {
+    document.body.innerHTML = `
+      <section data-testid="lineup-builder">
+        <nav aria-label="Positionen">
+          <button type="button"><span>TW</span></button>
+          <button type="button"><span>VER</span></button>
+          <button type="button"><span>MF</span></button>
+          <button type="button" class="highlighted"><span>FWD</span></button>
+        </nav>
+        ${'<div>'.repeat(9)}
+          <button type="button">
+            <img
+              alt="Ismael Saibari - common"
+              src="https://assets.sorare.com/image-resize/cardsamplepicture/saibari/picture/card.png"
+            >
+          </button>
+        ${'</div>'.repeat(9)}
+      </section>
+    `;
+
+    expect(findCardTargets(document)).toMatchObject([
+      { playerName: 'Ismael Saibari', position: 'Forward' },
+    ]);
+  });
+
+  it('does not mistake the St. in St. Louis for the striker marker ST', () => {
+    document.body.innerHTML = `
+      <button type="button">
+        <span>St. Louis City SC</span>
+        <span>Verteidiger</span>
+        <img
+          alt="Timo Baumgartl - common"
+          src="https://assets.sorare.com/image-resize/cardsamplepicture/baumgartl/picture/card.png"
+        >
+      </button>
+    `;
+
+    expect(findCardTargets(document)).toMatchObject([
+      { playerName: 'Timo Baumgartl', position: 'Defender' },
     ]);
   });
 
@@ -1028,6 +1116,315 @@ describe('Sorare card DOM discovery', () => {
       document.querySelectorAll('[data-sorare-overlay-companion="lineup-odds"]'),
     ).toHaveLength(1);
     scanner.stop();
+  });
+
+  it('aligns the player win segment with Sorare\'s canonical team order', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/de/football/series/test-series/compose-team',
+    );
+    document.body.innerHTML = `
+      <section>
+        <button data-testid="safonov-card">
+          <img alt="Matvey Safonov - common" src="/safonov.png">
+        </button>
+        <button>
+          <div data-testid="ren-psg-teams">
+            <div aria-label="Team">
+              <img alt="rennes-rennes" src="/rennes.png">
+              <span>REN</span>
+            </div>
+            <div aria-label="Team" class="highlighted">
+              <img alt="psg-paris" src="/psg.png">
+              <span>PSG</span>
+            </div>
+          </div>
+        </button>
+      </section>
+    `;
+    const card = document.querySelector<HTMLElement>(
+      '[data-testid="safonov-card"]',
+    );
+    const teamRow = document.querySelector<HTMLElement>(
+      '[data-testid="ren-psg-teams"]',
+    );
+    if (!card || !teamRow) throw new Error('Expected REN–PSG fixture');
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue({
+      x: 40,
+      y: 100,
+      top: 100,
+      right: 150,
+      bottom: 278,
+      left: 40,
+      width: 110,
+      height: 178,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(teamRow, 'getBoundingClientRect').mockReturnValue({
+      x: 40,
+      y: 300,
+      top: 300,
+      right: 150,
+      bottom: 320,
+      left: 40,
+      width: 110,
+      height: 20,
+      toJSON: () => ({}),
+    });
+
+    const view = new OverlayView(
+      card,
+      { playerName: 'Matvey Safonov' },
+      'Goalkeeper',
+    );
+    view.render({
+      slug: 'matvey-safonov',
+      displayName: 'Matvey Safonov',
+      position: 'Goalkeeper',
+      aaL10: { value: 12.3, sampleSize: 10 },
+      cleanSheetL10: { value: 0.5, sampleSize: 10 },
+      goalL10: { value: 0, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-23T18:45:00.000Z',
+        homeTeamName: 'PSG',
+        awayTeamName: 'Rennes',
+        playerTeamName: 'PSG',
+        opponentTeamName: 'Rennes',
+        playerTeamSlug: 'psg-paris',
+        cleanSheetProbability: 0.38,
+        matchProbabilities: { win: 0.67, draw: 0.19, loss: 0.14 },
+      },
+      excludedLowCoverage: 0,
+    });
+
+    const companion = document.querySelector<HTMLElement>(
+      '[data-sorare-overlay-companion="lineup-odds"]',
+    );
+    const bar = companion?.shadowRoot?.querySelector<HTMLElement>(
+      '.lineup-odds-bar',
+    );
+    expect(bar?.textContent).toBe('14%19%67%');
+    expect(
+      bar?.querySelector(
+        '[data-outcome="home"][data-role="opponent"]',
+      )?.textContent,
+    ).toBe('14%');
+    expect(
+      bar?.querySelector(
+        '[data-outcome="away"][data-role="player"]',
+      )?.textContent,
+    ).toBe('67%');
+    expect(
+      companion?.shadowRoot?.querySelector('.tooltip-fixture')?.textContent,
+    ).toBe('Rennes–PSG');
+    expect(
+      companion?.shadowRoot?.querySelector('.tooltip-odds')?.textContent,
+    ).toBe('H 14%D 19%A 67%');
+    view.destroy();
+  });
+
+  it('keeps lineup odds when Sorare exposes only an opaque opponent code', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/de/football/series/test-series/compose-team',
+    );
+    document.body.innerHTML = `
+      <section>
+        <button data-testid="fofana-card">
+          <img alt="Malick Fofana - common" src="/fofana.png">
+        </button>
+        <button>
+          <div data-testid="ol-fb-teams">
+            <div aria-label="Team" class="highlighted">
+              <img alt="olympique-lyonnais-lyon" src="/lyon.png">
+              <span>OL</span>
+            </div>
+            <div aria-label="Team">
+              <span>FB</span>
+            </div>
+          </div>
+        </button>
+      </section>
+    `;
+    const card = document.querySelector<HTMLElement>(
+      '[data-testid="fofana-card"]',
+    );
+    const teamRow = document.querySelector<HTMLElement>(
+      '[data-testid="ol-fb-teams"]',
+    );
+    if (!card || !teamRow) throw new Error('Expected OL–FB fixture');
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue({
+      x: 40,
+      y: 100,
+      top: 100,
+      right: 150,
+      bottom: 278,
+      left: 40,
+      width: 110,
+      height: 178,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(teamRow, 'getBoundingClientRect').mockReturnValue({
+      x: 40,
+      y: 300,
+      top: 300,
+      right: 150,
+      bottom: 320,
+      left: 40,
+      width: 110,
+      height: 20,
+      toJSON: () => ({}),
+    });
+
+    const view = new OverlayView(
+      card,
+      { playerName: 'Malick Fofana' },
+      'Forward',
+    );
+    const stats = {
+      slug: 'malick-fofana',
+      displayName: 'Malick Fofana',
+      position: 'Forward' as const,
+      aaL10: { value: 13.1, sampleSize: 10 },
+      cleanSheetL10: { value: 0, sampleSize: 10 },
+      goalL10: { value: 0.2, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-26T19:00:00.000Z',
+        homeTeamName: 'Olympique Lyonnais',
+        awayTeamName: 'Fenerbahçe',
+        homeTeamSlug: 'olympique-lyonnais-lyon',
+        awayTeamSlug: 'fenerbahce-istanbul',
+        playerTeamName: 'Olympique Lyonnais',
+        opponentTeamName: 'Fenerbahçe',
+        playerTeamSlug: 'olympique-lyonnais-lyon',
+        cleanSheetProbability: 0.38,
+        matchProbabilities: { win: 0.46, draw: 0.28, loss: 0.26 },
+      },
+      excludedLowCoverage: 0,
+    };
+    view.render(stats);
+
+    const companion = document.querySelector<HTMLElement>(
+      '[data-sorare-overlay-companion="lineup-odds"]',
+    );
+    expect(
+      companion?.shadowRoot?.querySelector('.lineup-odds-bar')?.textContent,
+    ).toBe('46%28%26%');
+    expect(
+      companion?.shadowRoot?.querySelector(
+        '[data-outcome="home"][data-role="player"]',
+      )?.textContent,
+    ).toBe('46%');
+
+    const opponent = teamRow.querySelectorAll<HTMLElement>(
+      ':scope > [aria-label="Team"]',
+    )[1];
+    if (!opponent) throw new Error('Expected opponent side');
+    opponent.textContent = 'Galatasaray';
+    view.render(stats);
+    const staleCompanion = document.querySelector<HTMLElement>(
+      '[data-sorare-overlay-companion="lineup-odds"]',
+    );
+    expect(staleCompanion?.hidden).toBe(true);
+    expect(
+      staleCompanion?.shadowRoot?.querySelector('.lineup-odds-bar')?.textContent,
+    ).toBe('');
+    view.destroy();
+  });
+
+  it('does not attach cached odds from a different opponent to Sorare\'s visible fixture', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/de/football/series/test-series/compose-team',
+    );
+    document.body.innerHTML = `
+      <section>
+        <button data-testid="bond-card">
+          <img alt="Jonathan Bond - common" src="/bond.png">
+        </button>
+        <button>
+          <div data-testid="hou-sj-teams">
+            <div aria-label="Team" class="highlighted">
+              <img alt="houston-dynamo-houston-texas" src="/houston.png">
+              <span>HOU</span>
+            </div>
+            <div aria-label="Team">
+              <img alt="sj-earthquakes-santa-clara-california" src="/sj.png">
+              <span>SJ</span>
+            </div>
+          </div>
+        </button>
+      </section>
+    `;
+    const card = document.querySelector<HTMLElement>(
+      '[data-testid="bond-card"]',
+    );
+    const teamRow = document.querySelector<HTMLElement>(
+      '[data-testid="hou-sj-teams"]',
+    );
+    if (!card || !teamRow) throw new Error('Expected HOU–SJ fixture');
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue({
+      x: 40,
+      y: 100,
+      top: 100,
+      right: 150,
+      bottom: 278,
+      left: 40,
+      width: 110,
+      height: 178,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(teamRow, 'getBoundingClientRect').mockReturnValue({
+      x: 40,
+      y: 300,
+      top: 300,
+      right: 150,
+      bottom: 320,
+      left: 40,
+      width: 110,
+      height: 20,
+      toJSON: () => ({}),
+    });
+
+    const view = new OverlayView(
+      card,
+      { playerName: 'Jonathan Bond' },
+      'Goalkeeper',
+    );
+    view.render({
+      slug: 'jonathan-bond',
+      displayName: 'Jonathan Bond',
+      position: 'Goalkeeper',
+      aaL10: { value: 13.4, sampleSize: 10 },
+      cleanSheetL10: { value: 0.6, sampleSize: 10 },
+      goalL10: { value: 0, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-23T00:30:00.000Z',
+        homeTeamName: 'St. Louis City',
+        awayTeamName: 'Houston Dynamo',
+        homeTeamSlug: 'st-louis-city-st-louis-missouri',
+        awayTeamSlug: 'houston-dynamo-houston-texas',
+        playerTeamName: 'Houston Dynamo',
+        opponentTeamName: 'St. Louis City',
+        playerTeamSlug: 'houston-dynamo-houston-texas',
+        cleanSheetProbability: 0.23,
+        matchProbabilities: { win: 0.28, draw: 0.26, loss: 0.46 },
+      },
+      excludedLowCoverage: 0,
+    });
+
+    expect(
+      document.querySelector(
+        '[data-sorare-overlay-companion="lineup-odds"]',
+      ),
+    ).toBeNull();
+    expect(
+      view.host.shadowRoot?.querySelector('.clean-sheet-bracket-cell'),
+    ).not.toBeNull();
+    view.destroy();
   });
 
   it('reuses known team fixture odds when a teammate response is temporarily incomplete', async () => {
@@ -2347,6 +2744,102 @@ describe('Sorare card DOM discovery', () => {
     vi.unstubAllGlobals();
   });
 
+  it('hydrates far-offscreen cards when a complete lineup pool is ready', async () => {
+    const observe = vi.fn();
+    const disconnect = vi.fn();
+    class TestIntersectionObserver {
+      readonly root = null;
+      readonly rootMargin = '';
+      readonly thresholds: readonly number[] = [];
+
+      constructor(_callback: IntersectionObserverCallback) {}
+
+      observe = observe;
+      unobserve = vi.fn();
+      disconnect = disconnect;
+      takeRecords(): IntersectionObserverEntry[] {
+        return [];
+      }
+    }
+    vi.stubGlobal('IntersectionObserver', TestIntersectionObserver);
+    document.body.innerHTML = `
+      <div data-testid="complete-lineup-pool">
+        <article data-testid="visible-lineup-card" data-position="Midfielder">
+          <a href="/football/players/visible-lineup-player">Visible player</a>
+        </article>
+        <article data-testid="offscreen-lineup-card" data-position="Midfielder">
+          <a href="/football/players/offscreen-lineup-player">Offscreen player</a>
+        </article>
+      </div>
+    `;
+    const pool = document.querySelector<HTMLElement>(
+      '[data-testid="complete-lineup-pool"]',
+    );
+    const visibleCard = document.querySelector<HTMLElement>(
+      '[data-testid="visible-lineup-card"]',
+    );
+    const offscreenCard = document.querySelector<HTMLElement>(
+      '[data-testid="offscreen-lineup-card"]',
+    );
+    if (!pool || !visibleCard || !offscreenCard) {
+      throw new Error('Expected complete lineup pool');
+    }
+    vi.spyOn(visibleCard, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 20, y: 100, width: 120, height: 194 }),
+    );
+    vi.spyOn(offscreenCard, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 20, y: 4_000, width: 120, height: 194 }),
+    );
+    const fetcher = vi.fn(
+      async (
+        request: PlayerStatsRequest,
+      ): Promise<PlayerStatsSuccessResponse> => ({
+        data: request.slugs.map((slug) => ({
+          slug,
+          displayName: slug,
+          position: 'Midfielder',
+          aaL10: { value: 10, sampleSize: 10 },
+          cleanSheetL10: { value: 0.2, sampleSize: 10 },
+          goalL10: { value: 0.1, sampleSize: 10 },
+          nextGame: null,
+          excludedLowCoverage: 0,
+        })),
+        meta: {
+          requested: request.slugs.length,
+          returned: request.slugs.length,
+          cacheHits: 0,
+          source: 'sorare',
+        },
+      }),
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const scanner = new SorareCardScanner(coordinator);
+
+    scanner.start();
+    await coordinator.flush();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0]?.[0].slugs).toEqual([
+      'visible-lineup-player',
+    ]);
+
+    pool.dispatchEvent(
+      new CustomEvent(lineupPoolReadyEvent, { bubbles: true }),
+    );
+    await coordinator.flush();
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[1]?.[0].slugs).toEqual([
+      'offscreen-lineup-player',
+    ]);
+    expect(
+      offscreenCard.getAttribute('data-sorare-overlay-aa-sort-value'),
+    ).toBe('10');
+    scanner.stop();
+    expect(observe).toHaveBeenCalledTimes(2);
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
   it('uses API-key optimized groups of twelve plus a remainder by default', async () => {
     const fetcher = vi.fn(
       async (
@@ -3342,7 +3835,15 @@ describe('Sorare card DOM discovery', () => {
     });
     const bracket =
       view.host.shadowRoot?.querySelector<HTMLElement>('.market-bracket');
-    expect(bracket?.querySelector('.aa-bracket-cell')).toBeNull();
+    const unavailableAa =
+      bracket?.querySelector<HTMLElement>('.aa-bracket-cell');
+    expect(unavailableAa?.textContent).toBe('AA—');
+    expect(unavailableAa?.dataset.available).toBe('false');
+    expect(unavailableAa?.dataset.tone).toBe('unavailable');
+    expect(unavailableAa?.getAttribute('aria-label')).toBe(
+      'AA L10: noch keine gültigen Spiele mit mindestens 60 Minuten beim aktuellen Verein',
+    );
+    expect(unavailableAa?.querySelector('.aa-sample-warning')).toBeNull();
     expect(
       bracket?.querySelector('.clean-sheet-bracket-cell .market-value')
         ?.textContent,
@@ -3648,6 +4149,196 @@ describe('Sorare card DOM discovery', () => {
     expect(view.host.style.left).toBe('400.25px');
     expect(view.host.style.width).toBe('300.5px');
     expect(view.host.dataset.cardSize).toBeUndefined();
+    view.destroy();
+  });
+
+  it('hides a fixed bracket when the card image is covered but its footer remains visible', () => {
+    document.body.innerHTML = `
+      <header data-sticky-toolbar></header>
+      <article data-testid="football-card">
+        <img alt="Noel Caliskan - limited" src="https://assets.sorare.com/card.png">
+        <footer data-card-footer></footer>
+      </article>
+    `;
+    const card = document.querySelector<HTMLElement>('article');
+    const image = document.querySelector<HTMLImageElement>('img');
+    const footer = document.querySelector<HTMLElement>('[data-card-footer]');
+    const toolbar = document.querySelector<HTMLElement>('[data-sticky-toolbar]');
+    if (!card || !image || !footer || !toolbar) {
+      throw new Error('Expected partially covered card fixture');
+    }
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue({
+      x: 100,
+      y: 80,
+      top: 80,
+      right: 230,
+      bottom: 300,
+      left: 100,
+      width: 130,
+      height: 220,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(image, 'getBoundingClientRect').mockReturnValue({
+      x: 100,
+      y: 80,
+      top: 80,
+      right: 230,
+      bottom: 250,
+      left: 100,
+      width: 130,
+      height: 170,
+      toJSON: () => ({}),
+    });
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true,
+      value: vi.fn((_x: number, y: number) => (y <= 250 ? toolbar : footer)),
+    });
+
+    const view = new OverlayView(
+      card,
+      { playerName: 'Noel Caliskan' },
+      'Midfielder',
+    );
+
+    expect(view.host.style.display).toBe('none');
+    view.destroy();
+  });
+
+  it('keeps a defender captain overlay visible above Sorare captain decoration', () => {
+    document.body.innerHTML = `
+      <div class="FOOTBALL slots5">
+        <div><button type="button">GK</button></div>
+        <div data-testid="captain-slot">
+          <button type="button" data-testid="captain-card">
+            <img alt="Álvaro Carreras - common" src="/carreras.png">
+          </button>
+          <div data-testid="captain-decoration">
+            <span title="Kapitän">C</span>
+          </div>
+        </div>
+        <div><button type="button">MID</button></div>
+        <div><button type="button">FWD</button></div>
+        <div><button type="button">EXTRA</button></div>
+      </div>
+    `;
+    const card = document.querySelector<HTMLElement>(
+      '[data-testid="captain-card"]',
+    );
+    const image = card?.querySelector<HTMLImageElement>('img');
+    const decoration = document.querySelector<HTMLElement>(
+      '[data-testid="captain-decoration"]',
+    );
+    if (!card || !image || !decoration) {
+      throw new Error('Expected defender captain fixture');
+    }
+    const cardRect = {
+      x: 140,
+      y: 90,
+      top: 90,
+      right: 250,
+      bottom: 268,
+      left: 140,
+      width: 110,
+      height: 178,
+      toJSON: () => ({}),
+    };
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue(cardRect);
+    vi.spyOn(image, 'getBoundingClientRect').mockReturnValue(cardRect);
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true,
+      value: vi.fn(() => decoration),
+    });
+
+    const view = new OverlayView(
+      card,
+      { playerName: 'Álvaro Carreras' },
+      'Defender',
+    );
+    view.render({
+      slug: 'alvaro-carreras',
+      displayName: 'Álvaro Carreras',
+      position: 'Defender',
+      aaL10: { value: 20.64, sampleSize: 10 },
+      cleanSheetL10: { value: 0.4, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-23T15:30:00.000Z',
+        cleanSheetProbability: 0.37,
+        matchProbabilities: null,
+      },
+      excludedLowCoverage: 0,
+    });
+
+    expect(view.host.style.display).toBe('');
+    expect(
+      view.host.shadowRoot?.querySelector(
+        '.clean-sheet-bracket-cell .market-value',
+      )?.textContent,
+    ).toBe('37%');
+    view.destroy();
+  });
+
+  it('keeps brackets visible above non-interactive live match decorations', () => {
+    document.body.innerHTML = `
+      <div data-testid="live-card-shell">
+        <button type="button" data-testid="live-card">
+          <img alt="Morgan Rogers - common" src="/morgan-rogers.png">
+        </button>
+        <div data-testid="match-event-decoration">
+          <img alt="" title="Tore" src="/goal.svg">
+          <img alt="" title="Auswechslung" src="/substitution.svg">
+        </div>
+      </div>
+    `;
+    const card = document.querySelector<HTMLElement>('[data-testid="live-card"]');
+    const image = card?.querySelector<HTMLImageElement>(
+      'img[alt="Morgan Rogers - common"]',
+    );
+    const decoration = document.querySelector<HTMLElement>(
+      '[data-testid="match-event-decoration"]',
+    );
+    if (!card || !image || !decoration) {
+      throw new Error('Expected live match card fixture');
+    }
+    const cardRect = {
+      x: 548,
+      y: 283,
+      top: 283,
+      right: 650,
+      bottom: 447,
+      left: 548,
+      width: 102,
+      height: 164,
+      toJSON: () => ({}),
+    };
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue(cardRect);
+    vi.spyOn(image, 'getBoundingClientRect').mockReturnValue(cardRect);
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true,
+      value: vi.fn(() => decoration),
+    });
+
+    const view = new OverlayView(
+      card,
+      { playerName: 'Morgan Rogers' },
+      'Midfielder',
+    );
+    view.render({
+      slug: 'morgan-rogers',
+      displayName: 'Morgan Rogers',
+      position: 'Midfielder',
+      aaL10: { value: null, sampleSize: 0 },
+      cleanSheetL10: { value: null, sampleSize: 0 },
+      goalL10: { value: 2 / 15, sampleSize: 15 },
+      nextGame: null,
+      excludedLowCoverage: 0,
+    });
+
+    expect(view.host.style.display).toBe('');
+    expect(
+      view.host.shadowRoot?.querySelector('[data-bracket-slot="aa"]')
+        ?.textContent,
+    ).toContain('—');
     view.destroy();
   });
 
@@ -5089,9 +5780,11 @@ describe('Sorare card DOM discovery', () => {
     window.dispatchEvent(new Event('scroll'));
 
     expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+    expect(views.every((view) => view.host.style.display === 'none')).toBe(true);
     expect(rectSpies.every((spy) => spy.mock.calls.length === 0)).toBe(true);
     frameCallbacks.shift()?.(performance.now());
     expect(rectSpies.map((spy) => spy.mock.calls.length)).toEqual([1, 1]);
+    expect(views.every((view) => view.host.style.display === '')).toBe(true);
 
     views.forEach((view) => view.destroy());
     vi.unstubAllGlobals();
@@ -5240,6 +5933,39 @@ describe('Sorare card DOM discovery', () => {
 
     await vi.waitFor(() => expect(requestAnimationFrame).toHaveBeenCalledTimes(1));
     frameCallbacks.shift()?.(performance.now());
+    expect(scan).not.toHaveBeenCalled();
+
+    scanner.stop();
+    vi.unstubAllGlobals();
+  });
+
+  it('ignores native sort option mutations owned by the extension', async () => {
+    const frameCallbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      frameCallbacks.push(callback);
+      return frameCallbacks.length;
+    });
+    vi.stubGlobal('requestAnimationFrame', requestAnimationFrame);
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    document.body.innerHTML = '<div data-native-options></div>';
+    const options = document.querySelector<HTMLElement>(
+      '[data-native-options]',
+    );
+    if (!options) throw new Error('Expected native sort options');
+    const scanner = new SorareCardScanner();
+    const scan = vi.spyOn(scanner, 'scan');
+    scanner.start();
+    scan.mockClear();
+    requestAnimationFrame.mockClear();
+
+    const customOption = document.createElement('button');
+    customOption.setAttribute(lineupGoalSortOptionAttribute, 'true');
+    options.append(customOption);
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    customOption.remove();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
     expect(scan).not.toHaveBeenCalled();
 
     scanner.stop();
@@ -5459,6 +6185,13 @@ describe('Sorare card DOM discovery', () => {
     expect(goal?.getAttribute('aria-label')).toBe(
       'Historisches Tor L15: 40 Prozent, n=15; keine Marktquote',
     );
+    expect(
+      card.getAttribute('data-sorare-overlay-goal-sort-probability'),
+    ).toBe('0.4');
+    expect(card.getAttribute('data-sorare-overlay-goal-sort-source')).toBe(
+      'historical',
+    );
+    expect(card.getAttribute('data-sorare-overlay-aa-sort-value')).toBe('12');
     expect(view.host.shadowRoot?.querySelector('.player-market-tooltip')?.textContent)
       .toContain('Assist · historisch L15');
     expect(view.host.shadowRoot?.querySelector('.player-market-tooltip')?.textContent)
@@ -5524,6 +6257,12 @@ describe('Sorare card DOM discovery', () => {
     );
     expect(goal?.textContent).toBe('34%');
     expect(goal?.dataset.source).toBeUndefined();
+    expect(
+      card.getAttribute('data-sorare-overlay-goal-sort-probability'),
+    ).toBe('0.34');
+    expect(card.getAttribute('data-sorare-overlay-goal-sort-source')).toBe(
+      'market',
+    );
 
     applyMarketValueFormat('decimal');
     view.render({

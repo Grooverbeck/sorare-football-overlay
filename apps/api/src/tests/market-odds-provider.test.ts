@@ -742,7 +742,7 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     ).toBe(false);
   });
 
-  it('stops new paid lookups at 90 percent while leaving cache reads available', async () => {
+  it('keeps missing first snapshots enabled at 90 percent without regional fallback', async () => {
     const usageStore = new InMemoryProviderQuotaUsageStore();
     const usage = quotaUsage(
       'the-odds-api',
@@ -753,7 +753,10 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     );
     if (!usage) throw new Error('Expected quota usage');
     usageStore.set(usage);
-    const fetchImpl = vi.fn<typeof fetch>();
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json(eventResponse()))
+      .mockResolvedValueOnce(json(marketResponse()));
     const provider = new TheOddsApiPlayerMarketOddsProvider({
       apiKey: 'test-key',
       baseUrl: 'https://api.the-odds-api.com/v4',
@@ -770,10 +773,19 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
       now: () => now,
     });
 
-    const result = await provider.load([player()]);
+    const requestedPlayer = player();
+    const result = await provider.load([requestedPlayer]);
 
-    expect(result.get(playerMarketOddsKey(player()))).toBeNull();
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(result.get(playerMarketOddsKey(requestedPlayer))).toMatchObject({
+      goal: { probability: expect.any(Number) },
+      assist: { probability: expect.any(Number) },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(
+      fetchImpl.mock.calls.some(([input]) =>
+        String(input).includes('regions=uk'),
+      ),
+    ).toBe(false);
   });
 
   it('keeps frozen values but skips missing-player supplement checks at 85 percent', async () => {

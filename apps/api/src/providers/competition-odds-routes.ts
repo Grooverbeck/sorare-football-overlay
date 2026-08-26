@@ -331,7 +331,10 @@ const BASE_ODDS_API_IO_ROUTES = [
   },
   {
     competitionSlugs: LEAGUES_CUP_COMPETITION_SLUGS,
-    leagueSlugs: ['international-clubs-leagues-cup-group-stage'],
+    leagueSlugs: [
+      'international-clubs-leagues-cup',
+      'international-clubs-leagues-cup-group-stage',
+    ],
   },
   {
     competitionSlugs: ['uefa-champions-league'],

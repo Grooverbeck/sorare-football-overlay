@@ -207,8 +207,10 @@ Bereits vorhandene Sorare-Werte werden dabei nie durch den externen Fallback
 ersetzt.
 
 Der tägliche Cron speichert außerdem die Kontingentnutzung der Quotenanbieter.
-The Odds API verzichtet ab 70 % auf den zusätzlichen Regionen-Fallback, ab
-85 % auf reine Ergänzungsprüfungen und stoppt ab 90 % neue externe Abrufe. Die
+The Odds API verzichtet ab 70 % auf den zusätzlichen Regionen-Fallback und ab
+85 % auf reine Ergänzungsprüfungen. Notwendige Erstabrufe für bisher fehlende
+Spiele bleiben bis zur tatsächlichen Ausschöpfung des Kontingents erlaubt; erst
+bei 100 % wechselt der Anbieter vollständig auf Cache-Lesezugriffe. Die
 SportsGameOdds-Objektnutzung ist dagegen reine Telemetrie und aktiviert keine
 proaktive Schutzstufe; nur eine echte Provider-Antwort wie HTTP 429 begrenzt
 dort Requests. Die Zahl der empfangenen Spielobjekte wird zwischen den

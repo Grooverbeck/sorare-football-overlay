@@ -108,3 +108,57 @@
   background: var(--sorare-overlay-lineup-tone) !important;
   clip-path: polygon(0 0, 100% 0, 100% 100%) !important;
 }
+
+[data-sorare-overlay-lineup-sort-active]
+  [data-sorare-overlay-native-sort-option]
+  svg {
+  fill: none !important;
+}
+
+[data-sorare-overlay-lineup-sort-active]
+  [data-sorare-overlay-native-sort-option]
+  svg circle:first-of-type {
+  fill: transparent !important;
+  stroke: currentColor !important;
+}
+
+[data-sorare-overlay-lineup-sort-active]
+  [data-sorare-overlay-native-sort-option]
+  svg circle:nth-of-type(2) {
+  fill: transparent !important;
+}
+
+[data-sorare-overlay-lineup-sort-trigger-label][data-sorare-overlay-lineup-sort-loading] {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  white-space: nowrap !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+[data-sorare-overlay-lineup-sort-trigger-label][data-sorare-overlay-lineup-sort-loading]::before {
+  content: "" !important;
+  box-sizing: border-box !important;
+  flex: 0 0 11px !important;
+  width: 11px !important;
+  height: 11px !important;
+  border: 2px solid currentColor !important;
+  border-right-color: transparent !important;
+  border-radius: 50% !important;
+  opacity: .85 !important;
+  animation: sorare-overlay-lineup-sort-spin .75s linear infinite !important;
+}
+
+@keyframes sorare-overlay-lineup-sort-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-sorare-overlay-lineup-sort-trigger-label][data-sorare-overlay-lineup-sort-loading]::before {
+    animation: none !important;
+    border-right-color: currentColor !important;
+    opacity: .45 !important;
+  }
+}

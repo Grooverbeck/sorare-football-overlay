@@ -23,6 +23,14 @@ describe('Leagues Cup external odds route', () => {
         fallbackRegion: 'uk',
       },
     ]);
+    expect(
+      ODDS_API_IO_ROUTES.find(({ competitionSlugs }) =>
+        competitionSlugs.includes('leagues-cup-mls'),
+      )?.leagueSlugs,
+    ).toEqual([
+      'international-clubs-leagues-cup',
+      'international-clubs-leagues-cup-group-stage',
+    ]);
   });
 });
 
