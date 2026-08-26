@@ -79,6 +79,18 @@ function normalizeName(value: string): string {
     .toLocaleLowerCase();
 }
 
+// A small, auditable escape hatch for Sorare card display names whose public
+// player slug is not derived from that display name. Candidates are still
+// fetched from Sorare and must pass the normal display-name, position and club
+// checks before they can replace a cached name resolution.
+const verifiedPlayerSlugAliases: Readonly<Record<string, string>> = {
+  'alexis vega': 'ernesto-alexis-vega-rojas',
+};
+
+function verifiedPlayerSlugAlias(name: string): string | undefined {
+  return verifiedPlayerSlugAliases[normalizeName(name)];
+}
+
 function normalizeExactDisplayName(value: string): string {
   return value
     .normalize('NFKC')
@@ -338,7 +350,15 @@ export class SorareDataSource implements PlayerStatsDataSource {
           .filter((name) => {
             const position = expectedPositionForName(name, expectedPositions);
             const teamSlug = expectedTeamSlugForName(name, expectedTeamSlugs);
-            return options.forceSearch || !this.hasCachedResolution(name, position, teamSlug);
+            const key = resolutionKey(name, position, teamSlug);
+            const verifiedSlug = verifiedPlayerSlugAlias(name);
+            const cachedResolution = this.resolvedNames.get(key);
+            return (
+              options.forceSearch ||
+              (verifiedSlug !== undefined &&
+                cachedResolution?.slug !== verifiedSlug) ||
+              !this.hasCachedResolution(name, position, teamSlug)
+            );
           })
           .map((name) => [normalizeName(name), name]),
       ).values(),
@@ -447,7 +467,12 @@ export class SorareDataSource implements PlayerStatsDataSource {
     expectedTeamSlugs?: Readonly<Record<string, string>>,
   ): Promise<void> {
     if (names.length === 0) return;
-    const nameBySlug = new Map(names.map((name) => [slugFromName(name), name]));
+    const nameBySlug = new Map(
+      names.map((name) => [
+        verifiedPlayerSlugAlias(name) ?? slugFromName(name),
+        name,
+      ]),
+    );
     const data = await this.client.request<
       { players: SlugCandidatePlayer[] },
       { slugs: string[] }

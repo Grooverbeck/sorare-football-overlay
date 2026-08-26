@@ -156,6 +156,76 @@ describe('SorareDataSource player-name resolution', () => {
     expect(request).toHaveBeenCalledTimes(2);
   });
 
+  it('repairs a cached Alexis Vega miss through the verified Sorare slug', async () => {
+    const getMany = vi.fn<
+      NonNullable<PlayerNameResolutionCache['getMany']>
+    >(async (reads) => reads.map(() => null));
+    const set = vi.fn<NonNullable<PlayerNameResolutionCache['set']>>();
+    const cache: PlayerNameResolutionCache = {
+      get: vi.fn(),
+      getMany,
+      set,
+    };
+    const request = vi.fn(
+      async (
+        _document: unknown,
+        variables: { query?: string; slugs?: string[] },
+      ) => {
+        if (variables.query) {
+          throw new Error('Full-text search must not run');
+        }
+        return {
+          players: [
+            {
+              __typename: 'Player',
+              slug: 'ernesto-alexis-vega-rojas',
+              displayName: 'Alexis Vega',
+              position: 'Forward',
+              activeClub: { slug: 'toluca-toluca-de-lerdo' },
+            },
+          ],
+        };
+      },
+    );
+    const source = new SorareDataSource(
+      { request } as unknown as SorareGraphqlClient,
+      25,
+      false,
+      86_400_000,
+      true,
+      cache,
+    );
+
+    await expect(
+      source.resolvePlayerNames(['Alexis Vega'], undefined, {
+        teamSlugs: { 'Alexis Vega': 'toluca-toluca-de-lerdo' },
+      }),
+    ).resolves.toEqual([
+      {
+        slug: 'ernesto-alexis-vega-rojas',
+        teamSlug: 'toluca-toluca-de-lerdo',
+        resolvedFromName: 'Alexis Vega',
+        nameResolution: 'direct',
+      },
+    ]);
+    expect(getMany).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledOnce();
+    expect(request.mock.calls[0]?.[1]).toEqual({
+      slugs: ['ernesto-alexis-vega-rojas'],
+    });
+    expect(set).toHaveBeenCalledWith(
+      'Alexis Vega',
+      undefined,
+      {
+        slug: 'ernesto-alexis-vega-rojas',
+        position: 'Forward',
+        teamSlug: 'toluca-toluca-de-lerdo',
+        nameResolution: 'direct',
+      },
+      'toluca-toluca-de-lerdo',
+    );
+  });
+
   it('resolves accented Sorare card names through a diacritic-safe slug candidate', async () => {
     const request = vi.fn(
       async (_document: unknown, variables: { query?: string; slugs?: string[] }) => {
