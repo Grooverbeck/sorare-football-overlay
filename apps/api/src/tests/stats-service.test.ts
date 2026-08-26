@@ -596,7 +596,9 @@ describe('StatsService cache writes', () => {
       reportsRefreshDue: true,
       supports: () => true,
       supportsMarket: () => true,
-      drivesMarketRequest: (_player, market) => market === 'goal',
+      // Reproduce a player with a cached goal quote and a still-missing,
+      // request-driving assist quote. Both refresh reasons must survive.
+      drivesMarketRequest: () => true,
       load,
       refreshCachedPrices,
     };
@@ -618,11 +620,13 @@ describe('StatsService cache writes', () => {
     expect(backgroundTasks).toHaveLength(1);
     await Promise.all(backgroundTasks);
     expect(refreshCachedPrices).toHaveBeenCalledTimes(1);
-    expect(load).toHaveBeenCalledTimes(1);
-    expect(load).toHaveBeenCalledWith(
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(load).toHaveBeenNthCalledWith(
+      1,
       expect.any(Array),
       expect.objectContaining({ cacheOnly: true }),
     );
+    expect(load).toHaveBeenNthCalledWith(2, expect.any(Array));
   });
 
   it('keeps fixture teammates pending while one shared market snapshot warms', async () => {

@@ -753,7 +753,7 @@ export class StatsService {
             ? marketRefreshDuePlayerKeys.has(key)
             : true);
         const needsMarketPriceRefresh =
-          !missingRequestDrivingMarket &&
+          Boolean(odds?.goal || odds?.assist || odds?.decisive) &&
           this.marketOddsProvider.refreshCachedPrices !== undefined &&
           this.marketOddsProvider.reportsRefreshDue === true &&
           marketRefreshDueState.complete &&
@@ -833,13 +833,13 @@ export class StatsService {
           !playersWithFixtureRefresh.has(key)
         ) {
           marketRefreshPlayers.push(stats);
-        } else if (
-          needsMarketPriceRefresh &&
-          playersWithFixtureRefresh.has(key)
-        ) {
-          fixturePriceRefreshPlayerKeys.add(key);
-        } else if (needsMarketPriceRefresh) {
-          marketPriceRefreshPlayers.push(stats);
+        }
+        if (needsMarketPriceRefresh) {
+          if (playersWithFixtureRefresh.has(key)) {
+            fixturePriceRefreshPlayerKeys.add(key);
+          } else {
+            marketPriceRefreshPlayers.push(stats);
+          }
         }
       }
       if (
