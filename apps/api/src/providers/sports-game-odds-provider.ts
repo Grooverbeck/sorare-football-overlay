@@ -1616,6 +1616,18 @@ export class SupplementingPlayerMarketOddsProvider
     );
   }
 
+  async refreshCachedPrices(players: readonly PlayerStats[]): Promise<void> {
+    const refreshes = [
+      this.primary.refreshCachedPrices?.(
+        players.filter((player) => this.primary.supports?.(player) ?? true),
+      ),
+      this.fallback.refreshCachedPrices?.(
+        players.filter((player) => this.fallback.supports?.(player) ?? true),
+      ),
+    ].filter((refresh): refresh is Promise<void> => Boolean(refresh));
+    await Promise.allSettled(refreshes);
+  }
+
   async load(
     players: readonly PlayerStats[],
     loadOptions?: PlayerMarketOddsLoadOptions,
@@ -1787,14 +1799,12 @@ export class SupplementingPlayerMarketOddsProvider
           continue;
         }
         if (!fallbackRefreshDue.has(key)) continue;
-        const odds = combined.get(key) ?? null;
-        if (
-          this.requestMarkets.some(
-            (market) =>
-              playerMarketFieldDrivesRequest(this.fallback, player, market) &&
-              !odds?.[market],
-          )
-        ) {
+        const primary = primaryValues.get(key) ?? null;
+        const fallback = fallbackValues.get(key) ?? null;
+        const fallbackContributes = this.supplementMarkets.some(
+          (market) => !primary?.[market] && Boolean(fallback?.[market]),
+        );
+        if (fallbackContributes) {
           loadOptions.refreshDuePlayerKeys.add(key);
         }
       }

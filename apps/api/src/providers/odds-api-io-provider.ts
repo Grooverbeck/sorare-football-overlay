@@ -166,8 +166,62 @@ class OddsApiIoHttpError extends Error {
 
 const ODDS_API_IO_REFRESH_LEASE_MS = 90 * 1_000;
 const HOUR_MS = 60 * 60 * 1_000;
+const ODDS_API_IO_GAME_DAY_PRICE_REFRESH_MS = 24 * HOUR_MS;
+const ODDS_API_IO_FINAL_PRICE_REFRESH_MS = 90 * 60 * 1_000;
 const ODDS_API_IO_MATCH_SNAPSHOT_AFTER_KICKOFF_MS = 36 * HOUR_MS;
 const DEFAULT_MATCH_ODDS_MISS_TTL_MS = 6 * HOUR_MS;
+
+function successfulPriceRefreshDue(
+  snapshot: FrozenMarketSnapshot,
+  kickoff: number,
+  now: number,
+): boolean {
+  const capturedAt = Date.parse(snapshot.capturedAt);
+  const untilKickoff = kickoff - now;
+  if (
+    !Number.isFinite(capturedAt) ||
+    !Number.isFinite(kickoff) ||
+    untilKickoff < 0
+  ) {
+    return false;
+  }
+  return [
+    ODDS_API_IO_GAME_DAY_PRICE_REFRESH_MS,
+    ODDS_API_IO_FINAL_PRICE_REFRESH_MS,
+  ].some(
+    (windowMs) =>
+      untilKickoff <= windowMs && capturedAt < kickoff - windowMs,
+  );
+}
+
+function refreshFrozenSnapshotPrices(
+  existing: FrozenMarketSnapshot | undefined,
+  incoming: FrozenMarketSnapshot,
+  fixturePlayers: FixtureGroup['players'],
+  fixtureDate: string,
+): FrozenMarketSnapshot {
+  const supplemented = supplementFrozenSnapshot(
+    existing,
+    incoming,
+    fixturePlayers,
+    fixtureDate,
+  );
+  if (!existing) return supplemented;
+  return FrozenMarketSnapshotSchema.parse({
+    ...supplemented,
+    capturedAt: incoming.capturedAt,
+    supplementedAt: incoming.capturedAt,
+    ...(incoming.parserVersion !== undefined
+      ? { parserVersion: incoming.parserVersion }
+      : {}),
+    // Keep a previously known player if a bookmaker temporarily suspends the
+    // selection, but replace every quote present in the fresh response.
+    players: {
+      ...supplemented.players,
+      ...incoming.players,
+    },
+  });
+}
 
 const defaultSleep = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
@@ -723,6 +777,10 @@ export class OddsApiIoPlayerMarketOddsProvider
     ].filter((usage): usage is ProviderQuotaUsage => Boolean(usage));
   }
 
+  async refreshCachedPrices(players: readonly PlayerStats[]): Promise<void> {
+    await this.load(players);
+  }
+
   async load(
     players: readonly PlayerStats[],
     loadOptions?: PlayerMarketOddsLoadOptions,
@@ -824,12 +882,17 @@ export class OddsApiIoPlayerMarketOddsProvider
         (goalSnapshot.status === 'unavailable'
           ? shouldRetryMarketFailure(goalSnapshot, kickoff, this.now())
           : protection.allowSnapshotSupplements &&
-            needsFrozenSnapshotSupplement(
+            (needsFrozenSnapshotSupplement(
               goalSnapshot,
               fixture.players,
               fixture.date,
               this.now(),
-            ));
+            ) ||
+              successfulPriceRefreshDue(
+                goalSnapshot,
+                kickoff,
+                this.now(),
+              )));
       if (
         cacheOnly &&
         loadOptions?.refreshDuePlayerKeys &&
@@ -1414,6 +1477,22 @@ export class OddsApiIoPlayerMarketOddsProvider
       string,
       { fixture: FixtureGroup; event: OddsApiIoEvent }
     >();
+    for (const fixture of fixtures) {
+      const snapshot = goalSnapshots.get(fixture.key);
+      if (snapshot?.status !== 'available') continue;
+      // A successful snapshot already contains a verified provider event ID.
+      // Reusing it keeps price-only refreshes to one odds request and avoids a
+      // second event-discovery request for the same fixture.
+      matched.set(fixture.key, {
+        fixture,
+        event: {
+          id: snapshot.eventId,
+          date: fixture.date,
+          home: fixture.homeTeamName,
+          away: fixture.awayTeamName,
+        },
+      });
+    }
     let eventCount = 0;
     const queriedLeagues: string[] = [];
     const eventCandidates: Array<{
@@ -1572,7 +1651,7 @@ export class OddsApiIoPlayerMarketOddsProvider
         'player_goal_scorer_anytime',
       );
       const snapshot = extracted
-        ? supplementFrozenSnapshot(
+        ? refreshFrozenSnapshotPrices(
             existing?.status === 'available' ? existing : undefined,
             extracted,
             fixture.players,
@@ -1615,7 +1694,7 @@ export class OddsApiIoPlayerMarketOddsProvider
         const incoming = extractedMarkets.snapshots.get(market);
         if (!incoming) continue;
         const previous = snapshots.get(fixture.key);
-        const supplemented = supplementFrozenSnapshot(
+        const supplemented = refreshFrozenSnapshotPrices(
           previous?.status === 'available' ? previous : undefined,
           incoming,
           fixture.players,

@@ -456,6 +456,10 @@ export interface PlayerMarketOddsProvider {
   // True when cache-only loads populate `refreshDuePlayerKeys` from the same
   // freshness rules used by the provider's normal network path.
   readonly reportsRefreshDue?: boolean;
+  // Optional provider-specific path for refreshing prices that are already
+  // available. Providers without a cheap reset-based allowance deliberately
+  // omit it, so a price refresh cannot spend their quota accidentally.
+  refreshCachedPrices?(players: readonly PlayerStats[]): Promise<void>;
   refreshUsage?(): Promise<ProviderQuotaUsage[]>;
 }
 

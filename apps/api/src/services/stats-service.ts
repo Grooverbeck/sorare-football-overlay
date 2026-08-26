@@ -715,6 +715,7 @@ export class StatsService {
       ),
     );
     const marketRefreshPlayers: PlayerStats[] = [];
+    const marketPriceRefreshPlayers: PlayerStats[] = [];
     const matchOddsRefreshPlayers: PlayerStats[] = [];
     const canScheduleOddsRefresh =
       Boolean(this.scheduleBackground) && !request.oddsCacheOnly;
@@ -750,6 +751,12 @@ export class StatsService {
           marketRefreshDueState.complete
             ? marketRefreshDuePlayerKeys.has(key)
             : true);
+        const needsMarketPriceRefresh =
+          !missingRequestDrivingMarket &&
+          this.marketOddsProvider.refreshCachedPrices !== undefined &&
+          this.marketOddsProvider.reportsRefreshDue === true &&
+          marketRefreshDueState.complete &&
+          marketRefreshDuePlayerKeys.has(key);
         return [
           key,
           {
@@ -757,6 +764,7 @@ export class StatsService {
             odds,
             missingDisplayedMarket,
             needsMarketOddsRefresh,
+            needsMarketPriceRefresh,
             fixtureKey: stats.nextGame
               ? marketFixtureKey(stats.nextGame)
               : null,
@@ -766,7 +774,8 @@ export class StatsService {
     );
     const warmingFixtureKeys = new Set(
       [...marketStateByPlayer.values()].flatMap((state) =>
-        state.needsMarketOddsRefresh && state.fixtureKey
+        (state.needsMarketOddsRefresh || state.needsMarketPriceRefresh) &&
+        state.fixtureKey
           ? [state.fixtureKey]
           : [],
       ),
@@ -781,6 +790,8 @@ export class StatsService {
       const odds = marketState?.odds ?? null;
       const needsMarketOddsRefresh =
         marketState?.needsMarketOddsRefresh ?? false;
+      const needsMarketPriceRefresh =
+        marketState?.needsMarketPriceRefresh ?? false;
       const sharesWarmingFixture = Boolean(
         marketState?.missingDisplayedMarket &&
           marketState.fixtureKey &&
@@ -811,7 +822,9 @@ export class StatsService {
       if (
         canScheduleOddsRefresh &&
         supportsMarketOdds &&
-        (needsMarketOddsRefresh || sharesWarmingFixture)
+        (needsMarketOddsRefresh ||
+          needsMarketPriceRefresh ||
+          sharesWarmingFixture)
       ) {
         pending.add('marketOdds');
         if (
@@ -819,6 +832,11 @@ export class StatsService {
           !playersWithFixtureRefresh.has(key)
         ) {
           marketRefreshPlayers.push(stats);
+        } else if (
+          needsMarketPriceRefresh &&
+          !playersWithFixtureRefresh.has(key)
+        ) {
+          marketPriceRefreshPlayers.push(stats);
         }
       }
       if (
@@ -850,6 +868,17 @@ export class StatsService {
           this.marketOddsProvider
             .load(marketRefreshPlayers)
             .then(() => undefined),
+        );
+      }
+      if (
+        canScheduleOddsRefresh &&
+        marketPriceRefreshPlayers.length > 0 &&
+        this.marketOddsProvider.refreshCachedPrices
+      ) {
+        tasks.push(
+          this.marketOddsProvider.refreshCachedPrices(
+            marketPriceRefreshPlayers,
+          ),
         );
       }
       if (canScheduleOddsRefresh && matchOddsRefreshPlayers.length > 0) {

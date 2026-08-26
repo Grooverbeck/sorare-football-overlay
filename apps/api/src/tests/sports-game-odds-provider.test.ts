@@ -1056,6 +1056,64 @@ describe('SportsGameOddsPlayerMarketOddsProvider', () => {
 });
 
 describe('SupplementingPlayerMarketOddsProvider', () => {
+  it('propagates a successful fallback price refresh only while the fallback contributes', async () => {
+    const stats = player();
+    const fallbackOdds: PlayerMarketOdds = {
+      source: 'odds-api-io',
+      capturedAt: '2026-07-25T10:01:00.000Z',
+      goal: { probability: 0.35, bookmakerCount: 1 },
+      assist: null,
+      decisive: null,
+    };
+    const primary: PlayerMarketOddsProvider = {
+      reportsRefreshDue: true,
+      load: vi.fn(async (players, options) => {
+        if (options?.refreshDueState) options.refreshDueState.complete = true;
+        return new Map(
+          players.map((candidate) => [playerMarketOddsKey(candidate), null]),
+        );
+      }),
+    };
+    const refreshCachedPrices = vi.fn(async () => undefined);
+    const fallback: PlayerMarketOddsProvider = {
+      reportsRefreshDue: true,
+      supportsMarket: (_player, market) => market === 'goal',
+      load: vi.fn(async (players, options) => {
+        if (options?.refreshDueState) options.refreshDueState.complete = true;
+        for (const candidate of players) {
+          options?.refreshDuePlayerKeys?.add(
+            playerMarketOddsKey(candidate),
+          );
+        }
+        return new Map(
+          players.map((candidate) => [
+            playerMarketOddsKey(candidate),
+            fallbackOdds,
+          ]),
+        );
+      }),
+      refreshCachedPrices,
+    };
+    const combined = new SupplementingPlayerMarketOddsProvider(
+      primary,
+      fallback,
+      ['goal'],
+    );
+    const refreshDuePlayerKeys = new Set<string>();
+    const refreshDueState = { complete: false };
+
+    await combined.load([stats], {
+      cacheOnly: true,
+      refreshDuePlayerKeys,
+      refreshDueState,
+    });
+
+    expect(refreshDueState.complete).toBe(true);
+    expect(refreshDuePlayerKeys).toContain(playerMarketOddsKey(stats));
+    await combined.refreshCachedPrices([stats]);
+    expect(refreshCachedPrices).toHaveBeenCalledWith([stats]);
+  });
+
   it('keeps the direct decisive market and fills missing split markets from the fallback', async () => {
     const stats = player();
     const primaryOdds: PlayerMarketOdds = {

@@ -79,6 +79,7 @@ function createProvider(
   store = new InMemoryMarketSnapshotStore(60_000, () => now),
   matchOddsStore?: MatchOddsSnapshotStore,
   appLogger: AppLogger = logger,
+  nowImpl: () => number = () => now,
 ) {
   const provider = new OddsApiIoPlayerMarketOddsProvider({
     apiKey: 'server-only-test-key',
@@ -97,7 +98,7 @@ function createProvider(
     logger: appLogger,
     usageStore,
     fetchImpl,
-    now: () => now,
+    now: nowImpl,
   });
   return {
     provider,
@@ -1095,6 +1096,113 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
       1 / 2.3,
     );
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('refreshes successful prices only once on match day and once near kickoff', async () => {
+    const scheduledKickoff = Date.parse('2026-08-27T18:30:00.000Z');
+    let clock = scheduledKickoff - 48 * 60 * 60 * 1_000;
+    let oddsRequests = 0;
+    const prices = [4, 3.1, 2.9];
+    const refreshedPlayer = player({
+      slug: 'pascal-gross',
+      displayName: 'Pascal Gross',
+      nextGame: {
+        ...player().nextGame!,
+        date: new Date(scheduledKickoff).toISOString(),
+        homeTeamName: 'Brighton & Hove Albion',
+        awayTeamName: 'Tromsø',
+        playerTeamName: 'Brighton & Hove Albion',
+        opponentTeamName: 'Tromsø',
+      },
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/events')) {
+        return json([
+          {
+            id: 'conference-fixture-1',
+            date: new Date(scheduledKickoff).toISOString(),
+            home: 'Brighton & Hove Albion',
+            away: 'Tromsoe IL',
+          },
+        ]);
+      }
+      oddsRequests += 1;
+      return json([
+        {
+          id: 'conference-fixture-1',
+          date: new Date(scheduledKickoff).toISOString(),
+          home: 'Brighton & Hove Albion',
+          away: 'Tromsoe IL',
+          bookmakers: {
+            Unibet: [
+              {
+                name: 'Anytime Goalscorer',
+                odds: [
+                  {
+                    label: 'Pascal Gross',
+                    over: prices[oddsRequests - 1],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ]);
+    });
+    const store = new InMemoryMarketSnapshotStore(60_000, () => clock);
+    const { provider } = createProvider(
+      fetchImpl,
+      new InMemoryProviderQuotaUsageStore(() => clock),
+      undefined,
+      0,
+      store,
+      undefined,
+      logger,
+      () => clock,
+    );
+
+    await provider.load([refreshedPlayer]);
+    clock = scheduledKickoff - 23 * 60 * 60 * 1_000;
+    const gameDayDue = new Set<string>();
+    const gameDayState = { complete: false };
+    await provider.load([refreshedPlayer], {
+      cacheOnly: true,
+      refreshDuePlayerKeys: gameDayDue,
+      refreshDueState: gameDayState,
+    });
+
+    expect(gameDayState.complete).toBe(true);
+    expect(gameDayDue).toContain(playerMarketOddsKey(refreshedPlayer));
+    await provider.refreshCachedPrices([refreshedPlayer]);
+    const gameDay = await provider.load([refreshedPlayer], {
+      cacheOnly: true,
+    });
+    expect(
+      gameDay.get(playerMarketOddsKey(refreshedPlayer))?.goal?.probability,
+    ).toBeCloseTo(1 / 3.1);
+
+    clock = scheduledKickoff - 20 * 60 * 60 * 1_000;
+    await provider.refreshCachedPrices([refreshedPlayer]);
+    expect(oddsRequests).toBe(2);
+
+    clock = scheduledKickoff - 89 * 60 * 1_000;
+    await provider.refreshCachedPrices([refreshedPlayer]);
+    const finalPrice = await provider.load([refreshedPlayer], {
+      cacheOnly: true,
+    });
+    expect(
+      finalPrice.get(playerMarketOddsKey(refreshedPlayer))?.goal?.probability,
+    ).toBeCloseTo(1 / 2.9);
+
+    clock = scheduledKickoff - 30 * 60 * 1_000;
+    await provider.refreshCachedPrices([refreshedPlayer]);
+    expect(oddsRequests).toBe(3);
+    expect(
+      fetchImpl.mock.calls.filter(([input]) =>
+        new URL(String(input)).pathname.endsWith('/events'),
+      ),
+    ).toHaveLength(1);
   });
 
   it('keeps a later cached fixture when earlier fixture reads hang', async () => {

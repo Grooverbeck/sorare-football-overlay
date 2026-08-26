@@ -536,6 +536,63 @@ describe('StatsService cache writes', () => {
     expect(scheduleBackground).not.toHaveBeenCalled();
   });
 
+  it('schedules an isolated cached-price refresh when an available quote is stale', async () => {
+    const load = vi.fn<PlayerMarketOddsProvider['load']>(
+      async (players, options) => {
+        if (options?.refreshDueState) {
+          options.refreshDueState.complete = true;
+        }
+        for (const stats of players) {
+          options?.refreshDuePlayerKeys?.add(playerMarketOddsKey(stats));
+        }
+        return new Map(
+          players.map((stats) => [
+            playerMarketOddsKey(stats),
+            {
+              source: 'odds-api-io' as const,
+              capturedAt: '2026-08-25T09:26:30.030Z',
+              goal: { probability: 0.25, bookmakerCount: 1 },
+              assist: null,
+              decisive: null,
+            },
+          ]),
+        );
+      },
+    );
+    const refreshCachedPrices = vi.fn(async () => undefined);
+    const marketOddsProvider: PlayerMarketOddsProvider = {
+      reportsRefreshDue: true,
+      supports: () => true,
+      supportsMarket: () => true,
+      drivesMarketRequest: (_player, market) => market === 'goal',
+      load,
+      refreshCachedPrices,
+    };
+    const backgroundTasks: Promise<void>[] = [];
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      marketOddsProvider,
+      (task) => backgroundTasks.push(task),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({ slugs: ['jude-bellingham'] }),
+    );
+
+    expect(result.data[0]?.pendingRefreshes).toContain('marketOdds');
+    expect(backgroundTasks).toHaveLength(1);
+    await Promise.all(backgroundTasks);
+    expect(refreshCachedPrices).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({ cacheOnly: true }),
+    );
+  });
+
   it('keeps fixture teammates pending while one shared market snapshot warms', async () => {
     const refreshedPlayers: string[][] = [];
     const load = vi.fn<PlayerMarketOddsProvider['load']>(
