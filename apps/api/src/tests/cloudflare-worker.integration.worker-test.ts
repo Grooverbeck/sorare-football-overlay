@@ -99,7 +99,7 @@ describe('Cloudflare Worker', () => {
       context,
     );
     const fixture = {
-      date: '2026-08-23T18:00:00.000Z',
+      date: new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString(),
       competitionSlug: 'bundesliga-de',
       homeTeamName: 'Shared Home',
       awayTeamName: 'Shared Away',
