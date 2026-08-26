@@ -716,6 +716,7 @@ export class StatsService {
     );
     const marketRefreshPlayers: PlayerStats[] = [];
     const marketPriceRefreshPlayers: PlayerStats[] = [];
+    const fixturePriceRefreshPlayerKeys = new Set<string>();
     const matchOddsRefreshPlayers: PlayerStats[] = [];
     const canScheduleOddsRefresh =
       Boolean(this.scheduleBackground) && !request.oddsCacheOnly;
@@ -834,8 +835,10 @@ export class StatsService {
           marketRefreshPlayers.push(stats);
         } else if (
           needsMarketPriceRefresh &&
-          !playersWithFixtureRefresh.has(key)
+          playersWithFixtureRefresh.has(key)
         ) {
+          fixturePriceRefreshPlayerKeys.add(key);
+        } else if (needsMarketPriceRefresh) {
           marketPriceRefreshPlayers.push(stats);
         }
       }
@@ -861,7 +864,12 @@ export class StatsService {
     if (this.scheduleBackground) {
       const tasks: Promise<void>[] = [];
       if (!request.oddsCacheOnly && fixtureRefreshEntries.length > 0) {
-        tasks.push(this.refreshFixtures(fixtureRefreshEntries));
+        tasks.push(
+          this.refreshFixtures(
+            fixtureRefreshEntries,
+            fixturePriceRefreshPlayerKeys,
+          ),
+        );
       }
       if (canScheduleOddsRefresh && marketRefreshPlayers.length > 0) {
         tasks.push(
@@ -1227,7 +1235,10 @@ export class StatsService {
     }
   }
 
-  private async refreshFixtures(entries: FixtureRefreshEntry[]): Promise<void> {
+  private async refreshFixtures(
+    entries: FixtureRefreshEntry[],
+    priceRefreshPlayerKeys: ReadonlySet<string> = new Set(),
+  ): Promise<void> {
     const splitCache = supportsSplitPlayerStatsCache(this.cache)
       ? this.cache
       : undefined;
@@ -1299,6 +1310,11 @@ export class StatsService {
     const oddsEligible = refreshedPlayers.filter(
       (stats) => playerMarketOddsSupported(this.marketOddsProvider, stats),
     );
+    const priceRefreshEligible = this.marketOddsProvider.refreshCachedPrices
+      ? refreshedPlayers.filter((stats) =>
+          priceRefreshPlayerKeys.has(playerMarketOddsKey(stats)),
+        )
+      : [];
     const matchOddsEligible = refreshedPlayers.filter(
       (stats) =>
         this.fixtureMatchOddsProvider.supports(stats) &&
@@ -1307,6 +1323,10 @@ export class StatsService {
     await Promise.allSettled([
       oddsEligible.length > 0
         ? this.marketOddsProvider.load(oddsEligible).then(() => undefined)
+        : Promise.resolve(),
+      priceRefreshEligible.length > 0 &&
+      this.marketOddsProvider.refreshCachedPrices
+        ? this.marketOddsProvider.refreshCachedPrices(priceRefreshEligible)
         : Promise.resolve(),
       matchOddsEligible.length > 0
         ? this.fixtureMatchOddsProvider

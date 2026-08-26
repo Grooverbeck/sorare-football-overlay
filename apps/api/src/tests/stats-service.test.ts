@@ -96,6 +96,7 @@ const followingFixture: NonNullable<PlayerFixtureStats> = {
 
 interface FixtureRefreshScenarioOptions {
   fetchNextGames: PlayerStatsDataSource['fetchNextGames'];
+  priceRefreshDue?: boolean;
   refreshFixture?: (
     key: string,
     value: PlayerFixtureStats,
@@ -106,6 +107,7 @@ async function runFixtureRefreshScenario(
   options: FixtureRefreshScenarioOptions,
 ): Promise<{
   marketRefreshes: PlayerStats[][];
+  priceRefreshes: PlayerStats[][];
   matchRefreshes: PlayerStats[][];
   refreshFixture: ReturnType<typeof vi.fn>;
 }> {
@@ -153,14 +155,39 @@ async function runFixtureRefreshScenario(
     fetchNextGames: options.fetchNextGames,
   };
   const marketRefreshes: PlayerStats[][] = [];
+  const priceRefreshes: PlayerStats[][] = [];
   const marketProvider: PlayerMarketOddsProvider = {
+    reportsRefreshDue: true,
     supports: () => true,
     supportsMarket: () => true,
+    drivesMarketRequest: (_player, market) => market === 'goal',
     load: async (players, loadOptions) => {
+      if (loadOptions?.refreshDueState) {
+        loadOptions.refreshDueState.complete = true;
+      }
+      if (loadOptions?.cacheOnly && options.priceRefreshDue) {
+        for (const player of players) {
+          loadOptions.refreshDuePlayerKeys?.add(playerMarketOddsKey(player));
+        }
+      }
       if (!loadOptions?.cacheOnly) marketRefreshes.push([...players]);
       return new Map(
-        players.map((player) => [playerMarketOddsKey(player), null]),
+        players.map((player) => [
+          playerMarketOddsKey(player),
+          options.priceRefreshDue
+            ? {
+                source: 'odds-api-io' as const,
+                capturedAt: '2026-08-06T12:00:00.000Z',
+                goal: { probability: 0.25, bookmakerCount: 1 },
+                assist: null,
+                decisive: null,
+              }
+            : null,
+        ]),
       );
+    },
+    refreshCachedPrices: async (players) => {
+      priceRefreshes.push([...players]);
     },
   };
   const matchRefreshes: PlayerStats[][] = [];
@@ -193,7 +220,12 @@ async function runFixtureRefreshScenario(
   );
   await Promise.all(backgroundTasks);
 
-  return { marketRefreshes, matchRefreshes, refreshFixture };
+  return {
+    marketRefreshes,
+    priceRefreshes,
+    matchRefreshes,
+    refreshFixture,
+  };
 }
 
 describe('StatsService cache writes', () => {
@@ -1464,6 +1496,18 @@ describe('StatsService cache writes', () => {
       expect(result.matchRefreshes[0]?.[0]?.nextGame).toEqual(heldFixture);
     },
   );
+
+  it('keeps a due cached-price refresh when the Sorare fixture refresh runs at the same time', async () => {
+    const result = await runFixtureRefreshScenario({
+      fetchNextGames: async () => [],
+      priceRefreshDue: true,
+    });
+
+    expect(result.marketRefreshes).toHaveLength(1);
+    expect(result.priceRefreshes).toHaveLength(1);
+    expect(result.priceRefreshes[0]).toHaveLength(1);
+    expect(result.priceRefreshes[0]?.[0]?.nextGame).toEqual(heldFixture);
+  });
 
   it.each([
     {
