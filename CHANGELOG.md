@@ -3,6 +3,35 @@
 Alle wichtigen Änderungen am Sorare Football Stats Overlay werden in dieser
 Datei dokumentiert.
 
+## 0.4.6 – 27. August 2026
+
+### Torquote und AA jetzt auch im Squad Lineup Builder
+
+- Die zusätzlichen Sortierungen **Torquote** und **AA** stehen jetzt sowohl im
+  normalen Lineup Builder als auch im Squad Lineup Builder zur Verfügung.
+- Die Erweiterung berücksichtigt die vollständige Spielerliste der gewählten
+  Position und respektiert weiterhin die aktiven Sorare-Filter.
+- Karten mit abweichender Position werden nicht mehr versehentlich in die
+  sortierte Auswahl übernommen.
+
+### Stabilere Anzeigen und aktuellere Quoten
+
+- Klammern bleiben auf sichtbaren Karten zuverlässig erhalten und verschwinden
+  weiterhin hinter tatsächlich verdeckenden Sorare-Oberflächen.
+- Spieler ohne verwertbare Daten nach einem Vereinswechsel erhalten eine graue
+  AA-Anzeige statt einer vollständig fehlenden Klammer.
+- Abgekürzte Teamnamen werden zuverlässiger der richtigen Seite des Spiels
+  zugeordnet.
+- Bereits bekannte Odds.io-Spielerquoten werden vor dem Anpfiff gezielt
+  aktualisiert, ohne zusätzliche Abfragen bei den monatlich begrenzten
+  Anbietern auszulösen.
+
+### Einheitlicher Veröffentlichungsstand
+
+- Extension- und Backend-Änderungen liegen wieder gemeinsam auf `main`.
+- Neu erstellte Erweiterungspakete tragen dadurch zuverlässig die aktuelle
+  Versionsnummer statt auf `0.3.4` zurückzufallen.
+
 ## 0.4.5 – 23. August 2026
 
 ### Ruhiges Sortiermenü im Squad Builder
