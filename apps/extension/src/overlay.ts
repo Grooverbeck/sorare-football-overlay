@@ -12,6 +12,7 @@ import {
 import { supportsCompactViewPath } from './compact-view-route.js';
 import { isScoreDetailsDialogTarget } from './dom.js';
 import {
+  isLineupPoolProbeScrollEvent,
   setLineupAaSortValue,
   setLineupGoalSortValue,
   setLineupSortDataReady,
@@ -2423,13 +2424,16 @@ interface OverlayPositionContext {
 
 interface PositionedOverlay {
   readonly host: HTMLElement;
+  readonly layoutContainer: HTMLElement;
   isViewportPriorityActive(): boolean;
+  isAffectedByLayoutMotion(target: Element): boolean;
   refreshPositionNow(context: OverlayPositionContext): void;
   hideUntilPositionRefresh?(): void;
   handleLayoutMotionStart?(event: Event): void;
 }
 
 const positionedOverlays = new Set<PositionedOverlay>();
+const positionedOverlayByContainer = new WeakMap<HTMLElement, PositionedOverlay>();
 const pendingPositionedOverlays = new Set<PositionedOverlay>();
 const layoutMotionEvents = [
   'animationstart',
@@ -2530,24 +2534,46 @@ function isPrimarySinglePackCard(
 }
 
 function schedulePositionsAfterLayoutMotion(event: Event): void {
+  const target = event.target;
   if (
-    event.target instanceof Element &&
-    event.target.closest(overlayMountSelector)
+    target instanceof Element &&
+    target.closest(overlayMountSelector)
   ) {
     return;
   }
-  if (
+  if (!(target instanceof Element)) {
+    scheduleAllOverlayPositions();
+    return;
+  }
+  const motionStarted =
     event.type === 'animationstart' ||
     event.type === 'transitionrun' ||
-    event.type === 'transitionstart'
-  ) {
-    for (const view of positionedOverlays) {
-      if (view.isViewportPriorityActive()) {
-        view.handleLayoutMotionStart?.(event);
-      }
+    event.type === 'transitionstart';
+  const directContainer = target.closest<HTMLElement>(
+    '[data-sorare-overlay-key]',
+  );
+  const directView = directContainer
+    ? positionedOverlayByContainer.get(directContainer)
+    : undefined;
+  if (directView) {
+    if (directView.isViewportPriorityActive()) {
+      if (motionStarted) directView.handleLayoutMotionStart?.(event);
+      pendingPositionedOverlays.add(directView);
+      ensurePositionFrame();
     }
+    return;
   }
-  scheduleAllOverlayPositions();
+  for (const view of positionedOverlays) {
+    if (
+      !view.isViewportPriorityActive() ||
+      !view.isAffectedByLayoutMotion(target)
+    ) {
+      continue;
+    }
+    if (motionStarted) view.handleLayoutMotionStart?.(event);
+    pendingPositionedOverlays.add(view);
+  }
+  ensurePositionFrame();
 }
 
 function detachPositionListeners(): void {
@@ -2566,6 +2592,9 @@ function detachPositionListeners(): void {
 
 function unregisterPositionedOverlay(view: PositionedOverlay): void {
   positionedOverlays.delete(view);
+  if (positionedOverlayByContainer.get(view.layoutContainer) === view) {
+    positionedOverlayByContainer.delete(view.layoutContainer);
+  }
   pendingPositionedOverlays.delete(view);
   if (positionedOverlays.size > 0) return;
   detachPositionListeners();
@@ -2611,6 +2640,7 @@ function scheduleOverlayPosition(view: PositionedOverlay): void {
 }
 
 function scheduleAllOverlayPositions(event?: Event): void {
+  if (event && isLineupPoolProbeScrollEvent(event)) return;
   for (const view of positionedOverlays) {
     if (!view.isViewportPriorityActive()) continue;
     if (event?.type === 'scroll') view.hideUntilPositionRefresh?.();
@@ -2624,6 +2654,7 @@ function registerPositionedOverlay(view: PositionedOverlay): void {
     if (!registered.host.isConnected) unregisterPositionedOverlay(registered);
   }
   positionedOverlays.add(view);
+  positionedOverlayByContainer.set(view.layoutContainer, view);
   if (positionListenersAttached) return;
   window.addEventListener('resize', scheduleAllOverlayPositions);
   window.addEventListener('scroll', scheduleAllOverlayPositions, true);
@@ -2706,6 +2737,10 @@ export class OverlayView {
   private readonly closeMarketBracketForCardHover = (): void => {
     delete this.host.dataset.marketBracketCardHover;
   };
+
+  get layoutContainer(): HTMLElement {
+    return this.container;
+  }
 
   constructor(
     private readonly container: HTMLElement,
@@ -2980,6 +3015,26 @@ export class OverlayView {
 
   isViewportPriorityActive(): boolean {
     return this.viewportPriorityActive;
+  }
+
+  isAffectedByLayoutMotion(target: Element): boolean {
+    if (this.destroyed) return false;
+    if (this.container.contains(target) || target.contains(this.container)) {
+      return true;
+    }
+    let scope = target.parentElement;
+    for (
+      let depth = 0;
+      scope &&
+      scope !== document.body &&
+      scope !== document.documentElement &&
+      depth < 3;
+      depth += 1
+    ) {
+      if (scope.contains(this.container)) return true;
+      scope = scope.parentElement;
+    }
+    return false;
   }
 
   setViewportPriorityActive(active: boolean): void {

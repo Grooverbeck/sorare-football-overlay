@@ -18,6 +18,8 @@ export const lineupSortValueChangedEvent =
   'sorare-overlay:lineup-sort-value-changed';
 export const lineupPoolReadyEvent =
   'sorare-overlay:lineup-pool-ready';
+export const lineupPoolProgressEvent =
+  'sorare-overlay:lineup-pool-progress';
 
 export type LineupGoalSortSource = 'market' | 'historical';
 export type LineupSortMode = 'goal' | 'aa';
@@ -77,6 +79,7 @@ interface SortableCell {
 export interface LineupPoolLoadContext {
   isCancelled: () => boolean;
   onProgress: (cardCount: number) => void;
+  onGridUpdate?: (grid: HTMLElement) => void;
 }
 
 export type LineupPoolLoader = (
@@ -224,13 +227,21 @@ function isNativeSortButton(button: HTMLButtonElement): boolean {
   );
 }
 
-function nativeSortButton(): HTMLButtonElement | null {
+function nativeSortButton(root: ParentNode = document): HTMLButtonElement | null {
+  const direct =
+    root instanceof HTMLButtonElement &&
+    root.matches('button[aria-haspopup="dialog"]')
+      ? [root]
+      : [];
   return (
-    Array.from(
-      document.querySelectorAll<HTMLButtonElement>(
-        'button[aria-haspopup="dialog"]',
+    [
+      ...direct,
+      ...Array.from(
+        root.querySelectorAll<HTMLButtonElement>(
+          'button[aria-haspopup="dialog"]',
+        ),
       ),
-    ).find(isNativeSortButton) ?? null
+    ].find(isNativeSortButton) ?? null
   );
 }
 
@@ -516,6 +527,24 @@ async function animationFrames(count: number): Promise<void> {
   }
 }
 
+interface LineupPoolProbeScrollEvent extends Event {
+  sorareOverlayPoolProbe?: boolean;
+}
+
+export function isLineupPoolProbeScrollEvent(event: Event): boolean {
+  return (event as LineupPoolProbeScrollEvent).sorareOverlayPoolProbe === true;
+}
+
+function dispatchLineupPoolProbeScrollEvents(): void {
+  const createEvent = (): LineupPoolProbeScrollEvent => {
+    const event = new Event('scroll') as LineupPoolProbeScrollEvent;
+    event.sorareOverlayPoolProbe = true;
+    return event;
+  };
+  window.dispatchEvent(createEvent());
+  document.dispatchEvent(createEvent());
+}
+
 interface InlineStyleValue {
   property: string;
   value: string;
@@ -548,11 +577,12 @@ function restoreInlineStyles(
 
 async function revealGridEndSilently(grid: HTMLElement): Promise<boolean> {
   const loadingCell = gridLoadingCell(grid);
-  const trigger = loadingCell ?? gridCardCells(grid).at(-1);
-  if (!trigger?.isConnected) {
+  if (!loadingCell) {
     await animationFrames(2);
-    return false;
+    return true;
   }
+  const trigger = loadingCell;
+  if (!trigger.isConnected) return false;
 
   const rectangle = trigger.getBoundingClientRect();
   if (rectangle.width <= 0 || rectangle.height <= 0) {
@@ -566,8 +596,7 @@ async function revealGridEndSilently(grid: HTMLElement): Promise<boolean> {
     rectangle.right > 0 &&
     rectangle.left < window.innerWidth;
   if (isAlreadyVisible) {
-    window.dispatchEvent(new Event('scroll'));
-    document.dispatchEvent(new Event('scroll'));
+    dispatchLineupPoolProbeScrollEvents();
     await animationFrames(8);
     return true;
   }
@@ -617,8 +646,7 @@ async function revealGridEndSilently(grid: HTMLElement): Promise<boolean> {
     trigger.style.setProperty('pointer-events', 'none', 'important');
     trigger.style.setProperty('transform', 'none', 'important');
     trigger.style.setProperty('z-index', '-2147483647', 'important');
-    window.dispatchEvent(new Event('scroll'));
-    document.dispatchEvent(new Event('scroll'));
+    dispatchLineupPoolProbeScrollEvents();
     await animationFrames(8);
   } finally {
     restoreInlineStyles(trigger, originalStyles);
@@ -641,14 +669,54 @@ async function waitForGridGrowth(
   previousCount: number,
   isCancelled: () => boolean,
 ): Promise<boolean> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    await delay(90);
-    if (isCancelled()) return false;
-    const currentGrid = lineupPlayerGrid();
-    if (currentGrid && currentGrid !== grid) return true;
-    if (currentGrid && gridCardCount(currentGrid) > previousCount) return true;
+  if (
+    isCancelled() ||
+    !grid.isConnected ||
+    gridCardCount(grid) > previousCount
+  ) {
+    return !isCancelled();
   }
-  return false;
+  if (typeof MutationObserver === 'undefined') {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await delay(90);
+      if (isCancelled()) return false;
+      if (!grid.isConnected || gridCardCount(grid) > previousCount) return true;
+    }
+    return false;
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let observer: MutationObserver;
+    let timeout: number;
+    let cancellationTimer: number;
+    const finish = (grew: boolean): void => {
+      if (settled) return;
+      settled = true;
+      observer.disconnect();
+      window.clearTimeout(timeout);
+      window.clearInterval(cancellationTimer);
+      resolve(grew);
+    };
+    observer = new MutationObserver(() => {
+      if (isCancelled()) {
+        finish(false);
+      } else if (!grid.isConnected || gridCardCount(grid) > previousCount) {
+        finish(true);
+      }
+    });
+    timeout = window.setTimeout(() => {
+      finish(
+        !isCancelled() &&
+          (!grid.isConnected || gridCardCount(grid) > previousCount),
+      );
+    }, 1_800);
+    cancellationTimer = window.setInterval(() => {
+      if (isCancelled()) finish(false);
+      else if (!grid.isConnected) finish(true);
+    }, 90);
+    observer.observe(grid, { childList: true });
+  });
 }
 
 export async function loadCompleteLineupPool(
@@ -662,10 +730,14 @@ export async function loadCompleteLineupPool(
   const stableMissesRequired = options.stableMissesRequired ?? 2;
   let stableMisses = 0;
   let observedGrowth = false;
+  let grid: HTMLElement | null = null;
 
   for (let pulse = 0; pulse < maxPulses; pulse += 1) {
     if (context.isCancelled()) return null;
-    const grid = getGrid();
+    if (!grid?.isConnected) {
+      grid = getGrid();
+      if (grid) context.onGridUpdate?.(grid);
+    }
     if (!grid) {
       await delay(100);
       continue;
@@ -680,23 +752,25 @@ export async function loadCompleteLineupPool(
       context.isCancelled,
     );
     if (context.isCancelled()) return null;
-    const currentGrid = getGrid();
-    if (currentGrid && gridCardCount(currentGrid) > previousCount) {
-      observedGrowth = true;
+    if (!grid.isConnected) {
+      grid = null;
+      stableMisses = 0;
+      continue;
     }
-    if (
-      grew ||
-      (currentGrid && currentGrid !== grid) ||
-      (currentGrid && gridCardCount(currentGrid) > previousCount)
-    ) {
+    const currentCount = gridCardCount(grid);
+    if (currentCount > previousCount) {
+      observedGrowth = true;
+      context.onGridUpdate?.(grid);
+    }
+    if (grew || currentCount > previousCount) {
       stableMisses = 0;
       continue;
     }
     stableMisses += 1;
     if (stableMisses >= stableMissesRequired) {
-      if (currentGrid && gridLoadingCell(currentGrid)) return null;
+      if (gridLoadingCell(grid)) return null;
       if (!observedGrowth && !endWasRevealed) return null;
-      context.onProgress(previousCount);
+      context.onProgress(currentCount);
       return grid;
     }
   }
@@ -725,10 +799,12 @@ export class LineupCardSorter {
   private poolCardCount = 0;
   private poolHydrating = false;
   private poolReadyCount = 0;
+  private loadingGrid: HTMLElement | null = null;
   private completedGrid: HTMLElement | null = null;
   private completedCells = new Set<HTMLElement>();
   private failedGrid: HTMLElement | null = null;
   private failedCells = new Set<HTMLElement>();
+  private gridObserver: MutationObserver | undefined;
   private requestedPosition: FootballPosition | null | undefined;
   private filterSuspended = false;
   private readonly originalOrders = new Map<HTMLElement, OriginalOrder>();
@@ -803,7 +879,7 @@ export class LineupCardSorter {
     this.root = null;
   }
 
-  scan(_root: ParentNode): void {
+  scan(root: ParentNode): void {
     if (!supportsLineupSortPath(window.location.pathname)) {
       if (this.supportedPathActive) {
         this.deactivateWithoutNativeSync();
@@ -814,7 +890,7 @@ export class LineupCardSorter {
       return;
     }
     this.supportedPathActive = true;
-    this.syncNativeSortUi();
+    this.syncNativeSortUi(root);
     if (!this.activeMode) return;
     if (nativeFilterIsOpen()) {
       if (!this.filterSuspended) {
@@ -832,8 +908,12 @@ export class LineupCardSorter {
       return;
     }
     if (this.poolLoading) return;
-    const grid = lineupPlayerGrid();
+    const grid = this.poolLoadFailed ? this.failedGrid : this.completedGrid;
     if (!grid) return;
+    if (!grid.isConnected) {
+      this.restartCompleteSort(80);
+      return;
+    }
     const cells = gridCardCells(grid);
     const sameCompletedPool =
       grid === this.completedGrid &&
@@ -854,8 +934,13 @@ export class LineupCardSorter {
     this.scheduleSort();
   }
 
-  private syncNativeSortUi(): void {
-    const trigger = nativeSortButton();
+  private syncNativeSortUi(searchRoot?: ParentNode): void {
+    const scopedTrigger = searchRoot ? nativeSortButton(searchRoot) : null;
+    const retainedTrigger =
+      this.nativeTrigger?.isConnected && isNativeSortButton(this.nativeTrigger)
+        ? this.nativeTrigger
+        : null;
+    const trigger = scopedTrigger ?? retainedTrigger ?? nativeSortButton();
     if (!trigger) {
       this.removeMenuOptions();
       this.restoreNativeTrigger();
@@ -1036,6 +1121,7 @@ export class LineupCardSorter {
     if (mode && reusableGrid) {
       this.completedGrid = reusableGrid;
       this.completedCells = new Set(gridCardCells(reusableGrid));
+      this.observeGrid(reusableGrid);
       this.refreshHydrationProgress();
       this.syncNativeSortUi();
       this.scheduleSort();
@@ -1058,18 +1144,25 @@ export class LineupCardSorter {
     this.poolCardCount = 0;
     this.poolHydrating = false;
     this.poolReadyCount = 0;
+    this.loadingGrid = null;
     this.completedGrid = null;
     this.completedCells.clear();
     this.failedGrid = null;
     this.failedCells.clear();
+    this.gridObserver?.disconnect();
+    this.gridObserver = undefined;
   }
 
-  private rememberFailedPool(grid = lineupPlayerGrid()): void {
+  private rememberFailedPool(
+    grid = this.loadingGrid?.isConnected ? this.loadingGrid : lineupPlayerGrid(),
+  ): void {
     this.poolLoadFailed = true;
     this.poolHydrating = false;
     this.poolReadyCount = 0;
     this.failedGrid = grid;
     this.failedCells = new Set(grid ? gridCardCells(grid) : []);
+    this.observeGrid(grid);
+    this.loadingGrid = null;
   }
 
   private restartCompleteSort(delayMs = 0): void {
@@ -1096,6 +1189,13 @@ export class LineupCardSorter {
         if (isCancelled()) return;
         this.poolCardCount = cardCount;
         this.syncNativeSortUi();
+      },
+      onGridUpdate: (activeGrid) => {
+        if (isCancelled()) return;
+        this.loadingGrid = activeGrid;
+        activeGrid.dispatchEvent(
+          new CustomEvent(lineupPoolProgressEvent, { bubbles: true }),
+        );
       },
     });
     if (isCancelled()) return;
@@ -1125,9 +1225,11 @@ export class LineupCardSorter {
     }
 
     this.poolLoadFailed = false;
+    this.loadingGrid = null;
     this.completedGrid = grid;
     this.completedCells = new Set(gridCardCells(grid));
     this.poolCardCount = this.completedCells.size;
+    this.observeGrid(grid);
     grid.dispatchEvent(
       new CustomEvent(lineupPoolReadyEvent, { bubbles: true }),
     );
@@ -1148,6 +1250,24 @@ export class LineupCardSorter {
     this.poolReadyCount = cells.filter(cellSortDataIsReady).length;
     this.poolHydrating =
       this.poolCardCount > 0 && this.poolReadyCount < this.poolCardCount;
+  }
+
+  private observeGrid(grid: HTMLElement | null): void {
+    this.gridObserver?.disconnect();
+    this.gridObserver = undefined;
+    if (!grid || typeof MutationObserver === 'undefined') return;
+    this.gridObserver = new MutationObserver((mutations) => {
+      if (
+        !this.activeMode ||
+        this.poolLoading ||
+        this.filterSuspended ||
+        !mutations.some((mutation) => mutation.type === 'childList')
+      ) {
+        return;
+      }
+      this.restartCompleteSort(80);
+    });
+    this.gridObserver.observe(grid, { childList: true });
   }
 
   private scheduleSort(): void {
@@ -1197,7 +1317,7 @@ export class LineupCardSorter {
       this.restartCompleteSort(80);
       return;
     }
-    const expectedPosition = this.requestedPosition ?? activeLineupPosition();
+    const expectedPosition = this.requestedPosition;
     if (!gridMatchesPosition(grid, expectedPosition)) {
       this.restoreOriginalOrders();
       this.rememberFailedPool(grid);

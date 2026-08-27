@@ -515,6 +515,84 @@ describe('Sorare card DOM discovery', () => {
     midfielderView.destroy();
   });
 
+  it('bounds cached aliases and expires inactive entries', async () => {
+    let now = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const fetcher = vi.fn(
+      async (request: PlayerStatsRequest): Promise<PlayerStatsSuccessResponse> => ({
+        data: request.slugs.map((slug) => ({
+          slug,
+          displayName: slug,
+          position: 'Defender' as const,
+          aaL10: { value: 10, sampleSize: 10 },
+          cleanSheetL10: { value: 0.2, sampleSize: 10 },
+          goalL10: { value: 0, sampleSize: 10 },
+          nextGame: null,
+          excludedLowCoverage: 0,
+        })),
+        meta: {
+          requested: request.slugs.length,
+          returned: request.slugs.length,
+          cacheHits: 0,
+          source: 'mock',
+        },
+      }),
+    );
+    const coordinator = new StatsBatchCoordinator(
+      fetcher,
+      60_000,
+      [],
+      12,
+      2,
+      [],
+      750,
+      { maxCachedAliases: 2, cachedAliasTtlMs: 10 },
+    );
+    const load = async (slug: string): Promise<void> => {
+      const card = document.createElement('article');
+      document.body.append(card);
+      const view = new OverlayView(card, { slug }, 'Defender');
+      coordinator.enqueue(
+        { slug, position: 'Defender', container: card },
+        view,
+      );
+      await coordinator.flush();
+      coordinator.releaseView(view);
+      view.destroy();
+      card.remove();
+    };
+
+    await load('first-player');
+    await load('second-player');
+    await load('first-player');
+    expect(fetcher).toHaveBeenCalledTimes(3);
+
+    now = 11;
+    await load('first-player');
+    expect(fetcher).toHaveBeenCalledTimes(4);
+  });
+
+  it('drops queued work when its card view is released', async () => {
+    const fetcher = vi.fn(async (): Promise<PlayerStatsSuccessResponse> => ({
+      data: [],
+      meta: { requested: 0, returned: 0, cacheHits: 0, source: 'mock' },
+    }));
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const card = document.createElement('article');
+    document.body.append(card);
+    const view = new OverlayView(card, { slug: 'removed-before-request' });
+
+    coordinator.enqueue(
+      { slug: 'removed-before-request', container: card },
+      view,
+    );
+    coordinator.releaseView(view);
+    await coordinator.flush();
+
+    expect(fetcher).not.toHaveBeenCalled();
+    view.destroy();
+  });
+
   it('keeps real market odds across an empty refresh for the same fixture only', async () => {
     applyHistoricalAssistFallbackSettings(true, 15);
     const fixture = {
@@ -1656,6 +1734,7 @@ describe('Sorare card DOM discovery', () => {
       vi.fn(async () => response),
       60_000,
     );
+    const releaseView = vi.spyOn(coordinator, 'releaseView');
     const scanner = new SorareCardScanner(coordinator);
     scanner.start();
     await coordinator.flush();
@@ -1670,6 +1749,7 @@ describe('Sorare card DOM discovery', () => {
         document.querySelectorAll('[data-sorare-overlay-root]'),
       ).toHaveLength(0),
     );
+    expect(releaseView).toHaveBeenCalledTimes(1);
     scanner.stop();
   });
 
@@ -5924,7 +6004,59 @@ describe('Sorare card DOM discovery', () => {
     vi.unstubAllGlobals();
   });
 
-  it('does not rerun card discovery for repeated visual-only mutations', async () => {
+  it('realigns only overlays affected by a local card animation', () => {
+    const frameCallbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      frameCallbacks.push(callback);
+      return frameCallbacks.length;
+    });
+    vi.stubGlobal('requestAnimationFrame', requestAnimationFrame);
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    document.body.innerHTML = `
+      <section data-testid="first-scope">
+        <article data-testid="first-card"><span data-testid="motion"></span></article>
+      </section>
+      <section data-testid="second-scope">
+        <article data-testid="second-card"></article>
+      </section>
+    `;
+    const firstCard = document.querySelector<HTMLElement>(
+      '[data-testid="first-card"]',
+    );
+    const secondCard = document.querySelector<HTMLElement>(
+      '[data-testid="second-card"]',
+    );
+    const motion = document.querySelector<HTMLElement>('[data-testid="motion"]');
+    if (!firstCard || !secondCard || !motion) {
+      throw new Error('Expected isolated animation cards');
+    }
+    firstCard.dataset.sorareOverlayKey = 'first-player';
+    secondCard.dataset.sorareOverlayKey = 'second-player';
+    const firstRect = vi.spyOn(firstCard, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 20, y: 100, width: 120, height: 194 }),
+    );
+    const secondRect = vi.spyOn(secondCard, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 160, y: 100, width: 120, height: 194 }),
+    );
+    const firstView = new OverlayView(firstCard, { playerName: 'First Player' });
+    const secondView = new OverlayView(secondCard, { playerName: 'Second Player' });
+    firstRect.mockClear();
+    secondRect.mockClear();
+    requestAnimationFrame.mockClear();
+
+    motion.dispatchEvent(new Event('animationend', { bubbles: true }));
+
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+    frameCallbacks.shift()?.(performance.now());
+    expect(firstRect).toHaveBeenCalledTimes(1);
+    expect(secondRect).not.toHaveBeenCalled();
+
+    firstView.destroy();
+    secondView.destroy();
+    vi.unstubAllGlobals();
+  });
+
+  it('ignores visual-only mutations outside tracked cards', async () => {
     const frameCallbacks: FrameRequestCallback[] = [];
     const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
       frameCallbacks.push(callback);
@@ -5944,9 +6076,54 @@ describe('Sorare card DOM discovery', () => {
     list.style.transform = 'translateY(20px)';
     list.style.opacity = '0.99';
 
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
+    expect(frameCallbacks).toHaveLength(0);
+    expect(scan).not.toHaveBeenCalled();
+
+    scanner.stop();
+    vi.unstubAllGlobals();
+  });
+
+  it('coalesces nested card mutations into one scoped discovery pass', async () => {
+    const frameCallbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      frameCallbacks.push(callback);
+      return frameCallbacks.length;
+    });
+    vi.stubGlobal('requestAnimationFrame', requestAnimationFrame);
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    document.body.innerHTML = `
+      <main data-testid="builder">
+        <div data-testid="player-pool"></div>
+      </main>
+    `;
+    const pool = document.querySelector<HTMLElement>('[data-testid="player-pool"]');
+    if (!pool) throw new Error('Expected player pool');
+    const coordinator = new StatsBatchCoordinator(
+      vi.fn(async (): Promise<PlayerStatsSuccessResponse> => ({
+        data: [],
+        meta: { requested: 0, returned: 0, cacheHits: 0, source: 'mock' },
+      })),
+      60_000,
+    );
+    const scanner = new SorareCardScanner(coordinator);
+    const scan = vi.spyOn(scanner, 'scan');
+    scanner.start();
+    scan.mockClear();
+    requestAnimationFrame.mockClear();
+
+    pool.insertAdjacentHTML(
+      'beforeend',
+      '<div><button><img alt="Scoped Player - limited" src="/card.png"></button></div>',
+    );
     await vi.waitFor(() => expect(requestAnimationFrame).toHaveBeenCalledTimes(1));
     frameCallbacks.shift()?.(performance.now());
-    expect(scan).not.toHaveBeenCalled();
+
+    expect(scan).toHaveBeenCalledTimes(1);
+    expect(scan.mock.calls[0]?.[0]).toBe(
+      document.querySelector('[data-testid="builder"]'),
+    );
 
     scanner.stop();
     vi.unstubAllGlobals();

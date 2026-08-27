@@ -255,6 +255,8 @@ describe('lineup card sorting', () => {
       '<div><img alt="Lazy Player Two - limited"></div>',
     ];
     const progress: number[] = [];
+    const gridUpdates = vi.fn();
+    const getGrid = vi.fn(() => grid);
     const revealGridEnd = vi.fn(async () => {
       const page = pages.shift();
       if (page) grid.insertAdjacentHTML('beforeend', page);
@@ -265,9 +267,10 @@ describe('lineup card sorting', () => {
       {
         isCancelled: () => false,
         onProgress: (count) => progress.push(count),
+        onGridUpdate: gridUpdates,
       },
       {
-        getGrid: () => grid,
+        getGrid,
         revealGridEnd,
         waitForGrowth: async (_grid, previousCount) =>
           grid.children.length > previousCount,
@@ -279,6 +282,9 @@ describe('lineup card sorting', () => {
     expect(result).toBe(grid);
     expect(grid.children).toHaveLength(5);
     expect(revealGridEnd).toHaveBeenCalledTimes(4);
+    expect(getGrid).toHaveBeenCalledTimes(1);
+    expect(gridUpdates).toHaveBeenCalledTimes(3);
+    expect(gridUpdates).toHaveBeenLastCalledWith(grid);
     expect(progress.at(-1)).toBe(5);
   });
 

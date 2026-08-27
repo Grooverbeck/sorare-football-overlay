@@ -17,6 +17,7 @@ import {
   LineupCardSorter,
   lineupAaSortOptionAttribute,
   lineupGoalSortOptionAttribute,
+  lineupPoolProgressEvent,
   lineupPoolReadyEvent,
 } from './lineup-sort.js';
 import {
@@ -45,11 +46,26 @@ const discoveryAttributes = new Set([
   'data-position',
   'data-card-position',
 ]);
+const globalLayoutStateAttributes = ['hidden', 'inert', 'aria-hidden'] as const;
+const globalOverlayLayoutSelector =
+  'dialog, [role="dialog"], [aria-modal="true"]';
 const viewportPriorityRootMargin = '500px 240px';
 const viewportPriorityVerticalMargin = 500;
 const viewportPriorityHorizontalMargin = 240;
 const viewportPriorityVisible = 2;
 const viewportPriorityNearby = 1;
+const defaultMaxCachedAliases = 8_192;
+const defaultCachedAliasTtlMs = 6 * 60 * 60 * 1_000;
+
+interface CachedAliasMetadata {
+  lastAccessedAt: number;
+  sequence: number;
+}
+
+export interface StatsBatchCoordinatorOptions {
+  maxCachedAliases?: number;
+  cachedAliasTtlMs?: number;
+}
 
 interface PendingTarget {
   slug?: string;
@@ -92,6 +108,20 @@ interface MountedOverlay {
   view: OverlayView;
   viewportActive: boolean;
   statsRequested: boolean;
+}
+
+function isElementNode(node: Node): node is Element {
+  return node.nodeType === 1;
+}
+
+function outermostElements(elements: Iterable<Element>): Element[] {
+  const candidates = [...elements];
+  return candidates.filter(
+    (candidate) =>
+      !candidates.some(
+        (other) => other !== candidate && other.contains(candidate),
+      ),
+  );
 }
 
 function normalizeName(name: string): string {
@@ -306,6 +336,7 @@ export class StatsBatchCoordinator {
   private readonly afterFlightTargets = new Map<string, PendingTarget>();
   private readonly batchQueue: BatchJob[] = [];
   private readonly cache = new Map<string, PlayerStats>();
+  private readonly cacheMetadata = new Map<string, CachedAliasMetadata>();
   private readonly trackedViews = new Map<OverlayView, TargetIdentity>();
   private readonly retryAttempts = new Map<string, number>();
   private readonly retryWork = new Map<string, ScheduledTargetWork>();
@@ -318,8 +349,11 @@ export class StatsBatchCoordinator {
   private readonly cacheOnlyOddsRequestKeys = new Set<string>();
   private activeBatchCount = 0;
   private batchSequence = 0;
+  private cacheSequence = 0;
   private timer: number | undefined;
   private includeHistoricalAssists = false;
+  private readonly maxCachedAliases: number;
+  private readonly cachedAliasTtlMs: number;
 
   constructor(
     private readonly fetcher: StatsFetcher = fetchPlayerStats,
@@ -334,7 +368,17 @@ export class StatsBatchCoordinator {
       60_000,
     ],
     private readonly deferredRetryDelayMs = 750,
-  ) {}
+    options: StatsBatchCoordinatorOptions = {},
+  ) {
+    this.maxCachedAliases = Math.max(
+      1,
+      Math.floor(options.maxCachedAliases ?? defaultMaxCachedAliases),
+    );
+    this.cachedAliasTtlMs = Math.max(
+      1,
+      Math.floor(options.cachedAliasTtlMs ?? defaultCachedAliasTtlMs),
+    );
+  }
 
   setIncludeHistoricalAssists(enabled: boolean): boolean {
     if (this.includeHistoricalAssists === enabled) return false;
@@ -348,6 +392,7 @@ export class StatsBatchCoordinator {
     priority = 0,
     forceRefresh = false,
   ): void {
+    if (!view.host.isConnected) return;
     const key = targetKey(target);
     this.trackedViews.set(view, target);
     this.clearRetry(key);
@@ -385,6 +430,39 @@ export class StatsBatchCoordinator {
     this.queueTarget(target, [view], priority);
   }
 
+  releaseView(view: OverlayView): void {
+    this.trackedViews.delete(view);
+
+    const detachFromTargets = (
+      targets: Iterable<PendingTarget | ScheduledTargetWork>,
+    ): void => {
+      for (const target of targets) target.views.delete(view);
+    };
+    detachFromTargets(this.pending.values());
+    detachFromTargets(this.inFlightTargets.values());
+    detachFromTargets(this.afterFlightTargets.values());
+    for (const job of this.batchQueue) detachFromTargets(job.batch);
+
+    for (const [key, work] of this.retryWork) {
+      work.views.delete(view);
+      if (work.views.size === 0) this.clearRetry(key);
+    }
+    for (const [key, work] of this.refreshWork) {
+      work.views.delete(view);
+      if (work.views.size === 0) this.clearPendingRefresh(key);
+    }
+    for (const [key, target] of this.pending) {
+      if (target.views.size === 0) this.pending.delete(key);
+    }
+    for (const [key, target] of this.afterFlightTargets) {
+      if (target.views.size === 0) this.afterFlightTargets.delete(key);
+    }
+    if (this.pending.size === 0 && this.timer !== undefined) {
+      window.clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+  }
+
   setViewViewportActive(
     target: TargetIdentity,
     view: OverlayView,
@@ -416,6 +494,8 @@ export class StatsBatchCoordinator {
     views: Iterable<OverlayView>,
     priority = 0,
   ): void {
+    const connectedViews = this.connectedViews(views);
+    if (connectedViews.length === 0) return;
     const key = targetKey(target);
     const inFlight = this.inFlightTargets.get(key);
     if (inFlight) {
@@ -424,7 +504,7 @@ export class StatsBatchCoordinator {
         !requiresFixtureRefresh ||
         this.inFlightFixtureRefreshKeys.has(key)
       ) {
-        for (const view of views) inFlight.views.add(view);
+        for (const view of connectedViews) inFlight.views.add(view);
         inFlight.priority = Math.max(inFlight.priority, priority);
         return;
       }
@@ -436,7 +516,7 @@ export class StatsBatchCoordinator {
         views: new Set<OverlayView>(),
         priority,
       };
-      for (const view of views) followUp.views.add(view);
+      for (const view of connectedViews) followUp.views.add(view);
       followUp.priority = Math.max(followUp.priority, priority);
       this.afterFlightTargets.set(key, followUp);
       return;
@@ -449,7 +529,7 @@ export class StatsBatchCoordinator {
       views: new Set<OverlayView>(),
       priority,
     };
-    for (const view of views) pendingTarget.views.add(view);
+    for (const view of connectedViews) pendingTarget.views.add(view);
     pendingTarget.priority = Math.max(pendingTarget.priority, priority);
     this.pending.set(key, pendingTarget);
     if (this.timer === undefined) {
@@ -601,7 +681,10 @@ export class StatsBatchCoordinator {
       const deferredPlayerSlugs = new Set(
         response.meta.deferredPlayerSlugs ?? [],
       );
-      const fixtureCandidates = [...response.data, ...this.cache.values()];
+      const fixtureCandidates = [
+        ...response.data,
+        ...this.cachedStatsValues(),
+      ];
       const responseDataWithSharedFixtures = response.data.map((stats) =>
         mergeSharedFixtureTeamData(stats, fixtureCandidates),
       );
@@ -617,7 +700,7 @@ export class StatsBatchCoordinator {
         const key = targetKey(target);
         if (refreshFixtures) this.fixtureRefreshTargets.delete(key);
         const stats =
-          this.cache.get(targetKey(target)) ??
+          this.getCachedStats(targetKey(target)) ??
           responseData.find(
             (candidate) =>
               canTrackStats(candidate) &&
@@ -664,7 +747,7 @@ export class StatsBatchCoordinator {
           }
         }
         if (stats && hasAnyDisplayData(stats)) {
-          this.cache.set(key, stats);
+          this.setCachedStats(key, stats);
           this.clearRetry(targetKey(target));
         } else if (stats?.pendingRefreshes?.length) {
           // A resolved zero-L10 player may only be waiting for its independent
@@ -759,18 +842,26 @@ export class StatsBatchCoordinator {
     isolateMarketOdds = false,
   ): void {
     const key = targetKey(target);
+    const connectedViews = this.connectedViews(views);
     if (refreshFixture) this.fixtureRefreshTargets.add(key);
     if (isolateMarketOdds) this.marketWarmupKeys.add(key);
     const existing = this.refreshWork.get(key);
     if (existing) {
-      for (const view of views) existing.views.add(view);
+      for (const view of connectedViews) existing.views.add(view);
+      if (this.connectedViews(existing.views).length === 0) {
+        this.clearPendingRefresh(key);
+        return;
+      }
       existing.priority = Math.max(existing.priority, priority);
       existing.refreshFixture ||= refreshFixture;
       existing.isolateMarketOdds ||= isolateMarketOdds;
       this.startRefreshWork(key, existing);
       return;
     }
-
+    if (connectedViews.length === 0) {
+      this.clearPendingRefresh(key);
+      return;
+    }
     const attempt = this.refreshAttempts.get(key) ?? 0;
     const delay = this.refreshDelaysMs[attempt];
     if (delay === undefined) {
@@ -784,7 +875,7 @@ export class StatsBatchCoordinator {
     this.refreshAttempts.set(key, attempt + 1);
     const work: PendingRefreshWork = {
       target,
-      views: new Set(views),
+      views: new Set(connectedViews),
       priority,
       remainingMs: delay,
       refreshFixture,
@@ -827,24 +918,32 @@ export class StatsBatchCoordinator {
   private cachedStatsForTarget(
     target: TargetIdentity,
   ): PlayerStats | undefined {
-    const exact = this.cache.get(targetKey(target));
+    this.pruneStatsCache();
+    const exact = this.getCachedStats(targetKey(target));
     if (exact || target.position === undefined || target.teamSlug !== undefined) {
       return exact;
     }
-    return [...this.cache.values()].find(
-      (stats) =>
-        stats.position === target.position && targetMatchesStats(target, stats),
-    );
+    for (const [key, stats] of this.cache) {
+      if (
+        stats.position === target.position &&
+        targetMatchesStats(target, stats)
+      ) {
+        this.touchCachedAlias(key);
+        return stats;
+      }
+    }
+    return undefined;
   }
 
   private cacheStatsAliases(
     stats: PlayerStats,
     batch: readonly PendingTarget[],
   ): Set<string> {
+    this.pruneStatsCache();
     const changedKeys = new Set<string>();
     const setAlias = (target: TargetIdentity): void => {
       const key = targetKey(target);
-      this.cache.set(key, stats);
+      this.setCachedStats(key, stats, false);
       changedKeys.add(key);
     };
 
@@ -855,7 +954,7 @@ export class StatsBatchCoordinator {
       if (cached.slug !== stats.slug || cached.position !== stats.position) {
         continue;
       }
-      this.cache.set(key, stats);
+      this.setCachedStats(key, stats, false);
       changedKeys.add(key);
     }
 
@@ -896,7 +995,59 @@ export class StatsBatchCoordinator {
       }
     }
 
+    this.pruneStatsCache();
+    for (const key of changedKeys) {
+      if (!this.cache.has(key)) changedKeys.delete(key);
+    }
     return changedKeys;
+  }
+
+  private getCachedStats(key: string): PlayerStats | undefined {
+    const stats = this.cache.get(key);
+    if (stats) this.touchCachedAlias(key);
+    return stats;
+  }
+
+  private setCachedStats(
+    key: string,
+    stats: PlayerStats,
+    prune = true,
+  ): void {
+    this.cache.set(key, stats);
+    this.touchCachedAlias(key);
+    if (prune) this.pruneStatsCache();
+  }
+
+  private touchCachedAlias(key: string): void {
+    this.cacheSequence += 1;
+    this.cacheMetadata.set(key, {
+      lastAccessedAt: Date.now(),
+      sequence: this.cacheSequence,
+    });
+  }
+
+  private cachedStatsValues(): PlayerStats[] {
+    this.pruneStatsCache();
+    return [...new Set(this.cache.values())];
+  }
+
+  private pruneStatsCache(): void {
+    const now = Date.now();
+    for (const [key, metadata] of this.cacheMetadata) {
+      if (now - metadata.lastAccessedAt <= this.cachedAliasTtlMs) continue;
+      this.cacheMetadata.delete(key);
+      this.cache.delete(key);
+    }
+
+    const overflow = this.cache.size - this.maxCachedAliases;
+    if (overflow <= 0) return;
+    const leastRecentlyUsed = [...this.cacheMetadata]
+      .sort((left, right) => left[1].sequence - right[1].sequence)
+      .slice(0, overflow);
+    for (const [key] of leastRecentlyUsed) {
+      this.cacheMetadata.delete(key);
+      this.cache.delete(key);
+    }
   }
 
   private renderTrackedAliases(
@@ -906,7 +1057,7 @@ export class StatsBatchCoordinator {
     if (!hasAnyDisplayData(stats)) return;
     for (const [view, target] of this.trackedViews) {
       if (!view.host.isConnected) {
-        this.trackedViews.delete(view);
+        this.releaseView(view);
         continue;
       }
       if (changedKeys.has(targetKey(target))) view.render(stats);
@@ -983,12 +1134,21 @@ export class StatsBatchCoordinator {
 
   private scheduleRetry(target: PendingTarget, deferred = false): boolean {
     const key = targetKey(target);
+    const connectedViews = this.connectedViews(target.views);
     const existing = this.retryWork.get(key);
     if (existing) {
-      for (const view of target.views) existing.views.add(view);
+      for (const view of connectedViews) existing.views.add(view);
+      if (this.connectedViews(existing.views).length === 0) {
+        this.clearRetry(key);
+        return false;
+      }
       existing.priority = Math.max(existing.priority, target.priority);
       this.startRetryWork(key, existing);
       return true;
+    }
+    if (connectedViews.length === 0) {
+      this.clearRetry(key);
+      return false;
     }
 
     let delay: number | undefined;
@@ -1004,7 +1164,7 @@ export class StatsBatchCoordinator {
 
     const work: ScheduledTargetWork = {
       target,
-      views: new Set(target.views),
+      views: new Set(connectedViews),
       priority: target.priority,
       remainingMs: delay,
     };
@@ -1066,12 +1226,16 @@ export class StatsBatchCoordinator {
 
 export class SorareCardScanner {
   private observer: MutationObserver | undefined;
+  private layoutObserver: MutationObserver | undefined;
   private visibilityObserver: IntersectionObserver | undefined;
   private root: HTMLElement | null = null;
   private readonly overlays = new Map<HTMLElement, MountedOverlay>();
+  private readonly layoutViewsByTarget = new Map<Element, Set<OverlayView>>();
+  private layoutTargetsDirty = false;
   private readonly pendingScanRoots = new Set<Element>();
+  private readonly pendingPositionScopes = new Set<Element>();
   private mutationFrame: number | undefined;
-  private shouldRefreshPositions = false;
+  private shouldRefreshAllPositions = false;
   private readonly lineupSorter = new LineupCardSorter();
   private readonly handleLineupPoolReady = (event: Event): void => {
     const grid = event.target;
@@ -1109,20 +1273,24 @@ export class SorareCardScanner {
     if (this.observer) return;
     const root = document.body ?? document.documentElement;
     this.root = root;
+    root.addEventListener(lineupPoolProgressEvent, this.handleLineupPoolReady);
     root.addEventListener(lineupPoolReadyEvent, this.handleLineupPoolReady);
     this.lineupSorter.start(root);
     this.startVisibilityObserver();
+    this.startLayoutObserver();
     this.scan(root);
     this.observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
-        const mutationElement = mutation.target instanceof Element ? mutation.target : null;
+        const mutationElement = isElementNode(mutation.target)
+          ? mutation.target
+          : null;
         if (mutationElement?.closest(extensionMutationSelector)) continue;
         const externalAddedNodes =
           mutation.type === 'childList'
             ? [...mutation.addedNodes].filter(
                 (node) =>
                   !(
-                    node instanceof Element &&
+                    isElementNode(node) &&
                     node.closest(extensionMutationSelector)
                   ),
               )
@@ -1132,11 +1300,14 @@ export class SorareCardScanner {
             ? [...mutation.removedNodes].filter(
                 (node) =>
                   !(
-                    node instanceof Element &&
+                    isElementNode(node) &&
                     node.matches(extensionMutationSelector)
                   ),
               )
             : [];
+        const externalAddedElements = externalAddedNodes.filter(isElementNode);
+        const externalRemovedElements =
+          externalRemovedNodes.filter(isElementNode);
         if (
           mutation.type === 'childList' &&
           externalAddedNodes.length === 0 &&
@@ -1144,17 +1315,45 @@ export class SorareCardScanner {
         ) {
           continue;
         }
-        this.shouldRefreshPositions = true;
+        for (const removed of externalRemovedElements) {
+          this.releaseRemovedOverlays(removed);
+        }
         if (mutation.type === 'attributes') {
+          if (
+            mutation.attributeName &&
+            globalLayoutStateAttributes.some(
+              (attribute) => attribute === mutation.attributeName,
+            )
+          ) {
+            this.shouldRefreshAllPositions = true;
+          } else {
+            this.queuePositionContext(mutation.target);
+          }
           if (mutation.attributeName && discoveryAttributes.has(mutation.attributeName)) {
             this.queueScanRoot(mutation.target as Element);
             this.queueScanContext(mutation.target);
           }
         } else {
-          for (const added of externalAddedNodes) {
-            if (added instanceof Element) this.queueScanRoot(added);
+          if (
+            [...externalAddedElements, ...externalRemovedElements].some(
+              (node) =>
+                node.matches(globalOverlayLayoutSelector) ||
+                Boolean(node.querySelector(globalOverlayLayoutSelector)),
+            )
+          ) {
+            this.shouldRefreshAllPositions = true;
+          } else {
+            this.queuePositionContext(mutation.target);
           }
-          this.queueScanContext(mutation.target);
+          for (const added of externalAddedElements) {
+            this.queueScanRoot(added);
+          }
+          if (
+            externalAddedElements.length > 0 ||
+            externalRemovedElements.length > 0
+          ) {
+            this.queueScanContext(mutation.target);
+          }
         }
       }
       this.scheduleMutationFlush();
@@ -1164,23 +1363,17 @@ export class SorareCardScanner {
       childList: true,
       attributes: true,
       attributeFilter: [
-        'href',
-        'alt',
-        'src',
-        'class',
-        'style',
-        'hidden',
-        'inert',
-        'aria-hidden',
-        'aria-label',
-        'aria-expanded',
-        'data-position',
-        'data-card-position',
+        ...discoveryAttributes,
+        ...globalLayoutStateAttributes,
       ],
     });
   }
 
   stop(): void {
+    this.root?.removeEventListener(
+      lineupPoolProgressEvent,
+      this.handleLineupPoolReady,
+    );
     this.root?.removeEventListener(
       lineupPoolReadyEvent,
       this.handleLineupPoolReady,
@@ -1188,6 +1381,10 @@ export class SorareCardScanner {
     this.root = null;
     this.observer?.disconnect();
     this.observer = undefined;
+    this.layoutObserver?.disconnect();
+    this.layoutObserver = undefined;
+    this.layoutViewsByTarget.clear();
+    this.layoutTargetsDirty = false;
     this.visibilityObserver?.disconnect();
     this.visibilityObserver = undefined;
     if (this.mutationFrame !== undefined) {
@@ -1199,14 +1396,17 @@ export class SorareCardScanner {
       this.mutationFrame = undefined;
     }
     this.pendingScanRoots.clear();
-    this.shouldRefreshPositions = false;
+    this.pendingPositionScopes.clear();
+    this.shouldRefreshAllPositions = false;
     this.lineupSorter.stop();
-    for (const { view } of this.overlays.values()) view.destroy();
-    this.overlays.clear();
+    for (const [container, mounted] of [...this.overlays]) {
+      this.releaseMountedOverlay(container, mounted);
+    }
+    this.layoutTargetsDirty = false;
     clearNativeSorareLineupProbabilityDecorations();
   }
 
-  scan(root: ParentNode): void {
+  scan(root: ParentNode, refreshLayoutTargets = true): void {
     decorateNativeSorareLineupProbabilities(root);
     this.lineupSorter.scan(root);
     const targets = findCardTargets(root);
@@ -1221,6 +1421,7 @@ export class SorareCardScanner {
     for (const target of targets) {
       this.mountTarget(target);
     }
+    if (refreshLayoutTargets) this.refreshLayoutObserverTargets();
   }
 
   private mountTarget(target: CardTarget): void {
@@ -1228,8 +1429,7 @@ export class SorareCardScanner {
     const mounted = this.overlays.get(target.container);
     if (mounted?.key === key) return;
     if (mounted) {
-      this.visibilityObserver?.unobserve(target.container);
-      mounted.view.destroy();
+      this.releaseMountedOverlay(target.container, mounted);
     }
     const view = new OverlayView(
       target.container,
@@ -1251,6 +1451,7 @@ export class SorareCardScanner {
       statsRequested: false,
     };
     this.overlays.set(target.container, mountedOverlay);
+    this.layoutTargetsDirty = true;
     if (this.visibilityObserver) {
       this.visibilityObserver.observe(target.container);
       view.setViewportPriorityActive(mountedOverlay.viewportActive);
@@ -1260,34 +1461,105 @@ export class SorareCardScanner {
     }
   }
 
-  private reconcileMountedOverlays(): void {
+  private reconcileMountedOverlays(scopes: readonly Element[]): void {
     for (const [container, mounted] of [...this.overlays]) {
+      if (
+        scopes.length > 0 &&
+        !scopes.some(
+          (scope) => scope.contains(container) || container.contains(scope),
+        )
+      ) {
+        continue;
+      }
       const currentTarget = container.isConnected
         ? findCardTargets(container).find(
             (candidate) => candidate.container === container,
           )
         : undefined;
       if (!currentTarget) {
-        this.visibilityObserver?.unobserve(container);
-        mounted.view.destroy();
-        delete container.dataset.sorareOverlayKey;
-        this.overlays.delete(container);
+        this.releaseMountedOverlay(container, mounted);
         continue;
       }
       if (targetKey(currentTarget) === mounted.key) continue;
-      this.visibilityObserver?.unobserve(container);
-      mounted.view.destroy();
-      this.overlays.delete(container);
+      this.releaseMountedOverlay(container, mounted);
       this.mountTarget(currentTarget);
     }
   }
 
   private cleanupDisconnectedOverlays(): void {
-    for (const [container, { view }] of this.overlays) {
+    for (const [container, mounted] of this.overlays) {
       if (container.isConnected) continue;
-      this.visibilityObserver?.unobserve(container);
-      view.destroy();
-      this.overlays.delete(container);
+      this.releaseMountedOverlay(container, mounted);
+    }
+  }
+
+  private releaseRemovedOverlays(removedRoot: Element): void {
+    for (const [container, mounted] of [...this.overlays]) {
+      if (container === removedRoot || removedRoot.contains(container)) {
+        this.releaseMountedOverlay(container, mounted);
+      }
+    }
+  }
+
+  private releaseMountedOverlay(
+    container: HTMLElement,
+    mounted: MountedOverlay,
+  ): void {
+    this.visibilityObserver?.unobserve(container);
+    this.coordinator.releaseView(mounted.view);
+    mounted.view.destroy();
+    delete container.dataset.sorareOverlayKey;
+    this.overlays.delete(container);
+    this.layoutTargetsDirty = true;
+  }
+
+  private startLayoutObserver(): void {
+    if (this.layoutObserver || typeof MutationObserver === 'undefined') return;
+    this.layoutObserver = new MutationObserver((mutations) => {
+      const views = new Set<OverlayView>();
+      for (const mutation of mutations) {
+        const target = mutation.target;
+        if (!isElementNode(target)) continue;
+        for (const view of this.layoutViewsByTarget.get(target) ?? []) {
+          views.add(view);
+        }
+        const container = target.closest<HTMLElement>(
+          '[data-sorare-overlay-key]',
+        );
+        const mounted = container ? this.overlays.get(container) : undefined;
+        if (mounted) views.add(mounted.view);
+      }
+      for (const view of views) view.refreshPosition();
+    });
+  }
+
+  private refreshLayoutObserverTargets(): void {
+    if (!this.layoutTargetsDirty || !this.layoutObserver) return;
+    this.layoutTargetsDirty = false;
+    this.layoutObserver.disconnect();
+    this.layoutViewsByTarget.clear();
+    for (const [container, { view }] of this.overlays) {
+      let target: HTMLElement | null = container;
+      for (let depth = 0; target && depth < 4; depth += 1) {
+        const views = this.layoutViewsByTarget.get(target) ?? new Set<OverlayView>();
+        views.add(view);
+        this.layoutViewsByTarget.set(target, views);
+        target = target.parentElement;
+      }
+    }
+    for (const target of this.layoutViewsByTarget.keys()) {
+      const tracksCardSubtree = this.overlays.has(target as HTMLElement);
+      this.layoutObserver.observe(target, {
+        attributes: true,
+        subtree: tracksCardSubtree,
+        attributeFilter: [
+          'class',
+          'style',
+          'hidden',
+          'inert',
+          'aria-hidden',
+        ],
+      });
     }
   }
 
@@ -1297,11 +1569,26 @@ export class SorareCardScanner {
 
   private queueScanContext(node: Node): void {
     let context =
-      node instanceof Element
+      isElementNode(node)
         ? node
         : node.parentElement;
     for (let depth = 0; context && depth < 4; depth += 1) {
+      if (context === document.body || context === document.documentElement) {
+        break;
+      }
       this.pendingScanRoots.add(context);
+      context = context.parentElement;
+    }
+  }
+
+  private queuePositionContext(node: Node): void {
+    let context = isElementNode(node) ? node : node.parentElement;
+    for (let depth = 0; context && depth < 3; depth += 1) {
+      if (context === document.body || context === document.documentElement) {
+        this.shouldRefreshAllPositions = true;
+        return;
+      }
+      this.pendingPositionScopes.add(context);
       context = context.parentElement;
     }
   }
@@ -1309,7 +1596,9 @@ export class SorareCardScanner {
   private scheduleMutationFlush(): void {
     if (
       this.mutationFrame !== undefined ||
-      (this.pendingScanRoots.size === 0 && !this.shouldRefreshPositions)
+      (this.pendingScanRoots.size === 0 &&
+        this.pendingPositionScopes.size === 0 &&
+        !this.shouldRefreshAllPositions)
     ) {
       return;
     }
@@ -1324,18 +1613,28 @@ export class SorareCardScanner {
   }
 
   private flushMutations(): void {
-    const roots = [...this.pendingScanRoots];
+    const roots = outermostElements(this.pendingScanRoots);
+    const positionScopes = outermostElements(this.pendingPositionScopes);
+    const refreshAllPositions = this.shouldRefreshAllPositions;
     this.pendingScanRoots.clear();
-    for (const root of roots) this.scan(root);
+    this.pendingPositionScopes.clear();
+    this.shouldRefreshAllPositions = false;
+    for (const root of roots) this.scan(root, false);
     if (roots.length > 0) {
-      this.reconcileMountedOverlays();
+      this.reconcileMountedOverlays(roots);
     } else {
       this.cleanupDisconnectedOverlays();
     }
-    if (this.shouldRefreshPositions) {
-      this.shouldRefreshPositions = false;
-      for (const { view, viewportActive } of this.overlays.values()) {
-        if (viewportActive) view.refreshPosition();
+    this.refreshLayoutObserverTargets();
+    for (const [container, { view, viewportActive }] of this.overlays) {
+      if (
+        viewportActive &&
+        (refreshAllPositions ||
+          positionScopes.some(
+            (scope) => scope.contains(container) || container.contains(scope),
+          ))
+      ) {
+        view.refreshPosition();
       }
     }
   }
