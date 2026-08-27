@@ -173,6 +173,93 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it('routes expanded PSG event names and returns João Neves goal and assist odds', async () => {
+    const joaoNeves = player({
+      slug: 'joao-pedro-goncalves-neves',
+      displayName: 'João Neves',
+      nextGame: {
+        ...player().nextGame!,
+        competitionSlug: 'ligue-1-fr',
+        homeTeamName: 'Lille',
+        awayTeamName: 'PSG',
+        homeTeamSlug: 'lille-villeneuve-d-ascq',
+        awayTeamSlug: 'psg-paris',
+        playerTeamName: 'PSG',
+        playerTeamSlug: 'psg-paris',
+        opponentTeamName: 'Lille',
+      },
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/events')) {
+        return json([
+          {
+            id: 'lille-psg-event',
+            date: kickoff,
+            home: 'Lille OSC',
+            away: 'Paris Saint-Germain',
+          },
+        ]);
+      }
+      return json([
+        {
+          id: 'lille-psg-event',
+          date: kickoff,
+          home: 'Lille OSC',
+          away: 'Paris Saint-Germain',
+          bookmakers: {
+            Bet365: [
+              {
+                name: 'Anytime Goalscorer',
+                odds: [{ label: 'Joao Neves', hdp: 0.5, over: '6.000' }],
+              },
+              {
+                name: 'Player To Score or Assist',
+                odds: [
+                  { label: 'Joao Neves (Score) (2)', over: '6.000' },
+                  { label: 'Joao Neves (Assist) (2)', over: '5.000' },
+                  {
+                    label: 'Joao Neves (Score or Assist) (2)',
+                    over: '3.000',
+                  },
+                ],
+              },
+            ],
+            Unibet: [
+              {
+                name: 'Anytime Goalscorer',
+                odds: [{ label: 'Joao Neves', hdp: 0.5, over: '5.80' }],
+              },
+            ],
+          },
+        },
+      ]);
+    });
+    const { provider } = createProvider(
+      fetchImpl,
+      new InMemoryProviderQuotaUsageStore(() => now),
+      [
+        {
+          competitionSlugs: ['ligue-1-fr'],
+          leagueSlugs: ['france-ligue-1'],
+          playerMarkets: ['goal'],
+        },
+      ],
+    );
+
+    const result = await provider.load([joaoNeves]);
+    const odds = result.get(playerMarketOddsKey(joaoNeves));
+
+    expect(odds?.goal?.probability).toBeCloseTo(1 / 5.9);
+    expect(odds?.assist?.probability).toBeCloseTo(1 / 5);
+    expect(odds?.decisive?.probability).toBeCloseTo(1 / 3);
+    expect(odds?.goal?.bookmakerQuotes).toEqual([
+      expect.objectContaining({ title: 'Bet365', decimalOdds: 6 }),
+      expect.objectContaining({ title: 'Unibet', decimalOdds: 5.8 }),
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it('reports labelled player markets that no parser consumed', async () => {
     const debug = vi.fn<AppLogger['debug']>();
     const fetchImpl = vi.fn<typeof fetch>(async (input) => {

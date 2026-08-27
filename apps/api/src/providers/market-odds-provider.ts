@@ -945,6 +945,13 @@ const europeanTeamAliases: Readonly<Record<string, string>> = {
   '1 koln': 'cologne',
   lyon: 'lyon',
   'olympique lyonnais': 'lyon',
+  // Sorare uses the short name `PSG`, while bookmaker event feeds expand it.
+  // Keep `psg` as the canonical value so existing fixture/cache keys remain
+  // stable when a provider returns the long form.
+  psg: 'psg',
+  'paris saint germain': 'psg',
+  'paris st germain': 'psg',
+  'paris sg': 'psg',
   'real betis': 'real betis',
   'real betis balompie': 'real betis',
   // UEFA feeds expand NEC and transliterate Bodø in several incompatible

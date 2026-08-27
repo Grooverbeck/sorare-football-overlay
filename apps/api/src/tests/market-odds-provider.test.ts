@@ -220,6 +220,8 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
       providerTeamNamesMatch('Olympique de Marseille', 'Marseille'),
     ).toBe(true);
     expect(providerTeamNamesMatch('Olympique Lyonnais', 'Lyon')).toBe(true);
+    expect(providerTeamNamesMatch('Paris Saint-Germain', 'PSG')).toBe(true);
+    expect(normalizeTeamName('Paris SG')).toBe('psg');
     expect(providerTeamNamesMatch('Real Madrid', 'Real Sociedad')).toBe(
       false,
     );
@@ -232,6 +234,34 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     expect(normalizeTeamName('Bodoe/Glimt')).toBe('bodo glimt');
     expect(normalizeTeamName('Tromsø')).toBe('tromso');
     expect(normalizeTeamName('Tromsoe IL')).toBe('tromso');
+  });
+
+  it('resolves expanded PSG provider names against Sorare fixture identity', () => {
+    const fixture: FixtureGroup = {
+      key: 'lille-psg',
+      date: kickoff,
+      homeTeamName: 'Lille',
+      awayTeamName: 'PSG',
+      homeTeamSlug: 'lille-villeneuve-d-ascq',
+      awayTeamSlug: 'psg-paris',
+      players: [],
+    };
+
+    expect(
+      resolveProviderFixtureCandidates(fixture, [
+        {
+          event: { id: 'lille-psg-provider-event' },
+          eventId: 'lille-psg-provider-event',
+          date: kickoff,
+          homeTeamName: 'Lille OSC',
+          awayTeamName: 'Paris Saint-Germain',
+        },
+      ]),
+    ).toMatchObject({
+      status: 'matched',
+      eventId: 'lille-psg-provider-event',
+      highConfidence: true,
+    });
   });
 
   it('resolves a fixture jointly and rejects an equally plausible duplicate', () => {
