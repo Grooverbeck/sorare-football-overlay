@@ -91,9 +91,13 @@ const PlayerFormStatsSchema = PlayerStatsSchema.omit({
   mlsAaContext: true,
 });
 const HISTORICAL_CLUB_SCOPE_VERSION = 1;
+const HISTORICAL_GOAL_PLAYER_SCOPE_VERSION = 1;
 const CachedPlayerFormStatsSchema = PlayerFormStatsSchema.extend({
   historicalClubScopeVersion: z
     .literal(HISTORICAL_CLUB_SCOPE_VERSION)
+    .optional(),
+  historicalGoalPlayerScopeVersion: z
+    .literal(HISTORICAL_GOAL_PLAYER_SCOPE_VERSION)
     .optional(),
 });
 // v3 adds the Sorare competition slug used to route bookmaker requests only
@@ -1004,26 +1008,26 @@ class CloudflarePlayerFormCache
     }
     const {
       historicalClubScopeVersion,
+      historicalGoalPlayerScopeVersion,
       historicalGoals,
       historicalAssists,
       historicalDecisives,
       ...baseForm
     } = parsed.data;
-    const hasHistoricalMetrics =
-      historicalGoals !== undefined ||
-      historicalAssists !== undefined ||
-      historicalDecisives !== undefined;
-    if (
-      hasHistoricalMetrics &&
-      historicalClubScopeVersion !== HISTORICAL_CLUB_SCOPE_VERSION
-    ) {
-      return baseForm;
-    }
+    const historicalClubScopeIsCurrent =
+      historicalClubScopeVersion === HISTORICAL_CLUB_SCOPE_VERSION;
+    const historicalGoalPlayerScopeIsCurrent =
+      historicalGoalPlayerScopeVersion ===
+      HISTORICAL_GOAL_PLAYER_SCOPE_VERSION;
     return {
       ...baseForm,
-      ...(historicalGoals !== undefined ? { historicalGoals } : {}),
-      ...(historicalAssists !== undefined ? { historicalAssists } : {}),
-      ...(historicalDecisives !== undefined
+      ...(historicalGoals !== undefined && historicalGoalPlayerScopeIsCurrent
+        ? { historicalGoals }
+        : {}),
+      ...(historicalAssists !== undefined && historicalClubScopeIsCurrent
+        ? { historicalAssists }
+        : {}),
+      ...(historicalDecisives !== undefined && historicalClubScopeIsCurrent
         ? { historicalDecisives }
         : {}),
     };
@@ -1036,6 +1040,8 @@ class CloudflarePlayerFormCache
       {
         ...parsed,
         historicalClubScopeVersion: HISTORICAL_CLUB_SCOPE_VERSION,
+        historicalGoalPlayerScopeVersion:
+          HISTORICAL_GOAL_PLAYER_SCOPE_VERSION,
       },
       nextMondayFormExpiration(this.now(), this.ttlSeconds),
     );

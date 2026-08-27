@@ -242,10 +242,60 @@ describe('Cloudflare Worker', () => {
     await expect(store.get(cacheKey, 'json')).resolves.toMatchObject({
       historicalGoals: historical,
       historicalClubScopeVersion: 1,
+      historicalGoalPlayerScopeVersion: 1,
     });
     await expect(cache.getParts(key)).resolves.toMatchObject({
       form: { historicalGoals: historical },
     });
+  });
+
+  it('refreshes stale club-scoped goals without discarding valid assist history', async () => {
+    const nowMs = Date.parse('2026-08-15T12:30:00.000Z');
+    const key = `historical-goal-player-scope-${nowMs}:Midfielder:no-low`;
+    const cacheKey = `player-form:v3:${key}`;
+    const store = new D1JsonKeyValueStore(
+      env.CACHE_DB,
+      env.STATS_CACHE,
+      () => Math.floor(nowMs / 1_000),
+    );
+    await Promise.all([store.delete(cacheKey), env.STATS_CACHE.delete(cacheKey)]);
+    const historical = {
+      l10: { value: 0.2, sampleSize: 10 },
+      l15: { value: 0.2, sampleSize: 15 },
+      l40: { value: 0.2, sampleSize: 40 },
+    };
+    await store.put(
+      cacheKey,
+      JSON.stringify({
+        slug: 'historical-goal-player-scope',
+        displayName: 'Historical Goal Player Scope',
+        position: 'Midfielder',
+        aaL10: { value: 24.3, sampleSize: 10 },
+        aaL10TeamWinRate: { value: 0.4, sampleSize: 10 },
+        cleanSheetL10: { value: 0, sampleSize: 10 },
+        goalL10: { value: 0.2, sampleSize: 10 },
+        historicalGoals: historical,
+        historicalAssists: historical,
+        historicalDecisives: historical,
+        historicalClubScopeVersion: 1,
+        excludedLowCoverage: 0,
+      }),
+      { expirationTtl: 3_600 },
+    );
+
+    const context = createExecutionContext();
+    const cache = new CloudflarePlayerStatsCache(
+      store,
+      604_800,
+      14_400,
+      context,
+      () => nowMs,
+    );
+
+    const parts = await cache.getParts(key);
+    expect(parts.form?.historicalGoals).toBeUndefined();
+    expect(parts.form?.historicalAssists).toEqual(historical);
+    expect(parts.form?.historicalDecisives).toEqual(historical);
   });
 
   it('treats aggregate-only form entries as lazy enrichment misses', async () => {

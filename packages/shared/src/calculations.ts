@@ -201,12 +201,13 @@ export function calculateHistoricalGoalMetrics(
   position: FootballPosition,
   excludeLowCoverage: boolean,
 ): HistoricalAssistMetrics {
-  const validAppearances = currentClubAppearancesOrFallback(
-    validAppearancesForPosition(
-      appearances,
-      position,
-      excludeLowCoverage,
-    ),
+  // A goal is a player event, so transfers must not reset the historical hit
+  // rate. Keep the position, coverage and minutes rules, but deliberately use
+  // all qualifying appearances across team changes in each L10/L15/L40 window.
+  const validAppearances = validAppearancesForPosition(
+    appearances,
+    position,
+    excludeLowCoverage,
   );
   const forWindow = (limit: number): Metric => {
     const selected = validAppearances.slice(0, limit);

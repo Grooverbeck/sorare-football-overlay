@@ -213,7 +213,7 @@ describe('calculatePlayerMetrics', () => {
     expect(decisives.l40).toEqual({ value: 0.4, sampleSize: 40 });
   });
 
-  it('uses only current-club appearances for historical event rates', () => {
+  it('uses cross-club goal history while keeping assists and decisives club-scoped', () => {
     const mixedClubHistory: PlayerAppearance[] = [
       {
         date: '2026-07-20T18:00:00.000Z',
@@ -267,7 +267,7 @@ describe('calculatePlayerMetrics', () => {
         'Midfielder',
         true,
       ).l15,
-    ).toEqual({ value: 0.5, sampleSize: 2 });
+    ).toEqual({ value: 0.25, sampleSize: 4 });
     expect(
       calculateHistoricalAssistMetrics(
         mixedClubHistory,
