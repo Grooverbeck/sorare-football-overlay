@@ -90,14 +90,18 @@ const PlayerFormStatsSchema = PlayerStatsSchema.omit({
   pendingRefreshes: true,
   mlsAaContext: true,
 });
-const HISTORICAL_CLUB_SCOPE_VERSION = 1;
 const HISTORICAL_GOAL_PLAYER_SCOPE_VERSION = 1;
+const HISTORICAL_ASSIST_PLAYER_SCOPE_VERSION = 1;
+const HISTORICAL_DECISIVE_PLAYER_SCOPE_VERSION = 1;
 const CachedPlayerFormStatsSchema = PlayerFormStatsSchema.extend({
-  historicalClubScopeVersion: z
-    .literal(HISTORICAL_CLUB_SCOPE_VERSION)
-    .optional(),
   historicalGoalPlayerScopeVersion: z
     .literal(HISTORICAL_GOAL_PLAYER_SCOPE_VERSION)
+    .optional(),
+  historicalAssistPlayerScopeVersion: z
+    .literal(HISTORICAL_ASSIST_PLAYER_SCOPE_VERSION)
+    .optional(),
+  historicalDecisivePlayerScopeVersion: z
+    .literal(HISTORICAL_DECISIVE_PLAYER_SCOPE_VERSION)
     .optional(),
 });
 // v3 adds the Sorare competition slug used to route bookmaker requests only
@@ -1007,27 +1011,39 @@ class CloudflarePlayerFormCache
       return undefined;
     }
     const {
-      historicalClubScopeVersion,
       historicalGoalPlayerScopeVersion,
+      historicalAssistPlayerScopeVersion,
+      historicalDecisivePlayerScopeVersion,
       historicalGoals,
       historicalAssists,
       historicalDecisives,
       ...baseForm
     } = parsed.data;
-    const historicalClubScopeIsCurrent =
-      historicalClubScopeVersion === HISTORICAL_CLUB_SCOPE_VERSION;
     const historicalGoalPlayerScopeIsCurrent =
       historicalGoalPlayerScopeVersion ===
       HISTORICAL_GOAL_PLAYER_SCOPE_VERSION;
+    const historicalAssistPlayerScopeIsCurrent =
+      historicalAssistPlayerScopeVersion ===
+      HISTORICAL_ASSIST_PLAYER_SCOPE_VERSION;
+    const historicalDecisivePlayerScopeIsCurrent =
+      historicalDecisivePlayerScopeVersion ===
+      HISTORICAL_DECISIVE_PLAYER_SCOPE_VERSION;
+    const historicalGoalsAreCurrent =
+      historicalGoals !== undefined && historicalGoalPlayerScopeIsCurrent;
+    const historicalAssistsAreCurrent =
+      historicalAssists !== undefined && historicalAssistPlayerScopeIsCurrent;
+    const historicalDecisivesAreCurrent =
+      historicalDecisives !== undefined &&
+      historicalDecisivePlayerScopeIsCurrent;
     return {
       ...baseForm,
-      ...(historicalGoals !== undefined && historicalGoalPlayerScopeIsCurrent
+      ...(historicalGoalsAreCurrent
         ? { historicalGoals }
         : {}),
-      ...(historicalAssists !== undefined && historicalClubScopeIsCurrent
+      ...(historicalAssistsAreCurrent
         ? { historicalAssists }
         : {}),
-      ...(historicalDecisives !== undefined && historicalClubScopeIsCurrent
+      ...(historicalDecisivesAreCurrent
         ? { historicalDecisives }
         : {}),
     };
@@ -1039,9 +1055,12 @@ class CloudflarePlayerFormCache
       `player-form:v3:${key}`,
       {
         ...parsed,
-        historicalClubScopeVersion: HISTORICAL_CLUB_SCOPE_VERSION,
         historicalGoalPlayerScopeVersion:
           HISTORICAL_GOAL_PLAYER_SCOPE_VERSION,
+        historicalAssistPlayerScopeVersion:
+          HISTORICAL_ASSIST_PLAYER_SCOPE_VERSION,
+        historicalDecisivePlayerScopeVersion:
+          HISTORICAL_DECISIVE_PLAYER_SCOPE_VERSION,
       },
       nextMondayFormExpiration(this.now(), this.ttlSeconds),
     );

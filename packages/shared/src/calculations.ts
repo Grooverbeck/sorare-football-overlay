@@ -102,21 +102,6 @@ export function selectAaAppearances(
     .slice(0, limit);
 }
 
-function currentClubAppearancesOrFallback(
-  appearances: readonly PlayerAppearance[],
-): PlayerAppearance[] {
-  const currentClubAppearances = appearances.filter(
-    (appearance) => appearance.currentClubGame === true,
-  );
-
-  // A newly transferred player can have reliable club markers without having
-  // played for the new club yet. Keep the previous history available until the
-  // first current-club appearance arrives, then switch over immediately.
-  return currentClubAppearances.length > 0
-    ? currentClubAppearances
-    : [...appearances];
-}
-
 export function calculatePlayerMetrics(
   appearances: readonly PlayerAppearance[],
   position: FootballPosition,
@@ -170,40 +155,14 @@ export function calculatePlayerMetrics(
   };
 }
 
-export function calculateHistoricalAssistMetrics(
+function calculateHistoricalPlayerEventMetrics(
   appearances: readonly PlayerAppearance[],
   position: FootballPosition,
   excludeLowCoverage: boolean,
+  eventOccurred: (appearance: PlayerAppearance) => boolean,
 ): HistoricalAssistMetrics {
-  const validAppearances = currentClubAppearancesOrFallback(
-    validAppearancesForPosition(
-      appearances,
-      position,
-      excludeLowCoverage,
-    ),
-  );
-  const forWindow = (limit: number): Metric => {
-    const selected = validAppearances.slice(0, limit);
-    return ratio(
-      selected.filter((appearance) => (appearance.assists ?? 0) >= 1).length,
-      selected.length,
-    );
-  };
-  return {
-    l10: forWindow(10),
-    l15: forWindow(15),
-    l40: forWindow(40),
-  };
-}
-
-export function calculateHistoricalGoalMetrics(
-  appearances: readonly PlayerAppearance[],
-  position: FootballPosition,
-  excludeLowCoverage: boolean,
-): HistoricalAssistMetrics {
-  // A goal is a player event, so transfers must not reset the historical hit
-  // rate. Keep the position, coverage and minutes rules, but deliberately use
-  // all qualifying appearances across team changes in each L10/L15/L40 window.
+  // Goals and assists describe the player, so transfers must not reset these
+  // rates. Position, coverage and minutes eligibility still apply unchanged.
   const validAppearances = validAppearancesForPosition(
     appearances,
     position,
@@ -212,7 +171,7 @@ export function calculateHistoricalGoalMetrics(
   const forWindow = (limit: number): Metric => {
     const selected = validAppearances.slice(0, limit);
     return ratio(
-      selected.filter((appearance) => (appearance.goals ?? 0) >= 1).length,
+      selected.filter(eventOccurred).length,
       selected.length,
     );
   };
@@ -223,34 +182,45 @@ export function calculateHistoricalGoalMetrics(
   };
 }
 
+export function calculateHistoricalAssistMetrics(
+  appearances: readonly PlayerAppearance[],
+  position: FootballPosition,
+  excludeLowCoverage: boolean,
+): HistoricalAssistMetrics {
+  return calculateHistoricalPlayerEventMetrics(
+    appearances,
+    position,
+    excludeLowCoverage,
+    (appearance) => (appearance.assists ?? 0) >= 1,
+  );
+}
+
+export function calculateHistoricalGoalMetrics(
+  appearances: readonly PlayerAppearance[],
+  position: FootballPosition,
+  excludeLowCoverage: boolean,
+): HistoricalAssistMetrics {
+  return calculateHistoricalPlayerEventMetrics(
+    appearances,
+    position,
+    excludeLowCoverage,
+    (appearance) => (appearance.goals ?? 0) >= 1,
+  );
+}
+
 export function calculateHistoricalDecisiveMetrics(
   appearances: readonly PlayerAppearance[],
   position: FootballPosition,
   excludeLowCoverage: boolean,
 ): HistoricalAssistMetrics {
-  const validAppearances = currentClubAppearancesOrFallback(
-    validAppearancesForPosition(
-      appearances,
-      position,
-      excludeLowCoverage,
-    ),
+  return calculateHistoricalPlayerEventMetrics(
+    appearances,
+    position,
+    excludeLowCoverage,
+    (appearance) =>
+      (appearance.goals ?? 0) >= 1 ||
+      (appearance.assists ?? 0) >= 1,
   );
-  const forWindow = (limit: number): Metric => {
-    const selected = validAppearances.slice(0, limit);
-    return ratio(
-      selected.filter(
-        (appearance) =>
-          (appearance.goals ?? 0) >= 1 ||
-          (appearance.assists ?? 0) >= 1,
-      ).length,
-      selected.length,
-    );
-  };
-  return {
-    l10: forWindow(10),
-    l15: forWindow(15),
-    l40: forWindow(40),
-  };
 }
 
 export function hasAnyDisplayData(stats: PlayerStats): boolean {

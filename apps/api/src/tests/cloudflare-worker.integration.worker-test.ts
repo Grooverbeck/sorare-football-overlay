@@ -183,7 +183,7 @@ describe('Cloudflare Worker', () => {
     ).toBe(Date.parse('2026-08-03T10:00:00.000Z') / 1_000);
   });
 
-  it('refreshes only historical metrics cached before club scoping', async () => {
+  it('refreshes historical metrics cached before player-scoped versions', async () => {
     const nowMs = Date.parse('2026-08-15T12:00:00.000Z');
     const key = `historical-club-scope-${nowMs}:Midfielder:no-low`;
     const cacheKey = `player-form:v3:${key}`;
@@ -241,17 +241,18 @@ describe('Cloudflare Worker', () => {
     await waitOnExecutionContext(context);
     await expect(store.get(cacheKey, 'json')).resolves.toMatchObject({
       historicalGoals: historical,
-      historicalClubScopeVersion: 1,
       historicalGoalPlayerScopeVersion: 1,
+      historicalAssistPlayerScopeVersion: 1,
+      historicalDecisivePlayerScopeVersion: 1,
     });
     await expect(cache.getParts(key)).resolves.toMatchObject({
       form: { historicalGoals: historical },
     });
   });
 
-  it('refreshes stale club-scoped goals without discarding valid assist history', async () => {
+  it('refreshes stale club-scoped assists without discarding valid goal history', async () => {
     const nowMs = Date.parse('2026-08-15T12:30:00.000Z');
-    const key = `historical-goal-player-scope-${nowMs}:Midfielder:no-low`;
+    const key = `historical-assist-player-scope-${nowMs}:Midfielder:no-low`;
     const cacheKey = `player-form:v3:${key}`;
     const store = new D1JsonKeyValueStore(
       env.CACHE_DB,
@@ -267,8 +268,8 @@ describe('Cloudflare Worker', () => {
     await store.put(
       cacheKey,
       JSON.stringify({
-        slug: 'historical-goal-player-scope',
-        displayName: 'Historical Goal Player Scope',
+        slug: 'historical-assist-player-scope',
+        displayName: 'Historical Assist Player Scope',
         position: 'Midfielder',
         aaL10: { value: 24.3, sampleSize: 10 },
         aaL10TeamWinRate: { value: 0.4, sampleSize: 10 },
@@ -278,6 +279,7 @@ describe('Cloudflare Worker', () => {
         historicalAssists: historical,
         historicalDecisives: historical,
         historicalClubScopeVersion: 1,
+        historicalGoalPlayerScopeVersion: 1,
         excludedLowCoverage: 0,
       }),
       { expirationTtl: 3_600 },
@@ -293,9 +295,9 @@ describe('Cloudflare Worker', () => {
     );
 
     const parts = await cache.getParts(key);
-    expect(parts.form?.historicalGoals).toBeUndefined();
-    expect(parts.form?.historicalAssists).toEqual(historical);
-    expect(parts.form?.historicalDecisives).toEqual(historical);
+    expect(parts.form?.historicalGoals).toEqual(historical);
+    expect(parts.form?.historicalAssists).toBeUndefined();
+    expect(parts.form?.historicalDecisives).toBeUndefined();
   });
 
   it('treats aggregate-only form entries as lazy enrichment misses', async () => {
