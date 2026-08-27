@@ -1096,6 +1096,9 @@ describe('Sorare card DOM discovery', () => {
     const companion = document.querySelector<HTMLElement>(
       '[data-sorare-overlay-companion="lineup-odds"]',
     );
+    const tooltipHost = document.querySelector<HTMLElement>(
+      '[data-sorare-overlay-companion="lineup-tooltip"]',
+    );
     const overlay = document.querySelector<HTMLElement>(
       '[data-sorare-overlay-root]',
     );
@@ -1103,9 +1106,7 @@ describe('Sorare card DOM discovery', () => {
     expect(overlay?.dataset.compactMarketBrackets).toBeUndefined();
     expect(companion?.hidden).toBe(false);
     expect(teamRow.nextElementSibling).toBe(companion);
-    expect(
-      companion?.style.getPropertyValue('--lineup-tooltip-clearance'),
-    ).toBe('25px');
+    expect(tooltipHost?.parentElement).toBe(document.body);
     expect(bar?.textContent).toBe('26%22%52%');
     const home = bar?.querySelector<HTMLElement>(
       '[data-outcome="home"][data-role="opponent"]',
@@ -1122,8 +1123,9 @@ describe('Sorare card DOM discovery', () => {
     expect(draw?.style.getPropertyValue('--probability-share')).toBe('22%');
     expect(away?.textContent).toBe('52%');
     expect(away?.style.getPropertyValue('--probability-share')).toBe('52%');
-    const tooltip =
-      companion?.shadowRoot?.querySelector<HTMLElement>('.lineup-odds-tooltip');
+    const tooltip = tooltipHost?.shadowRoot?.querySelector<HTMLElement>(
+      '.lineup-odds-tooltip',
+    );
     expect(tooltip?.hidden).toBe(false);
     expect(tooltip?.querySelector('.tooltip-label')?.textContent).toBe('Quoten');
     expect(tooltip?.querySelector('.tooltip-fixture')?.textContent).toBe(
@@ -1181,33 +1183,44 @@ describe('Sorare card DOM discovery', () => {
         ?.textContent,
     ).toBe('BetMGM5,50 · 18%');
     teamRow.dispatchEvent(new MouseEvent('mouseenter'));
-    expect(companion?.dataset.tooltipOpen).toBeUndefined();
+    expect(tooltipHost?.dataset.tooltipOpen).toBeUndefined();
     const teamNames = teamRow.querySelectorAll<HTMLElement>('[aria-label="Team"]');
     teamNames[0]?.dispatchEvent(new MouseEvent('mouseenter'));
-    expect(companion?.dataset.tooltipOpen).toBe('true');
+    expect(tooltipHost?.dataset.tooltipOpen).toBe('true');
+    expect(tooltipHost?.style.top).toBe('295px');
     expect(overlay?.dataset.playerMarketTooltipOpen).toBeUndefined();
     teamNames[0]?.dispatchEvent(new MouseEvent('mouseleave'));
-    expect(companion?.dataset.tooltipOpen).toBeUndefined();
+    expect(tooltipHost?.dataset.tooltipOpen).toBeUndefined();
     bar?.dispatchEvent(new MouseEvent('mouseenter'));
-    expect(companion?.dataset.tooltipOpen).toBe('true');
+    expect(tooltipHost?.dataset.tooltipOpen).toBe('true');
     bar?.dispatchEvent(new MouseEvent('mouseleave'));
-    expect(companion?.dataset.tooltipOpen).toBeUndefined();
+    expect(tooltipHost?.dataset.tooltipOpen).toBeUndefined();
     card.dispatchEvent(new MouseEvent('mouseenter'));
-    expect(companion?.dataset.tooltipOpen).toBeUndefined();
+    expect(tooltipHost?.dataset.tooltipOpen).toBeUndefined();
     expect(overlay?.dataset.playerMarketTooltipOpen).toBeUndefined();
     card.dispatchEvent(new MouseEvent('mouseleave'));
-    expect(companion?.dataset.tooltipOpen).toBeUndefined();
+    expect(tooltipHost?.dataset.tooltipOpen).toBeUndefined();
     expect(overlay?.dataset.playerMarketTooltipOpen).toBeUndefined();
     const cardImage = card.querySelector('img');
     cardImage?.dispatchEvent(new MouseEvent('mouseenter'));
-    expect(companion?.dataset.tooltipOpen).toBeUndefined();
+    expect(tooltipHost?.dataset.tooltipOpen).toBeUndefined();
     cardImage?.dispatchEvent(new MouseEvent('mouseleave'));
-    expect(companion?.dataset.tooltipOpen).toBeUndefined();
+    expect(tooltipHost?.dataset.tooltipOpen).toBeUndefined();
     expect(document.querySelectorAll('[data-sorare-overlay-root]')).toHaveLength(1);
     expect(
       document.querySelectorAll('[data-sorare-overlay-companion="lineup-odds"]'),
     ).toHaveLength(1);
+    expect(
+      document.querySelectorAll(
+        '[data-sorare-overlay-companion="lineup-tooltip"]',
+      ),
+    ).toHaveLength(1);
     scanner.stop();
+    expect(
+      document.querySelectorAll(
+        '[data-sorare-overlay-companion="lineup-tooltip"]',
+      ),
+    ).toHaveLength(0);
   });
 
   it('aligns the player win segment with Sorare\'s canonical team order', () => {
@@ -1293,6 +1306,9 @@ describe('Sorare card DOM discovery', () => {
     const companion = document.querySelector<HTMLElement>(
       '[data-sorare-overlay-companion="lineup-odds"]',
     );
+    const tooltipHost = document.querySelector<HTMLElement>(
+      '[data-sorare-overlay-companion="lineup-tooltip"]',
+    );
     const bar = companion?.shadowRoot?.querySelector<HTMLElement>(
       '.lineup-odds-bar',
     );
@@ -1308,10 +1324,10 @@ describe('Sorare card DOM discovery', () => {
       )?.textContent,
     ).toBe('67%');
     expect(
-      companion?.shadowRoot?.querySelector('.tooltip-fixture')?.textContent,
+      tooltipHost?.shadowRoot?.querySelector('.tooltip-fixture')?.textContent,
     ).toBe('Rennes–PSG');
     expect(
-      companion?.shadowRoot?.querySelector('.tooltip-odds')?.textContent,
+      tooltipHost?.shadowRoot?.querySelector('.tooltip-odds')?.textContent,
     ).toBe('H 14%D 19%A 67%');
     view.destroy();
   });

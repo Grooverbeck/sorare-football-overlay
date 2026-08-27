@@ -870,11 +870,25 @@ const lineupOddsStyles = `
     --outcome-fill: linear-gradient(90deg, #cf3f45, #ff5d62);
     box-shadow: inset 0 0 9px rgba(255, 93, 98, .24);
   }
+`;
+
+const lineupOddsTooltipStyles = `
+  :host {
+    all: initial;
+    position: fixed;
+    z-index: 2147483647;
+    top: 0;
+    left: 0;
+    display: block;
+    width: 0;
+    height: 0;
+    overflow: visible;
+    pointer-events: none;
+  }
   .lineup-odds-tooltip {
     position: absolute;
-    z-index: 2147483647;
-    left: 50%;
-    bottom: calc(100% + var(--lineup-tooltip-clearance, 25px));
+    top: 0;
+    left: 0;
     box-sizing: border-box;
     width: max-content;
     min-width: 160px;
@@ -888,7 +902,7 @@ const lineupOddsStyles = `
     font: 600 10px/1.25 "Segoe UI", Inter, ui-sans-serif, system-ui, sans-serif;
     font-variant-numeric: tabular-nums;
     opacity: 0;
-    transform: translate(-50%, 3px);
+    transform: translate(-50%, calc(-100% + 3px));
     transition: opacity 100ms ease, transform 100ms ease, visibility 100ms ease;
     visibility: hidden;
     white-space: nowrap;
@@ -898,7 +912,7 @@ const lineupOddsStyles = `
   .lineup-odds-tooltip::after {
     position: absolute;
     bottom: -5px;
-    left: 50%;
+    left: calc(50% + var(--lineup-tooltip-arrow-shift-x, 0px));
     width: 8px;
     height: 8px;
     border-right: 1px solid rgba(160, 174, 195, .42);
@@ -909,7 +923,7 @@ const lineupOddsStyles = `
   }
   :host([data-tooltip-open="true"]) .lineup-odds-tooltip:not([hidden]) {
     opacity: 1;
-    transform: translate(-50%, 0);
+    transform: translate(-50%, -100%);
     visibility: visible;
   }
   .tooltip-label {
@@ -2846,6 +2860,7 @@ export class OverlayView {
   private readonly playerMarketTooltip: HTMLDivElement;
   private readonly lineupOddsHost: HTMLSpanElement;
   private readonly lineupOddsBar: HTMLDivElement;
+  private readonly lineupTooltipHost: HTMLSpanElement;
   private readonly lineupOddsTooltip: HTMLDivElement;
   private readonly cleanupCallbacks: Array<() => void> = [];
   private readonly reposition: (context?: OverlayPositionContext) => void;
@@ -2965,12 +2980,11 @@ export class OverlayView {
         this.lineupOddsHost.hidden = !isVisible;
         if (!isVisible) this.closeLineupTooltip();
         if (isVisible) {
-          this.lineupOddsHost.style.setProperty(
-            '--lineup-tooltip-clearance',
-            cssPixels(teamRowRect.height + 5),
-          );
           if (teamRow.nextElementSibling !== this.lineupOddsHost) {
             teamRow.insertAdjacentElement('afterend', this.lineupOddsHost);
+          }
+          if (this.lineupTooltipHost.dataset.tooltipOpen === 'true') {
+            this.positionLineupTooltip(teamRowRect);
           }
         }
       }
@@ -3115,13 +3129,20 @@ export class OverlayView {
     this.lineupOddsTooltip = document.createElement('div');
     this.lineupOddsTooltip.className = 'lineup-odds-tooltip';
     this.lineupOddsTooltip.hidden = true;
-    lineupShadow.append(
-      lineupStyle,
-      this.lineupOddsBar,
-      this.lineupOddsTooltip,
-    );
+    lineupShadow.append(lineupStyle, this.lineupOddsBar);
+    this.lineupTooltipHost = document.createElement('span');
+    this.lineupTooltipHost.dataset.sorareOverlayCompanion = 'lineup-tooltip';
+    const lineupTooltipShadow = this.lineupTooltipHost.attachShadow({
+      mode: 'open',
+    });
+    const lineupTooltipStyle = document.createElement('style');
+    lineupTooltipStyle.textContent = lineupOddsTooltipStyles;
+    lineupTooltipShadow.append(lineupTooltipStyle, this.lineupOddsTooltip);
     shadow.append(style, this.panel, this.playerMarketTooltip);
-    (document.body ?? document.documentElement).append(this.host);
+    (document.body ?? document.documentElement).append(
+      this.host,
+      this.lineupTooltipHost,
+    );
     this.container.addEventListener(
       'mouseenter',
       this.openMarketBracketForCardHover,
@@ -3273,6 +3294,7 @@ export class OverlayView {
     this.cleanupCallbacks.length = 0;
     this.bindLineupTeamRow(null);
     this.lineupOddsHost.remove();
+    this.lineupTooltipHost.remove();
     this.host.remove();
   }
 
@@ -3670,16 +3692,45 @@ export class OverlayView {
   private readonly openLineupTooltip = (): void => {
     if (
       this.lineupOddsBar.dataset.ready === 'true' &&
-      !this.lineupOddsTooltip.hidden
+      !this.lineupOddsTooltip.hidden &&
+      this.lineupTeamRow
     ) {
       this.closePlayerMarketTooltip();
-      this.lineupOddsHost.dataset.tooltipOpen = 'true';
+      this.positionLineupTooltip(this.lineupTeamRow.getBoundingClientRect());
+      this.lineupTooltipHost.dataset.tooltipOpen = 'true';
     }
   };
 
   private readonly closeLineupTooltip = (): void => {
-    delete this.lineupOddsHost.dataset.tooltipOpen;
+    delete this.lineupTooltipHost.dataset.tooltipOpen;
   };
+
+  private positionLineupTooltip(teamRowRect: DOMRect): void {
+    const tooltipRect = this.lineupOddsTooltip.getBoundingClientRect();
+    const tooltipWidth = tooltipRect.width || 220;
+    const viewportPadding = 6;
+    const desiredCenter = teamRowRect.left + teamRowRect.width / 2;
+    const minimumCenter = tooltipWidth / 2 + viewportPadding;
+    const maximumCenter = Math.max(
+      minimumCenter,
+      window.innerWidth - tooltipWidth / 2 - viewportPadding,
+    );
+    const clampedCenter = Math.min(
+      maximumCenter,
+      Math.max(minimumCenter, desiredCenter),
+    );
+    const maximumArrowShift = Math.max(0, tooltipWidth / 2 - 12);
+    const arrowShift = Math.min(
+      maximumArrowShift,
+      Math.max(-maximumArrowShift, desiredCenter - clampedCenter),
+    );
+    this.lineupTooltipHost.style.left = cssPixels(clampedCenter);
+    this.lineupTooltipHost.style.top = cssPixels(teamRowRect.top - 5);
+    this.lineupTooltipHost.style.setProperty(
+      '--lineup-tooltip-arrow-shift-x',
+      cssPixels(arrowShift),
+    );
+  }
 
   private readonly openPlayerMarketTooltip = (): void => {
     if (
