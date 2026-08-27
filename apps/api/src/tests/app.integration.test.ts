@@ -191,6 +191,33 @@ describe('POST /api/player-stats', () => {
 });
 
 describe('public extension pages', () => {
+  it('resolves request-local services once per request on a reusable app', async () => {
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      new MockPlayerMarketOddsProvider(),
+    );
+    let statsServiceReads = 0;
+    const services = {
+      get statsService() {
+        statsServiceReads += 1;
+        return service;
+      },
+      logger,
+      corsOrigins: [] as const,
+    };
+    const resolveServices = vi.fn(() => services);
+    const app = createApp({ resolveServices });
+
+    await expect(app.request('/health')).resolves.toMatchObject({ status: 200 });
+    await expect(app.request('/privacy')).resolves.toMatchObject({ status: 200 });
+
+    expect(resolveServices).toHaveBeenCalledTimes(2);
+    expect(statsServiceReads).toBe(0);
+  });
+
   it.each([
     ['/', 'Football Stats Overlay'],
     ['/privacy', 'Datenschutzerklärung'],

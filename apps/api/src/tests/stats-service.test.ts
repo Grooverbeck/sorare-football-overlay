@@ -229,6 +229,69 @@ async function runFixtureRefreshScenario(
 }
 
 describe('StatsService cache writes', () => {
+  it('claims one fixture refresh lease per team and match in a batch', async () => {
+    const fixture: NonNullable<PlayerFixtureStats> = {
+      date: '2026-08-29T18:00:00.000Z',
+      competitionSlug: 'bundesliga-de',
+      homeTeamName: 'Shared Home',
+      awayTeamName: 'Shared Away',
+      homeTeamSlug: 'shared-home',
+      awayTeamSlug: 'shared-away',
+      playerTeamName: 'Shared Home',
+      opponentTeamName: 'Shared Away',
+      playerTeamSlug: 'shared-home',
+      cleanSheetProbability: 0.4,
+      matchProbabilities: { win: 0.55, draw: 0.25, loss: 0.2 },
+    };
+    const slugs = ['shared-player-one', 'shared-player-two'];
+    const fixtureByKey = new Map(
+      slugs.map((slug) => [`${slug}:auto-v3:no-low`, fixture] as const),
+    );
+    const claimRefresh = vi.fn(async () => false);
+    const fixtureCache: Cache<PlayerFixtureStats> & {
+      claimRefresh: typeof claimRefresh;
+    } = {
+      get: (key) => fixtureByKey.get(key),
+      set: (key, value) => {
+        fixtureByKey.set(key, value);
+      },
+      claimRefresh,
+    };
+    const formCache = new TtlCache<PlayerFormStats>(60_000);
+    for (const slug of slugs) {
+      formCache.set(`${slug}:Defender:no-low`, {
+        slug,
+        displayName: slug,
+        position: 'Defender',
+        aaL10: { value: 12, sampleSize: 10 },
+        cleanSheetL10: { value: 0.3, sampleSize: 10 },
+        goalL10: { value: 0.1, sampleSize: 10 },
+        excludedLowCoverage: 0,
+      });
+    }
+    const source = new MockDataSource();
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      new SplitPlayerStatsCache(formCache, fixtureCache),
+      true,
+      new UnavailablePlayerMarketOddsProvider(),
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs,
+        positions: Object.fromEntries(
+          slugs.map((slug) => [slug, 'Defender']),
+        ),
+      }),
+    );
+
+    expect(result.cacheHits).toBe(2);
+    expect(result.data).toHaveLength(2);
+    expect(claimRefresh).toHaveBeenCalledTimes(1);
+  });
+
   it('returns cached-name players while a cold name is resolved and warmed in the background', async () => {
     let finishColdResolution:
       | ((requests: SourcePlayerRequest[]) => void)

@@ -1,6 +1,7 @@
-import { createApp } from '../app.js';
-import { loadConfig } from '../config.js';
+import { createApp, type CreateAppOptions } from '../app.js';
+import { loadConfig, type AppConfig } from '../config.js';
 import { SorareGraphqlClient } from '../graphql/client.js';
+import type { AppLogger } from '../logger.js';
 import { createStatsRuntime } from '../service-factory.js';
 import { MlsMarketPrewarmer } from '../services/mls-market-prewarmer.js';
 import { MlsAaBenchmarkRefresher } from '../services/mls-aa-benchmark.js';
@@ -66,26 +67,26 @@ function stringBindings(env: CloudflareBindings): Record<string, string | undefi
   );
 }
 
-function createWorkerServices(
+function createWorkerBase(env: CloudflareBindings): {
+  config: AppConfig;
+  logger: AppLogger;
+} {
+  const config = loadConfig(stringBindings(env));
+  return { config, logger: createWorkerLogger(config.logLevel) };
+}
+
+function createWorkerRuntime(
   env: CloudflareBindings,
   context: ExecutionContext,
+  config: AppConfig,
+  logger: AppLogger,
+  cacheStore: D1JsonKeyValueStore,
 ) {
-  const config = loadConfig(stringBindings(env));
-  const logger = createWorkerLogger(config.logLevel);
   const formTtlSeconds = Math.floor(config.playerFormCacheTtlMs / 1_000);
   const fixtureTtlSeconds = Math.floor(config.fixtureCacheTtlMs / 1_000);
   const nameTtlSeconds = Math.floor(config.nameCacheTtlMs / 1_000);
   const nameMissTtlSeconds = Math.floor(config.nameMissCacheTtlMs / 1_000);
-  const cacheStore = new D1JsonKeyValueStore(
-    env.CACHE_DB,
-    undefined,
-    undefined,
-    logger,
-  );
-  const mlsAaBenchmarkStore = new CloudflareMlsAaBenchmarkStore(
-    cacheStore,
-  );
-  const runtime = createStatsRuntime({
+  return createStatsRuntime({
     config,
     logger,
     statsCache: new CloudflarePlayerStatsCache(
@@ -123,8 +124,53 @@ function createWorkerServices(
       );
     },
   });
-  return { config, logger, runtime, mlsAaBenchmarkStore };
 }
+
+function createWorkerAppServices(
+  env: CloudflareBindings,
+  context: ExecutionContext,
+): CreateAppOptions {
+  const { config, logger } = createWorkerBase(env);
+  let cacheStore: D1JsonKeyValueStore | undefined;
+  let runtime: ReturnType<typeof createStatsRuntime> | undefined;
+  let benchmarkStore: CloudflareMlsAaBenchmarkStore | undefined;
+  const getCacheStore = () =>
+    (cacheStore ??= new D1JsonKeyValueStore(
+      env.CACHE_DB,
+      undefined,
+      undefined,
+      logger,
+    ));
+  const getRuntime = () =>
+    (runtime ??= createWorkerRuntime(
+      env,
+      context,
+      config,
+      logger,
+      getCacheStore(),
+    ));
+
+  return {
+    get statsService() {
+      return getRuntime().statsService;
+    },
+    logger,
+    corsOrigins: config.corsOrigins,
+    get mlsAaBenchmarkStore() {
+      return (benchmarkStore ??= new CloudflareMlsAaBenchmarkStore(
+        getCacheStore(),
+      ));
+    },
+  };
+}
+
+const app = createApp<CloudflareBindings>({
+  resolveServices: (context) =>
+    createWorkerAppServices(
+      context.env,
+      context.executionCtx as unknown as ExecutionContext,
+    ),
+});
 
 export default {
   async fetch(
@@ -132,16 +178,7 @@ export default {
     env: CloudflareBindings,
     context: ExecutionContext,
   ): Promise<Response> {
-    const { config, logger, runtime, mlsAaBenchmarkStore } =
-      createWorkerServices(env, context);
-    const app = createApp({
-      statsService: runtime.statsService,
-      logger,
-      corsOrigins: config.corsOrigins,
-      mlsAaBenchmarkStore,
-    });
-
-    return app.fetch(request);
+    return app.fetch(request, env, context);
   },
 
   scheduled(
@@ -149,8 +186,17 @@ export default {
     env: CloudflareBindings,
     context: ExecutionContext,
   ): void {
-    const { config, logger, runtime, mlsAaBenchmarkStore } =
-      createWorkerServices(env, context);
+    const { config, logger } = createWorkerBase(env);
+    if (
+      controller.cron !== WEEKLY_MLS_AA_CRON &&
+      controller.cron !== DAILY_MARKET_PREWARM_CRON
+    ) {
+      logger.warn(
+        { cron: controller.cron },
+        'Ignoring unknown scheduled trigger',
+      );
+      return;
+    }
     const client = new SorareGraphqlClient({
       url: config.graphqlUrl,
       requestTimeoutMs: config.requestTimeoutMs,
@@ -161,9 +207,15 @@ export default {
       ...(config.jwtAud ? { jwtAud: config.jwtAud } : {}),
     });
     if (controller.cron === WEEKLY_MLS_AA_CRON) {
+      const cacheStore = new D1JsonKeyValueStore(
+        env.CACHE_DB,
+        undefined,
+        undefined,
+        logger,
+      );
       const refresher = new MlsAaBenchmarkRefresher({
         client,
-        store: mlsAaBenchmarkStore,
+        store: new CloudflareMlsAaBenchmarkStore(cacheStore),
         logger,
       });
       context.waitUntil(
@@ -179,13 +231,19 @@ export default {
       );
       return;
     }
-    if (controller.cron !== DAILY_MARKET_PREWARM_CRON) {
-      logger.warn(
-        { cron: controller.cron },
-        'Ignoring unknown scheduled trigger',
-      );
-      return;
-    }
+    const cacheStore = new D1JsonKeyValueStore(
+      env.CACHE_DB,
+      undefined,
+      undefined,
+      logger,
+    );
+    const runtime = createWorkerRuntime(
+      env,
+      context,
+      config,
+      logger,
+      cacheStore,
+    );
     const prewarmer = new MlsMarketPrewarmer({
       client,
       marketOddsProvider: runtime.marketOddsProvider,

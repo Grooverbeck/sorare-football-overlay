@@ -273,6 +273,16 @@ interface FixtureRefreshEntry {
   existingFixture?: PlayerStats['nextGame'];
 }
 
+function fixtureRefreshClaimKey(
+  fixture: NonNullable<PlayerStats['nextGame']>,
+): string | null {
+  const fixtureKey = marketFixtureKey(fixture);
+  const playerTeamKey = playerTeamFixtureIdentity(fixture);
+  return fixtureKey && playerTeamKey
+    ? `${fixtureKey}|${playerTeamKey}`
+    : null;
+}
+
 export type BackgroundTaskScheduler = (task: Promise<void>) => void;
 export const DEFAULT_NAME_RESOLUTION_BUDGET_MS = 650;
 
@@ -520,6 +530,7 @@ export class StatsService {
             : { ...cached, parts: { ...cached.parts, fixture: shared } };
         }),
       );
+      const claimedFixtureRefreshes = new Set<string>();
       for (const { key, playerRequest, parts } of hydratedCachedParts) {
         if (
           parts.form === undefined ||
@@ -532,9 +543,16 @@ export class StatsService {
         }
         cacheHits += 1;
         if (parts.fixture !== undefined) {
-          const fixtureRefreshDue =
-            parts.fixture !== null &&
-            (await splitCache.claimFixtureRefresh(parts.fixture));
+          let fixtureRefreshDue = false;
+          if (parts.fixture !== null) {
+            const refreshKey = fixtureRefreshClaimKey(parts.fixture);
+            if (!refreshKey || !claimedFixtureRefreshes.has(refreshKey)) {
+              if (refreshKey) claimedFixtureRefreshes.add(refreshKey);
+              fixtureRefreshDue = await splitCache.claimFixtureRefresh(
+                parts.fixture,
+              );
+            }
+          }
           immediate.set(key, {
             ...parts.form,
             nextGame: parts.fixture,

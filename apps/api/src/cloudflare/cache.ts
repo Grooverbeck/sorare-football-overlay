@@ -1454,35 +1454,41 @@ class CloudflarePlayerFixtureCache
       this.ttlSeconds,
       this.now(),
     );
+    const existing = await this.readPlayerTeamFixture(
+      teamKey,
+      expectedTeamSlug,
+    );
+    const selectedCandidate = existing
+      ? this.selectPlayerTeamFixture(existing, incomingFixture)
+      : incomingFixture;
+    const shouldPersist =
+      !existing || !sameFixtureIdentity(existing, selectedCandidate);
 
-    if (this.namespace.putEarlierFixture) {
-      await this.namespace.putEarlierFixture(
-        teamKey,
-        JSON.stringify(incomingEnvelope),
-        { expiration },
-      );
-      this.clearTeamFixtureReads(teamKey);
-    } else {
-      const existing = await this.readPlayerTeamFixture(
-        teamKey,
-        expectedTeamSlug,
-      );
-      const selected = existing
-        ? this.selectPlayerTeamFixture(existing, incomingFixture)
-        : incomingFixture;
-      if (!existing || !sameFixtureIdentity(existing, selected)) {
-        await this.namespace.put(
+    let selected = selectedCandidate;
+    if (shouldPersist) {
+      if (this.namespace.putEarlierFixture) {
+        // Keep the cross-isolate compare-and-set for cold or genuinely earlier
+        // fixtures, while allowing the overwhelmingly common warm read to stay
+        // free of D1 writes.
+        await this.namespace.putEarlierFixture(
           teamKey,
-          JSON.stringify(teamFixtureEnvelope(selected)),
+          JSON.stringify(incomingEnvelope),
           { expiration },
         );
-        this.clearTeamFixtureReads(teamKey);
+      } else {
+        await this.namespace.put(
+          teamKey,
+          JSON.stringify(teamFixtureEnvelope(selectedCandidate)),
+          { expiration },
+        );
       }
+      this.clearTeamFixtureReads(teamKey);
+      // The atomic D1 write may have retained an earlier fixture inserted by a
+      // concurrent isolate, so only a real write candidate needs this reread.
+      selected =
+        (await this.readPlayerTeamFixture(teamKey, expectedTeamSlug)) ??
+        incomingFixture;
     }
-
-    const selected =
-      (await this.readPlayerTeamFixture(teamKey, expectedTeamSlug)) ??
-      incomingFixture;
     if (sameFixtureIdentity(selected, candidate)) {
       const { marketOdds: _marketOdds, ...playerFixture } = candidate;
       return playerFixture;

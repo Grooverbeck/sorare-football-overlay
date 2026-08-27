@@ -7,6 +7,11 @@ import type { AppLogger } from './logger.js';
 import { MockDataSource } from './mock/mock-data-source.js';
 import { HistoricalGoalscorerProvider } from './providers/goalscorer-provider.js';
 import {
+  CompetitionRoutedFixtureMatchOddsProvider,
+  CompetitionRoutedPlayerMarketOddsProvider,
+  createCompetitionRouteIndex,
+} from './providers/competition-routed-provider.js';
+import {
   InMemoryMarketSnapshotStore,
   MockPlayerMarketOddsProvider,
   TheOddsApiPlayerMarketOddsProvider,
@@ -72,17 +77,70 @@ export interface StatsRuntime {
   source: 'sorare' | 'mock';
 }
 
-function supplementPlayerMarketOddsProviders(
-  providers: readonly PlayerMarketOddsProvider[],
-): PlayerMarketOddsProvider {
-  const [first, ...rest] = providers;
-  if (!first) return new UnavailablePlayerMarketOddsProvider();
-  return rest.reduce<PlayerMarketOddsProvider>(
-    (primary, fallback) =>
-      new SupplementingPlayerMarketOddsProvider(primary, fallback),
-    first,
-  );
+interface TheOddsPlayerProviderPlan {
+  competitionSlugs: readonly string[];
+  sportKeys: readonly string[] | null;
+  region?: string;
+  fallbackRegion?: string | null;
+  markets?: readonly PlayerMarketField[];
+  fetchWindowMs?: number;
+  refreshUsage: boolean;
 }
+
+const THE_ODDS_PLAYER_PROVIDER_PLANS: readonly TheOddsPlayerProviderPlan[] = [
+  {
+    competitionSlugs: ['mlspa'],
+    sportKeys: null,
+    refreshUsage: true,
+  },
+  ...LEAGUES_CUP_THE_ODDS_API_ROUTES.map((route) => ({
+    competitionSlugs: route.competitionSlugs,
+    sportKeys: route.sportKeys,
+    region: route.region,
+    fallbackRegion: route.fallbackRegion,
+    refreshUsage: false,
+  })),
+  {
+    competitionSlugs: ['uefa-champions-league'],
+    sportKeys: [
+      'soccer_uefa_champs_league_qualification',
+      'soccer_uefa_champs_league',
+    ],
+    region: 'eu',
+    fallbackRegion: 'uk',
+    refreshUsage: false,
+  },
+  {
+    competitionSlugs: ['uefa-europa-league'],
+    sportKeys: ['soccer_uefa_europa_league'],
+    region: 'eu',
+    fallbackRegion: 'uk',
+    refreshUsage: false,
+  },
+  {
+    competitionSlugs: ['uefa-europa-conference-league'],
+    sportKeys: ['soccer_uefa_europa_conference_league'],
+    region: 'eu',
+    fallbackRegion: 'uk',
+    refreshUsage: false,
+  },
+  ...EUROPEAN_THE_ODDS_API_PLAYER_ROUTES.map((route) => ({
+    competitionSlugs: route.competitionSlugs,
+    sportKeys: route.sportKeys,
+    region: route.region,
+    fallbackRegion: route.fallbackRegion,
+    markets: route.markets,
+    fetchWindowMs: route.fetchWindowMs,
+    refreshUsage: false,
+  })),
+];
+
+const THE_ODDS_PLAYER_ROUTE_INDEX = createCompetitionRouteIndex(
+  THE_ODDS_PLAYER_PROVIDER_PLANS.map(({ competitionSlugs }) => competitionSlugs),
+);
+const SPORTS_GAME_ODDS_ROUTE_INDEX = createCompetitionRouteIndex(
+  SPORTS_GAME_ODDS_ROUTES.map(({ competitionSlugs }) => competitionSlugs),
+);
 
 function supplementFixtureMatchOddsProviders(
   providers: readonly FixtureMatchOddsProvider[],
@@ -182,66 +240,36 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
         refreshLeaseTtlMs: 90 * 1_000,
       });
     };
-    const theOddsProvider = config.oddsApiKey
-      ? supplementPlayerMarketOddsProviders([
-          createTheOddsProvider(config.oddsApiSportKey, ['mlspa']),
-          ...LEAGUES_CUP_THE_ODDS_API_ROUTES.map((route) =>
-            createTheOddsProvider(
-              route.sportKeys[0],
-              route.competitionSlugs,
-              {
-                region: route.region,
-                fallbackRegion: route.fallbackRegion,
-                refreshUsage: false,
-              },
-            ),
-          ),
-          createTheOddsProvider(
-            'soccer_uefa_champs_league_qualification',
-            ['uefa-champions-league'],
+    const theOddsSources = config.oddsApiKey
+      ? THE_ODDS_PLAYER_PROVIDER_PLANS.map((plan) => {
+          const sportKeys = plan.sportKeys ?? [config.oddsApiSportKey];
+          return createTheOddsProvider(
+            sportKeys[0]!,
+            plan.competitionSlugs,
             {
-              additionalSportKeys: ['soccer_uefa_champs_league'],
-              region: 'eu',
-              fallbackRegion: 'uk',
-              refreshUsage: false,
+              ...(sportKeys.length > 1
+                ? { additionalSportKeys: sportKeys.slice(1) }
+                : {}),
+              ...(plan.region ? { region: plan.region } : {}),
+              ...(plan.fallbackRegion !== undefined
+                ? { fallbackRegion: plan.fallbackRegion }
+                : {}),
+              ...(plan.markets ? { markets: plan.markets } : {}),
+              ...(plan.fetchWindowMs !== undefined
+                ? { fetchWindowMs: plan.fetchWindowMs }
+                : {}),
+              refreshUsage: plan.refreshUsage,
             },
-          ),
-          createTheOddsProvider(
-            'soccer_uefa_europa_league',
-            ['uefa-europa-league'],
-            {
-              region: 'eu',
-              fallbackRegion: 'uk',
-              refreshUsage: false,
-            },
-          ),
-          createTheOddsProvider(
-            'soccer_uefa_europa_conference_league',
-            ['uefa-europa-conference-league'],
-            {
-              region: 'eu',
-              fallbackRegion: 'uk',
-              refreshUsage: false,
-            },
-          ),
-          ...EUROPEAN_THE_ODDS_API_PLAYER_ROUTES.map((route) =>
-            createTheOddsProvider(
-              route.sportKeys[0],
-              route.competitionSlugs,
-              {
-                ...(route.sportKeys.length > 1
-                  ? { additionalSportKeys: route.sportKeys.slice(1) }
-                  : {}),
-                region: route.region,
-                fallbackRegion: route.fallbackRegion,
-                markets: route.markets,
-                fetchWindowMs: route.fetchWindowMs,
-                refreshUsage: false,
-              },
-            ),
-          ),
-        ])
-      : new UnavailablePlayerMarketOddsProvider();
+          );
+        })
+      : [];
+    const theOddsProvider =
+      theOddsSources.length > 0
+        ? new CompetitionRoutedPlayerMarketOddsProvider(
+            theOddsSources,
+            THE_ODDS_PLAYER_ROUTE_INDEX,
+          )
+        : new UnavailablePlayerMarketOddsProvider();
     const sportsGameOddsSources = config.sportsGameOddsApiKey
       ? SPORTS_GAME_ODDS_ROUTES.map(
           (route, index) =>
@@ -271,9 +299,13 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
             }),
         )
       : [];
-    const sportsGameOddsProvider = supplementPlayerMarketOddsProviders(
-      sportsGameOddsSources,
-    );
+    const sportsGameOddsProvider =
+      sportsGameOddsSources.length > 0
+        ? new CompetitionRoutedPlayerMarketOddsProvider(
+            sportsGameOddsSources,
+            SPORTS_GAME_ODDS_ROUTE_INDEX,
+          )
+        : new UnavailablePlayerMarketOddsProvider();
     const configuredMarketOddsProvider = config.sportsGameOddsApiKey
       ? new SupplementingPlayerMarketOddsProvider(
           sportsGameOddsProvider,
@@ -360,12 +392,16 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
     const oddsApiIoMatchProvider = oddsApiIoProvider
       ? new OddsApiIoFixtureMatchOddsProvider(oddsApiIoProvider)
       : new UnavailableFixtureMatchOddsProvider();
+    const sportsGameOddsMatchSources = sportsGameOddsSources.map(
+      (source) => new SportsGameOddsFixtureMatchOddsProvider(source),
+    );
     const sportsGameOddsMatchProvider =
-      supplementFixtureMatchOddsProviders(
-        sportsGameOddsSources.map(
-          (source) => new SportsGameOddsFixtureMatchOddsProvider(source),
-        ),
-      );
+      sportsGameOddsMatchSources.length > 0
+        ? new CompetitionRoutedFixtureMatchOddsProvider(
+            sportsGameOddsMatchSources,
+            SPORTS_GAME_ODDS_ROUTE_INDEX,
+          )
+        : new UnavailableFixtureMatchOddsProvider();
     fixtureMatchOddsProvider = supplementFixtureMatchOddsProviders([
       sportsGameOddsMatchProvider,
       theOddsMatchProvider,

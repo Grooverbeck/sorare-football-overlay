@@ -21,9 +21,11 @@ import {
   type MlsAaBenchmarkStore,
 } from './services/mls-aa-benchmark.js';
 
-type AppEnv = {
+type AppEnv<TBindings extends object = Record<string, never>> = {
+  Bindings: TBindings;
   Variables: {
     requestId: string;
+    services: CreateAppOptions;
   };
 };
 
@@ -34,7 +36,10 @@ function samplesSuccessfulRequest(requestId: string): boolean {
   return Number.isFinite(firstByte) && firstByte < 16;
 }
 
-function servePublicHtml(context: Context<AppEnv>, html: string): Response {
+function servePublicHtml<TBindings extends object>(
+  context: Context<AppEnv<TBindings>>,
+  html: string,
+): Response {
   for (const [name, value] of Object.entries(publicPageHeaders)) context.header(name, value);
   return context.html(html);
 }
@@ -46,13 +51,26 @@ export interface CreateAppOptions {
   mlsAaBenchmarkStore?: MlsAaBenchmarkStore;
 }
 
-export function createApp(options: CreateAppOptions): Hono<AppEnv> {
-  const app = new Hono<AppEnv>();
+export interface CreateRequestAppOptions<TBindings extends object> {
+  resolveServices(
+    context: Context<AppEnv<TBindings>>,
+  ): CreateAppOptions | Promise<CreateAppOptions>;
+}
+
+export function createApp<TBindings extends object = Record<string, never>>(
+  options: CreateAppOptions | CreateRequestAppOptions<TBindings>,
+): Hono<AppEnv<TBindings>> {
+  const app = new Hono<AppEnv<TBindings>>();
 
   app.use('*', async (context, next) => {
     const requestId = context.req.header('x-request-id') ?? crypto.randomUUID();
     context.set('requestId', requestId);
     context.header('x-request-id', requestId);
+    const services =
+      'resolveServices' in options
+        ? await options.resolveServices(context)
+        : options;
+    context.set('services', services);
     const startedAt = performance.now();
     await next();
     const durationMs = Math.round(performance.now() - startedAt);
@@ -61,7 +79,7 @@ export function createApp(options: CreateAppOptions): Hono<AppEnv> {
       durationMs >= SLOW_REQUEST_LOG_THRESHOLD_MS ||
       samplesSuccessfulRequest(requestId)
     ) {
-      options.logger.info(
+      services.logger.info(
         {
           requestId,
           method: context.req.method,
@@ -77,10 +95,12 @@ export function createApp(options: CreateAppOptions): Hono<AppEnv> {
   app.use(
     '/api/*',
     cors({
-      origin: (origin) => {
+      origin: (origin, context) => {
         if (origin.startsWith('chrome-extension://')) return origin;
         if (origin.startsWith('moz-extension://')) return origin;
-        return options.corsOrigins.includes(origin) ? origin : undefined;
+        return context.get('services').corsOrigins.includes(origin)
+          ? origin
+          : undefined;
       },
       allowMethods: ['POST', 'OPTIONS'],
       allowHeaders: ['content-type', 'x-request-id'],
@@ -94,6 +114,7 @@ export function createApp(options: CreateAppOptions): Hono<AppEnv> {
   app.get('/health', (context) => context.json({ status: 'ok' }));
 
   app.post('/api/player-stats', async (context) => {
+    const services = context.get('services');
     const body = await context.req
       .json<unknown>()
       .catch(() => {
@@ -108,7 +129,7 @@ export function createApp(options: CreateAppOptions): Hono<AppEnv> {
       );
     }
 
-    const result = await options.statsService.getPlayerStats(parsed.data);
+    const result = await services.statsService.getPlayerStats(parsed.data);
     const requestId = context.get('requestId');
     if (
       result.diagnostics.responseBudgetExceeded ||
@@ -118,7 +139,7 @@ export function createApp(options: CreateAppOptions): Hono<AppEnv> {
         SLOW_REQUEST_LOG_THRESHOLD_MS ||
       samplesSuccessfulRequest(requestId)
     ) {
-      options.logger.info(
+      services.logger.info(
         {
           requestId,
           ...result.diagnostics,
@@ -127,15 +148,15 @@ export function createApp(options: CreateAppOptions): Hono<AppEnv> {
       );
     }
     let data = result.data;
-    if (options.mlsAaBenchmarkStore) {
+    if (services.mlsAaBenchmarkStore) {
       try {
-        const benchmark = await options.mlsAaBenchmarkStore.get();
+        const benchmark = await services.mlsAaBenchmarkStore.get();
         data = result.data.map((stats) => ({
           ...stats,
           mlsAaContext: mlsAaContextForPlayer(benchmark, stats),
         }));
       } catch (error) {
-        options.logger.warn(
+        services.logger.warn(
           {
             error: error instanceof Error ? error.message : String(error),
           },
@@ -179,7 +200,8 @@ export function createApp(options: CreateAppOptions): Hono<AppEnv> {
       error instanceof AppError
         ? error
         : new AppError(500, 'INTERNAL_ERROR', 'Unexpected server error', error);
-    options.logger.error(
+    const services = context.get('services');
+    services?.logger.error(
       { err: error, requestId: context.get('requestId'), code: appError.code },
       'Request failed',
     );

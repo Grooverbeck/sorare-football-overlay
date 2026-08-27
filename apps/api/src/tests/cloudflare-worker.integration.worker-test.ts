@@ -131,12 +131,40 @@ describe('Cloudflare Worker', () => {
       get.mock.calls.filter(([key]) =>
         String(key).startsWith('player-team-fixture:v2:shared-home'),
       ),
-    ).toHaveLength(1);
+    // One cold read decides whether a write is needed; the second confirms
+    // what the atomic cross-isolate write retained.
+    ).toHaveLength(2);
     expect(
       get.mock.calls.filter(([key]) =>
         String(key).startsWith('fixture-team-odds:v1:'),
       ),
     ).toHaveLength(1);
+
+    get.mockClear();
+    put.mockClear();
+    putEarlierFixture.mockClear();
+    const warmContext = createExecutionContext();
+    const warmCache = new CloudflarePlayerStatsCache(
+      namespace,
+      604_800,
+      14_400,
+      warmContext,
+    );
+
+    const warmParts = await warmCache.getPartsMany([
+      'first:Defender:no-low',
+      'second:Defender:no-low',
+    ]);
+    await waitOnExecutionContext(warmContext);
+
+    expect(warmParts.get('first:Defender:no-low')?.fixture).toMatchObject(
+      fixture,
+    );
+    expect(warmParts.get('second:Defender:no-low')?.fixture).toMatchObject(
+      fixture,
+    );
+    expect(putEarlierFixture).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
   });
 
   it('aligns weekly form expiry to Monday at 10:00 UTC', () => {
