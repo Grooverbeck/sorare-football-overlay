@@ -40,6 +40,15 @@ describe('PlayerStatsSchema team fixture identity', () => {
     ).toBe(true);
   });
 
+  it('accepts the win rate from the exact AA appearance sample', () => {
+    expect(
+      PlayerStatsSchema.parse({
+        ...fixture,
+        aaL10TeamWinRate: { value: 0.4, sampleSize: 10 },
+      }).aaL10TeamWinRate,
+    ).toEqual({ value: 0.4, sampleSize: 10 });
+  });
+
   it('rejects a non-canonical team slug', () => {
     expect(
       PlayerStatsSchema.safeParse({

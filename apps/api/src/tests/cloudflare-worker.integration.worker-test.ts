@@ -175,6 +175,7 @@ describe('Cloudflare Worker', () => {
       displayName: 'Historical Club Scope',
       position: 'Midfielder' as const,
       aaL10: { value: 24.3, sampleSize: 10 },
+      aaL10TeamWinRate: { value: 0.4, sampleSize: 10 },
       cleanSheetL10: { value: 0, sampleSize: 10 },
       goalL10: { value: 0, sampleSize: 10 },
       historicalGoals: historical,
@@ -201,6 +202,7 @@ describe('Cloudflare Worker', () => {
         displayName: 'Historical Club Scope',
         position: 'Midfielder',
         aaL10: { value: 24.3, sampleSize: 10 },
+        aaL10TeamWinRate: { value: 0.4, sampleSize: 10 },
         cleanSheetL10: { value: 0, sampleSize: 10 },
         goalL10: { value: 0, sampleSize: 10 },
         excludedLowCoverage: 0,
@@ -216,6 +218,37 @@ describe('Cloudflare Worker', () => {
     await expect(cache.getParts(key)).resolves.toMatchObject({
       form: { historicalGoals: historical },
     });
+  });
+
+  it('treats aggregate-only form entries as lazy enrichment misses', async () => {
+    const key = 'aa-result-enrichment:Midfielder:no-low';
+    const cacheKey = `player-form:v3:${key}`;
+    const store = new D1JsonKeyValueStore(env.CACHE_DB, env.STATS_CACHE);
+    await Promise.all([store.delete(cacheKey), env.STATS_CACHE.delete(cacheKey)]);
+    await store.put(
+      cacheKey,
+      JSON.stringify({
+        slug: 'aa-result-enrichment',
+        displayName: 'AA Result Enrichment',
+        position: 'Midfielder',
+        aaL10: { value: 12, sampleSize: 10 },
+        cleanSheetL10: { value: 0.2, sampleSize: 10 },
+        goalL10: { value: 0.1, sampleSize: 10 },
+        excludedLowCoverage: 0,
+      }),
+      { expirationTtl: 3_600 },
+    );
+    const context = createExecutionContext();
+    const cache = new CloudflarePlayerStatsCache(
+      store,
+      604_800,
+      14_400,
+      context,
+    );
+
+    await expect(cache.getParts(key)).resolves.toEqual({});
+    await waitOnExecutionContext(context);
+    await expect(store.get(cacheKey, 'json')).resolves.toBeNull();
   });
 
   it('keeps the current fixture and its team odds until the following morning', () => {
@@ -622,6 +655,7 @@ describe('Cloudflare Worker', () => {
       displayName: 'Fixture Odds Migration',
       position: 'Defender' as const,
       aaL10: { value: 10, sampleSize: 10 },
+      aaL10TeamWinRate: { value: 0.4, sampleSize: 10 },
       cleanSheetL10: { value: 0.2, sampleSize: 10 },
       goalL10: { value: 0.1, sampleSize: 10 },
       nextGame: fixture,
@@ -770,6 +804,7 @@ describe('Cloudflare Worker', () => {
       displayName: 'Team Fixture Player',
       position: 'Defender' as const,
       aaL10: { value: 12, sampleSize: 10 },
+      aaL10TeamWinRate: { value: 0.4, sampleSize: 10 },
       cleanSheetL10: { value: 0.3, sampleSize: 10 },
       goalL10: { value: 0.1, sampleSize: 10 },
       excludedLowCoverage: 0,
@@ -1384,6 +1419,7 @@ describe('Cloudflare Worker', () => {
       displayName: 'Team Name Migration Probe',
       position: 'Midfielder' as const,
       aaL10: { value: 10, sampleSize: 10 },
+      aaL10TeamWinRate: { value: 0.4, sampleSize: 10 },
       cleanSheetL10: { value: 0.2, sampleSize: 10 },
       goalL10: { value: 0.3, sampleSize: 10 },
       nextGame: {

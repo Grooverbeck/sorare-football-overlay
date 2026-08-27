@@ -958,6 +958,7 @@ describe('Sorare card DOM discovery', () => {
           displayName: 'Angus Gunn',
           position: 'Goalkeeper',
           aaL10: { value: 8.7, sampleSize: 10 },
+          aaL10TeamWinRate: { value: 0.3, sampleSize: 10 },
           cleanSheetL10: { value: 0.4, sampleSize: 10 },
           goalL10: { value: 0, sampleSize: 10 },
           nextGame: {
@@ -1057,6 +1058,18 @@ describe('Sorare card DOM discovery', () => {
     expect(tooltip?.querySelector('.tooltip-odds')?.textContent).toBe(
       'H 26%D 22%A 52%',
     );
+    expect(
+      tooltip?.querySelector('.tooltip-win-comparison')?.textContent,
+    ).toBe(
+      'Siegchance nächstes Spiel52 %' +
+        'Siegquote in AA-Spielen30 % (3/10)' +
+        'Abweichung+22 %-Pkt.',
+    );
+    expect(
+      tooltip?.querySelector<HTMLElement>(
+        '.tooltip-win-comparison-row[data-kind="delta"]',
+      )?.dataset.tone,
+    ).toBe('positive');
     expect(
       tooltip?.querySelector<HTMLElement>(
         '.tooltip-odd[data-outcome="away"][data-role="player"]',

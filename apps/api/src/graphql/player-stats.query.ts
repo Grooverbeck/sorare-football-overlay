@@ -60,6 +60,10 @@ export const PLAYER_STATS_BATCH_QUERY = gql`
             footballGame {
               date
               lowCoverage
+              statusTyped
+              winner {
+                id
+              }
             }
             footballPlayerGameStats {
               anyTeam {
@@ -148,6 +152,10 @@ export const PLAYER_APPEARANCE_HISTORY_QUERY = gql`
           nodes {
             date
             lowCoverage
+            statusTyped
+            winner {
+              id
+            }
             playerGameScore(playerSlug: $slug, position: $position) {
               __typename
               positionTyped

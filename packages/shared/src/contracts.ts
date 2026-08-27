@@ -132,6 +132,10 @@ export const PlayerStatsSchema = z.object({
   displayName: z.string(),
   position: FootballPositionSchema,
   aaL10: MetricSchema,
+  // Player- and card-position-specific team win rate over exactly the
+  // appearances used by aaL10. Optional keeps old extension responses and
+  // form cache entries backwards compatible during lazy enrichment.
+  aaL10TeamWinRate: MetricSchema.optional(),
   // Response-only league comparison. It is supplied from the weekly backend
   // snapshot and deliberately kept out of the per-player form cache.
   mlsAaContext: MlsAaContextSchema.optional(),

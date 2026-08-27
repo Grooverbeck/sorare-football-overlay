@@ -15,6 +15,11 @@ export interface PlayerAppearance {
   lowCoverage: boolean;
   position: FootballPosition;
   /**
+   * Result of this appearance from the player's team perspective. Missing
+   * keeps legacy form snapshots and providers without match results usable.
+   */
+  teamResult?: 'win' | 'draw' | 'loss';
+  /**
    * Whether the appearance was for the player's current active club.
    * Undefined keeps mock and legacy data backwards compatible.
    */
@@ -28,6 +33,7 @@ export interface CalculationOptions {
 
 export interface CalculatedMetrics {
   aaL10: Metric;
+  aaL10TeamWinRate: Metric;
   cleanSheetL10: Metric;
   goalL10: Metric;
   excludedLowCoverage: number;
@@ -61,6 +67,41 @@ function validAppearancesForPosition(
 
 export const AA_MINIMUM_MINUTES = 60;
 
+/**
+ * Selects the exact appearances that contribute values to the AA average.
+ * Keep this selector shared by every AA-derived metric so position, club,
+ * coverage, minutes and window semantics cannot drift apart.
+ */
+export function selectAaAppearances(
+  appearances: readonly PlayerAppearance[],
+  position: FootballPosition,
+  options: CalculationOptions,
+): PlayerAppearance[] {
+  const limit = options.limit ?? 10;
+  const allValidAppearances = validAppearancesForPosition(
+    appearances,
+    position,
+    options.excludeLowCoverage,
+  );
+  const hasCurrentClubMarkers = allValidAppearances.some(
+    (appearance) => appearance.currentClubGame !== undefined,
+  );
+
+  return (
+    hasCurrentClubMarkers
+      ? allValidAppearances.filter(
+          (appearance) => appearance.currentClubGame === true,
+        )
+      : allValidAppearances
+  )
+    .filter(
+      (appearance) =>
+        (appearance.minsPlayed ?? 0) >= AA_MINIMUM_MINUTES &&
+        appearance.allAroundScore !== null,
+    )
+    .slice(0, limit);
+}
+
 function currentClubAppearancesOrFallback(
   appearances: readonly PlayerAppearance[],
 ): PlayerAppearance[] {
@@ -93,24 +134,16 @@ export function calculatePlayerMetrics(
     options.excludeLowCoverage,
   );
   const validAppearances = allValidAppearances.slice(0, limit);
-  const hasCurrentClubMarkers = allValidAppearances.some(
-    (appearance) => appearance.currentClubGame !== undefined,
+  const aaEligibleAppearances = selectAaAppearances(
+    appearances,
+    position,
+    options,
   );
-  const aaEligibleAppearances = (
-    hasCurrentClubMarkers
-      ? allValidAppearances.filter(
-          (appearance) => appearance.currentClubGame === true,
-        )
-      : allValidAppearances
-  )
-    .filter(
-      (appearance) =>
-        (appearance.minsPlayed ?? 0) >= AA_MINIMUM_MINUTES,
-    )
-    .slice(0, limit);
-
-  const allAroundScores = aaEligibleAppearances.flatMap((appearance) =>
-    appearance.allAroundScore === null ? [] : [appearance.allAroundScore],
+  const allAroundScores = aaEligibleAppearances.map(
+    (appearance) => appearance.allAroundScore!,
+  );
+  const aaAppearancesWithTeamResult = aaEligibleAppearances.filter(
+    (appearance) => appearance.teamResult !== undefined,
   );
   const cleanSheetEligible = validAppearances.filter(
     (appearance) => (appearance.minsPlayed ?? 0) >= 60,
@@ -119,6 +152,12 @@ export function calculatePlayerMetrics(
 
   return {
     aaL10: mean(allAroundScores),
+    aaL10TeamWinRate: ratio(
+      aaAppearancesWithTeamResult.filter(
+        (appearance) => appearance.teamResult === 'win',
+      ).length,
+      aaAppearancesWithTeamResult.length,
+    ),
     cleanSheetL10: ratio(
       cleanSheetEligible.filter((appearance) => (appearance.cleanSheet60 ?? 0) >= 1).length,
       cleanSheetEligible.length,

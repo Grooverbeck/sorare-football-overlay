@@ -1497,6 +1497,7 @@ export class StatsService {
       displayName: player.displayName,
       position,
       aaL10: metrics.aaL10,
+      aaL10TeamWinRate: metrics.aaL10TeamWinRate,
       cleanSheetL10: metrics.cleanSheetL10,
       goalL10: goalProbability.metric,
       ...(includeHistoricalAssists && player.historyStatus !== 'partial'

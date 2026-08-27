@@ -995,6 +995,13 @@ class CloudflarePlayerFormCache
       this.removeInvalid(cacheKey);
       return undefined;
     }
+    if (parsed.data.aaL10TeamWinRate === undefined) {
+      // This metric needs the original appearance results and cannot be
+      // reconstructed from an older aggregate-only form entry. Treat that
+      // entry as a lazy cache miss so only requested players are enriched.
+      this.removeInvalid(cacheKey);
+      return undefined;
+    }
     const {
       historicalClubScopeVersion,
       historicalGoals,

@@ -944,6 +944,31 @@ const lineupOddsStyles = `
   }
   .tooltip-odd[data-role="draw"] { color: #d8dde5; }
   .tooltip-odd[data-role="opponent"] { color: #ff8589; }
+  .tooltip-win-comparison {
+    display: grid;
+    margin-top: 5px;
+    padding-top: 5px;
+    border-top: 1px solid rgba(255,255,255,.1);
+    gap: 2px;
+  }
+  .tooltip-win-comparison-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: 12px;
+  }
+  .tooltip-win-comparison-label { color: #aeb7c5; }
+  .tooltip-win-comparison-value {
+    color: #eef2f7;
+    font-weight: 800;
+    text-align: right;
+  }
+  .tooltip-win-comparison-row[data-kind="delta"][data-tone="positive"]
+    .tooltip-win-comparison-value { color: #8ce769; }
+  .tooltip-win-comparison-row[data-kind="delta"][data-tone="negative"]
+    .tooltip-win-comparison-value { color: #ff8589; }
+  .tooltip-win-comparison-row[data-kind="delta"][data-tone="neutral"]
+    .tooltip-win-comparison-value { color: #d8dde5; }
 `;
 
 function score(metric: Metric): string {
@@ -3108,10 +3133,7 @@ export class OverlayView {
     );
     setLineupAaSortValue(this.container, stats.aaL10.value);
     setLineupSortDataReady(this.container, true);
-    this.renderLineupOdds(
-      stats.nextGame,
-      lineupBuilderTeamRow(this.container),
-    );
+    this.renderLineupOdds(stats, lineupBuilderTeamRow(this.container));
     this.renderPlayerMarketTooltip(stats);
     this.panel.replaceChildren();
     this.panel.classList.add('bracket-only');
@@ -3219,9 +3241,10 @@ export class OverlayView {
   }
 
   private renderLineupOdds(
-    nextGame: PlayerStats['nextGame'],
+    stats: PlayerStats,
     teamRow: HTMLElement | null,
   ): void {
+    const nextGame = stats.nextGame;
     const probabilities = visualLineupProbabilities(nextGame, teamRow);
     if (
       !probabilities ||
@@ -3311,13 +3334,75 @@ export class OverlayView {
     const tooltipLabel = document.createElement('div');
     tooltipLabel.className = 'tooltip-label';
     tooltipLabel.textContent = 'Quoten';
+    const winComparison = this.lineupWinComparison(stats);
     this.lineupOddsTooltip.replaceChildren(
       tooltipLabel,
       fixture,
       odds,
+      ...(winComparison ? [winComparison] : []),
     );
     this.lineupOddsTooltip.hidden = false;
     this.lineupOddsBar.dataset.ready = 'true';
+  }
+
+  private lineupWinComparison(stats: PlayerStats): HTMLDivElement | null {
+    const nextWin = stats.nextGame?.matchProbabilities?.win;
+    const historical = stats.aaL10TeamWinRate;
+    if (
+      nextWin === null ||
+      nextWin === undefined ||
+      historical?.value === null ||
+      historical === undefined ||
+      historical.sampleSize <= 0
+    ) {
+      return null;
+    }
+
+    const nextPercentage = Math.round(Math.max(0, Math.min(1, nextWin)) * 100);
+    const historicalPercentage = Math.round(
+      Math.max(0, Math.min(1, historical.value)) * 100,
+    );
+    const wins = Math.round(historical.value * historical.sampleSize);
+    const delta = nextPercentage - historicalPercentage;
+    const comparison = document.createElement('div');
+    comparison.className = 'tooltip-win-comparison';
+    comparison.append(
+      this.lineupWinComparisonRow(
+        'Siegchance nächstes Spiel',
+        `${nextPercentage} %`,
+      ),
+      this.lineupWinComparisonRow(
+        'Siegquote in AA-Spielen',
+        `${historicalPercentage} % (${wins}/${historical.sampleSize})`,
+      ),
+      this.lineupWinComparisonRow(
+        'Abweichung',
+        `${delta > 0 ? '+' : ''}${delta} %-Pkt.`,
+        'delta',
+        delta > 0 ? 'positive' : delta < 0 ? 'negative' : 'neutral',
+      ),
+    );
+    return comparison;
+  }
+
+  private lineupWinComparisonRow(
+    label: string,
+    value: string,
+    kind?: 'delta',
+    tone?: 'positive' | 'negative' | 'neutral',
+  ): HTMLDivElement {
+    const row = document.createElement('div');
+    row.className = 'tooltip-win-comparison-row';
+    if (kind) row.dataset.kind = kind;
+    if (tone) row.dataset.tone = tone;
+    const labelNode = document.createElement('span');
+    labelNode.className = 'tooltip-win-comparison-label';
+    labelNode.textContent = label;
+    const valueNode = document.createElement('span');
+    valueNode.className = 'tooltip-win-comparison-value';
+    valueNode.textContent = value;
+    row.append(labelNode, valueNode);
+    return row;
   }
 
   private renderPlayerMarketTooltip(stats: PlayerStats): void {

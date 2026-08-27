@@ -75,6 +75,7 @@ export class MockDataSource implements PlayerStatsDataSource {
         { length: appearanceCount },
         (_, index) => {
           const sourceIndex = index % template.aa.length;
+          const resultSeed = hash(`${request.slug}:result:${index}`) % 4;
           return {
             date: new Date(Date.UTC(2026, 6, 20 - index * 7, 18)).toISOString(),
             allAroundScore: template.aa[sourceIndex] ?? null,
@@ -87,6 +88,12 @@ export class MockDataSource implements PlayerStatsDataSource {
             lowCoverage:
               template.lowCoverageIndexes?.includes(sourceIndex) ?? false,
             position,
+            teamResult:
+              resultSeed === 0
+                ? 'win'
+                : resultSeed === 1
+                  ? 'draw'
+                  : 'loss',
           };
         },
       );

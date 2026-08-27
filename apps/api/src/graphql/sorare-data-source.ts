@@ -1,5 +1,5 @@
 import {
-  AA_MINIMUM_MINUTES,
+  selectAaAppearances,
   type FootballPosition,
   type PlayerAppearance,
 } from '@sorare-overlay/shared';
@@ -77,6 +77,21 @@ function normalizeName(value: string): string {
     .replace(/[\u0300-\u036f]/g, '')
     .trim()
     .toLocaleLowerCase();
+}
+
+function playerTeamResult(
+  gameStatus: string | undefined,
+  winner: { id: string } | null | undefined,
+  playerTeamId: string | undefined,
+): PlayerAppearance['teamResult'] {
+  // Missing status/winner fields mean an older or mock response did not
+  // request result data. A GraphQL `null` winner on a played appearance is a
+  // draw.
+  if (gameStatus !== 'played' || winner === undefined || !playerTeamId) {
+    return undefined;
+  }
+  if (winner === null) return 'draw';
+  return winner.id === playerTeamId ? 'win' : 'loss';
 }
 
 // A small, auditable escape hatch for Sorare card display names whose public
@@ -313,11 +328,12 @@ export class SorareDataSource implements PlayerStatsDataSource {
     private readonly excludeLowCoverage = true,
     private readonly nameResolutionCache?: PlayerNameResolutionCache,
   ) {
-    // Four full L10 player payloads currently exceed Sorare's anonymous
-    // complexity limit (589 > 500); three remain below it.
+    // The result-enriched L10 query has measured complexity 589 for three
+    // players against Sorare's anonymous limit of 500. Two remain safe; API
+    // keys use Sorare's elevated limit and retain the configured batch size.
     this.batchSize = elevatedComplexityLimit
       ? requestedBatchSize
-      : Math.min(requestedBatchSize, 3);
+      : Math.min(requestedBatchSize, 2);
     // The fixture-only query omits the expensive score history and remains
     // comfortably below Sorare's anonymous complexity ceiling in larger
     // batches.
@@ -909,6 +925,12 @@ export class SorareDataSource implements PlayerStatsDataSource {
           if (!score || score.__typename !== 'PlayerGameScore') return [];
           const scorePosition = fromSorarePosition[score.positionTyped];
           if (!scorePosition) return [];
+          const appearanceTeamId = score.footballPlayerGameStats.anyTeam?.id;
+          const teamResult = playerTeamResult(
+            score.footballGame.statusTyped,
+            score.footballGame.winner,
+            appearanceTeamId,
+          );
           return [
             {
               date: score.footballGame.date,
@@ -920,10 +942,11 @@ export class SorareDataSource implements PlayerStatsDataSource {
               cleanSheet60: score.footballPlayerGameStats.cleanSheet60 ?? null,
               lowCoverage: score.footballGame.lowCoverage,
               position: scorePosition,
-              ...(activeClubId && score.footballPlayerGameStats.anyTeam?.id
+              ...(teamResult ? { teamResult } : {}),
+              ...(activeClubId && appearanceTeamId
                 ? {
                     currentClubGame:
-                      score.footballPlayerGameStats.anyTeam.id === activeClubId,
+                      appearanceTeamId === activeClubId,
                   }
                 : {}),
             },
@@ -936,7 +959,10 @@ export class SorareDataSource implements PlayerStatsDataSource {
               displayName: player.displayName,
               position,
               ...(activeClubId ? { activeClubId } : {}),
-              appearances: this.selectAppearanceWindow(appearances),
+              appearances: this.selectAppearanceWindow(
+                appearances,
+                position,
+              ),
               nextGame: this.nextGame(player, expectedTeamSlug),
             },
             scoreWindowWasFull: player.playerGameScores.length >= 15,
@@ -975,7 +1001,11 @@ export class SorareDataSource implements PlayerStatsDataSource {
             );
             return {
               ...player,
-              appearances: this.selectAppearanceWindow(appearances, 40),
+              appearances: this.selectAppearanceWindow(
+                appearances,
+                player.position,
+                40,
+              ),
               historyStatus: 'complete' as const,
             };
           } catch {
@@ -990,7 +1020,10 @@ export class SorareDataSource implements PlayerStatsDataSource {
           );
           return {
             ...player,
-            appearances: this.selectAppearanceWindow(appearances),
+            appearances: this.selectAppearanceWindow(
+              appearances,
+              player.position,
+            ),
             historyStatus: 'complete' as const,
           };
         } catch {
@@ -1004,40 +1037,34 @@ export class SorareDataSource implements PlayerStatsDataSource {
     appearances: readonly PlayerAppearance[],
     position: FootballPosition,
   ): number {
-    return appearances.filter(
-      (appearance) =>
-        appearance.position === position &&
-        appearance.currentClubGame !== false &&
-        (appearance.minsPlayed ?? 0) >= AA_MINIMUM_MINUTES &&
-        (!this.excludeLowCoverage || !appearance.lowCoverage),
-    ).length;
+    return selectAaAppearances(appearances, position, {
+      excludeLowCoverage: this.excludeLowCoverage,
+      limit: 10,
+    }).length;
   }
 
   private selectAppearanceWindow(
     appearances: readonly PlayerAppearance[],
+    position: FootballPosition,
     limit = 10,
   ): PlayerAppearance[] {
-    const selected: PlayerAppearance[] = [];
-    let valid = 0;
     const played = appearances
       .filter((appearance) => (appearance.minsPlayed ?? 0) > 0)
       .sort((left, right) => Date.parse(right.date) - Date.parse(left.date));
-    const hasCurrentClubMarkers = played.some(
-      (appearance) => appearance.currentClubGame !== undefined,
+    const selectedAaAppearances = selectAaAppearances(
+      played,
+      position,
+      {
+        excludeLowCoverage: this.excludeLowCoverage,
+        limit,
+      },
     );
-
-    for (const appearance of played) {
-      selected.push(appearance);
-      if (
-        (!hasCurrentClubMarkers || appearance.currentClubGame === true) &&
-        (appearance.minsPlayed ?? 0) >= AA_MINIMUM_MINUTES &&
-        (!this.excludeLowCoverage || !appearance.lowCoverage)
-      ) {
-        valid += 1;
-      }
-      if (valid >= limit) break;
-    }
-    return selected;
+    if (selectedAaAppearances.length < limit) return played;
+    const oldestSelected = selectedAaAppearances.at(-1);
+    const cutoffIndex = oldestSelected
+      ? played.indexOf(oldestSelected)
+      : -1;
+    return cutoffIndex < 0 ? played : played.slice(0, cutoffIndex + 1);
   }
 
   private async fetchAppearanceHistory(
@@ -1079,6 +1106,12 @@ export class SorareDataSource implements PlayerStatsDataSource {
           }
           const scorePosition = fromSorarePosition[score.positionTyped];
           if (!scorePosition) return [];
+          const appearanceTeamId = score.footballPlayerGameStats.anyTeam?.id;
+          const teamResult = playerTeamResult(
+            game.statusTyped,
+            game.winner,
+            appearanceTeamId,
+          );
           return [
             {
               date: game.date,
@@ -1090,10 +1123,11 @@ export class SorareDataSource implements PlayerStatsDataSource {
                 score.footballPlayerGameStats.cleanSheet60 ?? null,
               lowCoverage: game.lowCoverage,
               position: scorePosition,
-              ...(activeClubId && score.footballPlayerGameStats.anyTeam?.id
+              ...(teamResult ? { teamResult } : {}),
+              ...(activeClubId && appearanceTeamId
                 ? {
                     currentClubGame:
-                      score.footballPlayerGameStats.anyTeam.id === activeClubId,
+                      appearanceTeamId === activeClubId,
                   }
                 : {}),
             },

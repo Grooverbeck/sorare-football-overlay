@@ -13,6 +13,7 @@ const stats: PlayerStats = {
   displayName: 'Cache Test Player',
   position: 'Midfielder',
   aaL10: { value: 10.5, sampleSize: 10 },
+  aaL10TeamWinRate: { value: 0.4, sampleSize: 10 },
   cleanSheetL10: { value: 0.2, sampleSize: 10 },
   goalL10: { value: 0.3, sampleSize: 10 },
   nextGame: {
@@ -215,6 +216,35 @@ describe('SplitPlayerStatsCache', () => {
       nextGame: stats.nextGame,
     });
     await expect(cache.get('player')).resolves.toEqual(stored);
+  });
+
+  it('lazily enriches an old form while preserving historical windows', async () => {
+    const formCache = new TtlCache<PlayerFormStats>(24_000);
+    const fixtureCache = new TtlCache<PlayerFixtureStats>(24_000);
+    const cache = new SplitPlayerStatsCache(formCache, fixtureCache);
+    const {
+      nextGame,
+      aaL10TeamWinRate: _oldWinRate,
+      ...oldForm
+    } = stats;
+    const historical = {
+      l10: { value: 0.2, sampleSize: 10 },
+      l15: { value: 0.2, sampleSize: 15 },
+      l40: { value: 0.2, sampleSize: 40 },
+    };
+    formCache.set('player', { ...oldForm, historicalAssists: historical });
+    fixtureCache.set('player', nextGame);
+
+    const enriched = await cache.fillMissing('player', stats);
+
+    expect(enriched).toMatchObject({
+      aaL10TeamWinRate: { value: 0.4, sampleSize: 10 },
+      historicalAssists: historical,
+    });
+    expect(formCache.get('player')).toMatchObject({
+      aaL10TeamWinRate: { value: 0.4, sampleSize: 10 },
+      historicalAssists: historical,
+    });
   });
 
   it('migrates a legacy entry once without reviving its stale fixture later', async () => {

@@ -167,13 +167,17 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
     if (form === undefined && fixture === undefined && this.legacyCache) {
       const legacy = await this.legacyCache.get(key);
       if (legacy) {
-        await this.set(key, legacy);
         const {
           nextGame,
           pendingRefreshes: _pendingRefreshes,
           mlsAaContext: _mlsAaContext,
           ...legacyForm
         } = legacy;
+        if (legacyForm.aaL10TeamWinRate === undefined) {
+          await this.fixtureCache.set(playerFixtureCacheKey(key), nextGame);
+          return { fixture: nextGame };
+        }
+        await this.set(key, legacy);
         return { form: legacyForm, fixture: nextGame };
       }
     }
@@ -251,6 +255,15 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
           mlsAaContext: _mlsAaContext,
           ...legacyForm
         } = legacy;
+        if (legacyForm.aaL10TeamWinRate === undefined) {
+          result.set(key, { fixture: nextGame });
+          legacyMigrations.push(
+            Promise.resolve(
+              this.fixtureCache.set(playerFixtureCacheKey(key), nextGame),
+            ),
+          );
+          continue;
+        }
         result.set(key, { form: legacyForm, fixture: nextGame });
         legacyMigrations.push(Promise.resolve(this.set(key, legacy)));
         continue;
@@ -406,8 +419,20 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
       this.getFixture(key),
     ]);
     const writes: Array<void | Promise<void>> = [];
+    const resolvedForm =
+      existingForm === undefined
+        ? form
+        : existingForm.aaL10TeamWinRate === undefined
+          ? { ...existingForm, ...form }
+          : existingForm;
     let resolvedFixture = existingFixture;
-    if (existingForm === undefined) writes.push(this.formCache.set(key, form));
+    if (resolvedForm !== existingForm) {
+      // Form snapshots written before AA-match results existed cannot be
+      // enriched without the source appearances. Replace them lazily on the
+      // first normal player load while preserving any deeper historical
+      // windows already stored on the old snapshot.
+      writes.push(this.formCache.set(key, resolvedForm));
+    }
     if (existingFixture === undefined) {
       const fixtureKey = playerFixtureCacheKey(key);
       if (this.fixtureCache.fillMissing) {
@@ -422,7 +447,7 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
     }
     await Promise.all(writes);
     return {
-      ...(existingForm ?? form),
+      ...resolvedForm,
       nextGame: resolvedFixture ?? null,
     };
   }

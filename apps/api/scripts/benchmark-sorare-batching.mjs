@@ -28,6 +28,7 @@ const VALID_POSITIONS = new Set([
   'Forward',
 ]);
 const ANONYMOUS_REQUEST_BUDGET = 20;
+const ANONYMOUS_BATCH_SIZE = 2;
 
 function readArguments(argv) {
   const output = {
@@ -516,7 +517,7 @@ function buildConfig(arguments_) {
   }
   const repeats = positiveInteger(
     process.env.BENCHMARK_SORARE_REPEATS,
-    3,
+    2,
     'BENCHMARK_SORARE_REPEATS',
   );
   const warmups = positiveInteger(
@@ -526,7 +527,7 @@ function buildConfig(arguments_) {
     { allowZero: true },
   );
   const anonymousRequests =
-    Math.ceil(slugs.length / 3) * (repeats + warmups);
+    Math.ceil(slugs.length / ANONYMOUS_BATCH_SIZE) * (repeats + warmups);
   if (
     !arguments_.skipAnonymous &&
     anonymousRequests > ANONYMOUS_REQUEST_BUDGET
@@ -583,10 +584,10 @@ async function main() {
   const scenarios = [];
   if (!config.skipAnonymous) {
     scenarios.push({
-      id: 'anonymous/batch-3',
+      id: `anonymous/batch-${ANONYMOUS_BATCH_SIZE}`,
       authentication: 'anonymous',
       apiKey: undefined,
-      batchSize: 3,
+      batchSize: ANONYMOUS_BATCH_SIZE,
       gate: new StartRateGate(config.anonymousMinimumIntervalMs),
       slugCount: config.slugs.length,
     });

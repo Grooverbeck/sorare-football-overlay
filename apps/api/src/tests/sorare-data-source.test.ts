@@ -830,12 +830,12 @@ describe('SorareDataSource player-name resolution', () => {
 
     await source.fetchPlayers(players);
 
-    expect(request).toHaveBeenCalledTimes(3);
+    expect(request).toHaveBeenCalledTimes(4);
     expect(
       request.mock.calls.map(([, variables]) =>
         (variables as { slugs: string[] }).slugs.length,
       ),
-    ).toEqual([3, 3, 1]);
+    ).toEqual([2, 2, 2, 1]);
   });
 
   it('temporarily caches unresolved names to avoid repeated anonymous requests', async () => {
@@ -1167,6 +1167,15 @@ describe('SorareDataSource player-name resolution', () => {
               id: `game-${index}`,
               date: new Date(Date.UTC(2026, 6, 24 - index)).toISOString(),
               lowCoverage: false,
+              statusTyped: 'played',
+              winner: {
+                id:
+                  index < 2
+                    ? 'brazil'
+                    : index < 8
+                      ? 'fenerbahce'
+                      : 'opponent',
+              },
             },
             footballPlayerGameStats: {
               anyTeam: { id: index < 2 ? 'brazil' : 'fenerbahce' },
@@ -1200,6 +1209,10 @@ describe('SorareDataSource player-name resolution', () => {
       ),
     ).toHaveLength(2);
     expect(metrics.aaL10).toEqual({ value: 10, sampleSize: 10 });
+    expect(metrics.aaL10TeamWinRate).toEqual({
+      value: 0.6,
+      sampleSize: 10,
+    });
   });
 
   it('reloads scores for the primary card position when the default score window differs', async () => {
@@ -1377,11 +1390,14 @@ describe('SorareDataSource player-name resolution', () => {
     const historyNodes = Array.from({ length: 15 }, (_, index) => ({
       date: new Date(Date.UTC(2026, 6, 24 - index)).toISOString(),
       lowCoverage: false,
+      statusTyped: 'played',
+      winner: index >= 5 && index < 10 ? { id: 'history-club' } : null,
       playerGameScore: {
         __typename: 'PlayerGameScore',
         positionTyped: 'Midfielder',
         allAroundScore: index < 5 ? 99 : 10,
         footballPlayerGameStats: {
+          anyTeam: { id: 'history-club' },
           goals: 0,
           minsPlayed: index < 5 ? 59 : 60,
           cleanSheet60: 0,
@@ -1430,6 +1446,10 @@ describe('SorareDataSource player-name resolution', () => {
     expect(request).toHaveBeenCalledTimes(2);
     expect(player?.appearances).toHaveLength(15);
     expect(metrics.aaL10).toEqual({ value: 10, sampleSize: 10 });
+    expect(metrics.aaL10TeamWinRate).toEqual({
+      value: 0.5,
+      sampleSize: 10,
+    });
   });
 
   it('loads up to forty assist appearances only when explicitly requested', async () => {
@@ -1722,7 +1742,6 @@ describe('SorareDataSource player-name resolution', () => {
       source.fetchPlayers([
         { slug: 'one', position: 'Defender' },
         { slug: 'two', position: 'Defender' },
-        { slug: 'three', position: 'Defender' },
       ]),
     ).rejects.toMatchObject({ code });
     expect(request).toHaveBeenCalledOnce();

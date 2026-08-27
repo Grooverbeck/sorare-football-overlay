@@ -5,6 +5,7 @@ import {
   calculateHistoricalGoalMetrics,
   calculatePlayerMetrics,
   hasAnyDisplayData,
+  selectAaAppearances,
   type PlayerStats,
   type PlayerAppearance,
 } from '../index.js';
@@ -131,6 +132,44 @@ describe('calculatePlayerMetrics', () => {
 
     expect(result.aaL10).toEqual({ value: 10, sampleSize: 10 });
     expect(result.goalL10).toEqual({ value: 0, sampleSize: 10 });
+  });
+
+  it('uses the exact AA appearance sample for the team win rate', () => {
+    const history: PlayerAppearance[] = Array.from(
+      { length: 15 },
+      (_, index) => ({
+        date: new Date(Date.UTC(2026, 6, 25 - index)).toISOString(),
+        allAroundScore: index === 4 ? null : 10 + index,
+        goals: 0,
+        minsPlayed: index === 0 ? 59 : 90,
+        cleanSheet60: 0,
+        lowCoverage: index === 1,
+        position: index === 3 ? 'Defender' : 'Midfielder',
+        currentClubGame: index !== 2,
+        teamResult: index >= 5 && index <= 8 ? 'win' : 'loss',
+      }),
+    );
+
+    const options = { excludeLowCoverage: true, limit: 10 };
+    const selected = selectAaAppearances(
+      history,
+      'Midfielder',
+      options,
+    );
+    const result = calculatePlayerMetrics(
+      history,
+      'Midfielder',
+      options,
+    );
+
+    expect(selected.map(({ date }) => date)).toEqual(
+      history.slice(5, 15).map(({ date }) => date),
+    );
+    expect(result.aaL10).toEqual({ value: 19.5, sampleSize: 10 });
+    expect(result.aaL10TeamWinRate).toEqual({
+      value: 0.4,
+      sampleSize: 10,
+    });
   });
 
   it('calculates historical assist rates for selectable valid-appearance windows', () => {
