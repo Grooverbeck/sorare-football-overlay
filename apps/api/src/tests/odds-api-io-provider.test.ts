@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AppLogger } from '../logger.js';
 import {
   InMemoryMarketSnapshotStore,
+  marketFixtureKey,
   playerMarketFieldDrivesRequest,
   playerMarketOddsKey,
   type MarketSnapshotStore,
@@ -173,7 +174,7 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('routes expanded PSG event names and returns João Neves goal and assist odds', async () => {
+  it('ignores stale identity cooldowns and returns João Neves goal and assist odds', async () => {
     const joaoNeves = player({
       slug: 'joao-pedro-goncalves-neves',
       displayName: 'João Neves',
@@ -235,6 +236,17 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
         },
       ]);
     });
+    const store = new InMemoryMarketSnapshotStore(60_000, () => now);
+    const fixtureKey = marketFixtureKey(joaoNeves.nextGame!);
+    if (!fixtureKey || !store.setEvidence) {
+      throw new Error('Expected fixture identity evidence support');
+    }
+    await store.setEvidence(
+      fixtureKey,
+      'odds-api-io:fixture-identity-unresolved:v1',
+      { reason: 'unmatched', checkedAt: new Date(now).toISOString() },
+      new Date(now + 10 * 60 * 1_000).toISOString(),
+    );
     const { provider } = createProvider(
       fetchImpl,
       new InMemoryProviderQuotaUsageStore(() => now),
@@ -245,6 +257,8 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
           playerMarkets: ['goal'],
         },
       ],
+      0,
+      store,
     );
 
     const result = await provider.load([joaoNeves]);

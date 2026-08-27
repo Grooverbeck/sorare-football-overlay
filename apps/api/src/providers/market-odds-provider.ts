@@ -169,7 +169,9 @@ export type MarketIdentityProvider =
   | 'sports-game-odds';
 
 const fixtureIdentityCooldownMs = 10 * 60 * 1_000;
-const fixtureIdentityCooldownVersion = 1;
+// v2 invalidates negative identities produced before expanded PSG aliases were
+// available. Successful market snapshots and provider aliases remain intact.
+const fixtureIdentityCooldownVersion = 2;
 
 function fixtureIdentityCooldownProvider(
   provider: MarketIdentityProvider,
