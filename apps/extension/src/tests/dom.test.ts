@@ -20,6 +20,7 @@ import {
   lineupGoalSortOptionAttribute,
   lineupPoolReadyEvent,
   lineupSortDataReadyAttribute,
+  lineupSortHydrationGridAttribute,
 } from '../lineup-sort.js';
 import { SorareCardScanner, StatsBatchCoordinator } from '../scanner.js';
 
@@ -2933,6 +2934,123 @@ describe('Sorare card DOM discovery', () => {
     vi.unstubAllGlobals();
   });
 
+  it('keeps complete-pool retries running while their cards are offscreen', async () => {
+    vi.useFakeTimers();
+    const disconnect = vi.fn();
+    class TestIntersectionObserver {
+      readonly root = null;
+      readonly rootMargin = '';
+      readonly thresholds: readonly number[] = [];
+
+      constructor(_callback: IntersectionObserverCallback) {}
+
+      observe = vi.fn();
+      unobserve = vi.fn();
+      disconnect = disconnect;
+      takeRecords(): IntersectionObserverEntry[] {
+        return [];
+      }
+    }
+    vi.stubGlobal('IntersectionObserver', TestIntersectionObserver);
+    try {
+      document.body.innerHTML = `
+        <div data-testid="retry-lineup-pool" ${lineupSortHydrationGridAttribute}="true">
+          <article data-testid="visible-retry-card" data-position="Midfielder">
+            <a href="/football/players/visible-retry-player">Visible player</a>
+          </article>
+          <article data-testid="offscreen-retry-card" data-position="Midfielder">
+            <a href="/football/players/offscreen-retry-player">Offscreen player</a>
+          </article>
+        </div>
+      `;
+      const pool = document.querySelector<HTMLElement>(
+        '[data-testid="retry-lineup-pool"]',
+      );
+      const visibleCard = document.querySelector<HTMLElement>(
+        '[data-testid="visible-retry-card"]',
+      );
+      const offscreenCard = document.querySelector<HTMLElement>(
+        '[data-testid="offscreen-retry-card"]',
+      );
+      if (!pool || !visibleCard || !offscreenCard) {
+        throw new Error('Expected retry lineup pool');
+      }
+      vi.spyOn(visibleCard, 'getBoundingClientRect').mockReturnValue(
+        DOMRect.fromRect({ x: 20, y: 100, width: 120, height: 194 }),
+      );
+      vi.spyOn(offscreenCard, 'getBoundingClientRect').mockReturnValue(
+        DOMRect.fromRect({ x: 20, y: 4_000, width: 120, height: 194 }),
+      );
+      let offscreenAttempts = 0;
+      const fetcher = vi.fn(
+        async (
+          request: PlayerStatsRequest,
+        ): Promise<PlayerStatsSuccessResponse> => {
+          if (request.slugs.includes('offscreen-retry-player')) {
+            offscreenAttempts += 1;
+            if (offscreenAttempts === 1) {
+              throw new Error('Transient backend failure');
+            }
+          }
+          return {
+            data: request.slugs.map((slug) => ({
+              slug,
+              displayName: slug,
+              position: 'Midfielder',
+              aaL10: { value: 10, sampleSize: 10 },
+              cleanSheetL10: { value: 0.2, sampleSize: 10 },
+              goalL10: { value: 0.1, sampleSize: 10 },
+              nextGame: null,
+              excludedLowCoverage: 0,
+            })),
+            meta: {
+              requested: request.slugs.length,
+              returned: request.slugs.length,
+              cacheHits: 0,
+              source: 'sorare',
+            },
+          };
+        },
+      );
+      const coordinator = new StatsBatchCoordinator(
+        fetcher,
+        60_000,
+        [5_000],
+        12,
+        1,
+        [2_500],
+        1_000,
+      );
+      const scanner = new SorareCardScanner(coordinator);
+
+      scanner.start();
+      await coordinator.flush();
+      pool.dispatchEvent(
+        new CustomEvent(lineupPoolReadyEvent, { bubbles: true }),
+      );
+      await coordinator.flush();
+
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(
+        offscreenCard.getAttribute(lineupSortDataReadyAttribute),
+      ).toBe('false');
+      await vi.advanceTimersByTimeAsync(999);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      await coordinator.flush();
+
+      expect(fetcher).toHaveBeenCalledTimes(3);
+      expect(
+        offscreenCard.getAttribute('data-sorare-overlay-aa-sort-value'),
+      ).toBe('10');
+      scanner.stop();
+      expect(disconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
   it('uses API-key optimized groups of twelve plus a remainder by default', async () => {
     const fetcher = vi.fn(
       async (
@@ -5832,58 +5950,169 @@ describe('Sorare card DOM discovery', () => {
     expect(bronze?.shadowRoot?.querySelector('.aa-market-icon')?.textContent).toBe('#3');
   });
 
-  it('batches repeated scroll events into one positioning pass per animation frame', () => {
+  it('hides only brackets that overlap an open Sorare popover and restores them after React settles', () => {
+    vi.useFakeTimers();
     const frameCallbacks: FrameRequestCallback[] = [];
+    let frameSequence = 0;
     const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
       frameCallbacks.push(callback);
-      return frameCallbacks.length;
+      frameSequence += 1;
+      return frameSequence;
     });
     vi.stubGlobal('requestAnimationFrame', requestAnimationFrame);
     vi.stubGlobal('cancelAnimationFrame', vi.fn());
     document.body.innerHTML = `
-      <article data-testid="card-one"></article>
-      <article data-testid="card-two"></article>
+      <article data-testid="covered-card"></article>
+      <article data-testid="clear-card"></article>
     `;
-    const cards = [
-      document.querySelector<HTMLElement>('[data-testid="card-one"]'),
-      document.querySelector<HTMLElement>('[data-testid="card-two"]'),
-    ];
-    if (cards.some((card) => !card)) throw new Error('Expected performance-test cards');
-    const rectSpies = cards.map((card, index) =>
-      vi.spyOn(card as HTMLElement, 'getBoundingClientRect').mockReturnValue({
-        x: 20 + index * 130,
-        y: 100,
-        top: 100,
-        right: 140 + index * 130,
-        bottom: 294,
-        left: 20 + index * 130,
-        width: 120,
-        height: 194,
-        toJSON: () => ({}),
-      }),
+    const coveredCard = document.querySelector<HTMLElement>(
+      '[data-testid="covered-card"]',
     );
-    const views = cards.map(
-      (card, index) =>
-        new OverlayView(card as HTMLElement, { playerName: `Player ${index + 1}` }),
+    const clearCard = document.querySelector<HTMLElement>(
+      '[data-testid="clear-card"]',
     );
-    rectSpies.forEach((spy) => spy.mockClear());
+    if (!coveredCard || !clearCard) {
+      throw new Error('Expected popover overlap cards');
+    }
+    vi.spyOn(coveredCard, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 100, y: 150, width: 120, height: 194 }),
+    );
+    vi.spyOn(clearCard, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 300, y: 150, width: 120, height: 194 }),
+    );
+    const coveredView = new OverlayView(coveredCard, {
+      playerName: 'Covered Player',
+    });
+    const clearView = new OverlayView(clearCard, { playerName: 'Clear Player' });
+    vi.spyOn(coveredView.host, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 104, y: 127, width: 112, height: 22 }),
+    );
+    vi.spyOn(clearView.host, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 304, y: 127, width: 112, height: 22 }),
+    );
 
-    window.dispatchEvent(new Event('scroll'));
-    window.dispatchEvent(new Event('scroll'));
-    window.dispatchEvent(new Event('scroll'));
+    try {
+      const popover = document.createElement('div');
+      popover.setAttribute('role', 'dialog');
+      popover.dataset.state = 'open';
+      popover.textContent = 'Sortieren nach';
+      vi.spyOn(popover, 'getBoundingClientRect').mockReturnValue(
+        DOMRect.fromRect({ x: 90, y: 100, width: 140, height: 80 }),
+      );
+      document.body.append(popover);
+      document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+      frameCallbacks.shift()?.(0);
 
-    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
-    expect(views.every((view) => view.host.style.display === 'none')).toBe(true);
-    expect(rectSpies.every((spy) => spy.mock.calls.length === 0)).toBe(true);
-    frameCallbacks.shift()?.(performance.now());
-    expect(rectSpies.map((spy) => spy.mock.calls.length)).toEqual([1, 1]);
-    expect(views.every((view) => view.host.style.display === '')).toBe(true);
+      expect(coveredView.host.style.visibility).toBe('hidden');
+      expect(clearView.host.style.visibility).toBe('');
 
-    views.forEach((view) => view.destroy());
-    vi.unstubAllGlobals();
+      document.body.dispatchEvent(
+        new KeyboardEvent('keyup', { bubbles: true, key: 'Escape' }),
+      );
+      frameCallbacks.shift()?.(16);
+      expect(coveredView.host.style.visibility).toBe('hidden');
+
+      // Sorare removes its React popover after the input event has already
+      // reached our capture listener. The settle pass must observe that commit.
+      popover.remove();
+      vi.advanceTimersByTime(100);
+      frameCallbacks.shift()?.(116);
+      expect(coveredView.host.style.visibility).toBe('');
+      expect(clearView.host.style.visibility).toBe('');
+    } finally {
+      coveredView.destroy();
+      clearView.destroy();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
   });
 
-  it('skips viewport-inactive overlays during global scroll positioning', () => {
+  it('keeps overlays visible and reconciles positions during and after scrolling', async () => {
+    vi.useFakeTimers();
+    const frameCallbacks: FrameRequestCallback[] = [];
+    let frameSequence = 0;
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      frameCallbacks.push(callback);
+      frameSequence += 1;
+      return frameSequence;
+    });
+    vi.stubGlobal('requestAnimationFrame', requestAnimationFrame);
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const views: OverlayView[] = [];
+    try {
+      document.body.innerHTML = `
+        <article data-testid="card-one"></article>
+        <article data-testid="card-two"></article>
+      `;
+      const cards = [
+        document.querySelector<HTMLElement>('[data-testid="card-one"]'),
+        document.querySelector<HTMLElement>('[data-testid="card-two"]'),
+      ];
+      if (cards.some((card) => !card)) {
+        throw new Error('Expected performance-test cards');
+      }
+      const cardTops = [100, 100];
+      const rectSpies = cards.map((card, index) =>
+        vi
+          .spyOn(card as HTMLElement, 'getBoundingClientRect')
+          .mockImplementation(() => ({
+            x: 20 + index * 130,
+            y: cardTops[index] ?? 100,
+            top: cardTops[index] ?? 100,
+            right: 140 + index * 130,
+            bottom: (cardTops[index] ?? 100) + 194,
+            left: 20 + index * 130,
+            width: 120,
+            height: 194,
+            toJSON: () => ({}),
+          })),
+      );
+      views.push(
+        ...cards.map(
+          (card, index) =>
+            new OverlayView(card as HTMLElement, {
+              playerName: `Player ${index + 1}`,
+            }),
+        ),
+      );
+      rectSpies.forEach((spy) => spy.mockClear());
+
+      cardTops.fill(120);
+      window.dispatchEvent(new Event('scroll'));
+      window.dispatchEvent(new Event('scroll'));
+      window.dispatchEvent(new Event('scroll'));
+
+      expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+      expect(views.every((view) => view.host.style.display === '')).toBe(true);
+      expect(rectSpies.every((spy) => spy.mock.calls.length === 0)).toBe(true);
+      frameCallbacks.shift()?.(0);
+      expect(rectSpies.map((spy) => spy.mock.calls.length)).toEqual([1, 1]);
+      expect(views.map((view) => view.host.style.top)).toEqual(['119px', '119px']);
+
+      cardTops.fill(135);
+      await vi.advanceTimersByTimeAsync(79);
+      expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(requestAnimationFrame).toHaveBeenCalledTimes(2);
+      frameCallbacks.shift()?.(16);
+      expect(views.map((view) => view.host.style.top)).toEqual(['134px', '134px']);
+
+      cardTops.fill(146);
+      frameCallbacks.shift()?.(32);
+      expect(views.map((view) => view.host.style.top)).toEqual(['145px', '145px']);
+      frameCallbacks.shift()?.(48);
+      expect(rectSpies.map((spy) => spy.mock.calls.length)).toEqual([4, 4]);
+      expect(views.every((view) => view.host.style.display === '')).toBe(true);
+    } finally {
+      views.forEach((view) => view.destroy());
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('skips viewport-inactive overlays after scroll positioning settles', async () => {
+    vi.useFakeTimers();
     const frameCallbacks: FrameRequestCallback[] = [];
     const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
       frameCallbacks.push(callback);
@@ -5936,14 +6165,22 @@ describe('Sorare card DOM discovery', () => {
     visibleRect.mockClear();
     offscreenRect.mockClear();
 
-    window.dispatchEvent(new Event('scroll'));
-    frameCallbacks.shift()?.(performance.now());
+    try {
+      window.dispatchEvent(new Event('scroll'));
+      frameCallbacks.shift()?.(0);
+      await vi.advanceTimersByTimeAsync(80);
+      frameCallbacks.shift()?.(16);
+      frameCallbacks.shift()?.(32);
+      frameCallbacks.shift()?.(48);
 
-    expect(visibleRect).toHaveBeenCalledTimes(1);
-    expect(offscreenRect).not.toHaveBeenCalled();
-    visibleView.destroy();
-    offscreenView.destroy();
-    vi.unstubAllGlobals();
+      expect(visibleRect).toHaveBeenCalledTimes(4);
+      expect(offscreenRect).not.toHaveBeenCalled();
+    } finally {
+      visibleView.destroy();
+      offscreenView.destroy();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
   });
 
   it('realigns overlays after Sorare card transitions settle', () => {

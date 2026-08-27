@@ -13,6 +13,8 @@ import { supportsCompactViewPath } from './compact-view-route.js';
 import { isScoreDetailsDialogTarget } from './dom.js';
 import {
   isLineupPoolProbeScrollEvent,
+  lineupSortDataReadyAttribute,
+  lineupSortHydrationGridAttribute,
   setLineupAaSortValue,
   setLineupGoalSortValue,
   setLineupSortDataReady,
@@ -2201,6 +2203,69 @@ function activeModalScope(): HTMLElement | null {
   return candidates[candidates.length - 1] ?? null;
 }
 
+const overlayOccludingSurfaceSelector =
+  '[role="dialog"], [role="menu"], [role="listbox"]';
+
+function activeOverlayOccludingSurfaces(): HTMLElement[] {
+  return [
+    ...document.querySelectorAll<HTMLElement>(overlayOccludingSurfaceSelector),
+  ].filter((element) => {
+    if (
+      element.getAttribute('data-state') === 'closed' ||
+      element.closest('[hidden], [inert], [aria-hidden="true"]')
+    ) {
+      return false;
+    }
+    const rect = element.getBoundingClientRect();
+    if (
+      rect.width <= 0 ||
+      rect.height <= 0 ||
+      rect.bottom <= 0 ||
+      rect.top >= window.innerHeight ||
+      rect.right <= 0 ||
+      rect.left >= window.innerWidth
+    ) {
+      return false;
+    }
+    if (typeof element.checkVisibility === 'function') {
+      return element.checkVisibility({
+        checkOpacity: true,
+        checkVisibilityCSS: true,
+      });
+    }
+    const style = getComputedStyle(element);
+    return (
+      style.display !== 'none' &&
+      style.visibility !== 'hidden' &&
+      style.visibility !== 'collapse' &&
+      Number.parseFloat(style.opacity || '1') !== 0
+    );
+  });
+}
+
+function rectanglesIntersect(left: DOMRect, right: DOMRect): boolean {
+  return (
+    left.left < right.right &&
+    left.right > right.left &&
+    left.top < right.bottom &&
+    left.bottom > right.top
+  );
+}
+
+function overlayIntersectsOccludingSurface(
+  host: HTMLElement,
+  container: HTMLElement,
+  surfaces: readonly HTMLElement[],
+): boolean {
+  const hostRect = host.getBoundingClientRect();
+  if (hostRect.width <= 0 || hostRect.height <= 0) return false;
+  return surfaces.some(
+    (surface) =>
+      !surface.contains(container) &&
+      rectanglesIntersect(hostRect, surface.getBoundingClientRect()),
+  );
+}
+
 const packRevealText =
   /\b(?:deine\s+karten|your\s+cards|neuverpflichtungen|new\s+signings|neue\s+(?:karte|edition|spielerin)|neuer\s+spieler|new\s+(?:card|edition|player|signing))\b/i;
 const packResultText = /\b(?:neuverpflichtungen|new\s+signings)\b/i;
@@ -2420,6 +2485,7 @@ function isVisiblyRendered(
 
 interface OverlayPositionContext {
   modalScope: HTMLElement | null;
+  occludingSurfaces: readonly HTMLElement[];
 }
 
 interface PositionedOverlay {
@@ -2428,7 +2494,6 @@ interface PositionedOverlay {
   isViewportPriorityActive(): boolean;
   isAffectedByLayoutMotion(target: Element): boolean;
   refreshPositionNow(context: OverlayPositionContext): void;
-  hideUntilPositionRefresh?(): void;
   handleLayoutMotionStart?(event: Event): void;
 }
 
@@ -2447,7 +2512,13 @@ const layoutMotionEvents = [
 ] as const;
 const overlayMountSelector =
   '[data-sorare-overlay-root], [data-sorare-overlay-companion]';
+const scrollPositionSettleDelayMs = 80;
+const scrollPositionFollowUpFrames = 2;
+const uiInteractionSettleDelayMs = 100;
 let positionFrame: number | undefined;
+let scrollPositionSettleTimer: number | undefined;
+let uiInteractionSettleTimer: number | undefined;
+let remainingScrollPositionFollowUpFrames = 0;
 let positionListenersAttached = false;
 let marketBracketSide: MarketBracketSide = 'right';
 let historicalAssistFallbackEnabled = false;
@@ -2576,10 +2647,29 @@ function schedulePositionsAfterLayoutMotion(event: Event): void {
   ensurePositionFrame();
 }
 
+function schedulePositionsAfterUiInteraction(event: Event): void {
+  if (
+    event instanceof KeyboardEvent &&
+    !['Enter', ' ', 'Escape', 'ArrowDown', 'ArrowUp'].includes(event.key)
+  ) {
+    return;
+  }
+  scheduleAllOverlayPositions();
+  if (uiInteractionSettleTimer !== undefined) {
+    window.clearTimeout(uiInteractionSettleTimer);
+  }
+  uiInteractionSettleTimer = window.setTimeout(() => {
+    uiInteractionSettleTimer = undefined;
+    scheduleAllOverlayPositions();
+  }, uiInteractionSettleDelayMs);
+}
+
 function detachPositionListeners(): void {
   if (!positionListenersAttached) return;
   window.removeEventListener('resize', scheduleAllOverlayPositions);
   window.removeEventListener('scroll', scheduleAllOverlayPositions, true);
+  window.removeEventListener('click', schedulePositionsAfterUiInteraction, true);
+  window.removeEventListener('keyup', schedulePositionsAfterUiInteraction, true);
   for (const eventName of layoutMotionEvents) {
     window.removeEventListener(
       eventName,
@@ -2587,6 +2677,15 @@ function detachPositionListeners(): void {
       true,
     );
   }
+  if (scrollPositionSettleTimer !== undefined) {
+    window.clearTimeout(scrollPositionSettleTimer);
+    scrollPositionSettleTimer = undefined;
+  }
+  if (uiInteractionSettleTimer !== undefined) {
+    window.clearTimeout(uiInteractionSettleTimer);
+    uiInteractionSettleTimer = undefined;
+  }
+  remainingScrollPositionFollowUpFrames = 0;
   positionListenersAttached = false;
 }
 
@@ -2608,7 +2707,10 @@ function flushOverlayPositions(): void {
   positionFrame = undefined;
   const views = [...pendingPositionedOverlays];
   pendingPositionedOverlays.clear();
-  const context: OverlayPositionContext = { modalScope: activeModalScope() };
+  const context: OverlayPositionContext = {
+    modalScope: activeModalScope(),
+    occludingSurfaces: activeOverlayOccludingSurfaces(),
+  };
   for (const view of views) {
     if (!view.host.isConnected) {
       unregisterPositionedOverlay(view);
@@ -2621,10 +2723,21 @@ function flushOverlayPositions(): void {
       view.refreshPositionNow(context);
     }
   }
+  if (remainingScrollPositionFollowUpFrames > 0) {
+    remainingScrollPositionFollowUpFrames -= 1;
+    for (const view of positionedOverlays) {
+      if (view.isViewportPriorityActive()) {
+        pendingPositionedOverlays.add(view);
+      }
+    }
+    ensurePositionFrame();
+  }
 }
 
 function ensurePositionFrame(): void {
-  if (positionFrame !== undefined || pendingPositionedOverlays.size === 0) return;
+  if (positionFrame !== undefined || pendingPositionedOverlays.size === 0) {
+    return;
+  }
   positionFrame = requestPositionFrame(flushOverlayPositions);
 }
 
@@ -2643,8 +2756,18 @@ function scheduleAllOverlayPositions(event?: Event): void {
   if (event && isLineupPoolProbeScrollEvent(event)) return;
   for (const view of positionedOverlays) {
     if (!view.isViewportPriorityActive()) continue;
-    if (event?.type === 'scroll') view.hideUntilPositionRefresh?.();
     pendingPositionedOverlays.add(view);
+  }
+  if (event?.type === 'scroll') {
+    remainingScrollPositionFollowUpFrames = 0;
+    if (scrollPositionSettleTimer !== undefined) {
+      window.clearTimeout(scrollPositionSettleTimer);
+    }
+    scrollPositionSettleTimer = window.setTimeout(() => {
+      scrollPositionSettleTimer = undefined;
+      remainingScrollPositionFollowUpFrames = scrollPositionFollowUpFrames;
+      scheduleAllOverlayPositions();
+    }, scrollPositionSettleDelayMs);
   }
   ensurePositionFrame();
 }
@@ -2655,9 +2778,15 @@ function registerPositionedOverlay(view: PositionedOverlay): void {
   }
   positionedOverlays.add(view);
   positionedOverlayByContainer.set(view.layoutContainer, view);
+  if (scrollPositionSettleTimer !== undefined) {
+    pendingPositionedOverlays.add(view);
+    ensurePositionFrame();
+  }
   if (positionListenersAttached) return;
   window.addEventListener('resize', scheduleAllOverlayPositions);
   window.addEventListener('scroll', scheduleAllOverlayPositions, true);
+  window.addEventListener('click', schedulePositionsAfterUiInteraction, true);
+  window.addEventListener('keyup', schedulePositionsAfterUiInteraction, true);
   for (const eventName of layoutMotionEvents) {
     window.addEventListener(
       eventName,
@@ -2764,6 +2893,7 @@ export class OverlayView {
       transform: 'translateY(-100%)',
     });
     this.reposition = (context): void => {
+      this.host.style.visibility = '';
       if (usesCompactMarketBrackets(this.container)) {
         this.host.dataset.compactMarketBrackets = 'true';
       } else {
@@ -2945,6 +3075,18 @@ export class OverlayView {
         this.host.style.bottom = '';
       }
 
+      if (
+        context &&
+        overlayIntersectsOccludingSurface(
+          this.host,
+          this.container,
+          context.occludingSurfaces,
+        )
+      ) {
+        this.host.style.visibility = 'hidden';
+        this.closePlayerMarketTooltip();
+      }
+
     };
     const shadow = this.host.attachShadow({ mode: 'open' });
     const style = document.createElement('style');
@@ -2998,7 +3140,10 @@ export class OverlayView {
         this.closeMarketBracketForCardHover,
       );
     });
-    this.reposition();
+    this.reposition({
+      modalScope: activeModalScope(),
+      occludingSurfaces: activeOverlayOccludingSurfaces(),
+    });
     registerPositionedOverlay(this);
     this.cleanupCallbacks.push(() => unregisterPositionedOverlay(this));
     if (typeof ResizeObserver !== 'undefined') {
@@ -3015,6 +3160,17 @@ export class OverlayView {
 
   isViewportPriorityActive(): boolean {
     return this.viewportPriorityActive;
+  }
+
+  requiresBackgroundLineupSortHydration(): boolean {
+    return (
+      !this.destroyed &&
+      this.container.isConnected &&
+      this.container.getAttribute(lineupSortDataReadyAttribute) === 'false' &&
+      Boolean(
+        this.container.closest(`[${lineupSortHydrationGridAttribute}]`),
+      )
+    );
   }
 
   isAffectedByLayoutMotion(target: Element): boolean {
@@ -3056,14 +3212,6 @@ export class OverlayView {
     if (!this.destroyed && this.viewportPriorityActive) {
       this.reposition(context);
     }
-  }
-
-  hideUntilPositionRefresh(): void {
-    if (this.destroyed || !this.viewportPriorityActive) return;
-    this.host.style.display = 'none';
-    this.lineupOddsHost.hidden = true;
-    this.closePlayerMarketTooltip();
-    this.closeLineupTooltip();
   }
 
   handleLayoutMotionStart(event: Event): void {

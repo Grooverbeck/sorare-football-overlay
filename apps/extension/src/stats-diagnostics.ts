@@ -5,11 +5,19 @@ import type {
 } from '@sorare-overlay/shared';
 
 const diagnosticPrefix = '[Sorare Overlay][StatsDiag]';
+const verboseDiagnosticsStorageKey =
+  'sorare-overlay:verbose-stats-diagnostics';
+const verboseOnlyStages = new Set([
+  'cache-hit-render',
+  'target-resolution',
+  'render',
+]);
 const responseRequestIds = new WeakMap<
   PlayerStatsSuccessResponse,
   string
 >();
 let requestSequence = 0;
+let verboseDiagnostics: boolean | undefined;
 
 function diagnosticsEnabled(): boolean {
   try {
@@ -21,6 +29,18 @@ function diagnosticsEnabled(): boolean {
       )
     );
   } catch {
+    return false;
+  }
+}
+
+function verboseDiagnosticsEnabled(): boolean {
+  if (verboseDiagnostics !== undefined) return verboseDiagnostics;
+  try {
+    verboseDiagnostics =
+      globalThis.localStorage?.getItem(verboseDiagnosticsStorageKey) === 'true';
+    return verboseDiagnostics;
+  } catch {
+    verboseDiagnostics = false;
     return false;
   }
 }
@@ -50,7 +70,12 @@ export function logStatsDiagnostic(
   stage: string,
   detail: Record<string, unknown>,
 ): void {
-  if (!diagnosticsEnabled()) return;
+  if (
+    !diagnosticsEnabled() ||
+    (verboseOnlyStages.has(stage) && !verboseDiagnosticsEnabled())
+  ) {
+    return;
+  }
   console.info(
     `${diagnosticPrefix} ${JSON.stringify({
       stage,

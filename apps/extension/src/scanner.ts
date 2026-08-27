@@ -360,7 +360,7 @@ export class StatsBatchCoordinator {
     private readonly debounceMs = 40,
     private readonly retryDelaysMs: readonly number[] = [5_000, 30_000],
     private readonly progressiveBatchSize = 12,
-    private readonly maxConcurrentBatches = 2,
+    private readonly maxConcurrentBatches = 1,
     private readonly refreshDelaysMs: readonly number[] = [
       2_500,
       8_000,
@@ -474,8 +474,11 @@ export class StatsBatchCoordinator {
     if (retry) {
       retry.views.add(view);
       retry.priority = Math.max(retry.priority, priority);
-      if (active) this.startRetryWork(key, retry);
-      else if (!this.hasActiveViews(retry.views)) this.pauseScheduledWork(retry);
+      if (active || this.hasRetryEligibleViews(retry.views)) {
+        this.startRetryWork(key, retry);
+      } else {
+        this.pauseScheduledWork(retry);
+      }
     }
 
     const refresh = this.refreshWork.get(key);
@@ -1174,7 +1177,9 @@ export class StatsBatchCoordinator {
   }
 
   private startRetryWork(key: string, work: ScheduledTargetWork): void {
-    if (work.timer !== undefined || !this.hasActiveViews(work.views)) return;
+    if (work.timer !== undefined || !this.hasRetryEligibleViews(work.views)) {
+      return;
+    }
     work.startedAt = Date.now();
     work.timer = window.setTimeout(() => {
       delete work.timer;
@@ -1187,10 +1192,7 @@ export class StatsBatchCoordinator {
         this.deferredRetryUsed.delete(key);
         return;
       }
-      const activeViews = connectedViews.filter((view) =>
-        view.isViewportPriorityActive(),
-      );
-      if (activeViews.length === 0) return;
+      if (!this.hasRetryEligibleViews(connectedViews)) return;
       this.retryWork.delete(key);
       this.queueTarget(work.target, connectedViews, work.priority);
     }, work.remainingMs);
@@ -1203,6 +1205,14 @@ export class StatsBatchCoordinator {
   private hasActiveViews(views: Iterable<OverlayView>): boolean {
     return this.connectedViews(views).some((view) =>
       view.isViewportPriorityActive(),
+    );
+  }
+
+  private hasRetryEligibleViews(views: Iterable<OverlayView>): boolean {
+    return this.connectedViews(views).some(
+      (view) =>
+        view.isViewportPriorityActive() ||
+        view.requiresBackgroundLineupSortHydration(),
     );
   }
 

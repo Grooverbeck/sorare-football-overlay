@@ -14,6 +14,8 @@ export const lineupSortPositionAttribute =
   'data-sorare-overlay-sort-position';
 export const lineupSortDataReadyAttribute =
   'data-sorare-overlay-sort-data-ready';
+export const lineupSortHydrationGridAttribute =
+  'data-sorare-overlay-lineup-sort-hydration';
 export const lineupSortValueChangedEvent =
   'sorare-overlay:lineup-sort-value-changed';
 export const lineupPoolReadyEvent =
@@ -804,6 +806,7 @@ export class LineupCardSorter {
   private completedCells = new Set<HTMLElement>();
   private failedGrid: HTMLElement | null = null;
   private failedCells = new Set<HTMLElement>();
+  private hydrationGrid: HTMLElement | null = null;
   private gridObserver: MutationObserver | undefined;
   private requestedPosition: FootballPosition | null | undefined;
   private filterSuspended = false;
@@ -1144,6 +1147,7 @@ export class LineupCardSorter {
     this.poolCardCount = 0;
     this.poolHydrating = false;
     this.poolReadyCount = 0;
+    this.setHydrationGrid(null);
     this.loadingGrid = null;
     this.completedGrid = null;
     this.completedCells.clear();
@@ -1161,6 +1165,7 @@ export class LineupCardSorter {
     this.poolReadyCount = 0;
     this.failedGrid = grid;
     this.failedCells = new Set(grid ? gridCardCells(grid) : []);
+    this.setHydrationGrid(null);
     this.observeGrid(grid);
     this.loadingGrid = null;
   }
@@ -1193,6 +1198,7 @@ export class LineupCardSorter {
       onGridUpdate: (activeGrid) => {
         if (isCancelled()) return;
         this.loadingGrid = activeGrid;
+        this.setHydrationGrid(activeGrid);
         activeGrid.dispatchEvent(
           new CustomEvent(lineupPoolProgressEvent, { bubbles: true }),
         );
@@ -1229,6 +1235,7 @@ export class LineupCardSorter {
     this.completedGrid = grid;
     this.completedCells = new Set(gridCardCells(grid));
     this.poolCardCount = this.completedCells.size;
+    this.setHydrationGrid(grid);
     this.observeGrid(grid);
     grid.dispatchEvent(
       new CustomEvent(lineupPoolReadyEvent, { bubbles: true }),
@@ -1243,6 +1250,7 @@ export class LineupCardSorter {
     if (!grid?.isConnected) {
       this.poolHydrating = false;
       this.poolReadyCount = 0;
+      this.setHydrationGrid(null);
       return;
     }
     const cells = gridCardCells(grid);
@@ -1250,6 +1258,17 @@ export class LineupCardSorter {
     this.poolReadyCount = cells.filter(cellSortDataIsReady).length;
     this.poolHydrating =
       this.poolCardCount > 0 && this.poolReadyCount < this.poolCardCount;
+    this.setHydrationGrid(this.poolHydrating ? grid : null);
+  }
+
+  private setHydrationGrid(grid: HTMLElement | null): void {
+    if (this.hydrationGrid === grid) {
+      if (grid) grid.setAttribute(lineupSortHydrationGridAttribute, 'true');
+      return;
+    }
+    this.hydrationGrid?.removeAttribute(lineupSortHydrationGridAttribute);
+    this.hydrationGrid = grid;
+    grid?.setAttribute(lineupSortHydrationGridAttribute, 'true');
   }
 
   private observeGrid(grid: HTMLElement | null): void {
