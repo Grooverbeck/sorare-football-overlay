@@ -84,6 +84,7 @@ const nativeMenuActiveAttribute =
   'data-sorare-overlay-lineup-sort-active';
 const nativeMenuOptionAttribute =
   'data-sorare-overlay-native-sort-option';
+const hydrationUiSettleDelayMs = 600;
 
 interface OriginalOrder {
   value: string;
@@ -846,6 +847,9 @@ export class LineupCardSorter {
   private poolCardCount = 0;
   private displayedPoolCardCount = 0;
   private poolHydrating = false;
+  private poolHydrationUiPending = false;
+  private poolHydrationUiComplete = false;
+  private poolHydrationUiTimer: number | undefined;
   private poolReadyCount = 0;
   private poolValueCount = 0;
   private loadingGrid: HTMLElement | null = null;
@@ -1024,7 +1028,7 @@ export class LineupCardSorter {
       label.setAttribute(nativeTriggerLabelAttribute, 'true');
       const config = lineupSortConfigs[this.activeMode];
       const baseLabel = config.label;
-      const loading = this.poolLoading || this.poolHydrating;
+      const loading = this.poolLoading || this.poolHydrationUiPending;
       const displayedPlayerCount = this.displayedPoolCardCount;
       const loadingPlayerDescription =
         displayedPlayerCount > 0
@@ -1048,7 +1052,7 @@ export class LineupCardSorter {
           : baseLabel;
       const nextTitle = this.poolLoading
         ? `${loadingPlayerDescription}Die vollständige Spielerliste wird geladen. Danach wird automatisch sortiert.`
-        : this.poolHydrating
+        : this.poolHydrationUiPending
           ? `${totalPlayerDescription}${config.loadingDescription} Die Sortierung aktualisiert sich automatisch.`
           : this.poolLoadFailed
             ? `${loadingPlayerDescription}${baseLabel} konnte nicht vollständig geladen werden. Öffne das Menü und wähle „${baseLabel}“ erneut.`
@@ -1261,6 +1265,7 @@ export class LineupCardSorter {
     this.poolCardCount = 0;
     this.displayedPoolCardCount = 0;
     this.poolHydrating = false;
+    this.resetHydrationUiState();
     this.poolReadyCount = 0;
     this.poolValueCount = 0;
     this.setHydrationGrid(null);
@@ -1278,6 +1283,7 @@ export class LineupCardSorter {
   ): void {
     this.poolLoadFailed = true;
     this.poolHydrating = false;
+    this.resetHydrationUiState();
     this.poolReadyCount = 0;
     this.poolValueCount = 0;
     this.failedGrid = grid;
@@ -1395,6 +1401,7 @@ export class LineupCardSorter {
     const grid = this.completedGrid;
     if (!grid?.isConnected) {
       this.poolHydrating = false;
+      this.resetHydrationUiState();
       this.poolReadyCount = 0;
       this.poolValueCount = 0;
       this.setHydrationGrid(null);
@@ -1415,7 +1422,49 @@ export class LineupCardSorter {
       : 0;
     this.poolHydrating =
       this.poolCardCount > 0 && this.poolReadyCount < this.poolCardCount;
+    this.refreshHydrationUiState();
     this.setHydrationGrid(this.poolHydrating ? grid : null);
+  }
+
+  private refreshHydrationUiState(): void {
+    if (this.poolHydrationUiComplete) return;
+    if (!this.poolHydrationUiPending && !this.poolHydrating) {
+      this.poolHydrationUiComplete = true;
+      return;
+    }
+    if (this.poolHydrating) {
+      this.poolHydrationUiPending = true;
+      if (this.poolHydrationUiTimer !== undefined) {
+        window.clearTimeout(this.poolHydrationUiTimer);
+        this.poolHydrationUiTimer = undefined;
+      }
+      return;
+    }
+    if (this.poolHydrationUiTimer !== undefined) return;
+    const generation = this.poolGeneration;
+    this.poolHydrationUiTimer = window.setTimeout(() => {
+      this.poolHydrationUiTimer = undefined;
+      if (
+        generation !== this.poolGeneration ||
+        !this.activeMode ||
+        this.poolHydrating ||
+        !this.completedGrid?.isConnected
+      ) {
+        return;
+      }
+      this.poolHydrationUiPending = false;
+      this.poolHydrationUiComplete = true;
+      this.syncNativeSortUi();
+    }, hydrationUiSettleDelayMs);
+  }
+
+  private resetHydrationUiState(): void {
+    if (this.poolHydrationUiTimer !== undefined) {
+      window.clearTimeout(this.poolHydrationUiTimer);
+      this.poolHydrationUiTimer = undefined;
+    }
+    this.poolHydrationUiPending = false;
+    this.poolHydrationUiComplete = false;
   }
 
   private setHydrationGrid(grid: HTMLElement | null): void {

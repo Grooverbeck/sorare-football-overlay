@@ -342,7 +342,7 @@ describe('lineup card sorting', () => {
     expect(ready.mock.calls[0]?.[0].target).toBe(grid);
   });
 
-  it('shows separate progress for player loading and value hydration', async () => {
+  it('keeps loading progress stable until value hydration has settled', async () => {
     const market = document.querySelector<HTMLElement>('[data-player="market"]');
     const historical = document.querySelector<HTMLElement>(
       '[data-player="historical"]',
@@ -397,6 +397,25 @@ describe('lineup card sorting', () => {
 
     setLineupSortDataReady(historical, true);
     setLineupSortDataReady(missing, true);
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
+    expect(label.textContent).toBe('AA lädt …');
+    expect(
+      document.querySelector(
+        '[data-sorare-overlay-lineup-sort-player-status-label]',
+      )?.textContent,
+    ).toBe('3 Spieler geladen');
+
+    setLineupSortDataReady(missing, false);
+    await new Promise((resolve) => window.setTimeout(resolve, 20));
+    setLineupSortDataReady(missing, true);
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
+    expect(label.textContent).toBe('AA lädt …');
+    expect(
+      document.querySelector(
+        '[data-sorare-overlay-lineup-sort-player-status-label]',
+      )?.textContent,
+    ).toBe('3 Spieler geladen');
+
     await vi.waitFor(() => expect(label.textContent).toBe('AA'));
     expect(label.title).toBe(
       '3 Spieler insgesamt. Nach AA sortiert. Karten ohne verfügbaren AA-Wert stehen am Ende.',
@@ -409,6 +428,16 @@ describe('lineup card sorting', () => {
     expect(label.hasAttribute('data-sorare-overlay-lineup-sort-loading')).toBe(
       false,
     );
+
+    setLineupSortDataReady(missing, false);
+    await new Promise((resolve) => window.setTimeout(resolve, 20));
+    expect(label.textContent).toBe('AA');
+    expect(
+      document.querySelector(
+        '[data-sorare-overlay-lineup-sort-player-status-label]',
+      )?.textContent,
+    ).toBe('3 Spieler sortiert');
+    setLineupSortDataReady(missing, true);
     expect(market.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
   });
 
