@@ -15,6 +15,20 @@ export function normalizePlayerName(name: string): string {
     .toLocaleLowerCase();
 }
 
+export function teamSlugsLikelyMatch(
+  candidate: string | undefined,
+  expected: string | undefined,
+): boolean {
+  if (!candidate || !expected) return false;
+  const candidateNormalized = candidate.trim().toLowerCase();
+  const expectedNormalized = expected.trim().toLowerCase();
+  return (
+    candidateNormalized === expectedNormalized ||
+    candidateNormalized.startsWith(`${expectedNormalized}-`) ||
+    expectedNormalized.startsWith(`${candidateNormalized}-`)
+  );
+}
+
 export function playerNamesLikelyMatch(
   query: string,
   displayName: string,

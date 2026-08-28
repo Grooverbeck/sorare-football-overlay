@@ -17,6 +17,8 @@ export const lineupSortDataReadyAttribute =
   'data-sorare-overlay-sort-data-ready';
 export const lineupSortLightweightReadyAttribute =
   'data-sorare-overlay-sort-lightweight-ready';
+export const lineupSortFullDataRevisionAttribute =
+  'data-sorare-overlay-sort-full-data-revision';
 export const lineupSortHydrationGridAttribute =
   'data-sorare-overlay-lineup-sort-hydration';
 export const lineupSortValueChangedEvent =
@@ -247,6 +249,17 @@ function nativeSortButton(root: ParentNode = document): HTMLButtonElement | null
         ),
       ),
     ].find(isNativeSortButton) ?? null
+  );
+}
+
+export function markLineupSortFullDataUpdated(container: HTMLElement): void {
+  const currentRevision = Number.parseInt(
+    container.getAttribute(lineupSortFullDataRevisionAttribute) ?? '0',
+    10,
+  );
+  container.setAttribute(
+    lineupSortFullDataRevisionAttribute,
+    String(Number.isFinite(currentRevision) ? currentRevision + 1 : 1),
   );
 }
 
@@ -818,6 +831,7 @@ export class LineupCardSorter {
   private poolCardCount = 0;
   private poolHydrating = false;
   private poolReadyCount = 0;
+  private poolValueCount = 0;
   private loadingGrid: HTMLElement | null = null;
   private completedGrid: HTMLElement | null = null;
   private completedCells = new Set<HTMLElement>();
@@ -1000,7 +1014,10 @@ export class LineupCardSorter {
           ? `${baseLabel} · Sortierwerte laden · ${this.poolReadyCount}/${this.poolCardCount}`
           : this.poolLoadFailed
             ? `${baseLabel} · Erneut versuchen`
-            : baseLabel;
+            : this.poolCardCount > 0 &&
+                this.poolValueCount < this.poolCardCount
+              ? `${baseLabel} · ${this.poolValueCount}/${this.poolCardCount}`
+              : baseLabel;
       if (label.textContent !== nextLabel) label.textContent = nextLabel;
     } else if (label.hasAttribute(nativeTriggerLabelAttribute)) {
       label.textContent = this.originalTriggerLabel;
@@ -1164,6 +1181,7 @@ export class LineupCardSorter {
     this.poolCardCount = 0;
     this.poolHydrating = false;
     this.poolReadyCount = 0;
+    this.poolValueCount = 0;
     this.setHydrationGrid(null);
     this.loadingGrid = null;
     this.completedGrid = null;
@@ -1180,6 +1198,7 @@ export class LineupCardSorter {
     this.poolLoadFailed = true;
     this.poolHydrating = false;
     this.poolReadyCount = 0;
+    this.poolValueCount = 0;
     this.failedGrid = grid;
     this.failedCells = new Set(grid ? gridCardCells(grid) : []);
     this.setHydrationGrid(null);
@@ -1288,12 +1307,19 @@ export class LineupCardSorter {
     if (!grid?.isConnected) {
       this.poolHydrating = false;
       this.poolReadyCount = 0;
+      this.poolValueCount = 0;
       this.setHydrationGrid(null);
       return;
     }
     const cells = gridCardCells(grid);
     this.poolCardCount = cells.length;
     this.poolReadyCount = cells.filter(cellSortDataIsReady).length;
+    const valueAttribute = this.activeMode
+      ? lineupSortConfigs[this.activeMode].valueAttribute
+      : null;
+    this.poolValueCount = valueAttribute
+      ? cells.filter((cell) => valueForCell(cell, valueAttribute) !== null).length
+      : 0;
     this.poolHydrating =
       this.poolCardCount > 0 && this.poolReadyCount < this.poolCardCount;
     this.setHydrationGrid(this.poolHydrating ? grid : null);

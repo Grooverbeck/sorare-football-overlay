@@ -14,9 +14,11 @@ import { supportsCompactViewPath } from './compact-view-route.js';
 import { isScoreDetailsDialogTarget } from './dom.js';
 import {
   isLineupPoolProbeScrollEvent,
+  lineupSortFullDataRevisionAttribute,
   lineupSortDataReadyAttribute,
   lineupSortHydrationGridAttribute,
   lineupSortLightweightReadyAttribute,
+  markLineupSortFullDataUpdated,
   setLineupAaSortValue,
   setLineupGoalSortValue,
   setLineupSortDataReady,
@@ -3491,6 +3493,7 @@ export class OverlayView {
     setLineupSortPosition(this.container, null);
     setLineupSortDataReady(this.container, null);
     this.container.removeAttribute(lineupSortLightweightReadyAttribute);
+    this.container.removeAttribute(lineupSortFullDataRevisionAttribute);
     this.stopPackBracketSettling();
     if (this.packMotionProbeFrame !== undefined) {
       cancelPositionFrame(this.packMotionProbeFrame);
@@ -3538,6 +3541,7 @@ export class OverlayView {
   }
 
   noData(): void {
+    markLineupSortFullDataUpdated(this.container);
     this.container.removeAttribute(lineupSortLightweightReadyAttribute);
     setLineupGoalSortValue(this.container, null);
     setLineupAaSortValue(this.container, null);
@@ -3567,12 +3571,13 @@ export class OverlayView {
       this.host.dataset.packDataPending === 'true';
     delete this.host.dataset.packDataPending;
     this.host.dataset.position = displayStats.position;
-    this.container.removeAttribute(lineupSortLightweightReadyAttribute);
-    setLineupSortPosition(this.container, displayStats.position);
     if (!hasAnyDisplayData(displayStats)) {
       this.noData();
       return;
     }
+    markLineupSortFullDataUpdated(this.container);
+    this.container.removeAttribute(lineupSortLightweightReadyAttribute);
+    setLineupSortPosition(this.container, displayStats.position);
     const sortValue = goalSortValue(displayStats);
     setLineupGoalSortValue(
       this.container,

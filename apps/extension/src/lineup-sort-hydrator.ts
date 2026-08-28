@@ -9,7 +9,10 @@ import { findCardTargets, type CardTarget } from './dom.js';
 import {
   setLineupAaSortValue,
   setLineupGoalSortValue,
+  lineupGoalSortProbabilityAttribute,
+  lineupGoalSortSourceAttribute,
   lineupSortDataReadyAttribute,
+  lineupSortFullDataRevisionAttribute,
   lineupSortLightweightReadyAttribute,
   setLineupSortDataReady,
   setLineupSortPosition,
@@ -19,6 +22,7 @@ import {
   playerNamesLikelyMatch,
   playerRequestIdentity,
   playerTargetKey,
+  teamSlugsLikelyMatch,
 } from './player-identity.js';
 import { logStatsDiagnostic } from './stats-diagnostics.js';
 
@@ -33,6 +37,9 @@ interface HydrationState {
   target: CardTarget;
   status: HydrationStatus;
   attempts: number;
+  reconcileFullOverlay?: boolean;
+  preserveExistingGoalUnlessMarket?: boolean;
+  fullDataRevisionAtRequest?: string | null;
 }
 
 function targetMatchesValue(
@@ -180,6 +187,56 @@ export class LineupSortHydrator {
     return this.ensurePump();
   }
 
+  reconcileMissingGoals(teamSlugs?: Iterable<string>): Promise<void> {
+    const grid = this.grid;
+    if (!grid?.isConnected) return Promise.resolve();
+    const expectedTeams = teamSlugs
+      ? [...new Set([...teamSlugs].map((slug) => slug.trim().toLowerCase()))]
+      : null;
+    let queued = 0;
+    for (const state of this.states.values()) {
+      const container = state.target.container;
+      const hasGoalValue = container.hasAttribute(
+        lineupGoalSortProbabilityAttribute,
+      );
+      const hasMarketGoal =
+        hasGoalValue &&
+        container.getAttribute(lineupGoalSortSourceAttribute) === 'market';
+      if (
+        state.status !== 'ready' ||
+        !container.isConnected ||
+        !grid.contains(container) ||
+        (expectedTeams ? hasMarketGoal : hasGoalValue) ||
+        (expectedTeams &&
+          !expectedTeams.some((teamSlug) =>
+            teamSlugsLikelyMatch(state.target.teamSlug, teamSlug),
+          ))
+      ) {
+        continue;
+      }
+
+      state.status = 'queued';
+      state.attempts = 0;
+      state.preserveExistingGoalUnlessMarket = hasGoalValue;
+      state.reconcileFullOverlay = !container.hasAttribute(
+        lineupSortLightweightReadyAttribute,
+      );
+      if (!state.reconcileFullOverlay) {
+        setLineupSortDataReady(container, false);
+      }
+      this.queue.push(state);
+      queued += 1;
+    }
+
+    if (queued > 0) {
+      logStatsDiagnostic('lineup-sort-goal-reconcile', {
+        players: queued,
+        teams: expectedTeams,
+      });
+    }
+    return this.ensurePump();
+  }
+
   stop(): void {
     this.generation += 1;
     for (const timer of this.retryTimers.values()) window.clearTimeout(timer);
@@ -244,6 +301,10 @@ export class LineupSortHydrator {
       for (const state of batch) {
         state.status = 'in-flight';
         state.attempts += 1;
+        state.fullDataRevisionAtRequest =
+          state.target.container.getAttribute(
+            lineupSortFullDataRevisionAttribute,
+          );
       }
       try {
         const response = await this.fetcher(
@@ -369,11 +430,48 @@ export class LineupSortHydrator {
     // cache-only request is still in flight. The full response is newer and
     // may contain freshly fetched market odds, so never overwrite it with the
     // lightweight snapshot that started earlier.
-    if (
+    const fullOverlayOwnsValues =
       container.getAttribute(lineupSortDataReadyAttribute) === 'true' &&
-      !container.hasAttribute(lineupSortLightweightReadyAttribute)
+      !container.hasAttribute(lineupSortLightweightReadyAttribute);
+    const fullOverlayChangedDuringRequest =
+      container.getAttribute(lineupSortFullDataRevisionAttribute) !==
+      state.fullDataRevisionAtRequest;
+    if (
+      fullOverlayOwnsValues &&
+      (!state.reconcileFullOverlay || fullOverlayChangedDuringRequest)
     ) {
       state.status = 'ready';
+      delete state.reconcileFullOverlay;
+      delete state.preserveExistingGoalUnlessMarket;
+      delete state.fullDataRevisionAtRequest;
+      return;
+    }
+    const currentGoalIsMarket =
+      container.hasAttribute(lineupGoalSortProbabilityAttribute) &&
+      container.getAttribute(lineupGoalSortSourceAttribute) === 'market';
+    if (
+      currentGoalIsMarket ||
+      (state.preserveExistingGoalUnlessMarket &&
+        value?.goal?.source !== 'market')
+    ) {
+      state.status = 'ready';
+      delete state.reconcileFullOverlay;
+      delete state.preserveExistingGoalUnlessMarket;
+      delete state.fullDataRevisionAtRequest;
+      return;
+    }
+    if (state.reconcileFullOverlay) {
+      // The compact endpoint is only being consulted for a newer cached goal
+      // price. Keep AA, position and readiness owned by the full response.
+      setLineupGoalSortValue(
+        container,
+        value?.goal?.probability ?? null,
+        value?.goal?.source,
+      );
+      state.status = 'ready';
+      delete state.reconcileFullOverlay;
+      delete state.preserveExistingGoalUnlessMarket;
+      delete state.fullDataRevisionAtRequest;
       return;
     }
     setLineupSortPosition(
@@ -389,6 +487,9 @@ export class LineupSortHydrator {
     container.setAttribute(lineupSortLightweightReadyAttribute, state.key);
     setLineupSortDataReady(container, true);
     state.status = 'ready';
+    delete state.reconcileFullOverlay;
+    delete state.preserveExistingGoalUnlessMarket;
+    delete state.fullDataRevisionAtRequest;
   }
 
   private removeState(container: HTMLElement): void {

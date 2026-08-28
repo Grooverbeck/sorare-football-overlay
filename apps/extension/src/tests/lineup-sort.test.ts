@@ -354,6 +354,8 @@ describe('lineup card sorting', () => {
     if (!market || !historical || !missing || !label) {
       throw new Error('Expected lineup loading fixture');
     }
+    setLineupAaSortValue(market, 30);
+    setLineupAaSortValue(historical, 20);
     setLineupSortDataReady(historical, false);
     setLineupSortDataReady(missing, false);
 
@@ -372,7 +374,7 @@ describe('lineup card sorting', () => {
 
     setLineupSortDataReady(historical, true);
     setLineupSortDataReady(missing, true);
-    await vi.waitFor(() => expect(label.textContent).toBe('AA'));
+    await vi.waitFor(() => expect(label.textContent).toBe('AA · 2/3'));
     expect(label.hasAttribute('data-sorare-overlay-lineup-sort-loading')).toBe(
       false,
     );
@@ -696,7 +698,7 @@ describe('lineup card sorting', () => {
     expect(
       document.querySelector<HTMLElement>('[data-native-trigger-label]')
         ?.textContent,
-    ).toBe('Torquote');
+    ).toBe('Torquote · 2/3');
     expect(
       document.querySelector<HTMLInputElement>(
         '[data-native-option="average"] input[type="radio"]',
@@ -785,7 +787,7 @@ describe('lineup card sorting', () => {
     expect(
       document.querySelector<HTMLElement>('[data-native-trigger-label]')
         ?.textContent,
-    ).toBe('AA');
+    ).toBe('AA · 2/3');
     expect(
       goalOption?.querySelector<HTMLInputElement>('input[type="radio"]')?.checked,
     ).toBe(false);
@@ -960,7 +962,7 @@ describe('lineup card sorting', () => {
     expect(
       document.querySelector<HTMLElement>('[data-native-trigger-label]')
         ?.textContent,
-    ).toBe('AA');
+    ).toBe('AA · 2/3');
   });
 
   it('still rejects a pool whose known positions are mostly stale', async () => {

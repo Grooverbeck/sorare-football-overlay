@@ -22,6 +22,7 @@ import {
 } from '../overlay.js';
 import {
   lineupGoalSortOptionAttribute,
+  lineupPoolProgressEvent,
   lineupPoolReadyEvent,
   lineupSortDataReadyAttribute,
   lineupSortHydrationGridAttribute,
@@ -3159,6 +3160,99 @@ describe('Sorare card DOM discovery', () => {
     expect(observe).toHaveBeenCalledTimes(2);
     expect(disconnect).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
+  });
+
+  it('does not rescan the complete grid for every pool progress pulse', async () => {
+    document.body.innerHTML = '<div data-testid="progress-pool"></div>';
+    const pool = document.querySelector<HTMLElement>(
+      '[data-testid="progress-pool"]',
+    );
+    if (!pool) throw new Error('Expected progress pool');
+    const coordinator = new StatsBatchCoordinator(vi.fn(), 60_000);
+    const hydrator = new LineupSortHydrator(vi.fn());
+    const reconcile = vi.spyOn(hydrator, 'reconcileMissingGoals');
+    const scanner = new SorareCardScanner(coordinator, undefined, hydrator);
+    const scan = vi.spyOn(scanner, 'scan');
+
+    scanner.start();
+    expect(scan).toHaveBeenCalledTimes(1);
+
+    pool.dispatchEvent(
+      new CustomEvent(lineupPoolProgressEvent, { bubbles: true }),
+    );
+    await Promise.resolve();
+    expect(scan).toHaveBeenCalledTimes(1);
+
+    pool.dispatchEvent(
+      new CustomEvent(lineupPoolReadyEvent, { bubbles: true }),
+    );
+    await vi.waitFor(() => expect(reconcile).toHaveBeenCalledTimes(1));
+    expect(scan).toHaveBeenCalledTimes(2);
+    scanner.stop();
+  });
+
+  it('reconciles stale lineup goal misses after a team market cache update', async () => {
+    document.body.innerHTML = `
+      <article data-testid="cache-signal-card" data-position="Forward">
+        <a href="/football/players/cache-signal-player">Cache signal player</a>
+      </article>
+    `;
+    const stats: PlayerStats = {
+      slug: 'cache-signal-player',
+      displayName: 'Cache Signal Player',
+      position: 'Forward',
+      aaL10: { value: 14, sampleSize: 10 },
+      cleanSheetL10: { value: 0.2, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-29T18:00:00.000Z',
+        homeTeamName: 'Home FC',
+        awayTeamName: 'Away FC',
+        playerTeamName: 'Home FC',
+        opponentTeamName: 'Away FC',
+        playerTeamSlug: 'home-fc',
+        homeTeamSlug: 'home-fc',
+        awayTeamSlug: 'away-fc',
+        cleanSheetProbability: null,
+        matchProbabilities: null,
+        marketOdds: {
+          source: 'odds-api-io',
+          capturedAt: '2026-08-28T00:00:00.000Z',
+          goal: { probability: 0.4, bookmakerCount: 2 },
+          assist: null,
+          decisive: null,
+        },
+      },
+      excludedLowCoverage: 0,
+    };
+    const fetcher = vi.fn(
+      async (): Promise<PlayerStatsSuccessResponse> => ({
+        data: [stats],
+        meta: {
+          requested: 1,
+          returned: 1,
+          cacheHits: 1,
+          source: 'sorare',
+        },
+      }),
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const hydrator = new LineupSortHydrator(vi.fn());
+    const reconcile = vi.spyOn(hydrator, 'reconcileMissingGoals');
+    const scanner = new SorareCardScanner(coordinator, undefined, hydrator);
+
+    scanner.start();
+    await coordinator.flush();
+
+    await vi.waitFor(() => expect(reconcile).toHaveBeenCalledTimes(1));
+    expect(reconcile).toHaveBeenCalledWith(['home-fc', 'away-fc']);
+
+    scanner.refreshAllOverlays(true);
+    await coordinator.flush();
+    await new Promise((resolve) => window.setTimeout(resolve, 180));
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    scanner.stop();
   });
 
   it('hydrates an offscreen card mounted after lineup pool hydration started', async () => {

@@ -23,6 +23,7 @@ import {
   playerNamesLikelyMatch as namesLikelyMatch,
   playerRequestIdentity as requestIdentity,
   playerTargetKey as targetKey,
+  teamSlugsLikelyMatch,
 } from './player-identity.js';
 import {
   LineupCardSorter,
@@ -49,6 +50,7 @@ type StatsFetcher = (request: PlayerStatsRequest) => Promise<PlayerStatsSuccessR
 type MarketSnapshotsFetcher = (
   request: PlayerMarketSnapshotsRequest,
 ) => Promise<PlayerMarketSnapshotsSuccessResponse>;
+type MarketCacheUpdateListener = (teamSlugs: readonly string[]) => void;
 const extensionMountSelector =
   '[data-sorare-overlay-root], [data-sorare-overlay-companion]';
 const extensionMutationSelector =
@@ -147,20 +149,6 @@ function outermostElements(elements: Iterable<Element>): Element[] {
       !candidates.some(
         (other) => other !== candidate && other.contains(candidate),
       ),
-  );
-}
-
-function teamSlugsLikelyMatch(
-  candidate: string | undefined,
-  expected: string | undefined,
-): boolean {
-  if (!candidate || !expected) return false;
-  const candidateNormalized = candidate.trim().toLowerCase();
-  const expectedNormalized = expected.trim().toLowerCase();
-  return (
-    candidateNormalized === expectedNormalized ||
-    candidateNormalized.startsWith(`${expectedNormalized}-`) ||
-    expectedNormalized.startsWith(`${candidateNormalized}-`)
   );
 }
 
@@ -368,6 +356,8 @@ export class StatsBatchCoordinator {
   private readonly cachedAliasTtlMs: number;
   private readonly marketSnapshotBatchSize: number;
   private readonly marketSnapshotsFetcher: MarketSnapshotsFetcher;
+  private marketCacheUpdateListener: MarketCacheUpdateListener | undefined;
+  private readonly notifiedMarketGoalFingerprints = new Map<string, string>();
 
   constructor(
     private readonly fetcher: StatsFetcher = fetchPlayerStats,
@@ -448,6 +438,12 @@ export class StatsBatchCoordinator {
     }
 
     this.queueTarget(target, [view], priority);
+  }
+
+  setMarketCacheUpdateListener(
+    listener: MarketCacheUpdateListener | undefined,
+  ): void {
+    this.marketCacheUpdateListener = listener;
   }
 
   releaseView(view: OverlayView): void {
@@ -726,6 +722,7 @@ export class StatsBatchCoordinator {
         const changedKeys = this.cacheStatsAliases(mergedStats, batch);
         this.renderTrackedAliases(changedKeys, mergedStats);
       }
+      this.notifyMarketCacheUpdated(responseData);
       for (const target of batch) {
         const key = targetKey(target);
         if (refreshFixtures) this.fixtureRefreshTargets.delete(key);
@@ -859,6 +856,7 @@ export class StatsBatchCoordinator {
       const response = await this.marketSnapshotsFetcher({
         players: [...players.values()],
       });
+      const updatedStats: PlayerStats[] = [];
       const snapshotsByPlayer = new Map(
         response.data.map((snapshot) => [
           `${snapshot.slug}:${snapshot.position}`,
@@ -903,6 +901,7 @@ export class StatsBatchCoordinator {
         };
         const changedKeys = this.cacheStatsAliases(merged, [target]);
         this.renderTrackedAliases(changedKeys, merged);
+        updatedStats.push(merged);
         this.clearRetry(key);
         if (snapshot.refreshState === 'pending') {
           this.schedulePendingRefresh(
@@ -934,6 +933,7 @@ export class StatsBatchCoordinator {
           rendered: summarizeStats(merged),
         });
       }
+      this.notifyMarketCacheUpdated(updatedStats);
     } catch (error) {
       const message =
         error instanceof Error && error.message
@@ -1062,6 +1062,50 @@ export class StatsBatchCoordinator {
       }
     }
     return undefined;
+  }
+
+  private notifyMarketCacheUpdated(statsPlayers: readonly PlayerStats[]): void {
+    if (!this.marketCacheUpdateListener) return;
+    const teamSlugs = new Set<string>();
+    for (const stats of statsPlayers) {
+      const nextGame = stats.nextGame;
+      const marketOdds = nextGame?.marketOdds;
+      const goal = marketOdds?.goal;
+      if (!nextGame || !marketOdds || !goal) continue;
+      const playerKey = `${stats.slug}:${stats.position}`;
+      const fingerprint = [
+        nextGame.date,
+        nextGame.homeTeamSlug,
+        nextGame.awayTeamSlug,
+        marketOdds.source,
+        marketOdds.capturedAt,
+        goal.probability,
+        goal.bookmakerCount,
+      ].join('|');
+      if (this.notifiedMarketGoalFingerprints.get(playerKey) === fingerprint) {
+        continue;
+      }
+      this.notifiedMarketGoalFingerprints.delete(playerKey);
+      this.notifiedMarketGoalFingerprints.set(playerKey, fingerprint);
+      while (
+        this.notifiedMarketGoalFingerprints.size > this.maxCachedAliases
+      ) {
+        const oldestKey = this.notifiedMarketGoalFingerprints.keys().next()
+          .value;
+        if (!oldestKey) break;
+        this.notifiedMarketGoalFingerprints.delete(oldestKey);
+      }
+      for (const teamSlug of [
+        nextGame.playerTeamSlug,
+        nextGame.homeTeamSlug,
+        nextGame.awayTeamSlug,
+      ]) {
+        if (teamSlug) teamSlugs.add(teamSlug);
+      }
+    }
+    if (teamSlugs.size > 0) {
+      this.marketCacheUpdateListener([...teamSlugs]);
+    }
   }
 
   private cacheStatsAliases(
@@ -1407,6 +1451,13 @@ export class SorareCardScanner {
   private mutationFrame: number | undefined;
   private shouldRefreshAllPositions = false;
   private readonly lineupSorter = new LineupCardSorter();
+  private readonly pendingMarketReconcileTeams = new Set<string>();
+  private marketReconcileTimer: number | undefined;
+  private readonly handleLineupPoolProgress = (event: Event): void => {
+    const grid = event.target;
+    if (!(grid instanceof HTMLElement)) return;
+    void this.lineupSortHydrator.hydrate(grid);
+  };
   private readonly handleLineupPoolReady = (event: Event): void => {
     const grid = event.target;
     if (!(grid instanceof HTMLElement)) return;
@@ -1414,7 +1465,25 @@ export class SorareCardScanner {
     // The event is the authoritative signal from LineupCardSorter. Keep this
     // explicit because the hydration attribute can be removed immediately
     // after the final card reports ready.
-    void this.lineupSortHydrator.hydrate(grid);
+    void this.lineupSortHydrator
+      .hydrate(grid)
+      .then(() => this.lineupSortHydrator.reconcileMissingGoals());
+  };
+  private readonly handleMarketCacheUpdate = (
+    teamSlugs: readonly string[],
+  ): void => {
+    for (const teamSlug of teamSlugs) {
+      this.pendingMarketReconcileTeams.add(teamSlug);
+    }
+    if (this.marketReconcileTimer !== undefined) return;
+    this.marketReconcileTimer = window.setTimeout(() => {
+      this.marketReconcileTimer = undefined;
+      const pendingTeams = [...this.pendingMarketReconcileTeams];
+      this.pendingMarketReconcileTeams.clear();
+      if (pendingTeams.length > 0) {
+        void this.lineupSortHydrator.reconcileMissingGoals(pendingTeams);
+      }
+    }, 120);
   };
 
   constructor(
@@ -1447,7 +1516,13 @@ export class SorareCardScanner {
     if (this.observer) return;
     const root = document.body ?? document.documentElement;
     this.root = root;
-    root.addEventListener(lineupPoolProgressEvent, this.handleLineupPoolReady);
+    this.coordinator.setMarketCacheUpdateListener(
+      this.handleMarketCacheUpdate,
+    );
+    root.addEventListener(
+      lineupPoolProgressEvent,
+      this.handleLineupPoolProgress,
+    );
     root.addEventListener(lineupPoolReadyEvent, this.handleLineupPoolReady);
     this.lineupSorter.start(root);
     this.startVisibilityObserver();
@@ -1546,13 +1621,19 @@ export class SorareCardScanner {
   stop(): void {
     this.root?.removeEventListener(
       lineupPoolProgressEvent,
-      this.handleLineupPoolReady,
+      this.handleLineupPoolProgress,
     );
     this.root?.removeEventListener(
       lineupPoolReadyEvent,
       this.handleLineupPoolReady,
     );
     this.root = null;
+    this.coordinator.setMarketCacheUpdateListener(undefined);
+    if (this.marketReconcileTimer !== undefined) {
+      window.clearTimeout(this.marketReconcileTimer);
+      this.marketReconcileTimer = undefined;
+    }
+    this.pendingMarketReconcileTeams.clear();
     this.observer?.disconnect();
     this.observer = undefined;
     this.layoutObserver?.disconnect();
