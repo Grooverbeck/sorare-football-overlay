@@ -157,12 +157,18 @@
   font-variant-numeric: tabular-nums !important;
   font-weight: 600 !important;
   line-height: 1 !important;
-  opacity: .68 !important;
+  opacity: .76 !important;
   pointer-events: none !important;
   text-align: center !important;
   text-overflow: ellipsis !important;
   transform: translateX(-50%) !important;
   white-space: nowrap !important;
+}
+
+[data-sorare-overlay-lineup-sort-player-status][aria-expanded="true"]
+  > [data-sorare-overlay-lineup-sort-player-status-label] {
+  opacity: 0 !important;
+  visibility: hidden !important;
 }
 
 [data-sorare-overlay-lineup-sort-trigger-label][data-sorare-overlay-lineup-sort-loading] {
