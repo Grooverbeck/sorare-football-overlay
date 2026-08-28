@@ -13,6 +13,8 @@ import { hasAnyDisplayData } from '@sorare-overlay/shared';
 import { fetchPlayerMarketSnapshots, fetchPlayerStats } from './api.js';
 import {
   drainDiscoveredCardPictureNames,
+  extractCardPictureId,
+  extractPlayerName,
   findCardTargets,
   type CardTarget,
 } from './dom.js';
@@ -1449,6 +1451,8 @@ export class SorareCardScanner {
   private layoutTargetsDirty = false;
   private readonly pendingScanRoots = new Set<Element>();
   private readonly pendingPositionScopes = new Set<Element>();
+  private readonly pendingPictureNameRescanIds = new Set<string>();
+  private pictureNameRescanTimer: number | undefined;
   private mutationFrame: number | undefined;
   private shouldRefreshAllPositions = false;
   private readonly lineupSorter = new LineupCardSorter();
@@ -1466,6 +1470,10 @@ export class SorareCardScanner {
     const grid = event.target;
     if (!(grid instanceof HTMLElement)) return;
     const targets = this.scan(grid);
+    // A large pool can teach us hundreds of card-picture aliases. Revisit
+    // only previously anonymized copies of those pictures once the pool is
+    // complete instead of rescanning the entire growing document per alias.
+    this.flushPictureNameRescans(grid);
     // The event is the authoritative signal from LineupCardSorter. Keep this
     // explicit because the hydration attribute can be removed immediately
     // after the final card reports ready.
@@ -1656,6 +1664,11 @@ export class SorareCardScanner {
     }
     this.pendingScanRoots.clear();
     this.pendingPositionScopes.clear();
+    if (this.pictureNameRescanTimer !== undefined) {
+      window.clearTimeout(this.pictureNameRescanTimer);
+      this.pictureNameRescanTimer = undefined;
+    }
+    this.pendingPictureNameRescanIds.clear();
     this.shouldRefreshAllPositions = false;
     this.lineupSorter.stop();
     this.lineupSortHydrator.stop();
@@ -1689,10 +1702,10 @@ export class SorareCardScanner {
     const discoveredPictureNames = drainDiscoveredCardPictureNames();
     if (Object.keys(discoveredPictureNames).length > 0) {
       this.onCardPictureNamesDiscovered?.(discoveredPictureNames);
-      if (root !== document && root !== document.documentElement) {
-        this.queueScanRoot(document.documentElement);
-        this.scheduleMutationFlush();
+      for (const pictureId of Object.keys(discoveredPictureNames)) {
+        this.pendingPictureNameRescanIds.add(pictureId.toLowerCase());
       }
+      this.schedulePictureNameRescans();
     }
     for (const target of targets) {
       this.mountTarget(target);
@@ -1910,6 +1923,48 @@ export class SorareCardScanner {
 
   private queueScanRoot(root: Element): void {
     this.pendingScanRoots.add(root);
+  }
+
+  private schedulePictureNameRescans(delayMs = 80): void {
+    if (
+      this.pictureNameRescanTimer !== undefined ||
+      this.pendingPictureNameRescanIds.size === 0
+    ) {
+      return;
+    }
+    this.pictureNameRescanTimer = window.setTimeout(() => {
+      this.pictureNameRescanTimer = undefined;
+      if (!this.root || this.pendingPictureNameRescanIds.size === 0) return;
+      if (
+        document.querySelector(`[${lineupSortHydrationGridAttribute}]`)
+      ) {
+        this.schedulePictureNameRescans(750);
+        return;
+      }
+      this.flushPictureNameRescans();
+    }, delayMs);
+  }
+
+  private flushPictureNameRescans(alreadyScannedRoot?: Node): void {
+    if (this.pictureNameRescanTimer !== undefined) {
+      window.clearTimeout(this.pictureNameRescanTimer);
+      this.pictureNameRescanTimer = undefined;
+    }
+    if (!this.root || this.pendingPictureNameRescanIds.size === 0) return;
+    const pictureIds = new Set(this.pendingPictureNameRescanIds);
+    this.pendingPictureNameRescanIds.clear();
+    for (const image of document.querySelectorAll<HTMLImageElement>('img[alt]')) {
+      if (
+        alreadyScannedRoot &&
+        (alreadyScannedRoot === image || alreadyScannedRoot.contains(image))
+      ) {
+        continue;
+      }
+      if (extractPlayerName(image)) continue;
+      const pictureId = extractCardPictureId(image);
+      if (pictureId && pictureIds.has(pictureId)) this.queueScanRoot(image);
+    }
+    this.scheduleMutationFlush();
   }
 
   private queueScanContext(node: Node): void {

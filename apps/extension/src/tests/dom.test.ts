@@ -3259,6 +3259,109 @@ describe('Sorare card DOM discovery', () => {
     scanner.stop();
   });
 
+  it('defers targeted picture-alias rescans until lineup hydration completes', async () => {
+    const pictureId = '8249d58d-6f30-4edf-abc9-3a7fee6f4985';
+    document.body.innerHTML = `
+      <section data-testid="selected-lineup-player">
+        <button data-testid="anonymized-match" type="button">
+          <img
+            alt=""
+            src="https://assets.sorare.com/image-resize/cardsamplepicture/${pictureId}/picture/tinified.png?width=640"
+          >
+        </button>
+        <button type="button">
+          <div>
+            <div aria-label="Team">NE</div>
+            <div aria-label="Team">ATL</div>
+          </div>
+        </button>
+      </section>
+      <section data-testid="unrelated-lineup-player">
+        <button data-testid="anonymized-unrelated" type="button">
+          <img
+            alt=""
+            src="https://assets.sorare.com/image-resize/cardsamplepicture/unrelated-picture/picture/tinified.png?width=640"
+          >
+        </button>
+        <button type="button">
+          <div>
+            <div aria-label="Team">ONE</div>
+            <div aria-label="Team">TWO</div>
+          </div>
+        </button>
+      </section>
+      <div
+        data-testid="active-lineup-pool"
+        ${lineupSortHydrationGridAttribute}="true"
+      ></div>
+    `;
+    const pool = document.querySelector<HTMLElement>(
+      '[data-testid="active-lineup-pool"]',
+    );
+    const anonymizedMatch = document.querySelector<HTMLElement>(
+      '[data-testid="anonymized-match"]',
+    );
+    const anonymizedUnrelated = document.querySelector<HTMLElement>(
+      '[data-testid="anonymized-unrelated"]',
+    );
+    if (!pool || !anonymizedMatch || !anonymizedUnrelated) {
+      throw new Error('Expected picture-alias test fixtures');
+    }
+    const fetcher = vi.fn(
+      async (): Promise<PlayerStatsSuccessResponse> => ({
+        data: [],
+        meta: { requested: 0, returned: 0, cacheHits: 0, source: 'mock' },
+      }),
+    );
+    const scanner = new SorareCardScanner(
+      new StatsBatchCoordinator(fetcher, 60_000),
+      vi.fn(),
+      new LineupSortHydrator(
+        vi.fn(async (request: LineupSortValuesRequest) =>
+          compactSortResponse(request),
+        ),
+      ),
+    );
+    const scan = vi.spyOn(scanner, 'scan');
+    scanner.start();
+    expect(anonymizedMatch.dataset.sorareOverlayKey).toBeUndefined();
+
+    pool.insertAdjacentHTML(
+      'beforeend',
+      `<button data-testid="named-source" type="button">
+        <img
+          alt="Mamadou Fofana - common"
+          src="https://assets.sorare.com/image-resize/cardsamplepicture/${pictureId}/picture/tinified.png?width=640"
+        >
+      </button>`,
+    );
+    const namedSource = document.querySelector<HTMLElement>(
+      '[data-testid="named-source"]',
+    );
+    if (!namedSource) throw new Error('Expected named picture source');
+    scanner.scan(namedSource);
+
+    await new Promise((resolve) => window.setTimeout(resolve, 120));
+    expect(anonymizedMatch.dataset.sorareOverlayKey).toBeUndefined();
+    expect(
+      scan.mock.calls.some(([root]) => root === document.documentElement),
+    ).toBe(false);
+
+    pool.dispatchEvent(
+      new CustomEvent(lineupPoolReadyEvent, { bubbles: true }),
+    );
+    await vi.waitFor(() =>
+      expect(anonymizedMatch.dataset.sorareOverlayKey).toContain(
+        'name:mamadou fofana',
+      ),
+    );
+    expect(anonymizedUnrelated.dataset.sorareOverlayKey).toBeUndefined();
+    expect(
+      scan.mock.calls.some(([root]) => root === document.documentElement),
+    ).toBe(false);
+    scanner.stop();
+  });
+
   it('reconciles stale lineup goal misses after a team market cache update', async () => {
     document.body.innerHTML = `
       <article data-testid="cache-signal-card" data-position="Forward">

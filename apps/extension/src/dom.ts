@@ -242,7 +242,7 @@ export function extractPlayerName(image: HTMLImageElement): string | null {
   return image.alt.match(cardImageAlt)?.[1]?.trim() ?? null;
 }
 
-function extractCardPictureId(image: HTMLImageElement): string | null {
+export function extractCardPictureId(image: HTMLImageElement): string | null {
   try {
     return new URL(image.currentSrc || image.src, location.href).pathname
       .match(cardPicturePath)?.[1]
