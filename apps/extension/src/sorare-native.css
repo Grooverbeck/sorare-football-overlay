@@ -128,30 +128,64 @@
   fill: transparent !important;
 }
 
-[data-sorare-overlay-lineup-sort-trigger-label][data-sorare-overlay-lineup-sort-loading] {
-  display: inline-flex !important;
-  align-items: center !important;
-  gap: 6px !important;
+[data-sorare-overlay-lineup-sort-trigger-label] {
+  display: block !important;
+  box-sizing: border-box !important;
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
+  position: relative !important;
+  text-overflow: ellipsis !important;
   white-space: nowrap !important;
+}
+
+[data-sorare-overlay-lineup-sort-trigger-label][data-sorare-overlay-lineup-sort-player-count] {
+  padding-inline-end: 39px !important;
+}
+
+[data-sorare-overlay-lineup-sort-trigger-label][data-sorare-overlay-lineup-sort-player-count]::after {
+  content: attr(data-sorare-overlay-lineup-sort-player-count) !important;
+  box-sizing: border-box !important;
+  position: absolute !important;
+  inset-inline-end: 0 !important;
+  top: 50% !important;
+  min-width: 29px !important;
+  padding: 3px 5px !important;
+  border-radius: 999px !important;
+  background: rgb(128 128 128 / 18%) !important;
+  font-size: 10px !important;
+  font-variant-numeric: tabular-nums !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  text-align: center !important;
+  transform: translateY(-50%) !important;
+}
+
+[data-sorare-overlay-lineup-sort-trigger-label][data-sorare-overlay-lineup-sort-loading] {
+  padding-inline-start: 17px !important;
   font-variant-numeric: tabular-nums !important;
 }
 
 [data-sorare-overlay-lineup-sort-trigger-label][data-sorare-overlay-lineup-sort-loading]::before {
   content: "" !important;
   box-sizing: border-box !important;
-  flex: 0 0 11px !important;
+  position: absolute !important;
+  inset-inline-start: 0 !important;
+  top: 50% !important;
   width: 11px !important;
   height: 11px !important;
   border: 2px solid currentColor !important;
   border-right-color: transparent !important;
   border-radius: 50% !important;
   opacity: .85 !important;
+  transform: translateY(-50%) rotate(0deg) !important;
   animation: sorare-overlay-lineup-sort-spin .75s linear infinite !important;
 }
 
 @keyframes sorare-overlay-lineup-sort-spin {
   to {
-    transform: rotate(360deg);
+    transform: translateY(-50%) rotate(360deg);
   }
 }
 

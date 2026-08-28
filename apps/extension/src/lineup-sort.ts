@@ -36,6 +36,8 @@ interface LineupSortConfig {
   label: string;
   description: string;
   title: string;
+  loadingDescription: string;
+  missingValueDescription: string;
   optionAttribute: string;
   valueAttribute: string;
 }
@@ -47,6 +49,10 @@ const lineupSortConfigs: Record<LineupSortMode, LineupSortConfig> = {
     description: 'Markt & Historie gemeinsam',
     title:
       'Nach Torwahrscheinlichkeit sortieren – Marktquoten und historische Werte werden gemeinsam verglichen.',
+    loadingDescription:
+      'Torquoten und historische Vergleichswerte werden abgeglichen.',
+    missingValueDescription:
+      'Karten ohne verfügbare Torquote stehen am Ende.',
     optionAttribute: lineupGoalSortOptionAttribute,
     valueAttribute: lineupGoalSortProbabilityAttribute,
   },
@@ -56,6 +62,9 @@ const lineupSortConfigs: Record<LineupSortMode, LineupSortConfig> = {
     description: 'L10 · mindestens 60 Minuten',
     title:
       'Nach dem durchschnittlichen All-Around Score der letzten zehn Spiele mit mindestens 60 Minuten sortieren.',
+    loadingDescription: 'AA-Werte werden abgeglichen.',
+    missingValueDescription:
+      'Karten ohne verfügbaren AA-Wert stehen am Ende.',
     optionAttribute: lineupAaSortOptionAttribute,
     valueAttribute: lineupAaSortValueAttribute,
   },
@@ -67,6 +76,8 @@ const nativeTriggerLabelAttribute =
   'data-sorare-overlay-lineup-sort-trigger-label';
 const nativeTriggerLoadingAttribute =
   'data-sorare-overlay-lineup-sort-loading';
+const nativeTriggerPlayerCountAttribute =
+  'data-sorare-overlay-lineup-sort-player-count';
 const nativeMenuActiveAttribute =
   'data-sorare-overlay-lineup-sort-active';
 const nativeMenuOptionAttribute =
@@ -816,6 +827,7 @@ export class LineupCardSorter {
   private nativeTrigger: HTMLButtonElement | null = null;
   private nativeTriggerLabel: HTMLElement | null = null;
   private originalTriggerLabel = '';
+  private originalTriggerTitle: string | null = null;
   private nativeMenu: HTMLElement | null = null;
   private readonly menuOptions = new Map<
     LineupSortMode,
@@ -830,6 +842,7 @@ export class LineupCardSorter {
   private poolLoading = false;
   private poolLoadFailed = false;
   private poolCardCount = 0;
+  private displayedPoolCardCount = 0;
   private poolHydrating = false;
   private poolReadyCount = 0;
   private poolValueCount = 0;
@@ -999,44 +1012,87 @@ export class LineupCardSorter {
     if (label !== this.nativeTriggerLabel) {
       this.nativeTriggerLabel = label;
       this.originalTriggerLabel = label.textContent?.trim() ?? '';
+      this.originalTriggerTitle = label.getAttribute('title');
     }
     if (this.activeMode) {
       if (!label.hasAttribute(nativeTriggerLabelAttribute)) {
         this.originalTriggerLabel = label.textContent?.trim() ?? '';
+        this.originalTriggerTitle = label.getAttribute('title');
       }
       label.setAttribute(nativeTriggerLabelAttribute, 'true');
-      const baseLabel = lineupSortConfigs[this.activeMode].label;
+      const config = lineupSortConfigs[this.activeMode];
+      const baseLabel = config.label;
       const loading = this.poolLoading || this.poolHydrating;
+      const displayedPlayerCount = this.displayedPoolCardCount;
+      const loadingPlayerDescription =
+        displayedPlayerCount > 0
+          ? `${displayedPlayerCount} Spieler bisher gefunden. `
+          : '';
+      const totalPlayerDescription =
+        displayedPlayerCount > 0
+          ? `${displayedPlayerCount} Spieler insgesamt. `
+          : '';
       label.toggleAttribute(nativeTriggerLoadingAttribute, loading);
-      const nextLabel = this.poolLoading
-        ? `${baseLabel} · Spielerliste laden${this.poolCardCount > 0 ? ` · ${this.poolCardCount} gefunden` : ''}`
+      if (displayedPlayerCount > 0) {
+        label.setAttribute(
+          nativeTriggerPlayerCountAttribute,
+          String(displayedPlayerCount),
+        );
+      } else {
+        label.removeAttribute(nativeTriggerPlayerCountAttribute);
+      }
+      const nextLabel = loading
+        ? `${baseLabel} lädt …`
+        : this.poolLoadFailed
+          ? `${baseLabel} · Neu laden`
+          : baseLabel;
+      const nextTitle = this.poolLoading
+        ? `${loadingPlayerDescription}Die vollständige Spielerliste wird geladen. Danach wird automatisch sortiert.`
         : this.poolHydrating
-          ? `${baseLabel} · Sortierwerte laden · ${this.poolReadyCount}/${this.poolCardCount}`
+          ? `${totalPlayerDescription}${config.loadingDescription} Die Sortierung aktualisiert sich automatisch.`
           : this.poolLoadFailed
-            ? `${baseLabel} · Erneut versuchen`
+            ? `${loadingPlayerDescription}${baseLabel} konnte nicht vollständig geladen werden. Öffne das Menü und wähle „${baseLabel}“ erneut.`
             : this.poolCardCount > 0 &&
                 this.poolValueCount < this.poolCardCount
-              ? `${baseLabel} · ${this.poolValueCount}/${this.poolCardCount}`
-              : baseLabel;
+              ? `${totalPlayerDescription}Nach ${baseLabel} sortiert. ${config.missingValueDescription}`
+              : `${totalPlayerDescription}Nach ${baseLabel} sortiert.`;
       if (label.textContent !== nextLabel) label.textContent = nextLabel;
+      if (label.title !== nextTitle) label.title = nextTitle;
     } else if (label.hasAttribute(nativeTriggerLabelAttribute)) {
       label.textContent = this.originalTriggerLabel;
+      if (this.originalTriggerTitle === null) {
+        label.removeAttribute('title');
+      } else {
+        label.setAttribute('title', this.originalTriggerTitle);
+      }
       label.removeAttribute(nativeTriggerLabelAttribute);
       label.removeAttribute(nativeTriggerLoadingAttribute);
+      label.removeAttribute(nativeTriggerPlayerCountAttribute);
     } else {
       this.originalTriggerLabel = label.textContent?.trim() ?? '';
+      this.originalTriggerTitle = label.getAttribute('title');
     }
   }
 
   private restoreNativeTrigger(): void {
     if (this.nativeTriggerLabel?.hasAttribute(nativeTriggerLabelAttribute)) {
       this.nativeTriggerLabel.textContent = this.originalTriggerLabel;
+      if (this.originalTriggerTitle === null) {
+        this.nativeTriggerLabel.removeAttribute('title');
+      } else {
+        this.nativeTriggerLabel.setAttribute(
+          'title',
+          this.originalTriggerTitle,
+        );
+      }
       this.nativeTriggerLabel.removeAttribute(nativeTriggerLabelAttribute);
       this.nativeTriggerLabel.removeAttribute(nativeTriggerLoadingAttribute);
+      this.nativeTriggerLabel.removeAttribute(nativeTriggerPlayerCountAttribute);
     }
     this.nativeTrigger = null;
     this.nativeTriggerLabel = null;
     this.originalTriggerLabel = '';
+    this.originalTriggerTitle = null;
   }
 
   private mountMenuOptions(dialog: HTMLElement): void {
@@ -1179,6 +1235,7 @@ export class LineupCardSorter {
     }
     this.poolLoading = false;
     this.poolCardCount = 0;
+    this.displayedPoolCardCount = 0;
     this.poolHydrating = false;
     this.poolReadyCount = 0;
     this.poolValueCount = 0;
@@ -1233,6 +1290,10 @@ export class LineupCardSorter {
       onProgress: (cardCount) => {
         if (isCancelled()) return;
         this.poolCardCount = cardCount;
+        this.displayedPoolCardCount = Math.max(
+          this.displayedPoolCardCount,
+          cardCount,
+        );
         this.syncNativeSortUi();
       },
       onGridUpdate: (activeGrid) => {
@@ -1287,6 +1348,10 @@ export class LineupCardSorter {
     this.completedGrid = grid;
     this.completedCells = new Set(gridCardCells(grid));
     this.poolCardCount = this.completedCells.size;
+    this.displayedPoolCardCount = Math.max(
+      this.displayedPoolCardCount,
+      this.poolCardCount,
+    );
     this.setHydrationGrid(grid);
     this.observeGrid(grid);
     grid.dispatchEvent(
@@ -1313,6 +1378,10 @@ export class LineupCardSorter {
     }
     const cells = gridCardCells(grid);
     this.poolCardCount = cells.length;
+    this.displayedPoolCardCount = Math.max(
+      this.displayedPoolCardCount,
+      this.poolCardCount,
+    );
     this.poolReadyCount = cells.filter(cellSortDataIsReady).length;
     const valueAttribute = this.activeMode
       ? lineupSortConfigs[this.activeMode].valueAttribute

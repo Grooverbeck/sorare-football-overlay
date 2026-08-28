@@ -364,21 +364,88 @@ describe('lineup card sorting', () => {
       .querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)
       ?.click();
 
-    expect(label.textContent).toBe('AA · Spielerliste laden');
+    expect(label.textContent).toBe('AA lädt …');
+    expect(label.title).toBe(
+      'Die vollständige Spielerliste wird geladen. Danach wird automatisch sortiert.',
+    );
     expect(label.hasAttribute('data-sorare-overlay-lineup-sort-loading')).toBe(
       true,
     );
     await vi.waitFor(() => {
-      expect(label.textContent).toBe('AA · Sortierwerte laden · 1/3');
+      expect(label.textContent).toBe('AA lädt …');
+      expect(label.title).toBe(
+        '3 Spieler insgesamt. AA-Werte werden abgeglichen. Die Sortierung aktualisiert sich automatisch.',
+      );
+      expect(
+        label.getAttribute(
+          'data-sorare-overlay-lineup-sort-player-count',
+        ),
+      ).toBe('3');
     });
 
     setLineupSortDataReady(historical, true);
+    await new Promise((resolve) => window.setTimeout(resolve, 20));
+    setLineupSortDataReady(historical, false);
+    await new Promise((resolve) => window.setTimeout(resolve, 20));
+    expect(label.textContent).toBe('AA lädt …');
+    expect(label.textContent).not.toMatch(/\d/);
+    expect(
+      label.getAttribute('data-sorare-overlay-lineup-sort-player-count'),
+    ).toBe('3');
+
+    setLineupSortDataReady(historical, true);
     setLineupSortDataReady(missing, true);
-    await vi.waitFor(() => expect(label.textContent).toBe('AA · 2/3'));
+    await vi.waitFor(() => expect(label.textContent).toBe('AA'));
+    expect(label.title).toBe(
+      '3 Spieler insgesamt. Nach AA sortiert. Karten ohne verfügbaren AA-Wert stehen am Ende.',
+    );
     expect(label.hasAttribute('data-sorare-overlay-lineup-sort-loading')).toBe(
       false,
     );
     expect(market.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+  });
+
+  it('only counts discovered players upwards while loading the pool', async () => {
+    sorter.stop();
+    let reportProgress: ((cardCount: number) => void) | undefined;
+    let finishLoad: ((grid: HTMLElement | null) => void) | undefined;
+    sorter = new LineupCardSorter(
+      (context) =>
+        new Promise((resolve) => {
+          reportProgress = context.onProgress;
+          finishLoad = resolve;
+        }),
+    );
+    const label = document.querySelector<HTMLElement>(
+      '[data-native-trigger-label]',
+    );
+    if (!label) throw new Error('Expected native trigger label');
+
+    sorter.start();
+    document
+      .querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)
+      ?.click();
+    await vi.waitFor(() => expect(reportProgress).toBeTypeOf('function'));
+
+    reportProgress?.(38);
+    expect(
+      label.getAttribute('data-sorare-overlay-lineup-sort-player-count'),
+    ).toBe('38');
+    expect(label.title).toContain('38 Spieler bisher gefunden.');
+
+    reportProgress?.(74);
+    expect(
+      label.getAttribute('data-sorare-overlay-lineup-sort-player-count'),
+    ).toBe('74');
+
+    reportProgress?.(69);
+    expect(
+      label.getAttribute('data-sorare-overlay-lineup-sort-player-count'),
+    ).toBe('74');
+    expect(label.title).toContain('74 Spieler bisher gefunden.');
+
+    finishLoad?.(null);
+    await vi.waitFor(() => expect(label.textContent).toBe('AA · Neu laden'));
   });
 
   it('coalesces a burst of card value changes into one pool refresh', async () => {
@@ -736,7 +803,7 @@ describe('lineup card sorting', () => {
     expect(
       document.querySelector<HTMLElement>('[data-native-trigger-label]')
         ?.textContent,
-    ).toBe('Torquote · 2/3');
+    ).toBe('Torquote');
     expect(
       document.querySelector<HTMLInputElement>(
         '[data-native-option="average"] input[type="radio"]',
@@ -825,7 +892,7 @@ describe('lineup card sorting', () => {
     expect(
       document.querySelector<HTMLElement>('[data-native-trigger-label]')
         ?.textContent,
-    ).toBe('AA · 2/3');
+    ).toBe('AA');
     expect(
       goalOption?.querySelector<HTMLInputElement>('input[type="radio"]')?.checked,
     ).toBe(false);
@@ -879,6 +946,11 @@ describe('lineup card sorting', () => {
       document.querySelector<HTMLElement>('[data-native-trigger-label]')
         ?.textContent,
     ).toBe('Durchschnittsbewertung');
+    expect(
+      document
+        .querySelector<HTMLElement>('[data-native-trigger-label]')
+        ?.hasAttribute('title'),
+    ).toBe(false);
     expect(
       document.querySelector<HTMLInputElement>(
         `[${lineupGoalSortOptionAttribute}] input[type="radio"]`,
@@ -964,7 +1036,7 @@ describe('lineup card sorting', () => {
       expect(
         document.querySelector<HTMLElement>('[data-native-trigger-label]')
           ?.textContent,
-      ).toBe('AA · Erneut versuchen');
+      ).toBe('AA · Neu laden');
     });
     expect(marketCell.style.order).toBe('');
   });
@@ -1000,7 +1072,7 @@ describe('lineup card sorting', () => {
     expect(
       document.querySelector<HTMLElement>('[data-native-trigger-label]')
         ?.textContent,
-    ).toBe('AA · 2/3');
+    ).toBe('AA');
   });
 
   it('still rejects a pool whose known positions are mostly stale', async () => {
@@ -1034,7 +1106,7 @@ describe('lineup card sorting', () => {
       expect(
         document.querySelector<HTMLElement>('[data-native-trigger-label]')
           ?.textContent,
-      ).toBe('AA · Erneut versuchen');
+      ).toBe('AA · Neu laden');
     });
     expect(marketCell.style.order).toBe('');
   });
@@ -1058,7 +1130,7 @@ describe('lineup card sorting', () => {
       expect(
         document.querySelector<HTMLElement>('[data-native-trigger-label]')
           ?.textContent,
-      ).toBe('AA · Erneut versuchen');
+      ).toBe('AA · Neu laden');
     });
 
     sorter.scan(document);
