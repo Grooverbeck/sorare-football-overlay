@@ -156,6 +156,10 @@ function createWorkerAppServices(
     },
     logger,
     corsOrigins: config.corsOrigins,
+    consumeApiRateLimit: async (key) => {
+      const { success } = await env.API_RATE_LIMITER.limit({ key });
+      return success;
+    },
     get mlsAaBenchmarkStore() {
       return (benchmarkStore ??= new CloudflareMlsAaBenchmarkStore(
         getCacheStore(),

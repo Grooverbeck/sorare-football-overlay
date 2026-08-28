@@ -8,6 +8,10 @@
   "placement": {
     "mode": "smart"
   },
+  "limits": {
+    "cpu_ms": 10000,
+    "subrequests": 50
+  },
   "vars": {
     "LOG_LEVEL": "info",
     "MOCK_MODE": "false",
@@ -58,6 +62,16 @@
       "migrations_dir": "migrations"
     }
   ],
+  "ratelimits": [
+    {
+      "name": "API_RATE_LIMITER",
+      "namespace_id": "2026082801",
+      "simple": {
+        "limit": 600,
+        "period": 60
+      }
+    }
+  ],
   "triggers": {
     "crons": ["0 5 * * *", "0 10 * * MON"]
   },
@@ -65,7 +79,7 @@
     "enabled": true,
     "logs": {
       "enabled": true,
-      "head_sampling_rate": 1
+      "head_sampling_rate": 0.25
     },
     "traces": {
       "enabled": true,

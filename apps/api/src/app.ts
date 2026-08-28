@@ -35,6 +35,7 @@ type AppEnv<TBindings extends object = Record<string, never>> = {
 };
 
 const SLOW_REQUEST_LOG_THRESHOLD_MS = 2_000;
+const API_RATE_LIMIT_RETRY_AFTER_SECONDS = 60;
 
 function samplesSuccessfulRequest(requestId: string): boolean {
   const firstByte = Number.parseInt(requestId.slice(0, 2), 16);
@@ -54,6 +55,7 @@ export interface CreateAppOptions {
   logger: AppLogger;
   corsOrigins: readonly string[];
   mlsAaBenchmarkStore?: MlsAaBenchmarkStore;
+  consumeApiRateLimit?: (key: string) => Promise<boolean>;
 }
 
 export interface CreateRequestAppOptions<TBindings extends object> {
@@ -112,6 +114,55 @@ export function createApp<TBindings extends object = Record<string, never>>(
       maxAge: 86_400,
     }),
   );
+
+  app.use('/api/*', async (context, next) => {
+    const services = context.get('services');
+    if (!services.consumeApiRateLimit) {
+      await next();
+      return;
+    }
+
+    // Cloudflare owns this header on workers.dev requests. The deliberately
+    // generous limit keeps shared household/mobile connections usable while
+    // still containing accidental request loops and simple endpoint abuse.
+    const clientKey =
+      context.req.header('cf-connecting-ip')?.trim() || 'unknown-client';
+    const rateLimitKey = `${clientKey}:${context.req.path}`;
+    let allowed = true;
+    try {
+      allowed = await services.consumeApiRateLimit(rateLimitKey);
+    } catch (error) {
+      // Availability wins if Cloudflare's local limiter binding itself fails;
+      // the normal CPU and subrequest ceilings remain active as a backstop.
+      services.logger.warn(
+        {
+          requestId: context.get('requestId'),
+          path: context.req.path,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'API rate limiter unavailable; allowing request',
+      );
+    }
+
+    if (!allowed) {
+      context.header(
+        'retry-after',
+        String(API_RATE_LIMIT_RETRY_AFTER_SECONDS),
+      );
+      return context.json(
+        ApiErrorResponseSchema.parse({
+          error: {
+            code: 'RATE_LIMITED',
+            message: 'Too many requests; retry shortly',
+            requestId: context.get('requestId'),
+          },
+        }),
+        429,
+      );
+    }
+
+    await next();
+  });
 
   app.get('/', (context) => servePublicHtml(context, homePage));
   app.get('/privacy', (context) => servePublicHtml(context, privacyPage));

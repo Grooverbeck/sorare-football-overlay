@@ -272,6 +272,92 @@ describe('POST /api/lineup-sort-values', () => {
   });
 });
 
+describe('API rate limiting', () => {
+  it('rate limits an API route before starting player work', async () => {
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      new MockPlayerMarketOddsProvider(),
+    );
+    const getPlayerStats = vi.spyOn(service, 'getPlayerStats');
+    const consumeApiRateLimit = vi.fn(async () => false);
+    const app = createApp({
+      statsService: service,
+      logger,
+      corsOrigins: [],
+      consumeApiRateLimit,
+    });
+
+    const response = await app.request('/api/player-stats', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'origin': 'chrome-extension://overlay-test',
+        'cf-connecting-ip': '203.0.113.42',
+        'x-request-id': 'rate-limited-request',
+      },
+      body: JSON.stringify({ slugs: ['jude-bellingham'] }),
+    });
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get('retry-after')).toBe('60');
+    expect(response.headers.get('access-control-allow-origin')).toBe(
+      'chrome-extension://overlay-test',
+    );
+    expect(await response.json()).toEqual({
+      error: {
+        code: 'RATE_LIMITED',
+        message: 'Too many requests; retry shortly',
+        requestId: 'rate-limited-request',
+      },
+    });
+    expect(consumeApiRateLimit).toHaveBeenCalledWith(
+      '203.0.113.42:/api/player-stats',
+    );
+    expect(getPlayerStats).not.toHaveBeenCalled();
+  });
+
+  it('fails open when the rate-limit binding is unavailable', async () => {
+    const warn = vi.fn<AppLogger['warn']>();
+    const rateLimitLogger: AppLogger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn,
+      error: vi.fn(),
+    };
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      new MockPlayerMarketOddsProvider(),
+    );
+    const app = createApp({
+      statsService: service,
+      logger: rateLimitLogger,
+      corsOrigins: [],
+      consumeApiRateLimit: vi.fn().mockRejectedValue(new Error('unavailable')),
+    });
+
+    const response = await app.request('/api/player-stats', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slugs: ['jude-bellingham'] }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/player-stats',
+        error: 'unavailable',
+      }),
+      'API rate limiter unavailable; allowing request',
+    );
+  });
+});
+
 describe('POST /api/player-market-snapshots', () => {
   it('returns a compact cache-only market update for a canonical fixture', async () => {
     const app = testApp();
