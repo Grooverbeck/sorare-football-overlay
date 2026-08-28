@@ -288,6 +288,45 @@ describe('lineup card sorting', () => {
     expect(progress.at(-1)).toBe(5);
   });
 
+  it('accepts a 256-card pool that finishes on the final loading probe', async () => {
+    const grid = document.querySelector<HTMLElement>('[data-player-grid]');
+    if (!grid) throw new Error('Expected player grid');
+    grid.replaceChildren();
+    appendLoadingCell(grid);
+    const progress: number[] = [];
+    let loadedCards = 0;
+
+    const result = await loadCompleteLineupPool(
+      {
+        isCancelled: () => false,
+        onProgress: (count) => progress.push(count),
+      },
+      {
+        getGrid: () => grid,
+        revealGridEnd: async () => {
+          grid.querySelector('[data-loading-cell]')?.remove();
+          for (let index = 0; index < 8; index += 1) {
+            const cell = document.createElement('div');
+            cell.innerHTML = `<img alt="Large Pool Player ${loadedCards + 1} - limited">`;
+            grid.append(cell);
+            loadedCards += 1;
+          }
+          if (loadedCards < 256) appendLoadingCell(grid);
+          return true;
+        },
+        waitForGrowth: async (_currentGrid, previousCount) =>
+          grid.querySelectorAll('img').length > previousCount,
+        maxPulses: 32,
+        stableMissesRequired: 2,
+      },
+    );
+
+    expect(result).toBe(grid);
+    expect(loadedCards).toBe(256);
+    expect(grid.querySelector('[aria-busy="true"]')).toBeNull();
+    expect(progress.at(-1)).toBe(256);
+  });
+
   it('announces the complete pool so offscreen cards can be hydrated', async () => {
     const grid = document.querySelector<HTMLElement>('[data-player-grid]');
     if (!grid) throw new Error('Expected player grid');

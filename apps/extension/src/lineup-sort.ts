@@ -777,6 +777,15 @@ export async function loadCompleteLineupPool(
     }
   }
 
+  // A large pool can grow on every allowed probe and finish exactly on the
+  // final one. In that case there is no stable follow-up probe left, even
+  // though Sorare has already removed its loading cell. Treat that terminal
+  // state as complete instead of leaving a fully hydrated pool on retry.
+  if (grid?.isConnected && observedGrowth && !gridLoadingCell(grid)) {
+    context.onProgress(gridCardCount(grid));
+    return grid;
+  }
+
   return null;
 }
 
