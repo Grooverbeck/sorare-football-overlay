@@ -377,10 +377,10 @@ describe('lineup card sorting', () => {
         '3 Spieler insgesamt. AA-Werte werden abgeglichen. Die Sortierung aktualisiert sich automatisch.',
       );
       expect(
-        label.getAttribute(
-          'data-sorare-overlay-lineup-sort-player-count',
-        ),
-      ).toBe('3');
+        document.querySelector(
+          '[data-sorare-overlay-lineup-sort-player-status-label]',
+        )?.textContent,
+      ).toBe('3 Spieler geladen');
     });
 
     setLineupSortDataReady(historical, true);
@@ -390,8 +390,10 @@ describe('lineup card sorting', () => {
     expect(label.textContent).toBe('AA lädt …');
     expect(label.textContent).not.toMatch(/\d/);
     expect(
-      label.getAttribute('data-sorare-overlay-lineup-sort-player-count'),
-    ).toBe('3');
+      document.querySelector(
+        '[data-sorare-overlay-lineup-sort-player-status-label]',
+      )?.textContent,
+    ).toBe('3 Spieler geladen');
 
     setLineupSortDataReady(historical, true);
     setLineupSortDataReady(missing, true);
@@ -399,6 +401,11 @@ describe('lineup card sorting', () => {
     expect(label.title).toBe(
       '3 Spieler insgesamt. Nach AA sortiert. Karten ohne verfügbaren AA-Wert stehen am Ende.',
     );
+    expect(
+      document.querySelector(
+        '[data-sorare-overlay-lineup-sort-player-status-label]',
+      )?.textContent,
+    ).toBe('3 Spieler sortiert');
     expect(label.hasAttribute('data-sorare-overlay-lineup-sort-loading')).toBe(
       false,
     );
@@ -429,20 +436,26 @@ describe('lineup card sorting', () => {
 
     reportProgress?.(38);
     expect(
-      label.getAttribute('data-sorare-overlay-lineup-sort-player-count'),
-    ).toBe('38');
-    expect(label.title).toContain('38 Spieler bisher gefunden.');
+      document.querySelector(
+        '[data-sorare-overlay-lineup-sort-player-status-label]',
+      )?.textContent,
+    ).toBe('38 Spieler geladen');
+    expect(label.title).toContain('38 Spieler bisher geladen.');
 
     reportProgress?.(74);
     expect(
-      label.getAttribute('data-sorare-overlay-lineup-sort-player-count'),
-    ).toBe('74');
+      document.querySelector(
+        '[data-sorare-overlay-lineup-sort-player-status-label]',
+      )?.textContent,
+    ).toBe('74 Spieler geladen');
 
     reportProgress?.(69);
     expect(
-      label.getAttribute('data-sorare-overlay-lineup-sort-player-count'),
-    ).toBe('74');
-    expect(label.title).toContain('74 Spieler bisher gefunden.');
+      document.querySelector(
+        '[data-sorare-overlay-lineup-sort-player-status-label]',
+      )?.textContent,
+    ).toBe('74 Spieler geladen');
+    expect(label.title).toContain('74 Spieler bisher geladen.');
 
     finishLoad?.(null);
     await vi.waitFor(() => expect(label.textContent).toBe('AA · Neu laden'));

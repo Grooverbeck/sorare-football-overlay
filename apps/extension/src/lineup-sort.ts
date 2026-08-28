@@ -76,8 +76,10 @@ const nativeTriggerLabelAttribute =
   'data-sorare-overlay-lineup-sort-trigger-label';
 const nativeTriggerLoadingAttribute =
   'data-sorare-overlay-lineup-sort-loading';
-const nativeTriggerPlayerCountAttribute =
-  'data-sorare-overlay-lineup-sort-player-count';
+const nativeTriggerPlayerStatusAttribute =
+  'data-sorare-overlay-lineup-sort-player-status';
+const nativeTriggerPlayerStatusLabelAttribute =
+  'data-sorare-overlay-lineup-sort-player-status-label';
 const nativeMenuActiveAttribute =
   'data-sorare-overlay-lineup-sort-active';
 const nativeMenuOptionAttribute =
@@ -1026,21 +1028,19 @@ export class LineupCardSorter {
       const displayedPlayerCount = this.displayedPoolCardCount;
       const loadingPlayerDescription =
         displayedPlayerCount > 0
-          ? `${displayedPlayerCount} Spieler bisher gefunden. `
+          ? `${displayedPlayerCount} Spieler bisher geladen. `
           : '';
       const totalPlayerDescription =
         displayedPlayerCount > 0
           ? `${displayedPlayerCount} Spieler insgesamt. `
           : '';
       label.toggleAttribute(nativeTriggerLoadingAttribute, loading);
-      if (displayedPlayerCount > 0) {
-        label.setAttribute(
-          nativeTriggerPlayerCountAttribute,
-          String(displayedPlayerCount),
-        );
-      } else {
-        label.removeAttribute(nativeTriggerPlayerCountAttribute);
-      }
+      this.syncNativeTriggerPlayerStatus(
+        trigger,
+        displayedPlayerCount > 0
+          ? `${displayedPlayerCount} Spieler ${loading || this.poolLoadFailed ? 'geladen' : 'sortiert'}`
+          : null,
+      );
       const nextLabel = loading
         ? `${baseLabel} lädt …`
         : this.poolLoadFailed
@@ -1067,14 +1067,39 @@ export class LineupCardSorter {
       }
       label.removeAttribute(nativeTriggerLabelAttribute);
       label.removeAttribute(nativeTriggerLoadingAttribute);
-      label.removeAttribute(nativeTriggerPlayerCountAttribute);
+      this.syncNativeTriggerPlayerStatus(trigger, null);
     } else {
       this.originalTriggerLabel = label.textContent?.trim() ?? '';
       this.originalTriggerTitle = label.getAttribute('title');
     }
   }
 
+  private syncNativeTriggerPlayerStatus(
+    trigger: HTMLButtonElement,
+    text: string | null,
+  ): void {
+    let status = trigger.querySelector<HTMLSpanElement>(
+      `:scope > [${nativeTriggerPlayerStatusLabelAttribute}]`,
+    );
+    if (!text) {
+      status?.remove();
+      trigger.removeAttribute(nativeTriggerPlayerStatusAttribute);
+      return;
+    }
+    if (!status) {
+      status = document.createElement('span');
+      status.setAttribute(nativeTriggerPlayerStatusLabelAttribute, 'true');
+      status.setAttribute('aria-hidden', 'true');
+      trigger.append(status);
+    }
+    if (status.textContent !== text) status.textContent = text;
+    trigger.setAttribute(nativeTriggerPlayerStatusAttribute, 'true');
+  }
+
   private restoreNativeTrigger(): void {
+    if (this.nativeTrigger) {
+      this.syncNativeTriggerPlayerStatus(this.nativeTrigger, null);
+    }
     if (this.nativeTriggerLabel?.hasAttribute(nativeTriggerLabelAttribute)) {
       this.nativeTriggerLabel.textContent = this.originalTriggerLabel;
       if (this.originalTriggerTitle === null) {
@@ -1087,7 +1112,6 @@ export class LineupCardSorter {
       }
       this.nativeTriggerLabel.removeAttribute(nativeTriggerLabelAttribute);
       this.nativeTriggerLabel.removeAttribute(nativeTriggerLoadingAttribute);
-      this.nativeTriggerLabel.removeAttribute(nativeTriggerPlayerCountAttribute);
     }
     this.nativeTrigger = null;
     this.nativeTriggerLabel = null;

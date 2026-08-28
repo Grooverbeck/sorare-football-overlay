@@ -140,26 +140,29 @@
   white-space: nowrap !important;
 }
 
-[data-sorare-overlay-lineup-sort-trigger-label][data-sorare-overlay-lineup-sort-player-count] {
-  padding-inline-end: 39px !important;
+[data-sorare-overlay-lineup-sort-player-status] {
+  overflow: visible !important;
+  position: relative !important;
 }
 
-[data-sorare-overlay-lineup-sort-trigger-label][data-sorare-overlay-lineup-sort-player-count]::after {
-  content: attr(data-sorare-overlay-lineup-sort-player-count) !important;
-  box-sizing: border-box !important;
+[data-sorare-overlay-lineup-sort-player-status-label] {
   position: absolute !important;
-  inset-inline-end: 0 !important;
-  top: 50% !important;
-  min-width: 29px !important;
-  padding: 3px 5px !important;
-  border-radius: 999px !important;
-  background: rgb(128 128 128 / 18%) !important;
+  inset-inline-start: 50% !important;
+  top: calc(100% + 3px) !important;
+  width: max-content !important;
+  max-width: 180px !important;
+  overflow: hidden !important;
+  color: currentColor !important;
   font-size: 10px !important;
   font-variant-numeric: tabular-nums !important;
-  font-weight: 700 !important;
+  font-weight: 600 !important;
   line-height: 1 !important;
+  opacity: .68 !important;
+  pointer-events: none !important;
   text-align: center !important;
-  transform: translateY(-50%) !important;
+  text-overflow: ellipsis !important;
+  transform: translateX(-50%) !important;
+  white-space: nowrap !important;
 }
 
 [data-sorare-overlay-lineup-sort-trigger-label][data-sorare-overlay-lineup-sort-loading] {
