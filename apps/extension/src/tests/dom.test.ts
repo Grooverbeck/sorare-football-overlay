@@ -3084,6 +3084,80 @@ describe('Sorare card DOM discovery', () => {
     vi.unstubAllGlobals();
   });
 
+  it('hydrates an offscreen card mounted after lineup pool hydration started', async () => {
+    const disconnect = vi.fn();
+    class TestIntersectionObserver {
+      readonly root = null;
+      readonly rootMargin = '';
+      readonly thresholds: readonly number[] = [];
+
+      constructor(_callback: IntersectionObserverCallback) {}
+
+      observe = vi.fn();
+      unobserve = vi.fn();
+      disconnect = disconnect;
+      takeRecords(): IntersectionObserverEntry[] {
+        return [];
+      }
+    }
+    vi.stubGlobal('IntersectionObserver', TestIntersectionObserver);
+    try {
+      document.body.innerHTML = `
+        <div data-testid="active-lineup-pool" ${lineupSortHydrationGridAttribute}="true">
+          <article data-testid="late-offscreen-card" data-position="Midfielder">
+            <a href="/football/players/late-offscreen-player">Late player</a>
+          </article>
+        </div>
+      `;
+      const offscreenCard = document.querySelector<HTMLElement>(
+        '[data-testid="late-offscreen-card"]',
+      );
+      if (!offscreenCard) throw new Error('Expected late offscreen card');
+      vi.spyOn(offscreenCard, 'getBoundingClientRect').mockReturnValue(
+        DOMRect.fromRect({ x: 20, y: 4_000, width: 120, height: 194 }),
+      );
+      const fetcher = vi.fn(
+        async (
+          request: PlayerStatsRequest,
+        ): Promise<PlayerStatsSuccessResponse> => ({
+          data: request.slugs.map((slug) => ({
+            slug,
+            displayName: slug,
+            position: 'Midfielder',
+            aaL10: { value: 10, sampleSize: 10 },
+            cleanSheetL10: { value: 0.2, sampleSize: 10 },
+            goalL10: { value: 0.1, sampleSize: 10 },
+            nextGame: null,
+            excludedLowCoverage: 0,
+          })),
+          meta: {
+            requested: request.slugs.length,
+            returned: request.slugs.length,
+            cacheHits: 0,
+            source: 'sorare',
+          },
+        }),
+      );
+      const coordinator = new StatsBatchCoordinator(fetcher, 0);
+      const scanner = new SorareCardScanner(coordinator);
+
+      scanner.start();
+      await coordinator.flush();
+
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(fetcher.mock.calls[0]?.[0].slugs).toEqual([
+        'late-offscreen-player',
+      ]);
+      expect(
+        offscreenCard.getAttribute('data-sorare-overlay-aa-sort-value'),
+      ).toBe('10');
+      scanner.stop();
+      expect(disconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('keeps complete-pool retries running while their cards are offscreen', async () => {
     vi.useFakeTimers();
     const disconnect = vi.fn();
@@ -3180,16 +3254,16 @@ describe('Sorare card DOM discovery', () => {
       );
       await coordinator.flush();
 
-      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(fetcher).toHaveBeenCalledTimes(1);
       expect(
         offscreenCard.getAttribute(lineupSortDataReadyAttribute),
       ).toBe('false');
       await vi.advanceTimersByTimeAsync(999);
-      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(fetcher).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(1);
       await coordinator.flush();
 
-      expect(fetcher).toHaveBeenCalledTimes(3);
+      expect(fetcher).toHaveBeenCalledTimes(2);
       expect(
         offscreenCard.getAttribute('data-sorare-overlay-aa-sort-value'),
       ).toBe('10');

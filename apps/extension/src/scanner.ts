@@ -1516,8 +1516,13 @@ export class SorareCardScanner {
       this.visibilityObserver.observe(target.container);
       view.setViewportPriorityActive(mountedOverlay.viewportActive);
     }
-    if (mountedOverlay.viewportActive) {
-      this.requestStats(mountedOverlay, priority);
+    const requiresBackgroundHydration =
+      view.requiresBackgroundLineupSortHydration();
+    if (mountedOverlay.viewportActive || requiresBackgroundHydration) {
+      this.requestStats(
+        mountedOverlay,
+        mountedOverlay.viewportActive ? priority : viewportPriorityNearby,
+      );
     }
   }
 
