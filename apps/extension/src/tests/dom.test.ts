@@ -1,4 +1,6 @@
 import type {
+  LineupSortValuesRequest,
+  LineupSortValuesSuccessResponse,
   PlayerStats,
   PlayerStatsRequest,
   PlayerStatsSuccessResponse,
@@ -21,8 +23,33 @@ import {
   lineupPoolReadyEvent,
   lineupSortDataReadyAttribute,
   lineupSortHydrationGridAttribute,
+  lineupSortLightweightReadyAttribute,
 } from '../lineup-sort.js';
+import { LineupSortHydrator } from '../lineup-sort-hydrator.js';
 import { SorareCardScanner, StatsBatchCoordinator } from '../scanner.js';
+
+function compactSortResponse(
+  request: LineupSortValuesRequest,
+  aa = 10,
+): LineupSortValuesSuccessResponse {
+  const slugs = request.slugs ?? [];
+  return {
+    data: slugs.map((slug) => ({
+      slug,
+      displayName: slug,
+      position: 'Midfielder',
+      goal: { probability: 0.1, source: 'historical' },
+      aa,
+    })),
+    meta: {
+      requested: slugs.length,
+      returned: slugs.length,
+      cacheHits: slugs.length,
+      source: 'sorare',
+      durationMs: 1,
+    },
+  };
+}
 
 describe('Sorare card DOM discovery', () => {
   beforeEach(() => {
@@ -218,6 +245,46 @@ describe('Sorare card DOM discovery', () => {
     expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
     view.destroy();
     expect(card.hasAttribute(lineupSortDataReadyAttribute)).toBe(false);
+  });
+
+  it('keeps lightweight sort values ready while mounting the full overlay', () => {
+    document.body.innerHTML = `
+      <article data-testid="prehydrated-sort-card">
+        <img alt="Prehydrated Player - limited" src="/card.png">
+      </article>
+    `;
+    const card = document.querySelector<HTMLElement>(
+      '[data-testid="prehydrated-sort-card"]',
+    );
+    if (!card) throw new Error('Expected prehydrated card');
+    card.setAttribute(lineupSortDataReadyAttribute, 'true');
+    card.setAttribute(
+      lineupSortLightweightReadyAttribute,
+      'name:prehydrated player:Midfielder',
+    );
+
+    const view = new OverlayView(
+      card,
+      { playerName: 'Prehydrated Player' },
+      'Midfielder',
+    );
+
+    expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    view.retrying();
+    expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    view.render({
+      slug: 'prehydrated-player',
+      displayName: 'Prehydrated Player',
+      position: 'Midfielder',
+      aaL10: { value: 15, sampleSize: 10 },
+      cleanSheetL10: { value: 0.2, sampleSize: 10 },
+      goalL10: { value: 0.3, sampleSize: 10 },
+      nextGame: null,
+      excludedLowCoverage: 0,
+    });
+    expect(card.hasAttribute(lineupSortLightweightReadyAttribute)).toBe(false);
+    expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    view.destroy();
   });
 
   it('uses the uniquely active lineup position for an image-only player card', () => {
@@ -3057,7 +3124,14 @@ describe('Sorare card DOM discovery', () => {
       }),
     );
     const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
-    const scanner = new SorareCardScanner(coordinator);
+    const sortFetcher = vi.fn(async (request: LineupSortValuesRequest) =>
+      compactSortResponse(request),
+    );
+    const scanner = new SorareCardScanner(
+      coordinator,
+      undefined,
+      new LineupSortHydrator(sortFetcher),
+    );
 
     scanner.start();
     await coordinator.flush();
@@ -3071,8 +3145,9 @@ describe('Sorare card DOM discovery', () => {
     );
     await coordinator.flush();
 
-    expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(fetcher.mock.calls[1]?.[0].slugs).toEqual([
+    await vi.waitFor(() => expect(sortFetcher).toHaveBeenCalledTimes(1));
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(sortFetcher.mock.calls[0]?.[0].slugs).toEqual([
       'offscreen-lineup-player',
     ]);
     expect(
@@ -3086,12 +3161,15 @@ describe('Sorare card DOM discovery', () => {
 
   it('hydrates an offscreen card mounted after lineup pool hydration started', async () => {
     const disconnect = vi.fn();
+    let intersectionCallback: IntersectionObserverCallback | undefined;
     class TestIntersectionObserver {
       readonly root = null;
       readonly rootMargin = '';
       readonly thresholds: readonly number[] = [];
 
-      constructor(_callback: IntersectionObserverCallback) {}
+      constructor(callback: IntersectionObserverCallback) {
+        intersectionCallback = callback;
+      }
 
       observe = vi.fn();
       unobserve = vi.fn();
@@ -3139,18 +3217,53 @@ describe('Sorare card DOM discovery', () => {
         }),
       );
       const coordinator = new StatsBatchCoordinator(fetcher, 0);
-      const scanner = new SorareCardScanner(coordinator);
+      const sortFetcher = vi.fn(async (request: LineupSortValuesRequest) =>
+        compactSortResponse(request),
+      );
+      const scanner = new SorareCardScanner(
+        coordinator,
+        undefined,
+        new LineupSortHydrator(sortFetcher),
+      );
 
       scanner.start();
       await coordinator.flush();
 
-      expect(fetcher).toHaveBeenCalledTimes(1);
-      expect(fetcher.mock.calls[0]?.[0].slugs).toEqual([
+      await vi.waitFor(() => expect(sortFetcher).toHaveBeenCalledTimes(1));
+      expect(fetcher).toHaveBeenCalledTimes(0);
+      expect(sortFetcher.mock.calls[0]?.[0].slugs).toEqual([
         'late-offscreen-player',
       ]);
       expect(
+        document.querySelectorAll('[data-sorare-overlay-root]'),
+      ).toHaveLength(0);
+      expect(
         offscreenCard.getAttribute('data-sorare-overlay-aa-sort-value'),
       ).toBe('10');
+      intersectionCallback?.(
+        [
+          {
+            target: offscreenCard,
+            isIntersecting: true,
+            boundingClientRect: DOMRect.fromRect({
+              x: 20,
+              y: 800,
+              width: 120,
+              height: 194,
+            }),
+          } as IntersectionObserverEntry,
+        ],
+        {} as IntersectionObserver,
+      );
+      await coordinator.flush();
+
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(
+        document.querySelectorAll('[data-sorare-overlay-root]'),
+      ).toHaveLength(1);
+      expect(
+        offscreenCard.hasAttribute(lineupSortLightweightReadyAttribute),
+      ).toBe(false);
       scanner.stop();
       expect(disconnect).toHaveBeenCalledTimes(1);
     } finally {
@@ -3205,17 +3318,10 @@ describe('Sorare card DOM discovery', () => {
       vi.spyOn(offscreenCard, 'getBoundingClientRect').mockReturnValue(
         DOMRect.fromRect({ x: 20, y: 4_000, width: 120, height: 194 }),
       );
-      let offscreenAttempts = 0;
       const fetcher = vi.fn(
         async (
           request: PlayerStatsRequest,
         ): Promise<PlayerStatsSuccessResponse> => {
-          if (request.slugs.includes('offscreen-retry-player')) {
-            offscreenAttempts += 1;
-            if (offscreenAttempts === 1) {
-              throw new Error('Transient backend failure');
-            }
-          }
           return {
             data: request.slugs.map((slug) => ({
               slug,
@@ -3245,7 +3351,36 @@ describe('Sorare card DOM discovery', () => {
         [2_500],
         1_000,
       );
-      const scanner = new SorareCardScanner(coordinator);
+      let sortAttempts = 0;
+      const sortFetcher = vi.fn(
+        async (
+          request: LineupSortValuesRequest,
+        ): Promise<LineupSortValuesSuccessResponse> => {
+          sortAttempts += 1;
+          if (sortAttempts === 1) {
+            const response = compactSortResponse({
+              ...request,
+              slugs: (request.slugs ?? []).filter(
+                (slug) => slug !== 'offscreen-retry-player',
+              ),
+            });
+            return {
+              ...response,
+              meta: {
+                ...response.meta,
+                requested: request.slugs?.length ?? 0,
+                deferredPlayerSlugs: ['offscreen-retry-player'],
+              },
+            };
+          }
+          return compactSortResponse(request);
+        },
+      );
+      const scanner = new SorareCardScanner(
+        coordinator,
+        undefined,
+        new LineupSortHydrator(sortFetcher, 25, [1_000]),
+      );
 
       scanner.start();
       await coordinator.flush();
@@ -3255,15 +3390,20 @@ describe('Sorare card DOM discovery', () => {
       await coordinator.flush();
 
       expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(sortFetcher).toHaveBeenCalledTimes(1);
+      expect(
+        document.querySelectorAll('[data-sorare-overlay-root]'),
+      ).toHaveLength(1);
       expect(
         offscreenCard.getAttribute(lineupSortDataReadyAttribute),
       ).toBe('false');
       await vi.advanceTimersByTimeAsync(999);
-      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(sortFetcher).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(1);
       await coordinator.flush();
 
-      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(sortFetcher).toHaveBeenCalledTimes(2);
       expect(
         offscreenCard.getAttribute('data-sorare-overlay-aa-sort-value'),
       ).toBe('10');

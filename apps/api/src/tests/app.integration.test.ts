@@ -190,6 +190,88 @@ describe('POST /api/player-stats', () => {
   });
 });
 
+describe('POST /api/lineup-sort-values', () => {
+  it('forces provider cache-only mode regardless of the client payload', async () => {
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      new MockPlayerMarketOddsProvider(),
+    );
+    const getPlayerStats = vi.spyOn(service, 'getPlayerStats');
+    const app = createApp({ statsService: service, logger, corsOrigins: [] });
+
+    const response = await app.request('/api/lineup-sort-values', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slugs: ['jude-bellingham'] }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(getPlayerStats).toHaveBeenCalledWith(
+      expect.objectContaining({
+        oddsCacheOnly: true,
+        supportsPartialFormHistory: true,
+        refreshFixtures: false,
+      }),
+    );
+  });
+
+  it('returns only compact sort values and timing metadata', async () => {
+    const response = await testApp().request('/api/lineup-sort-values', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        slugs: ['jude-bellingham'],
+        positions: { 'jude-bellingham': 'Midfielder' },
+        historicalGoalWindow: 15,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('server-timing')).toMatch(
+      /^lineup-sort;dur=\d+(?:\.\d)?$/,
+    );
+    const body = await response.json();
+    expect(body).toMatchObject({
+      data: [
+        {
+          slug: 'jude-bellingham',
+          position: 'Midfielder',
+          goal: { probability: expect.any(Number) },
+          aa: expect.any(Number),
+        },
+      ],
+      meta: {
+        requested: 1,
+        returned: 1,
+        source: 'mock',
+        durationMs: expect.any(Number),
+      },
+    });
+    expect(body.data[0]).not.toHaveProperty('nextGame');
+    expect(body.data[0]).not.toHaveProperty('historicalGoals');
+  });
+
+  it('accepts a full fifty-player compact batch', async () => {
+    const slugs = Array.from(
+      { length: 50 },
+      (_, index) => `lineup-sort-player-${index + 1}`,
+    );
+    const response = await testApp().request('/api/lineup-sort-values', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slugs }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      meta: { requested: 50, returned: 50 },
+    });
+  });
+});
+
 describe('public extension pages', () => {
   it('resolves request-local services once per request on a reusable app', async () => {
     const service = new StatsService(

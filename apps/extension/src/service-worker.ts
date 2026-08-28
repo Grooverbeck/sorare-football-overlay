@@ -1,19 +1,24 @@
 import {
   ApiErrorResponseSchema,
+  LineupSortValuesRequestSchema,
+  LineupSortValuesSuccessResponseSchema,
   PlayerStatsRequestSchema,
   PlayerStatsSuccessResponseSchema,
 } from '@sorare-overlay/shared';
-import type { FetchPlayerStatsMessage, WorkerResponse } from './messages.js';
+import type {
+  ExtensionMessage,
+  WorkerResponse,
+} from './messages.js';
 
 const backendRequestTimeoutMs = 15_000;
 
-function errorResponse(
+function errorResponse<T>(
   code: string,
   message: string,
   requestId: string,
   startedAt: number,
   status?: number,
-): WorkerResponse {
+): WorkerResponse<T> {
   return {
     ok: false,
     error: { code, message, requestId },
@@ -39,10 +44,10 @@ interface HandleMessageOptions {
 }
 
 export async function handleMessage(
-  message: FetchPlayerStatsMessage,
+  message: ExtensionMessage,
   sender: chrome.runtime.MessageSender,
   options: HandleMessageOptions = {},
-): Promise<WorkerResponse> {
+): Promise<WorkerResponse<unknown>> {
   const startedAt = performance.now();
   const requestId = message?.requestId || crypto.randomUUID();
   if (!isSorareSender(sender)) {
@@ -53,7 +58,10 @@ export async function handleMessage(
       startedAt,
     );
   }
-  if (message?.type !== 'FETCH_PLAYER_STATS') {
+  if (
+    message?.type !== 'FETCH_PLAYER_STATS' &&
+    message?.type !== 'FETCH_LINEUP_SORT_VALUES'
+  ) {
     return errorResponse(
       'UNKNOWN_MESSAGE',
       'Unknown extension message',
@@ -61,11 +69,14 @@ export async function handleMessage(
       startedAt,
     );
   }
-  const request = PlayerStatsRequestSchema.safeParse(message.payload);
+  const isLineupSortRequest = message.type === 'FETCH_LINEUP_SORT_VALUES';
+  const request = isLineupSortRequest
+    ? LineupSortValuesRequestSchema.safeParse(message.payload)
+    : PlayerStatsRequestSchema.safeParse(message.payload);
   if (!request.success) {
     return errorResponse(
       'INVALID_REQUEST',
-      'Invalid player-stats request',
+      'Invalid extension request',
       requestId,
       startedAt,
     );
@@ -79,16 +90,23 @@ export async function handleMessage(
   try {
     const apiBaseUrl = options.apiBaseUrl ?? __API_BASE_URL__;
     const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
-    const response = await fetchImpl(`${apiBaseUrl}/api/player-stats`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-request-id': requestId,
+    const response = await fetchImpl(
+      `${apiBaseUrl}${
+        isLineupSortRequest
+          ? '/api/lineup-sort-values'
+          : '/api/player-stats'
+      }`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-request-id': requestId,
+        },
+        body: JSON.stringify(request.data),
+        cache: 'no-store',
+        signal: controller.signal,
       },
-      body: JSON.stringify(request.data),
-      cache: 'no-store',
-      signal: controller.signal,
-    });
+    );
     const backendRequestId = response.headers.get('x-request-id') ?? requestId;
     let json: unknown;
     try {
@@ -123,7 +141,9 @@ export async function handleMessage(
             response.status,
           );
     }
-    const parsed = PlayerStatsSuccessResponseSchema.safeParse(json);
+    const parsed = isLineupSortRequest
+      ? LineupSortValuesSuccessResponseSchema.safeParse(json)
+      : PlayerStatsSuccessResponseSchema.safeParse(json);
     return parsed.success
       ? {
           ok: true,
@@ -157,7 +177,7 @@ export async function handleMessage(
 if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
   chrome.runtime.onMessage.addListener(
     (message: unknown, sender, sendResponse) => {
-      void handleMessage(message as FetchPlayerStatsMessage, sender).then(
+      void handleMessage(message as ExtensionMessage, sender).then(
         sendResponse,
       );
       return true;

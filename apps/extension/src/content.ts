@@ -111,7 +111,10 @@ void Promise.all([
       historicalAssistWindow,
     );
     applyMarketValueFormat(marketValueFormat);
-    scanner.configureHistoricalAssistFallback(historicalAssistEnabled);
+    scanner.configureHistoricalAssistFallback(
+      historicalAssistEnabled,
+      historicalAssistWindow,
+    );
     applyEnabled(nextEnabled);
   },
 );
@@ -137,7 +140,10 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
       historicalAssistEnabled,
       historicalAssistWindow,
     );
-    scanner.configureHistoricalAssistFallback(historicalAssistEnabled);
+    scanner.configureHistoricalAssistFallback(
+      historicalAssistEnabled,
+      historicalAssistWindow,
+    );
   }
   const historicalAssistWindowChange = changes[HISTORICAL_ASSIST_WINDOW_KEY];
   if (historicalAssistWindowChange) {
@@ -145,6 +151,10 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
       historicalAssistWindowChange.newValue,
     );
     applyHistoricalAssistFallbackSettings(
+      historicalAssistEnabled,
+      historicalAssistWindow,
+    );
+    scanner.configureHistoricalAssistFallback(
       historicalAssistEnabled,
       historicalAssistWindow,
     );

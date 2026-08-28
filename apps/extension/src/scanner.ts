@@ -1,5 +1,6 @@
 import type {
   FootballPosition,
+  HistoricalMarketWindow,
   PlayerMarketOdds,
   PlayerStats,
   PlayerStatsRequest,
@@ -13,12 +14,23 @@ import {
   type CardTarget,
 } from './dom.js';
 import { OverlayView } from './overlay.js';
+import { LineupSortHydrator } from './lineup-sort-hydrator.js';
+import {
+  normalizePlayerName as normalizeName,
+  playerNamesLikelyMatch as namesLikelyMatch,
+  playerRequestIdentity as requestIdentity,
+  playerTargetKey as targetKey,
+} from './player-identity.js';
 import {
   LineupCardSorter,
   lineupAaSortOptionAttribute,
   lineupGoalSortOptionAttribute,
   lineupPoolProgressEvent,
   lineupPoolReadyEvent,
+  lineupSortDataReadyAttribute,
+  lineupSortHydrationGridAttribute,
+  setLineupSortDataReady,
+  setLineupSortPosition,
 } from './lineup-sort.js';
 import {
   clearNativeSorareLineupProbabilityDecorations,
@@ -110,6 +122,11 @@ interface MountedOverlay {
   statsRequested: boolean;
 }
 
+interface DeferredOverlay {
+  key: string;
+  target: CardTarget;
+}
+
 function isElementNode(node: Node): node is Element {
   return node.nodeType === 1;
 }
@@ -124,14 +141,6 @@ function outermostElements(elements: Iterable<Element>): Element[] {
   );
 }
 
-function normalizeName(name: string): string {
-  return name
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .trim()
-    .toLocaleLowerCase();
-}
-
 function teamSlugsLikelyMatch(
   candidate: string | undefined,
   expected: string | undefined,
@@ -144,39 +153,6 @@ function teamSlugsLikelyMatch(
     candidateNormalized.startsWith(`${expectedNormalized}-`) ||
     expectedNormalized.startsWith(`${candidateNormalized}-`)
   );
-}
-
-function namesLikelyMatch(query: string, displayName: string): boolean {
-  const requested = normalizeName(query).split(/\s+/);
-  const candidate = normalizeName(displayName).split(/\s+/);
-  if (requested.join(' ') === candidate.join(' ')) return true;
-  if (requested.length !== 2 || candidate.length !== 2) return false;
-  const [requestedFirst, requestedLast] = requested;
-  const [candidateFirst, candidateLast] = candidate;
-  return Boolean(
-    requestedFirst &&
-      candidateFirst &&
-      requestedLast === candidateLast &&
-      Math.min(requestedFirst.length, candidateFirst.length) >= 3 &&
-      (requestedFirst.startsWith(candidateFirst) || candidateFirst.startsWith(requestedFirst)),
-  );
-}
-
-function targetKey(
-  target: TargetIdentity,
-): string {
-  const base = target.slug
-    ? `slug:${target.slug}:${target.position ?? 'default'}`
-    : `name:${normalizeName(target.playerName ?? '')}:${target.position ?? 'default'}`;
-  return target.teamSlug ? `${base}:team:${target.teamSlug}` : base;
-}
-
-function requestIdentity(
-  target: Pick<PendingTarget, 'slug' | 'playerName'>,
-): string {
-  return target.slug
-    ? `slug:${target.slug}`
-    : `name:${normalizeName(target.playerName ?? '')}`;
 }
 
 function conflictFreeBatches(
@@ -1290,6 +1266,7 @@ export class SorareCardScanner {
   private visibilityObserver: IntersectionObserver | undefined;
   private root: HTMLElement | null = null;
   private readonly overlays = new Map<HTMLElement, MountedOverlay>();
+  private readonly deferredOverlays = new Map<HTMLElement, DeferredOverlay>();
   private readonly layoutViewsByTarget = new Map<Element, Set<OverlayView>>();
   private layoutTargetsDirty = false;
   private readonly pendingScanRoots = new Set<Element>();
@@ -1301,11 +1278,10 @@ export class SorareCardScanner {
     const grid = event.target;
     if (!(grid instanceof HTMLElement)) return;
     this.scan(grid);
-    for (const [container, mounted] of this.overlays) {
-      if (grid.contains(container)) {
-        this.requestStats(mounted, viewportPriorityNearby);
-      }
-    }
+    // The event is the authoritative signal from LineupCardSorter. Keep this
+    // explicit because the hydration attribute can be removed immediately
+    // after the final card reports ready.
+    void this.lineupSortHydrator.hydrate(grid);
   };
 
   constructor(
@@ -1313,10 +1289,15 @@ export class SorareCardScanner {
     private readonly onCardPictureNamesDiscovered?: (
       entries: Readonly<Record<string, string>>,
     ) => void,
+    private readonly lineupSortHydrator = new LineupSortHydrator(),
   ) {}
 
-  configureHistoricalAssistFallback(enabled: boolean): void {
+  configureHistoricalAssistFallback(
+    enabled: boolean,
+    window: HistoricalMarketWindow = 15,
+  ): void {
     const changed = this.coordinator.setIncludeHistoricalAssists(enabled);
+    this.lineupSortHydrator.configureHistoricalGoalFallback(enabled, window);
     this.refreshAllOverlays(changed && enabled);
   }
 
@@ -1459,9 +1440,11 @@ export class SorareCardScanner {
     this.pendingPositionScopes.clear();
     this.shouldRefreshAllPositions = false;
     this.lineupSorter.stop();
+    this.lineupSortHydrator.stop();
     for (const [container, mounted] of [...this.overlays]) {
       this.releaseMountedOverlay(container, mounted);
     }
+    this.deferredOverlays.clear();
     this.layoutTargetsDirty = false;
     clearNativeSorareLineupProbabilityDecorations();
   }
@@ -1481,15 +1464,51 @@ export class SorareCardScanner {
     for (const target of targets) {
       this.mountTarget(target);
     }
+    const hydrationGrids = new Set(
+      targets.flatMap((target) => {
+        const grid = target.container.closest<HTMLElement>(
+          `[${lineupSortHydrationGridAttribute}]`,
+        );
+        return grid ? [grid] : [];
+      }),
+    );
+    for (const grid of hydrationGrids) {
+      void this.lineupSortHydrator.hydrate(grid);
+    }
     if (refreshLayoutTargets) this.refreshLayoutObserverTargets();
   }
 
-  private mountTarget(target: CardTarget): void {
+  private mountTarget(target: CardTarget, knownPriority?: number): void {
     const key = targetKey(target);
     const mounted = this.overlays.get(target.container);
     if (mounted?.key === key) return;
+    const priority = knownPriority ?? (this.visibilityObserver
+      ? viewportPriorityForRect(target.container.getBoundingClientRect())
+      : viewportPriorityNearby);
+    const deferred = this.deferredOverlays.get(target.container);
+    if (deferred?.key === key && priority === 0) return;
+    if (deferred) {
+      this.visibilityObserver?.unobserve(target.container);
+      this.deferredOverlays.delete(target.container);
+    }
     if (mounted) {
       this.releaseMountedOverlay(target.container, mounted);
+    }
+    const shouldDeferFullOverlay = Boolean(
+      this.visibilityObserver &&
+        priority === 0 &&
+        target.container.closest(`[${lineupSortHydrationGridAttribute}]`),
+    );
+    if (shouldDeferFullOverlay) {
+      this.deferredOverlays.set(target.container, { key, target });
+      this.visibilityObserver?.observe(target.container);
+      setLineupSortPosition(target.container, target.position ?? null);
+      if (
+        target.container.getAttribute(lineupSortDataReadyAttribute) !== 'true'
+      ) {
+        setLineupSortDataReady(target.container, false);
+      }
+      return;
     }
     const view = new OverlayView(
       target.container,
@@ -1500,9 +1519,6 @@ export class SorareCardScanner {
       target.position,
     );
     target.container.dataset.sorareOverlayKey = key;
-    const priority = this.visibilityObserver
-      ? viewportPriorityForRect(target.container.getBoundingClientRect())
-      : viewportPriorityNearby;
     const mountedOverlay: MountedOverlay = {
       key,
       target,
@@ -1516,14 +1532,7 @@ export class SorareCardScanner {
       this.visibilityObserver.observe(target.container);
       view.setViewportPriorityActive(mountedOverlay.viewportActive);
     }
-    const requiresBackgroundHydration =
-      view.requiresBackgroundLineupSortHydration();
-    if (mountedOverlay.viewportActive || requiresBackgroundHydration) {
-      this.requestStats(
-        mountedOverlay,
-        mountedOverlay.viewportActive ? priority : viewportPriorityNearby,
-      );
-    }
+    if (mountedOverlay.viewportActive) this.requestStats(mountedOverlay, priority);
   }
 
   private reconcileMountedOverlays(scopes: readonly Element[]): void {
@@ -1549,12 +1558,37 @@ export class SorareCardScanner {
       this.releaseMountedOverlay(container, mounted);
       this.mountTarget(currentTarget);
     }
+    for (const [container, deferred] of [...this.deferredOverlays]) {
+      if (
+        scopes.length > 0 &&
+        !scopes.some(
+          (scope) => scope.contains(container) || container.contains(scope),
+        )
+      ) {
+        continue;
+      }
+      const currentTarget = container.isConnected
+        ? findCardTargets(container).find(
+            (candidate) => candidate.container === container,
+          )
+        : undefined;
+      if (!currentTarget) {
+        this.releaseDeferredOverlay(container);
+        continue;
+      }
+      if (targetKey(currentTarget) === deferred.key) continue;
+      this.releaseDeferredOverlay(container);
+      this.mountTarget(currentTarget);
+    }
   }
 
   private cleanupDisconnectedOverlays(): void {
     for (const [container, mounted] of this.overlays) {
       if (container.isConnected) continue;
       this.releaseMountedOverlay(container, mounted);
+    }
+    for (const container of [...this.deferredOverlays.keys()]) {
+      if (!container.isConnected) this.releaseDeferredOverlay(container);
     }
   }
 
@@ -1564,6 +1598,16 @@ export class SorareCardScanner {
         this.releaseMountedOverlay(container, mounted);
       }
     }
+    for (const container of [...this.deferredOverlays.keys()]) {
+      if (container === removedRoot || removedRoot.contains(container)) {
+        this.releaseDeferredOverlay(container);
+      }
+    }
+  }
+
+  private releaseDeferredOverlay(container: HTMLElement): void {
+    this.visibilityObserver?.unobserve(container);
+    this.deferredOverlays.delete(container);
   }
 
   private releaseMountedOverlay(
@@ -1715,6 +1759,16 @@ export class SorareCardScanner {
       (entries) => {
         for (const entry of entries) {
           if (!(entry.target instanceof HTMLElement)) continue;
+          const deferred = this.deferredOverlays.get(entry.target);
+          if (deferred && entry.isIntersecting) {
+            const priority = Math.max(
+              viewportPriorityNearby,
+              viewportPriorityForRect(entry.boundingClientRect),
+            );
+            this.releaseDeferredOverlay(entry.target);
+            this.mountTarget(deferred.target, priority);
+            continue;
+          }
           const mounted = this.overlays.get(entry.target);
           if (!mounted) continue;
           const priority = entry.isIntersecting

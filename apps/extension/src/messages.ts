@@ -1,5 +1,7 @@
 import type {
   ApiErrorResponse,
+  LineupSortValuesRequest,
+  LineupSortValuesSuccessResponse,
   PlayerStatsRequest,
   PlayerStatsSuccessResponse,
 } from '@sorare-overlay/shared';
@@ -10,10 +12,20 @@ export interface FetchPlayerStatsMessage {
   requestId: string;
 }
 
-export type WorkerResponse =
+export interface FetchLineupSortValuesMessage {
+  type: 'FETCH_LINEUP_SORT_VALUES';
+  payload: LineupSortValuesRequest;
+  requestId: string;
+}
+
+export type ExtensionMessage =
+  | FetchPlayerStatsMessage
+  | FetchLineupSortValuesMessage;
+
+export type WorkerResponse<T> =
   | {
       ok: true;
-      value: PlayerStatsSuccessResponse;
+      value: T;
       requestId: string;
       durationMs: number;
     }
@@ -24,3 +36,8 @@ export type WorkerResponse =
       durationMs: number;
       status?: number;
     };
+
+export type PlayerStatsWorkerResponse = WorkerResponse<PlayerStatsSuccessResponse>;
+export type LineupSortValuesWorkerResponse = WorkerResponse<
+  LineupSortValuesSuccessResponse
+>;

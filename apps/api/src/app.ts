@@ -1,5 +1,8 @@
 import {
   ApiErrorResponseSchema,
+  lineupSortValueForPlayer,
+  LineupSortValuesRequestSchema,
+  LineupSortValuesSuccessResponseSchema,
   PlayerStatsRequestSchema,
   PlayerStatsSuccessResponseSchema,
 } from '@sorare-overlay/shared';
@@ -171,6 +174,86 @@ export function createApp<TBindings extends object = Record<string, never>>(
         returned: result.data.length,
         cacheHits: result.cacheHits,
         source: result.source,
+        ...(result.deferredPlayerNames.length > 0
+          ? { deferredPlayerNames: result.deferredPlayerNames }
+          : {}),
+        ...(result.deferredPlayerSlugs.length > 0
+          ? { deferredPlayerSlugs: result.deferredPlayerSlugs }
+          : {}),
+      },
+    });
+    return context.json(response);
+  });
+
+  app.post('/api/lineup-sort-values', async (context) => {
+    const services = context.get('services');
+    const body = await context.req
+      .json<unknown>()
+      .catch(() => {
+        throw new AppError(400, 'INVALID_JSON', 'Request body must be valid JSON');
+      });
+    const parsed = LineupSortValuesRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new AppError(
+        400,
+        'INVALID_REQUEST',
+        parsed.error.issues.map((issue) => issue.message).join('; '),
+      );
+    }
+
+    const startedAt = performance.now();
+    const statsRequest = PlayerStatsRequestSchema.parse({
+      slugs: parsed.data.slugs,
+      playerNames: parsed.data.playerNames,
+      ...(parsed.data.positions ? { positions: parsed.data.positions } : {}),
+      ...(parsed.data.playerTeams
+        ? { playerTeams: parsed.data.playerTeams }
+        : {}),
+      includeHistoricalAssists: parsed.data.historicalGoalWindow !== null,
+      supportsPartialFormHistory: true,
+      // Sorting may observe provider snapshots that already exist, but it must
+      // never consume quota or schedule provider work for an offscreen pool.
+      oddsCacheOnly: true,
+    });
+    const result = await services.statsService.getPlayerStats(statsRequest);
+    const durationMs = Math.round((performance.now() - startedAt) * 10) / 10;
+    context.header('server-timing', `lineup-sort;dur=${durationMs.toFixed(1)}`);
+
+    const requestId = context.get('requestId');
+    if (
+      result.diagnostics.responseBudgetExceeded ||
+      result.diagnostics.deferredNames > 0 ||
+      durationMs >= SLOW_REQUEST_LOG_THRESHOLD_MS ||
+      samplesSuccessfulRequest(requestId)
+    ) {
+      services.logger.info(
+        {
+          requestId,
+          requestedPlayers: result.diagnostics.requestedPlayers,
+          resolvedPlayers: result.diagnostics.resolvedPlayers,
+          returnedPlayers: result.diagnostics.returnedPlayers,
+          cacheHits: result.diagnostics.cacheHits,
+          deferredNames: result.diagnostics.deferredNames,
+          responseBudgetExceeded:
+            result.diagnostics.responseBudgetExceeded,
+          durationsMs: result.diagnostics.durationsMs,
+          routeDurationMs: durationMs,
+        },
+        'Lineup sort phases completed',
+      );
+    }
+
+    const data = result.data.map((stats) =>
+      lineupSortValueForPlayer(stats, parsed.data.historicalGoalWindow),
+    );
+    const response = LineupSortValuesSuccessResponseSchema.parse({
+      data,
+      meta: {
+        requested: parsed.data.slugs.length + parsed.data.playerNames.length,
+        returned: data.length,
+        cacheHits: result.cacheHits,
+        source: result.source,
+        durationMs,
         ...(result.deferredPlayerNames.length > 0
           ? { deferredPlayerNames: result.deferredPlayerNames }
           : {}),

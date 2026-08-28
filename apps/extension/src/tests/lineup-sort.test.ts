@@ -362,12 +362,12 @@ describe('lineup card sorting', () => {
       .querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)
       ?.click();
 
-    expect(label.textContent).toBe('AA · Spieler laden');
+    expect(label.textContent).toBe('AA · Spielerliste laden');
     expect(label.hasAttribute('data-sorare-overlay-lineup-sort-loading')).toBe(
       true,
     );
     await vi.waitFor(() => {
-      expect(label.textContent).toBe('AA · Werte laden (1/3)');
+      expect(label.textContent).toBe('AA · Sortierwerte laden · 1/3');
     });
 
     setLineupSortDataReady(historical, true);

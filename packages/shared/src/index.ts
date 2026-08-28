@@ -4,4 +4,5 @@ export * from './mls-aa-benchmarks.js';
 export * from './mls-clean-sheet-benchmarks.js';
 export * from './market-probability-benchmarks.js';
 export * from './historical-market-benchmarks.js';
+export * from './lineup-sort-values.js';
 export * from './mls-win-probability-benchmarks.js';

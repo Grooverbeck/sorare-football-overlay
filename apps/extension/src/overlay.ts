@@ -5,6 +5,7 @@ import {
   getMlsHistoricalMarketProbabilityBand,
   getMlsMarketProbabilityBand,
   hasAnyDisplayData,
+  lineupGoalSortValue as sharedLineupGoalSortValue,
   type MarketProbability,
   type Metric,
   type PlayerStats,
@@ -15,6 +16,7 @@ import {
   isLineupPoolProbeScrollEvent,
   lineupSortDataReadyAttribute,
   lineupSortHydrationGridAttribute,
+  lineupSortLightweightReadyAttribute,
   setLineupAaSortValue,
   setLineupGoalSortValue,
   setLineupSortDataReady,
@@ -1919,20 +1921,10 @@ function selectedHistoricalMarket(
 function goalSortValue(
   stats: PlayerStats,
 ): { probability: number; source: 'market' | 'historical' } | null {
-  if (stats.position === 'Goalkeeper') return null;
-  const marketProbability = stats.nextGame?.marketOdds?.goal?.probability;
-  if (marketProbability !== null && marketProbability !== undefined) {
-    return { probability: marketProbability, source: 'market' };
-  }
-
-  const selectedHistory = selectedHistoricalMarket(stats, 'goal')?.metric;
-  const historicalMetric =
-    selectedHistory?.value !== null && selectedHistory?.value !== undefined
-      ? selectedHistory
-      : stats.goalL10;
-  return historicalMetric.value !== null && historicalMetric.sampleSize > 0
-    ? { probability: historicalMetric.value, source: 'historical' }
-    : null;
+  return sharedLineupGoalSortValue(
+    stats,
+    historicalAssistFallbackEnabled ? historicalAssistWindow : null,
+  );
 }
 
 function marketBracketNode(stats: PlayerStats): HTMLElement | null {
@@ -3498,6 +3490,7 @@ export class OverlayView {
     setLineupAaSortValue(this.container, null);
     setLineupSortPosition(this.container, null);
     setLineupSortDataReady(this.container, null);
+    this.container.removeAttribute(lineupSortLightweightReadyAttribute);
     this.stopPackBracketSettling();
     if (this.packMotionProbeFrame !== undefined) {
       cancelPositionFrame(this.packMotionProbeFrame);
@@ -3512,14 +3505,18 @@ export class OverlayView {
   }
 
   loading(): void {
-    setLineupSortDataReady(this.container, false);
+    if (!this.container.hasAttribute(lineupSortLightweightReadyAttribute)) {
+      setLineupSortDataReady(this.container, false);
+    }
     this.clearLineupOdds();
     this.clearPlayerMarketTooltip();
     this.state('Lade L10 …', 'pulse');
   }
 
   retrying(): void {
-    setLineupSortDataReady(this.container, false);
+    if (!this.container.hasAttribute(lineupSortLightweightReadyAttribute)) {
+      setLineupSortDataReady(this.container, false);
+    }
     this.clearLineupOdds();
     this.clearPlayerMarketTooltip();
     this.state(
@@ -3541,6 +3538,7 @@ export class OverlayView {
   }
 
   noData(): void {
+    this.container.removeAttribute(lineupSortLightweightReadyAttribute);
     setLineupGoalSortValue(this.container, null);
     setLineupAaSortValue(this.container, null);
     this.clearLineupOdds();
@@ -3569,6 +3567,7 @@ export class OverlayView {
       this.host.dataset.packDataPending === 'true';
     delete this.host.dataset.packDataPending;
     this.host.dataset.position = displayStats.position;
+    this.container.removeAttribute(lineupSortLightweightReadyAttribute);
     setLineupSortPosition(this.container, displayStats.position);
     if (!hasAnyDisplayData(displayStats)) {
       this.noData();

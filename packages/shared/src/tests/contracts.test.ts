@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  LineupSortValuesRequestSchema,
+  LineupSortValuesSuccessResponseSchema,
   PlayerStatsRequestSchema,
   PlayerStatsSchema,
 } from '../contracts.js';
@@ -74,5 +76,48 @@ describe('PlayerStatsRequestSchema odds cache mode', () => {
         oddsCacheOnly: true,
       }).oddsCacheOnly,
     ).toBe(true);
+  });
+});
+
+describe('LineupSortValues contracts', () => {
+  it('accepts a provider-free batch of up to fifty players', () => {
+    const slugs = Array.from({ length: 50 }, (_, index) => `player-${index + 1}`);
+    expect(
+      LineupSortValuesRequestSchema.parse({
+        slugs,
+        historicalGoalWindow: 15,
+      }),
+    ).toMatchObject({ slugs, historicalGoalWindow: 15 });
+  });
+
+  it('rejects oversized batches', () => {
+    const slugs = Array.from({ length: 51 }, (_, index) => `player-${index + 1}`);
+    expect(
+      LineupSortValuesRequestSchema.safeParse({ slugs }).success,
+    ).toBe(false);
+  });
+
+  it('keeps the compact response free of full fixture and form payloads', () => {
+    const response = LineupSortValuesSuccessResponseSchema.parse({
+      data: [
+        {
+          slug: 'contract-player',
+          displayName: 'Contract Player',
+          position: 'Defender',
+          goal: { probability: 0.25, source: 'market' },
+          aa: 10,
+        },
+      ],
+      meta: {
+        requested: 1,
+        returned: 1,
+        cacheHits: 1,
+        source: 'sorare',
+        durationMs: 2.5,
+      },
+    });
+
+    expect(response.data[0]).not.toHaveProperty('nextGame');
+    expect(response.data[0]).not.toHaveProperty('historicalGoals');
   });
 });

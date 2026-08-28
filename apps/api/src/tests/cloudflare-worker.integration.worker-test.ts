@@ -1366,6 +1366,42 @@ describe('Cloudflare Worker', () => {
     });
   });
 
+  it('serves compact lineup sort values through the Worker runtime', async () => {
+    const response = await SELF.fetch(
+      'https://overlay.example/api/lineup-sort-values',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          slugs: ['virgil-van-dijk'],
+          positions: { 'virgil-van-dijk': 'Defender' },
+        }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('server-timing')).toContain('lineup-sort;dur=');
+    const body = await response.json<Record<string, unknown>>();
+    expect(body).toMatchObject({
+      data: [
+        {
+          slug: 'virgil-van-dijk',
+          position: 'Defender',
+          aa: expect.any(Number),
+        },
+      ],
+      meta: {
+        requested: 1,
+        returned: 1,
+        source: 'mock',
+        durationMs: expect.any(Number),
+      },
+    });
+    expect(
+      (body.data as Array<Record<string, unknown>>)[0],
+    ).not.toHaveProperty('nextGame');
+  });
+
   it('stores form, fixture, name hits, and name misses with separate TTLs', async () => {
     const nowMs = Date.now();
     const nowSeconds = Math.floor(nowMs / 1_000);

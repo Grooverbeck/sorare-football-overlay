@@ -80,4 +80,60 @@ describe('extension service worker player-stats requests', () => {
       },
     });
   });
+
+  it('forwards compact lineup sorting to its provider-free endpoint', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe(
+        'https://overlay.example/api/lineup-sort-values',
+      );
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        slugs: ['sort-player'],
+        historicalGoalWindow: 15,
+      });
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              slug: 'sort-player',
+              displayName: 'Sort Player',
+              position: 'Midfielder',
+              goal: { probability: 0.2, source: 'historical' },
+              aa: 12.5,
+            },
+          ],
+          meta: {
+            requested: 1,
+            returned: 1,
+            cacheHits: 1,
+            source: 'sorare',
+            durationMs: 3.2,
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      );
+    });
+
+    const response = await handleMessage(
+      {
+        type: 'FETCH_LINEUP_SORT_VALUES',
+        payload: {
+          slugs: ['sort-player'],
+          historicalGoalWindow: 15,
+        },
+        requestId: 'extension-sort-request-1',
+      },
+      { url: 'https://sorare.com/football' },
+      { apiBaseUrl: 'https://overlay.example', fetchImpl },
+    );
+
+    expect(response).toMatchObject({
+      ok: true,
+      value: {
+        data: [{ slug: 'sort-player', aa: 12.5 }],
+      },
+    });
+  });
 });

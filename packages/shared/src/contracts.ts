@@ -10,6 +10,15 @@ export const footballPositions = [
 export const FootballPositionSchema = z.enum(footballPositions);
 export type FootballPosition = z.infer<typeof FootballPositionSchema>;
 
+export const HistoricalMarketWindowSchema = z.union([
+  z.literal(10),
+  z.literal(15),
+  z.literal(40),
+]);
+export type HistoricalMarketWindow = z.infer<
+  typeof HistoricalMarketWindowSchema
+>;
+
 export const PlayerStatsRequestSchema = z
   .object({
     slugs: z
@@ -56,6 +65,46 @@ export const PlayerStatsRequestSchema = z
 
 export type PlayerStatsRequest = z.input<typeof PlayerStatsRequestSchema>;
 export type ValidatedPlayerStatsRequest = z.output<typeof PlayerStatsRequestSchema>;
+
+export const LineupSortValuesRequestSchema = z
+  .object({
+    slugs: z
+      .array(z.string().trim().min(1).max(160).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i))
+      .max(50)
+      .default([])
+      .transform((slugs) => [...new Set(slugs.map((slug) => slug.toLowerCase()))]),
+    playerNames: z
+      .array(z.string().trim().min(2).max(120))
+      .max(50)
+      .default([])
+      .transform((names) => [
+        ...new Map(names.map((name) => [name.toLocaleLowerCase(), name.trim()])).values(),
+      ]),
+    positions: z.record(z.string(), FootballPositionSchema).optional(),
+    playerTeams: z
+      .record(
+        z.string(),
+        z.string().trim().min(1).max(180).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i),
+      )
+      .optional(),
+    historicalGoalWindow: HistoricalMarketWindowSchema.nullable().default(null),
+  })
+  .superRefine((request, context) => {
+    const total = request.slugs.length + request.playerNames.length;
+    if (total < 1) {
+      context.addIssue({ code: 'custom', message: 'At least one slug or player name is required' });
+    }
+    if (total > 50) {
+      context.addIssue({ code: 'custom', message: 'At most 50 players are allowed' });
+    }
+  });
+
+export type LineupSortValuesRequest = z.input<
+  typeof LineupSortValuesRequestSchema
+>;
+export type ValidatedLineupSortValuesRequest = z.output<
+  typeof LineupSortValuesRequestSchema
+>;
 
 export const MetricSchema = z.object({
   value: z.number().finite().nullable(),
@@ -251,6 +300,46 @@ export const ApiErrorResponseSchema = z.object({
 
 export type PlayerStatsSuccessResponse = z.infer<typeof PlayerStatsSuccessResponseSchema>;
 export type ApiErrorResponse = z.infer<typeof ApiErrorResponseSchema>;
+
+export const LineupSortValueSchema = z.object({
+  slug: z.string(),
+  displayName: z.string(),
+  position: FootballPositionSchema,
+  goal: z
+    .object({
+      probability: z.number().min(0).max(1),
+      source: z.enum(['market', 'historical']),
+    })
+    .nullable(),
+  aa: z.number().finite().nullable(),
+});
+
+export const LineupSortValuesSuccessResponseSchema = z.object({
+  data: z.array(LineupSortValueSchema),
+  meta: z.object({
+    requested: z.number().int().nonnegative(),
+    returned: z.number().int().nonnegative(),
+    cacheHits: z.number().int().nonnegative(),
+    source: z.enum(['sorare', 'mock']),
+    durationMs: z.number().nonnegative(),
+    deferredPlayerNames: z.array(z.string().trim().min(2).max(120)).optional(),
+    deferredPlayerSlugs: z
+      .array(
+        z
+          .string()
+          .trim()
+          .min(1)
+          .max(160)
+          .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i),
+      )
+      .optional(),
+  }),
+});
+
+export type LineupSortValue = z.infer<typeof LineupSortValueSchema>;
+export type LineupSortValuesSuccessResponse = z.infer<
+  typeof LineupSortValuesSuccessResponseSchema
+>;
 
 export const PlayerStatsApiResponseSchema = z.union([
   PlayerStatsSuccessResponseSchema,

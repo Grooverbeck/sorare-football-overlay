@@ -1,4 +1,5 @@
 import type { FootballPosition } from '@sorare-overlay/shared';
+import { logStatsDiagnostic } from './stats-diagnostics.js';
 
 export const lineupGoalSortOptionAttribute =
   'data-sorare-overlay-goal-sort-option';
@@ -14,6 +15,8 @@ export const lineupSortPositionAttribute =
   'data-sorare-overlay-sort-position';
 export const lineupSortDataReadyAttribute =
   'data-sorare-overlay-sort-data-ready';
+export const lineupSortLightweightReadyAttribute =
+  'data-sorare-overlay-sort-lightweight-ready';
 export const lineupSortHydrationGridAttribute =
   'data-sorare-overlay-lineup-sort-hydration';
 export const lineupSortValueChangedEvent =
@@ -399,9 +402,11 @@ function directGridCell(container: HTMLElement): HTMLElement | null {
 }
 
 function valueForCell(cell: HTMLElement, valueAttribute: string): number | null {
-  const values = Array.from(
-    cell.querySelectorAll<HTMLElement>(`[${valueAttribute}]`),
-  ).flatMap((container) => {
+  const containers = [
+    ...(cell.hasAttribute(valueAttribute) ? [cell] : []),
+    ...cell.querySelectorAll<HTMLElement>(`[${valueAttribute}]`),
+  ];
+  const values = containers.flatMap((container) => {
     const value = Number(container.getAttribute(valueAttribute));
     return Number.isFinite(value) ? [value] : [];
   });
@@ -420,9 +425,12 @@ function gridCardCount(grid: HTMLElement): number {
 }
 
 function cellSortDataIsReady(cell: HTMLElement): boolean {
-  const states = Array.from(
-    cell.querySelectorAll<HTMLElement>(`[${lineupSortDataReadyAttribute}]`),
-  );
+  const states = [
+    ...(cell.hasAttribute(lineupSortDataReadyAttribute) ? [cell] : []),
+    ...cell.querySelectorAll<HTMLElement>(
+      `[${lineupSortDataReadyAttribute}]`,
+    ),
+  ];
   return (
     states.length > 0 &&
     states.every(
@@ -599,7 +607,7 @@ async function revealGridEndSilently(grid: HTMLElement): Promise<boolean> {
     rectangle.left < window.innerWidth;
   if (isAlreadyVisible) {
     dispatchLineupPoolProbeScrollEvents();
-    await animationFrames(8);
+    await animationFrames(4);
     return true;
   }
 
@@ -649,7 +657,7 @@ async function revealGridEndSilently(grid: HTMLElement): Promise<boolean> {
     trigger.style.setProperty('transform', 'none', 'important');
     trigger.style.setProperty('z-index', '-2147483647', 'important');
     dispatchLineupPoolProbeScrollEvents();
-    await animationFrames(8);
+    await animationFrames(4);
   } finally {
     restoreInlineStyles(trigger, originalStyles);
     restoreInlineStyles(grid, originalGridMinHeight);
@@ -987,9 +995,9 @@ export class LineupCardSorter {
       const loading = this.poolLoading || this.poolHydrating;
       label.toggleAttribute(nativeTriggerLoadingAttribute, loading);
       const nextLabel = this.poolLoading
-        ? `${baseLabel} · Spieler laden${this.poolCardCount > 0 ? ` (${this.poolCardCount})` : ''}`
+        ? `${baseLabel} · Spielerliste laden${this.poolCardCount > 0 ? ` · ${this.poolCardCount} gefunden` : ''}`
         : this.poolHydrating
-          ? `${baseLabel} · Werte laden (${this.poolReadyCount}/${this.poolCardCount})`
+          ? `${baseLabel} · Sortierwerte laden · ${this.poolReadyCount}/${this.poolCardCount}`
           : this.poolLoadFailed
             ? `${baseLabel} · Erneut versuchen`
             : baseLabel;
@@ -1195,6 +1203,10 @@ export class LineupCardSorter {
   }
 
   private async completePoolAndSort(generation: number): Promise<void> {
+    const startedAt = performance.now();
+    logStatsDiagnostic('lineup-sort-pool-start', {
+      mode: this.activeMode,
+    });
     const isCancelled = (): boolean =>
       generation !== this.poolGeneration || !this.activeMode;
     const grid = await this.poolLoader({
@@ -1217,6 +1229,12 @@ export class LineupCardSorter {
     this.poolLoading = false;
     if (!grid) {
       this.rememberFailedPool();
+      logStatsDiagnostic('lineup-sort-pool-failed', {
+        mode: this.activeMode,
+        players: this.poolCardCount,
+        durationMs: Math.round((performance.now() - startedAt) * 10) / 10,
+        reason: 'incomplete-grid',
+      });
       this.syncNativeSortUi();
       return;
     }
@@ -1235,6 +1253,12 @@ export class LineupCardSorter {
     if (!gridMatchesPosition(grid, expectedPosition)) {
       this.rememberFailedPool(grid);
       this.restoreOriginalOrders();
+      logStatsDiagnostic('lineup-sort-pool-failed', {
+        mode: this.activeMode,
+        players: gridCardCount(grid),
+        durationMs: Math.round((performance.now() - startedAt) * 10) / 10,
+        reason: 'position-mismatch',
+      });
       this.syncNativeSortUi();
       return;
     }
@@ -1249,6 +1273,11 @@ export class LineupCardSorter {
     grid.dispatchEvent(
       new CustomEvent(lineupPoolReadyEvent, { bubbles: true }),
     );
+    logStatsDiagnostic('lineup-sort-pool-complete', {
+      mode: this.activeMode,
+      players: this.poolCardCount,
+      durationMs: Math.round((performance.now() - startedAt) * 10) / 10,
+    });
     this.refreshHydrationProgress();
     this.syncNativeSortUi();
     this.scheduleSort();
