@@ -3505,6 +3505,9 @@ describe('Sorare card DOM discovery', () => {
         document.querySelectorAll('[data-sorare-overlay-root]'),
       ).toHaveLength(0);
       expect(
+        offscreenCard.hasAttribute('data-sorare-overlay-deferred-key'),
+      ).toBe(true);
+      expect(
         offscreenCard.getAttribute('data-sorare-overlay-aa-sort-value'),
       ).toBe('10');
       intersectionCallback?.(
@@ -3528,6 +3531,9 @@ describe('Sorare card DOM discovery', () => {
       expect(
         document.querySelectorAll('[data-sorare-overlay-root]'),
       ).toHaveLength(1);
+      expect(
+        offscreenCard.hasAttribute('data-sorare-overlay-deferred-key'),
+      ).toBe(false);
       expect(
         offscreenCard.hasAttribute(lineupSortLightweightReadyAttribute),
       ).toBe(false);
@@ -7201,18 +7207,21 @@ describe('Sorare card DOM discovery', () => {
       '[data-testid="large-player-pool"]',
     );
     if (!pool) throw new Error('Expected large player pool');
+    const hydrator = new LineupSortHydrator(
+      vi.fn(async (request: LineupSortValuesRequest) =>
+        compactSortResponse(request),
+      ),
+    );
+    const hydrate = vi.spyOn(hydrator, 'hydrate');
     const scanner = new SorareCardScanner(
       new StatsBatchCoordinator(vi.fn(), 60_000),
       undefined,
-      new LineupSortHydrator(
-        vi.fn(async (request: LineupSortValuesRequest) =>
-          compactSortResponse(request),
-        ),
-      ),
+      hydrator,
     );
     const scan = vi.spyOn(scanner, 'scan');
     scanner.start();
     scan.mockClear();
+    hydrate.mockClear();
     requestAnimationFrame.mockClear();
 
     const fragment = document.createDocumentFragment();
@@ -7237,6 +7246,8 @@ describe('Sorare card DOM discovery', () => {
         (root) => root instanceof HTMLElement && root.parentElement === pool,
       ),
     ).toBe(true);
+    expect(hydrate).toHaveBeenCalledTimes(1);
+    expect(hydrate.mock.calls[0]?.[1]).toHaveLength(40);
   });
 
   it('ignores native sort option mutations owned by the extension', async () => {

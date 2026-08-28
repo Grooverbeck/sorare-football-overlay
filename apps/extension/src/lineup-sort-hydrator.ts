@@ -129,7 +129,10 @@ export class LineupSortHydrator {
     targets: readonly CardTarget[] = findCardTargets(grid),
   ): Promise<void> {
     if (this.grid !== grid) this.reset(grid);
-    this.removeDisconnectedStates();
+    // Progress pulses intentionally pass no targets. They only need to keep
+    // the existing queue moving; sweeping every previously discovered card
+    // on each pulse makes a large lazy-loaded pool quadratic.
+    if (targets.length > 0) this.removeDisconnectedStates();
     let discovered = 0;
     for (const target of targets) {
       const key = playerTargetKey(target);
@@ -177,13 +180,13 @@ export class LineupSortHydrator {
         this.phaseStartedAt = performance.now();
         this.phaseCompleted = false;
         logStatsDiagnostic('lineup-sort-hydration-start', {
-          players: this.connectedStateCount(),
+          players: this.states.size,
           batchSize: this.effectiveBatchSize(),
         });
       } else {
         logStatsDiagnostic('lineup-sort-hydration-grow', {
           addedPlayers: discovered,
-          players: this.connectedStateCount(),
+          players: this.states.size,
         });
       }
     }
@@ -517,13 +520,6 @@ export class LineupSortHydrator {
         this.removeState(container);
       }
     }
-  }
-
-  private connectedStateCount(): number {
-    return [...this.states.values()].filter(
-      ({ target }) =>
-        target.container.isConnected && Boolean(this.grid?.contains(target.container)),
-    ).length;
   }
 
   private maybeLogCompletion(): void {

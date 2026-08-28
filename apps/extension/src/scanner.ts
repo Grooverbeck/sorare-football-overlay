@@ -56,6 +56,9 @@ type MarketSnapshotsFetcher = (
 type MarketCacheUpdateListener = (teamSlugs: readonly string[]) => void;
 const extensionMountSelector =
   '[data-sorare-overlay-root], [data-sorare-overlay-companion]';
+const deferredOverlayKeyAttribute = 'data-sorare-overlay-deferred-key';
+const trackedOverlayContainerSelector =
+  `[data-sorare-overlay-key], [${deferredOverlayKeyAttribute}]`;
 const extensionMutationSelector =
   `${extensionMountSelector}, ` +
   `[${lineupGoalSortOptionAttribute}], ` +
@@ -1469,7 +1472,12 @@ export class SorareCardScanner {
   private readonly handleLineupPoolReady = (event: Event): void => {
     const grid = event.target;
     if (!(grid instanceof HTMLElement)) return;
-    const targets = this.scan(grid);
+    const targets = this.scan(
+      grid,
+      true,
+      activeLineupPosition(),
+      false,
+    );
     // A large pool can teach us hundreds of card-picture aliases. Revisit
     // only previously anonymized copies of those pictures once the pool is
     // complete instead of rescanning the entire growing document per alias.
@@ -1675,7 +1683,9 @@ export class SorareCardScanner {
     for (const [container, mounted] of [...this.overlays]) {
       this.releaseMountedOverlay(container, mounted);
     }
-    this.deferredOverlays.clear();
+    for (const container of [...this.deferredOverlays.keys()]) {
+      this.releaseDeferredOverlay(container);
+    }
     this.layoutTargetsDirty = false;
     clearNativeSorareLineupProbabilityDecorations();
   }
@@ -1684,6 +1694,7 @@ export class SorareCardScanner {
     root: ParentNode,
     refreshLayoutTargets = true,
     knownLineupPosition = activeLineupPosition(),
+    hydrateLineupSortTargets = true,
   ): CardTarget[] {
     decorateNativeSorareLineupProbabilities(root);
     this.lineupSorter.scan(root);
@@ -1710,21 +1721,25 @@ export class SorareCardScanner {
     for (const target of targets) {
       this.mountTarget(target);
     }
-    const hydrationTargetsByGrid = new Map<HTMLElement, CardTarget[]>();
+    if (hydrateLineupSortTargets) this.hydrateLineupTargets(targets);
+    if (refreshLayoutTargets) this.refreshLayoutObserverTargets();
+    return targets;
+  }
+
+  private hydrateLineupTargets(targets: readonly CardTarget[]): void {
+    const targetsByGrid = new Map<HTMLElement, CardTarget[]>();
     for (const target of targets) {
       const grid = target.container.closest<HTMLElement>(
         `[${lineupSortHydrationGridAttribute}]`,
       );
       if (!grid) continue;
-      const gridTargets = hydrationTargetsByGrid.get(grid) ?? [];
+      const gridTargets = targetsByGrid.get(grid) ?? [];
       gridTargets.push(target);
-      hydrationTargetsByGrid.set(grid, gridTargets);
+      targetsByGrid.set(grid, gridTargets);
     }
-    for (const [grid, gridTargets] of hydrationTargetsByGrid) {
+    for (const [grid, gridTargets] of targetsByGrid) {
       void this.lineupSortHydrator.hydrate(grid, gridTargets);
     }
-    if (refreshLayoutTargets) this.refreshLayoutObserverTargets();
-    return targets;
   }
 
   private mountTarget(target: CardTarget, knownPriority?: number): void {
@@ -1750,6 +1765,7 @@ export class SorareCardScanner {
     );
     if (shouldDeferFullOverlay) {
       this.deferredOverlays.set(target.container, { key, target });
+      target.container.setAttribute(deferredOverlayKeyAttribute, key);
       this.visibilityObserver?.observe(target.container);
       setLineupSortPosition(target.container, target.position ?? null);
       if (
@@ -1785,50 +1801,59 @@ export class SorareCardScanner {
   }
 
   private reconcileMountedOverlays(scopes: readonly Element[]): void {
-    for (const [container, mounted] of [...this.overlays]) {
-      if (
-        scopes.length > 0 &&
-        !scopes.some(
-          (scope) => scope.contains(container) || container.contains(scope),
-        )
-      ) {
-        continue;
-      }
+    const candidates =
+      scopes.length > 0
+        ? this.trackedOverlayContainersForScopes(scopes)
+        : new Set([...this.overlays.keys(), ...this.deferredOverlays.keys()]);
+    for (const container of candidates) {
+      const mounted = this.overlays.get(container);
+      const deferred = this.deferredOverlays.get(container);
+      if (!mounted && !deferred) continue;
       const currentTarget = container.isConnected
         ? findCardTargets(container).find(
             (candidate) => candidate.container === container,
           )
         : undefined;
       if (!currentTarget) {
-        this.releaseMountedOverlay(container, mounted);
+        if (mounted) this.releaseMountedOverlay(container, mounted);
+        else this.releaseDeferredOverlay(container);
         continue;
       }
-      if (targetKey(currentTarget) === mounted.key) continue;
-      this.releaseMountedOverlay(container, mounted);
+      const currentKey = targetKey(currentTarget);
+      if (currentKey === (mounted?.key ?? deferred?.key)) continue;
+      if (mounted) this.releaseMountedOverlay(container, mounted);
+      else this.releaseDeferredOverlay(container);
       this.mountTarget(currentTarget);
     }
-    for (const [container, deferred] of [...this.deferredOverlays]) {
+  }
+
+  private trackedOverlayContainersForScopes(
+    scopes: readonly Element[],
+  ): Set<HTMLElement> {
+    const candidates = new Set<HTMLElement>();
+    for (const scope of scopes) {
       if (
-        scopes.length > 0 &&
-        !scopes.some(
-          (scope) => scope.contains(container) || container.contains(scope),
-        )
+        scope instanceof HTMLElement &&
+        scope.matches(trackedOverlayContainerSelector)
       ) {
-        continue;
+        candidates.add(scope);
       }
-      const currentTarget = container.isConnected
-        ? findCardTargets(container).find(
-            (candidate) => candidate.container === container,
-          )
-        : undefined;
-      if (!currentTarget) {
-        this.releaseDeferredOverlay(container);
-        continue;
+      for (const container of scope.querySelectorAll<HTMLElement>(
+        trackedOverlayContainerSelector,
+      )) {
+        candidates.add(container);
       }
-      if (targetKey(currentTarget) === deferred.key) continue;
-      this.releaseDeferredOverlay(container);
-      this.mountTarget(currentTarget);
+      let ancestor = scope.parentElement?.closest<HTMLElement>(
+        trackedOverlayContainerSelector,
+      );
+      while (ancestor) {
+        candidates.add(ancestor);
+        ancestor = ancestor.parentElement?.closest<HTMLElement>(
+          trackedOverlayContainerSelector,
+        );
+      }
     }
+    return candidates;
   }
 
   private cleanupDisconnectedOverlays(): void {
@@ -1842,13 +1867,22 @@ export class SorareCardScanner {
   }
 
   private releaseRemovedOverlays(removedRoot: Element): void {
-    for (const [container, mounted] of [...this.overlays]) {
-      if (container === removedRoot || removedRoot.contains(container)) {
-        this.releaseMountedOverlay(container, mounted);
-      }
+    const candidates = new Set<HTMLElement>();
+    if (
+      removedRoot instanceof HTMLElement &&
+      removedRoot.matches(trackedOverlayContainerSelector)
+    ) {
+      candidates.add(removedRoot);
     }
-    for (const container of [...this.deferredOverlays.keys()]) {
-      if (container === removedRoot || removedRoot.contains(container)) {
+    for (const container of removedRoot.querySelectorAll<HTMLElement>(
+      trackedOverlayContainerSelector,
+    )) {
+      candidates.add(container);
+    }
+    for (const container of candidates) {
+      const mounted = this.overlays.get(container);
+      if (mounted) this.releaseMountedOverlay(container, mounted);
+      else if (this.deferredOverlays.has(container)) {
         this.releaseDeferredOverlay(container);
       }
     }
@@ -1857,6 +1891,7 @@ export class SorareCardScanner {
   private releaseDeferredOverlay(container: HTMLElement): void {
     this.visibilityObserver?.unobserve(container);
     this.deferredOverlays.delete(container);
+    container.removeAttribute(deferredOverlayKeyAttribute);
   }
 
   private releaseMountedOverlay(
@@ -2039,9 +2074,13 @@ export class SorareCardScanner {
     this.pendingPositionScopes.clear();
     this.shouldRefreshAllPositions = false;
     const knownLineupPosition = activeLineupPosition();
+    const hydrationTargets: CardTarget[] = [];
     for (const root of roots) {
-      this.scan(root, false, knownLineupPosition);
+      hydrationTargets.push(
+        ...this.scan(root, false, knownLineupPosition, false),
+      );
     }
+    this.hydrateLineupTargets(hydrationTargets);
     if (roots.length > 0) {
       this.reconcileMountedOverlays(roots);
     } else {
