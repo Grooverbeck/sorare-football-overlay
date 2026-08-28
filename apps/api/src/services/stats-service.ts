@@ -95,6 +95,9 @@ export interface PlayerMarketSnapshotsResult {
   durationMs: number;
 }
 
+const CACHE_ONLY_ODDS_BATCH_EXTRA_PER_PLAYER_MS = 25;
+const CACHE_ONLY_ODDS_BATCH_MAX_MS = 1_600;
+
 function hasNoUsablePlayerData(stats: PlayerStats): boolean {
   return (
     stats.nextGame === null &&
@@ -811,7 +814,11 @@ export class StatsService {
     );
     const marketRefreshDuePlayerKeys = new Set<string>();
     const marketRefreshDueState = { complete: false };
-    const cacheOnlyOddsDeadlineMs = Date.now() + this.cacheOnlyOddsBudgetMs;
+    const marketCacheOnlyBudgetMs = this.cacheOnlyOddsReadBudgetMs(
+      request.oddsCacheOnly,
+      oddsEligiblePlayers.length,
+    );
+    const cacheOnlyOddsDeadlineMs = Date.now() + marketCacheOnlyBudgetMs;
     const [fixtureMatchOdds, marketOdds] = await Promise.all([
       this.loadCacheOnlyWithinBudget(
         this.fixtureMatchOddsProvider.load(cachedOrLoaded, {
@@ -825,6 +832,7 @@ export class StatsService {
           refreshDuePlayerKeys: marketRefreshDuePlayerKeys,
           refreshDueState: marketRefreshDueState,
         }),
+        marketCacheOnlyBudgetMs,
       ),
     ]);
     const playersWithFixtureRefresh = new Set(
@@ -1056,10 +1064,32 @@ export class StatsService {
 
   private async loadCacheOnlyWithinBudget<T>(
     pending: Promise<Map<string, T>>,
+    budgetMs = this.cacheOnlyOddsBudgetMs,
   ): Promise<Map<string, T>> {
-    const result = await settleWithin(pending, this.cacheOnlyOddsBudgetMs);
+    const result = await settleWithin(pending, budgetMs);
     if (result.status === 'fulfilled') return result.value;
     return new Map();
+  }
+
+  private cacheOnlyOddsReadBudgetMs(
+    explicitCacheOnly: boolean,
+    playerCount: number,
+  ): number {
+    if (!explicitCacheOnly || playerCount <= 1) {
+      return this.cacheOnlyOddsBudgetMs;
+    }
+    // A lineup-sort request may carry fifty players through several nested
+    // snapshot stores. The former fixed 350 ms window could discard the
+    // complete market map even when every requested quote was already cached.
+    // Scale only explicit cache-only batches; normal card responses keep the
+    // short path and no external provider work is enabled by this extra time.
+    const scaledBudgetMs =
+      this.cacheOnlyOddsBudgetMs +
+      (playerCount - 1) * CACHE_ONLY_ODDS_BATCH_EXTRA_PER_PLAYER_MS;
+    return Math.max(
+      this.cacheOnlyOddsBudgetMs,
+      Math.min(CACHE_ONLY_ODDS_BATCH_MAX_MS, scaledBudgetMs),
+    );
   }
 
   private async resolveNamesForResponse(

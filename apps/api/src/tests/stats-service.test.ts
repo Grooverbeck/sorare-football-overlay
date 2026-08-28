@@ -932,6 +932,60 @@ describe('StatsService cache writes', () => {
     expect(result.data[0]?.pendingRefreshes ?? []).not.toContain('marketOdds');
   });
 
+  it('keeps cached market values in a fifty-player cache-only batch', async () => {
+    let announcedBudgetMs = 0;
+    const cachedOdds: PlayerMarketOdds = {
+      source: 'sports-game-odds',
+      capturedAt: '2026-08-28T10:00:00.000Z',
+      goal: { probability: 0.4545454545, bookmakerCount: 4 },
+      assist: null,
+      decisive: null,
+    };
+    const load = vi.fn<PlayerMarketOddsProvider['load']>(
+      async (players, options) => {
+        expect(options?.cacheOnly).toBe(true);
+        announcedBudgetMs =
+          (options?.cacheOnlyDeadlineMs ?? Date.now()) - Date.now();
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        return new Map(
+          players.map((player) => [playerMarketOddsKey(player), cachedOdds]),
+        );
+      },
+    );
+    const slugs = Array.from(
+      { length: 50 },
+      (_, index) => `cached-sort-player-${index + 1}`,
+    );
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      { load },
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs,
+        positions: Object.fromEntries(
+          slugs.map((slug) => [slug, 'Forward' as const]),
+        ),
+        oddsCacheOnly: true,
+      }),
+    );
+
+    expect(announcedBudgetMs).toBeGreaterThan(1_400);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(result.data).toHaveLength(50);
+    expect(
+      result.data.every(
+        (stats) =>
+          stats.nextGame?.marketOdds?.goal?.probability ===
+          cachedOdds.goal?.probability,
+      ),
+    ).toBe(true);
+  });
+
   it('returns a bounded deferred response while a cold slug warms in background', async () => {
     const never = new Promise<never>(() => undefined);
     const source: PlayerStatsDataSource = {

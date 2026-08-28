@@ -82,6 +82,8 @@ const viewportPriorityVisible = 2;
 const viewportPriorityNearby = 1;
 const mutationFlushBudgetMs = 7;
 const mutationFlushMaxRoots = 16;
+const poolReadyScanBudgetMs = 7;
+const poolReadyScanMaxRoots = 16;
 const defaultMaxCachedAliases = 8_192;
 const defaultCachedAliasTtlMs = 6 * 60 * 60 * 1_000;
 
@@ -1467,6 +1469,8 @@ export class SorareCardScanner {
   private readonly pendingPictureNameRescanIds = new Set<string>();
   private pictureNameRescanTimer: number | undefined;
   private mutationFrame: number | undefined;
+  private poolReadyScanFrame: number | undefined;
+  private poolReadyScanGeneration = 0;
   private shouldRefreshAllPositions = false;
   private readonly lineupSorter = new LineupCardSorter();
   private readonly pendingMarketReconcileTeams = new Set<string>();
@@ -1482,25 +1486,7 @@ export class SorareCardScanner {
   private readonly handleLineupPoolReady = (event: Event): void => {
     const grid = event.target;
     if (!(grid instanceof HTMLElement)) return;
-    const targets = this.scan(
-      grid,
-      true,
-      activeLineupPosition(),
-      false,
-      // Pool membership is authoritative here. Keep identity reconciliation
-      // layout-free; IntersectionObserver promotes currently visible cards.
-      0,
-    );
-    // A large pool can teach us hundreds of card-picture aliases. Revisit
-    // only previously anonymized copies of those pictures once the pool is
-    // complete instead of rescanning the entire growing document per alias.
-    this.flushPictureNameRescans(grid);
-    // The event is the authoritative signal from LineupCardSorter. Keep this
-    // explicit because the hydration attribute can be removed immediately
-    // after the final card reports ready.
-    void this.lineupSortHydrator
-      .hydrate(grid, targets)
-      .then(() => this.lineupSortHydrator.reconcileMissingGoals());
+    this.scheduleLineupPoolReadyScan(grid);
   };
   private readonly handleMarketCacheUpdate = (
     teamSlugs: readonly string[],
@@ -1683,6 +1669,7 @@ export class SorareCardScanner {
       }
       this.mutationFrame = undefined;
     }
+    this.cancelLineupPoolReadyScan();
     this.pendingScanRoots.clear();
     this.mutationScanBacklog = [];
     this.mutationBacklogLineupPosition = undefined;
@@ -1715,12 +1702,29 @@ export class SorareCardScanner {
   ): CardTarget[] {
     decorateNativeSorareLineupProbabilities(root);
     this.lineupSorter.scan(root);
+    const targets = this.discoverAndMountTargets(
+      root,
+      knownLineupPosition,
+      knownHydrationPriority,
+    );
+    if (hydrateLineupSortTargets) this.hydrateLineupTargets(targets);
+    if (refreshLayoutTargets) this.refreshLayoutObserverTargets();
+    return targets;
+  }
+
+  private discoverAndMountTargets(
+    root: ParentNode,
+    knownLineupPosition: FootballPosition | null | undefined,
+    knownHydrationPriority?: number,
+    knownHydrationGrid?: HTMLElement,
+  ): CardTarget[] {
     const rootHydrationGrid =
-      root instanceof Element
+      knownHydrationGrid ??
+      (root instanceof Element
         ? root.closest<HTMLElement>(
             `[${lineupSortHydrationGridAttribute}]`,
           )
-        : null;
+        : null);
     const targets = rootHydrationGrid
       ? findCardTargets(root, {
           ...(knownLineupPosition !== undefined
@@ -1744,11 +1748,92 @@ export class SorareCardScanner {
       this.mountTarget(
         target,
         rootHydrationGrid ? knownHydrationPriority : undefined,
+        rootHydrationGrid ?? undefined,
       );
     }
-    if (hydrateLineupSortTargets) this.hydrateLineupTargets(targets);
-    if (refreshLayoutTargets) this.refreshLayoutObserverTargets();
     return targets;
+  }
+
+  private scheduleLineupPoolReadyScan(grid: HTMLElement): void {
+    this.cancelLineupPoolReadyScan();
+    const generation = this.poolReadyScanGeneration;
+    const knownLineupPosition = activeLineupPosition();
+    const roots = Array.from(grid.children).filter(
+      (child): child is HTMLElement => child instanceof HTMLElement,
+    );
+    if (roots.length === 0) roots.push(grid);
+    const targets = new Map<HTMLElement, CardTarget>();
+    let nextRootIndex = 0;
+
+    const scheduleNextFrame = (): void => {
+      this.poolReadyScanFrame =
+        typeof window.requestAnimationFrame === 'function'
+          ? window.requestAnimationFrame(processFrame)
+          : window.setTimeout(processFrame, 0);
+    };
+    const processFrame = (): void => {
+      this.poolReadyScanFrame = undefined;
+      if (
+        generation !== this.poolReadyScanGeneration ||
+        !grid.isConnected
+      ) {
+        return;
+      }
+      const startedAt = performance.now();
+      let processedRoots = 0;
+      while (nextRootIndex < roots.length) {
+        const root = roots[nextRootIndex];
+        nextRootIndex += 1;
+        if (root?.isConnected && grid.contains(root)) {
+          for (const target of this.discoverAndMountTargets(
+            root,
+            knownLineupPosition,
+            // Pool membership is authoritative here. Keep identity
+            // reconciliation layout-free; IntersectionObserver promotes
+            // currently visible cards.
+            0,
+            grid,
+          )) {
+            targets.set(target.container, target);
+          }
+        }
+        processedRoots += 1;
+        if (
+          processedRoots >= poolReadyScanMaxRoots ||
+          performance.now() - startedAt >= poolReadyScanBudgetMs
+        ) {
+          break;
+        }
+      }
+      if (nextRootIndex < roots.length) {
+        scheduleNextFrame();
+        return;
+      }
+
+      this.refreshLayoutObserverTargets();
+      // A large pool can teach us hundreds of card-picture aliases. Revisit
+      // only previously anonymized copies once the frame-budgeted pass has
+      // learned every final pool identity.
+      this.flushPictureNameRescans(grid);
+      // The ready event is authoritative. Keep this explicit because the
+      // hydration attribute can disappear immediately after the final card.
+      void this.lineupSortHydrator
+        .hydrate(grid, [...targets.values()])
+        .then(() => this.lineupSortHydrator.reconcileMissingGoals());
+    };
+
+    scheduleNextFrame();
+  }
+
+  private cancelLineupPoolReadyScan(): void {
+    this.poolReadyScanGeneration += 1;
+    if (this.poolReadyScanFrame === undefined) return;
+    if (typeof window.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(this.poolReadyScanFrame);
+    } else {
+      window.clearTimeout(this.poolReadyScanFrame);
+    }
+    this.poolReadyScanFrame = undefined;
   }
 
   private hydrateLineupTargets(targets: readonly CardTarget[]): void {
@@ -1767,7 +1852,11 @@ export class SorareCardScanner {
     }
   }
 
-  private mountTarget(target: CardTarget, knownPriority?: number): void {
+  private mountTarget(
+    target: CardTarget,
+    knownPriority?: number,
+    knownHydrationGrid?: HTMLElement,
+  ): void {
     const key = targetKey(target);
     const mounted = this.overlays.get(target.container);
     if (mounted?.key === key) return;
@@ -1790,7 +1879,10 @@ export class SorareCardScanner {
     const shouldDeferFullOverlay = Boolean(
       this.visibilityObserver &&
         priority === 0 &&
-        target.container.closest(`[${lineupSortHydrationGridAttribute}]`),
+        (knownHydrationGrid?.contains(target.container) ||
+          target.container.closest(
+            `[${lineupSortHydrationGridAttribute}]`,
+          )),
     );
     if (shouldDeferFullOverlay) {
       this.deferredOverlays.set(target.container, { key, target });

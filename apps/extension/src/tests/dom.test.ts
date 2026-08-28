@@ -3255,9 +3255,110 @@ describe('Sorare card DOM discovery', () => {
       new CustomEvent(lineupPoolReadyEvent, { bubbles: true }),
     );
     await vi.waitFor(() => expect(reconcile).toHaveBeenCalledTimes(1));
-    expect(scan).toHaveBeenCalledTimes(2);
-    expect(scan.mock.calls[1]?.[4]).toBe(0);
+    expect(scan).toHaveBeenCalledTimes(1);
     scanner.stop();
+  });
+
+  it('splits final pool identity reconciliation across animation frames', async () => {
+    const frameCallbacks: FrameRequestCallback[] = [];
+    let frameSequence = 0;
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      frameCallbacks.push(callback);
+      frameSequence += 1;
+      return frameSequence;
+    });
+    vi.stubGlobal('requestAnimationFrame', requestAnimationFrame);
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    class TestIntersectionObserver {
+      readonly root = null;
+      readonly rootMargin = '';
+      readonly thresholds: readonly number[] = [];
+      constructor(_callback: IntersectionObserverCallback) {}
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+      takeRecords(): IntersectionObserverEntry[] {
+        return [];
+      }
+    }
+    vi.stubGlobal('IntersectionObserver', TestIntersectionObserver);
+    document.body.innerHTML = `
+      <div
+        data-testid="frame-budgeted-pool"
+        ${lineupSortHydrationGridAttribute}="true"
+      >
+        ${Array.from(
+          { length: 40 },
+          (_, index) => `
+            <article data-testid="frame-card-${index}">
+              <a href="/football/players/frame-player-${index}">
+                <img
+                  alt="Frame player ${index} - limited"
+                  src="/frame-player-${index}.png"
+                >
+              </a>
+            </article>`,
+        ).join('')}
+      </div>
+    `;
+    const pool = document.querySelector<HTMLElement>(
+      '[data-testid="frame-budgeted-pool"]',
+    );
+    if (!pool) throw new Error('Expected frame-budgeted pool');
+    const imageRects = [...pool.querySelectorAll<HTMLImageElement>('img')].map(
+      (image) =>
+        vi.spyOn(image, 'getBoundingClientRect').mockReturnValue(
+          DOMRect.fromRect({ x: 20, y: 4_000, width: 120, height: 194 }),
+        ),
+    );
+    const hydrator = new LineupSortHydrator(
+      vi.fn(async (request: LineupSortValuesRequest) =>
+        compactSortResponse(request),
+      ),
+    );
+    const hydrate = vi.spyOn(hydrator, 'hydrate');
+    const scanner = new SorareCardScanner(
+      new StatsBatchCoordinator(vi.fn(), 60_000),
+      undefined,
+      hydrator,
+    );
+
+    scanner.start();
+    await vi.waitFor(() =>
+      expect(
+        pool.querySelectorAll(`[${lineupSortDataReadyAttribute}="true"]`),
+      ).toHaveLength(40),
+    );
+    hydrate.mockClear();
+    requestAnimationFrame.mockClear();
+    frameCallbacks.length = 0;
+    for (const imageRect of imageRects) imageRect.mockClear();
+
+    pool.dispatchEvent(
+      new CustomEvent(lineupPoolReadyEvent, { bubbles: true }),
+    );
+    pool.removeAttribute(lineupSortHydrationGridAttribute);
+    expect(hydrate).not.toHaveBeenCalled();
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+
+    frameCallbacks.shift()?.(performance.now());
+    expect(hydrate).not.toHaveBeenCalled();
+    expect(frameCallbacks).toHaveLength(1);
+
+    let flushedFrames = 1;
+    while (frameCallbacks.length > 0 && flushedFrames < 100) {
+      flushedFrames += 1;
+      frameCallbacks.shift()?.(performance.now());
+    }
+    await Promise.resolve();
+
+    expect(flushedFrames).toBeGreaterThanOrEqual(3);
+    expect(frameCallbacks).toHaveLength(0);
+    expect(hydrate).toHaveBeenCalledTimes(1);
+    expect(hydrate.mock.calls[0]?.[1]).toHaveLength(40);
+    expect(imageRects.every(({ mock }) => mock.calls.length === 0)).toBe(true);
+    scanner.stop();
+    vi.unstubAllGlobals();
   });
 
   it('defers targeted picture-alias rescans until lineup hydration completes', async () => {
