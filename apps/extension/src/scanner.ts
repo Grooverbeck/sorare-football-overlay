@@ -1487,6 +1487,9 @@ export class SorareCardScanner {
       true,
       activeLineupPosition(),
       false,
+      // Pool membership is authoritative here. Keep identity reconciliation
+      // layout-free; IntersectionObserver promotes currently visible cards.
+      0,
     );
     // A large pool can teach us hundreds of card-picture aliases. Revisit
     // only previously anonymized copies of those pictures once the pool is

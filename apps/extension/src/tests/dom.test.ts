@@ -3256,6 +3256,7 @@ describe('Sorare card DOM discovery', () => {
     );
     await vi.waitFor(() => expect(reconcile).toHaveBeenCalledTimes(1));
     expect(scan).toHaveBeenCalledTimes(2);
+    expect(scan.mock.calls[1]?.[4]).toBe(0);
     scanner.stop();
   });
 
