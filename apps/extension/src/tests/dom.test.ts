@@ -6957,7 +6957,7 @@ describe('Sorare card DOM discovery', () => {
     secondView.destroy();
   });
 
-  it('marks the current MLS AA leader per concrete position with a podium rank', async () => {
+  it('keeps the standard AA label for players in the MLS podium snapshot', async () => {
     document.body.innerHTML = `
       <article data-testid="football-card" data-position="Midfielder">
         <a href="/football/players/adrian-andres-cubas">Player</a>
@@ -6984,15 +6984,15 @@ describe('Sorare card DOM discovery', () => {
 
     const host = document.querySelector<HTMLElement>('[data-sorare-overlay-root]');
     const aa = host?.shadowRoot?.querySelector<HTMLElement>('.aa-percentile');
-    expect(aa?.dataset.topRank).toBe('1');
-    expect(aa?.dataset.podiumFrame).toBe('gold');
-    expect(aa?.querySelector('.aa-market-icon')?.textContent).toBe('#1');
+    expect(aa?.dataset.topRank).toBeUndefined();
+    expect(aa?.dataset.podiumFrame).toBeUndefined();
+    expect(aa?.querySelector('.aa-market-icon')?.textContent).toBe('AA');
     expect(aa?.querySelector('.aa-market-icon')?.getAttribute('aria-hidden')).toBe('true');
-    expect(aa?.getAttribute('aria-label')).toContain('Rang 1');
+    expect(aa?.getAttribute('aria-label')).not.toContain('Rang');
     expect(host?.shadowRoot?.querySelector('.details')).toBeNull();
   });
 
-  it('renders distinct silver and bronze rank badges for places two and three', async () => {
+  it('does not expose silver or bronze ranks in AA brackets', async () => {
     document.body.innerHTML = `
       <article data-testid="football-card" data-position="Midfielder">
         <a href="/football/players/alonso-coello-camarero">Alonso Coello</a>
@@ -7036,18 +7036,18 @@ describe('Sorare card DOM discovery', () => {
     const bronze = document.querySelector<HTMLElement>(
       '[data-sorare-overlay-root][data-player-slug="jaziel-orozco"]',
     );
-    expect(silver?.shadowRoot?.querySelector('.aa-percentile')?.getAttribute('data-top-rank')).toBe('2');
+    expect(silver?.shadowRoot?.querySelector('.aa-percentile')?.getAttribute('data-top-rank')).toBeNull();
     expect(
       silver?.shadowRoot?.querySelector<HTMLElement>('.aa-percentile')?.dataset
         .podiumFrame,
-    ).toBe('silver');
-    expect(silver?.shadowRoot?.querySelector('.aa-market-icon')?.textContent).toBe('#2');
-    expect(bronze?.shadowRoot?.querySelector('.aa-percentile')?.getAttribute('data-top-rank')).toBe('3');
+    ).toBeUndefined();
+    expect(silver?.shadowRoot?.querySelector('.aa-market-icon')?.textContent).toBe('AA');
+    expect(bronze?.shadowRoot?.querySelector('.aa-percentile')?.getAttribute('data-top-rank')).toBeNull();
     expect(
       bronze?.shadowRoot?.querySelector<HTMLElement>('.aa-percentile')?.dataset
         .podiumFrame,
-    ).toBe('bronze');
-    expect(bronze?.shadowRoot?.querySelector('.aa-market-icon')?.textContent).toBe('#3');
+    ).toBeUndefined();
+    expect(bronze?.shadowRoot?.querySelector('.aa-market-icon')?.textContent).toBe('AA');
   });
 
   it('hides only brackets that overlap an open Sorare popover and restores them after React settles', () => {

@@ -1,6 +1,5 @@
 import {
   getMlsAaPercentileBand,
-  getMlsAaTopPlayer,
   getMlsCleanSheetPercentileBand,
   getMlsHistoricalMarketProbabilityBand,
   getMlsMarketProbabilityBand,
@@ -543,43 +542,6 @@ const styles = `
     font-weight: 800;
     letter-spacing: .02em;
     text-transform: uppercase;
-  }
-  .aa-bracket-cell[data-podium-frame] {
-    z-index: 3;
-    border: 1px solid var(--podium-border);
-    box-shadow:
-      inset 0 1px 0 rgba(255,255,255,.42),
-      inset 0 0 0 1px rgba(13,17,23,.28),
-      0 0 7px var(--podium-glow),
-      0 2px 5px rgba(0,0,0,.42);
-  }
-  .aa-bracket-cell[data-podium-frame]::before {
-    position: absolute;
-    z-index: -1;
-    inset: -2px;
-    border: 1px solid var(--podium-border);
-    border-radius: 7px 1px 1px 7px;
-    box-shadow:
-      0 0 3px var(--podium-glow),
-      0 0 9px var(--podium-glow);
-    content: "";
-    pointer-events: none;
-  }
-  :host([data-market-bracket-side="left"])
-    .aa-bracket-cell[data-podium-frame]::before {
-    border-radius: 1px 7px 7px 1px;
-  }
-  .aa-bracket-cell[data-podium-frame="gold"] {
-    --podium-border: #ffe066;
-    --podium-glow: rgba(255, 193, 7, .72);
-  }
-  .aa-bracket-cell[data-podium-frame="silver"] {
-    --podium-border: #f1f5f9;
-    --podium-glow: rgba(203, 213, 225, .66);
-  }
-  .aa-bracket-cell[data-podium-frame="bronze"] {
-    --podium-border: #f0a36b;
-    --podium-glow: rgba(217, 119, 58, .68);
   }
   .aa-bracket-cell:first-child,
   .aa-bracket-cell.market-last {
@@ -2074,17 +2036,9 @@ function aaStatNode(
     placement === 'single' ? '' : ` aa-bracket-${placement}`
   }`;
   stat.dataset.available = String(hasAaValue);
-  const fallbackTopPlayer = hasAaValue
-    ? getMlsAaTopPlayer(stats.position, stats.slug)
-    : null;
-  const topRank = hasAaValue
-    ? stats.mlsAaContext
-      ? stats.mlsAaContext.rank
-      : (fallbackTopPlayer?.rank ?? null)
-    : null;
   const icon = document.createElement('span');
   icon.className = 'market-icon aa-market-icon';
-  icon.textContent = topRank ? `#${topRank}` : 'AA';
+  icon.textContent = 'AA';
   icon.setAttribute('aria-hidden', 'true');
   const value = document.createElement('span');
   value.className = 'market-value';
@@ -2135,15 +2089,6 @@ function aaStatNode(
     warning.append(warningGlyph, warningTooltip);
     stat.append(warning);
   }
-  if (topRank) {
-    stat.dataset.topRank = String(topRank);
-    stat.dataset.podiumFrame =
-      topRank === 1
-        ? 'gold'
-        : topRank === 2
-          ? 'silver'
-          : 'bronze';
-  }
   const fallbackBand = getMlsAaPercentileBand(
     stats.position,
     stats.aaL10.value,
@@ -2174,8 +2119,8 @@ function aaStatNode(
   stat.setAttribute(
     'aria-label',
     `AA L10 ${score(stats.aaL10)} im MLS-Vergleich für ${stats.position}: ${percentileBand}${
-      topRank ? `, Rang ${topRank}` : ''
-    }${stats.mlsAaContext ? `, Stand ${stats.mlsAaContext.asOf}` : ''}${
+      stats.mlsAaContext ? `, Stand ${stats.mlsAaContext.asOf}` : ''
+    }${
       limitedClubSample
         ? `; Warnung: nur ${stats.aaL10.sampleSize} Vereinsspiele mit mindestens 60 Minuten`
         : ''
