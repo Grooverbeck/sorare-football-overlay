@@ -420,6 +420,69 @@ describe('Sorare card DOM discovery', () => {
     });
   });
 
+  it('keeps lineup team hints inside their own grid cell', () => {
+    document.body.innerHTML = `
+      <div data-testid="lineup-grid" ${lineupSortHydrationGridAttribute}="true">
+        <div>
+          <button type="button">
+            <img alt="Teamless Player - common" src="/teamless.png">
+          </button>
+        </div>
+        <div>
+          <button type="button">
+            <img alt="Matched Player - common" src="/matched.png">
+          </button>
+          <div>
+            <span aria-label="Team" class="highlighted"><img alt="own-team-city"></span>
+            <span aria-label="Team"><img alt="opponent-team-city"></span>
+          </div>
+        </div>
+      </div>
+    `;
+    const grid = document.querySelector<HTMLElement>('[data-testid="lineup-grid"]');
+    if (!grid) throw new Error('Expected lineup grid');
+
+    const targets = findCardTargets(grid, { activeLineupPosition: null });
+
+    expect(targets[0]).toMatchObject({ playerName: 'Teamless Player' });
+    expect(targets[0]).not.toHaveProperty('teamSlug');
+    expect(targets[1]).toMatchObject({
+      playerName: 'Matched Player',
+      teamSlug: 'own-team-city',
+    });
+  });
+
+  it('discovers a 300-card lineup pool without searching neighboring cells', () => {
+    document.body.innerHTML = `
+      <div data-testid="large-lineup-grid" ${lineupSortHydrationGridAttribute}="true">
+        ${Array.from(
+          { length: 300 },
+          (_, index) => `
+            <div>
+              <button type="button">
+                <img alt="Large Pool Player ${index + 1} - common" src="/large-${index + 1}.png">
+              </button>
+            </div>
+          `,
+        ).join('')}
+      </div>
+    `;
+    const grid = document.querySelector<HTMLElement>(
+      '[data-testid="large-lineup-grid"]',
+    );
+    if (!grid) throw new Error('Expected large lineup grid');
+    const gridQueries = vi.spyOn(grid, 'querySelectorAll');
+
+    const targets = findCardTargets(grid, { activeLineupPosition: null });
+
+    expect(targets).toHaveLength(300);
+    expect(
+      gridQueries.mock.calls.filter(([selector]) =>
+        String(selector).includes('aria-label="Team"'),
+      ),
+    ).toHaveLength(0);
+  });
+
   it('keeps exact team cache keys isolated while preserving the teamless name fallback', async () => {
     const fetcher = vi.fn(
       async (
@@ -3171,17 +3234,22 @@ describe('Sorare card DOM discovery', () => {
     const coordinator = new StatsBatchCoordinator(vi.fn(), 60_000);
     const hydrator = new LineupSortHydrator(vi.fn());
     const reconcile = vi.spyOn(hydrator, 'reconcileMissingGoals');
+    const hydrate = vi.spyOn(hydrator, 'hydrate');
     const scanner = new SorareCardScanner(coordinator, undefined, hydrator);
     const scan = vi.spyOn(scanner, 'scan');
+    const gridQueries = vi.spyOn(pool, 'querySelectorAll');
 
     scanner.start();
     expect(scan).toHaveBeenCalledTimes(1);
+    gridQueries.mockClear();
 
     pool.dispatchEvent(
       new CustomEvent(lineupPoolProgressEvent, { bubbles: true }),
     );
     await Promise.resolve();
     expect(scan).toHaveBeenCalledTimes(1);
+    expect(hydrate).toHaveBeenLastCalledWith(pool, []);
+    expect(gridQueries).not.toHaveBeenCalled();
 
     pool.dispatchEvent(
       new CustomEvent(lineupPoolReadyEvent, { bubbles: true }),

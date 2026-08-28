@@ -207,7 +207,7 @@ function lineupPositionFromButton(
   return lineupPositionAliases[marker];
 }
 
-function activeLineupPosition(): FootballPosition | null | undefined {
+export function activeLineupPosition(): FootballPosition | null | undefined {
   const positions = new Set<FootballPosition | null>();
   for (const button of document.querySelectorAll<HTMLButtonElement>('button')) {
     const position = lineupPositionFromButton(button);

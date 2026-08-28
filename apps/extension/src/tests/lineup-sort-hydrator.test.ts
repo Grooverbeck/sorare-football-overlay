@@ -4,6 +4,7 @@ import type {
 } from '@sorare-overlay/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LineupSortHydrator } from '../lineup-sort-hydrator.js';
+import { findCardTargets } from '../dom.js';
 import {
   markLineupSortFullDataUpdated,
   setLineupAaSortValue,
@@ -126,6 +127,24 @@ describe('LineupSortHydrator', () => {
 
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(fetcher.mock.calls[0]?.[0].slugs).toHaveLength(50);
+    hydrator.stop();
+  });
+
+  it('hydrates only explicitly discovered targets during incremental growth', async () => {
+    const grid = renderGrid(3);
+    const targets = findCardTargets(grid);
+    const fetcher = vi.fn(async (request: LineupSortValuesRequest) =>
+      responseFor(request),
+    );
+    const hydrator = new LineupSortHydrator(fetcher);
+
+    await hydrator.hydrate(grid, targets.slice(1, 2));
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0]?.[0].slugs).toEqual(['sort-player-2']);
+    expect(
+      grid.querySelectorAll('[data-sorare-overlay-sort-data-ready="true"]'),
+    ).toHaveLength(1);
     hydrator.stop();
   });
 

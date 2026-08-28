@@ -8,6 +8,10 @@ export interface CardTarget {
   container: HTMLElement;
 }
 
+export interface FindCardTargetsOptions {
+  activeLineupPosition?: FootballPosition | null;
+}
+
 const playerPath = /\/(?:football\/)?players\/([a-z0-9]+(?:-[a-z0-9]+)*)/i;
 const cardImageAlt = /^(.+?)\s+-\s+(?:common|limited|rare|super rare|unique)$/i;
 const cardPicturePath = /\/cardsamplepicture\/([a-z0-9-]+)\//i;
@@ -311,8 +315,9 @@ export function findImageCardContainer(image: HTMLImageElement): HTMLElement | n
 
 function inferHighlightedPlayerTeamSlug(
   container: HTMLElement,
+  boundary?: HTMLElement,
 ): string | undefined {
-  let scope = container.parentElement;
+  let scope = boundary === container ? container : container.parentElement;
   for (let depth = 0; scope && depth < 6; depth += 1) {
     const teamsByRow = new Map<HTMLElement, HTMLElement[]>();
     for (const teamNode of scope.querySelectorAll<HTMLElement>(
@@ -352,6 +357,7 @@ function inferHighlightedPlayerTeamSlug(
         ? [...selectedTeamSlugs][0]
         : undefined;
     }
+    if (scope === boundary) return undefined;
     scope = scope.parentElement;
   }
   return undefined;
@@ -385,8 +391,38 @@ export function isScoreDetailsDialogTarget(container: HTMLElement): boolean {
   );
 }
 
-export function findCardTargets(root: ParentNode): CardTarget[] {
+export function findCardTargets(
+  root: ParentNode,
+  options: FindCardTargetsOptions = {},
+): CardTarget[] {
   const targets: CardTarget[] = [];
+  const targetContainers = new Set<HTMLElement>();
+  const hasActiveLineupPosition = Object.prototype.hasOwnProperty.call(
+    options,
+    'activeLineupPosition',
+  );
+  const lineupContextBoundary = (
+    container: HTMLElement,
+  ): HTMLElement | undefined => {
+    if (
+      !hasActiveLineupPosition ||
+      !(root instanceof HTMLElement) ||
+      (root !== container && !root.contains(container))
+    ) {
+      return undefined;
+    }
+    if (
+      !root.hasAttribute('data-sorare-overlay-lineup-sort-hydration') ||
+      root === container
+    ) {
+      return root;
+    }
+    let directChild = container;
+    while (directChild.parentElement && directChild.parentElement !== root) {
+      directChild = directChild.parentElement;
+    }
+    return directChild.parentElement === root ? directChild : root;
+  };
   const anchors: HTMLAnchorElement[] = [];
   if (root instanceof HTMLAnchorElement) anchors.push(root);
   anchors.push(...root.querySelectorAll<HTMLAnchorElement>('a[href]'));
@@ -395,11 +431,16 @@ export function findCardTargets(root: ParentNode): CardTarget[] {
     const slug = extractPlayerSlug(anchor);
     const container = slug ? findCardContainer(anchor) : null;
     if (!slug || !container) continue;
+    if (targetContainers.has(container)) continue;
     if (isScoreDetailsDialogTarget(container)) continue;
     if (isMiniatureCardTarget(container)) continue;
     const position =
-      inferCardPosition(container) ?? inferNearbyPlayerPosition(container, slug);
+      inferCardPosition(container) ??
+      (hasActiveLineupPosition
+        ? options.activeLineupPosition ?? undefined
+        : inferNearbyPlayerPosition(container, slug));
     targets.push({ slug, container, ...(position ? { position } : {}) });
+    targetContainers.add(container);
   }
 
   const images: HTMLImageElement[] = [];
@@ -413,24 +454,31 @@ export function findCardTargets(root: ParentNode): CardTarget[] {
     const playerName = resolvePlayerName(image);
     const container = playerName ? findImageCardContainer(image) : null;
     if (!playerName || !container) continue;
+    if (targetContainers.has(container)) continue;
     if (isScoreDetailsDialogTarget(container)) continue;
     if (isMiniatureCardTarget(container)) continue;
     if (!extractPlayerName(image) && !hasNearbyTeamRow(container)) continue;
-    if (targets.some((target) => target.container === container)) continue;
     const concretePosition = inferCardPosition(container);
     const lineupSlotPosition = inferLineupSlotPosition(container);
     const position =
       concretePosition ??
       (lineupSlotPosition === null
         ? undefined
-        : lineupSlotPosition ?? inferActivePositionSelection(container));
-    const teamSlug = inferHighlightedPlayerTeamSlug(container);
+        : lineupSlotPosition ??
+          (hasActiveLineupPosition
+            ? options.activeLineupPosition ?? undefined
+            : inferActivePositionSelection(container)));
+    const teamSlug = inferHighlightedPlayerTeamSlug(
+      container,
+      lineupContextBoundary(container),
+    );
     targets.push({
       playerName,
       container,
       ...(position ? { position } : {}),
       ...(teamSlug ? { teamSlug } : {}),
     });
+    targetContainers.add(container);
   }
 
   return targets;

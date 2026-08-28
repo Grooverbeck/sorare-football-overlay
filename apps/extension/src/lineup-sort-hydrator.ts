@@ -124,11 +124,14 @@ export class LineupSortHydrator {
     void this.hydrate(grid);
   }
 
-  hydrate(grid: HTMLElement): Promise<void> {
+  hydrate(
+    grid: HTMLElement,
+    targets: readonly CardTarget[] = findCardTargets(grid),
+  ): Promise<void> {
     if (this.grid !== grid) this.reset(grid);
     this.removeDisconnectedStates();
     let discovered = 0;
-    for (const target of findCardTargets(grid)) {
+    for (const target of targets) {
       const key = playerTargetKey(target);
       const existing = this.states.get(target.container);
       if (existing?.key === key) continue;

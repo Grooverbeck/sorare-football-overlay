@@ -27,6 +27,7 @@ import {
 } from './player-identity.js';
 import {
   LineupCardSorter,
+  activeLineupPosition,
   lineupAaSortOptionAttribute,
   lineupGoalSortOptionAttribute,
   lineupPoolProgressEvent,
@@ -1456,17 +1457,20 @@ export class SorareCardScanner {
   private readonly handleLineupPoolProgress = (event: Event): void => {
     const grid = event.target;
     if (!(grid instanceof HTMLElement)) return;
-    void this.lineupSortHydrator.hydrate(grid);
+    // Child-list mutations discover and pass only newly added card targets.
+    // A progress pulse merely keeps the current queue pumping; rescanning the
+    // complete, ever-growing grid here turns a large pool into quadratic work.
+    void this.lineupSortHydrator.hydrate(grid, []);
   };
   private readonly handleLineupPoolReady = (event: Event): void => {
     const grid = event.target;
     if (!(grid instanceof HTMLElement)) return;
-    this.scan(grid);
+    const targets = this.scan(grid);
     // The event is the authoritative signal from LineupCardSorter. Keep this
     // explicit because the hydration attribute can be removed immediately
     // after the final card reports ready.
     void this.lineupSortHydrator
-      .hydrate(grid)
+      .hydrate(grid, targets)
       .then(() => this.lineupSortHydrator.reconcileMissingGoals());
   };
   private readonly handleMarketCacheUpdate = (
@@ -1663,10 +1667,25 @@ export class SorareCardScanner {
     clearNativeSorareLineupProbabilityDecorations();
   }
 
-  scan(root: ParentNode, refreshLayoutTargets = true): void {
+  scan(
+    root: ParentNode,
+    refreshLayoutTargets = true,
+    knownLineupPosition = activeLineupPosition(),
+  ): CardTarget[] {
     decorateNativeSorareLineupProbabilities(root);
     this.lineupSorter.scan(root);
-    const targets = findCardTargets(root);
+    const rootHydrationGrid =
+      root instanceof Element
+        ? root.closest<HTMLElement>(
+            `[${lineupSortHydrationGridAttribute}]`,
+          )
+        : null;
+    const targets =
+      !rootHydrationGrid || knownLineupPosition === undefined
+        ? findCardTargets(root)
+        : findCardTargets(root, {
+            activeLineupPosition: knownLineupPosition,
+          });
     const discoveredPictureNames = drainDiscoveredCardPictureNames();
     if (Object.keys(discoveredPictureNames).length > 0) {
       this.onCardPictureNamesDiscovered?.(discoveredPictureNames);
@@ -1678,18 +1697,21 @@ export class SorareCardScanner {
     for (const target of targets) {
       this.mountTarget(target);
     }
-    const hydrationGrids = new Set(
-      targets.flatMap((target) => {
-        const grid = target.container.closest<HTMLElement>(
-          `[${lineupSortHydrationGridAttribute}]`,
-        );
-        return grid ? [grid] : [];
-      }),
-    );
-    for (const grid of hydrationGrids) {
-      void this.lineupSortHydrator.hydrate(grid);
+    const hydrationTargetsByGrid = new Map<HTMLElement, CardTarget[]>();
+    for (const target of targets) {
+      const grid = target.container.closest<HTMLElement>(
+        `[${lineupSortHydrationGridAttribute}]`,
+      );
+      if (!grid) continue;
+      const gridTargets = hydrationTargetsByGrid.get(grid) ?? [];
+      gridTargets.push(target);
+      hydrationTargetsByGrid.set(grid, gridTargets);
+    }
+    for (const [grid, gridTargets] of hydrationTargetsByGrid) {
+      void this.lineupSortHydrator.hydrate(grid, gridTargets);
     }
     if (refreshLayoutTargets) this.refreshLayoutObserverTargets();
+    return targets;
   }
 
   private mountTarget(target: CardTarget, knownPriority?: number): void {
@@ -1942,7 +1964,10 @@ export class SorareCardScanner {
     this.pendingScanRoots.clear();
     this.pendingPositionScopes.clear();
     this.shouldRefreshAllPositions = false;
-    for (const root of roots) this.scan(root, false);
+    const knownLineupPosition = activeLineupPosition();
+    for (const root of roots) {
+      this.scan(root, false, knownLineupPosition);
+    }
     if (roots.length > 0) {
       this.reconcileMountedOverlays(roots);
     } else {
