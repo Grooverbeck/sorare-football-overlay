@@ -36,6 +36,7 @@ import {
   lineupPoolReadyEvent,
   lineupSortDataReadyAttribute,
   lineupSortHydrationGridAttribute,
+  lineupSortLightweightReadyAttribute,
   setLineupSortDataReady,
   setLineupSortPosition,
 } from './lineup-sort.js';
@@ -84,6 +85,8 @@ const mutationFlushBudgetMs = 7;
 const mutationFlushMaxRoots = 16;
 const poolReadyScanBudgetMs = 7;
 const poolReadyScanMaxRoots = 16;
+const poolOverlayDemotionBudgetMs = 7;
+const poolOverlayDemotionMaxCards = 16;
 const defaultMaxCachedAliases = 8_192;
 const defaultCachedAliasTtlMs = 6 * 60 * 60 * 1_000;
 
@@ -1471,6 +1474,13 @@ export class SorareCardScanner {
   private mutationFrame: number | undefined;
   private poolReadyScanFrame: number | undefined;
   private poolReadyScanGeneration = 0;
+  private readonly lineupPoolGrids = new WeakSet<HTMLElement>();
+  private readonly pendingPoolOverlayDemotions: Array<{
+    grid: HTMLElement;
+    container: HTMLElement;
+  }> = [];
+  private readonly pendingPoolOverlayDemotionContainers = new Set<HTMLElement>();
+  private poolOverlayDemotionFrame: number | undefined;
   private shouldRefreshAllPositions = false;
   private readonly lineupSorter = new LineupCardSorter();
   private readonly pendingMarketReconcileTeams = new Set<string>();
@@ -1478,6 +1488,10 @@ export class SorareCardScanner {
   private readonly handleLineupPoolProgress = (event: Event): void => {
     const grid = event.target;
     if (!(grid instanceof HTMLElement)) return;
+    if (!this.lineupPoolGrids.has(grid)) {
+      this.lineupPoolGrids.add(grid);
+      this.queueInactivePoolOverlaysForDemotion(grid);
+    }
     // Child-list mutations discover and pass only newly added card targets.
     // A progress pulse merely keeps the current queue pumping; rescanning the
     // complete, ever-growing grid here turns a large pool into quadratic work.
@@ -1486,6 +1500,8 @@ export class SorareCardScanner {
   private readonly handleLineupPoolReady = (event: Event): void => {
     const grid = event.target;
     if (!(grid instanceof HTMLElement)) return;
+    this.lineupPoolGrids.add(grid);
+    this.queueInactivePoolOverlaysForDemotion(grid);
     this.scheduleLineupPoolReadyScan(grid);
   };
   private readonly handleMarketCacheUpdate = (
@@ -1670,6 +1686,7 @@ export class SorareCardScanner {
       this.mutationFrame = undefined;
     }
     this.cancelLineupPoolReadyScan();
+    this.cancelPoolOverlayDemotions();
     this.pendingScanRoots.clear();
     this.mutationScanBacklog = [];
     this.mutationBacklogLineupPosition = undefined;
@@ -2052,6 +2069,113 @@ export class SorareCardScanner {
     this.layoutTargetsDirty = true;
   }
 
+  private queueInactivePoolOverlaysForDemotion(grid: HTMLElement): void {
+    if (!this.visibilityObserver || !grid.isConnected) return;
+    for (const [container, mounted] of this.overlays) {
+      if (
+        mounted.viewportActive ||
+        !grid.contains(container) ||
+        this.pendingPoolOverlayDemotionContainers.has(container)
+      ) {
+        continue;
+      }
+      this.pendingPoolOverlayDemotionContainers.add(container);
+      this.pendingPoolOverlayDemotions.push({ grid, container });
+    }
+    this.schedulePoolOverlayDemotions();
+  }
+
+  private schedulePoolOverlayDemotions(): void {
+    if (
+      this.poolOverlayDemotionFrame !== undefined ||
+      this.pendingPoolOverlayDemotions.length === 0
+    ) {
+      return;
+    }
+    const callback = (): void => {
+      this.poolOverlayDemotionFrame = undefined;
+      const startedAt = performance.now();
+      let processed = 0;
+      while (this.pendingPoolOverlayDemotions.length > 0) {
+        const candidate = this.pendingPoolOverlayDemotions.shift();
+        if (!candidate) break;
+        this.pendingPoolOverlayDemotionContainers.delete(candidate.container);
+        const mounted = this.overlays.get(candidate.container);
+        if (
+          mounted &&
+          !mounted.viewportActive &&
+          candidate.grid.isConnected &&
+          candidate.grid.contains(candidate.container)
+        ) {
+          this.deferMountedPoolOverlay(candidate.container, mounted);
+        }
+        processed += 1;
+        if (
+          processed >= poolOverlayDemotionMaxCards ||
+          performance.now() - startedAt >= poolOverlayDemotionBudgetMs
+        ) {
+          break;
+        }
+      }
+      this.schedulePoolOverlayDemotions();
+    };
+    this.poolOverlayDemotionFrame =
+      typeof window.requestAnimationFrame === 'function'
+        ? window.requestAnimationFrame(callback)
+        : window.setTimeout(callback, 0);
+  }
+
+  private cancelPoolOverlayDemotions(): void {
+    if (this.poolOverlayDemotionFrame !== undefined) {
+      if (typeof window.cancelAnimationFrame === 'function') {
+        window.cancelAnimationFrame(this.poolOverlayDemotionFrame);
+      } else {
+        window.clearTimeout(this.poolOverlayDemotionFrame);
+      }
+      this.poolOverlayDemotionFrame = undefined;
+    }
+    this.pendingPoolOverlayDemotions.length = 0;
+    this.pendingPoolOverlayDemotionContainers.clear();
+  }
+
+  private isKnownLineupPoolContainer(container: HTMLElement): boolean {
+    if (
+      container.closest<HTMLElement>(`[${lineupSortHydrationGridAttribute}]`)
+    ) {
+      return true;
+    }
+    let ancestor = container.parentElement;
+    while (ancestor) {
+      if (this.lineupPoolGrids.has(ancestor)) return true;
+      ancestor = ancestor.parentElement;
+    }
+    return false;
+  }
+
+  private deferMountedPoolOverlay(
+    container: HTMLElement,
+    mounted: MountedOverlay,
+  ): void {
+    if (!this.visibilityObserver || !this.isKnownLineupPoolContainer(container)) {
+      return;
+    }
+    this.visibilityObserver.unobserve(container);
+    this.coordinator.releaseView(mounted.view);
+    mounted.view.destroy({ preserveLineupSortData: true });
+    delete container.dataset.sorareOverlayKey;
+    this.overlays.delete(container);
+    if (container.getAttribute(lineupSortDataReadyAttribute) === 'true') {
+      container.setAttribute(lineupSortLightweightReadyAttribute, mounted.key);
+    }
+    this.deferredOverlays.set(container, {
+      key: mounted.key,
+      target: mounted.target,
+    });
+    container.setAttribute(deferredOverlayKeyAttribute, mounted.key);
+    this.visibilityObserver.observe(container);
+    this.layoutTargetsDirty = true;
+  }
+
   private startLayoutObserver(): void {
     if (this.layoutObserver || typeof MutationObserver === 'undefined') return;
     this.layoutObserver = new MutationObserver((mutations) => {
@@ -2345,6 +2469,13 @@ export class SorareCardScanner {
           }
           const mounted = this.overlays.get(entry.target);
           if (!mounted) continue;
+          if (
+            !entry.isIntersecting &&
+            this.isKnownLineupPoolContainer(entry.target)
+          ) {
+            this.deferMountedPoolOverlay(entry.target, mounted);
+            continue;
+          }
           const priority = entry.isIntersecting
             ? Math.max(
                 viewportPriorityNearby,

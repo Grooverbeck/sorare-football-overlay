@@ -3485,15 +3485,17 @@ export class OverlayView {
     });
   }
 
-  destroy(): void {
+  destroy(options: { preserveLineupSortData?: boolean } = {}): void {
     if (this.destroyed) return;
     this.destroyed = true;
-    setLineupGoalSortValue(this.container, null);
-    setLineupAaSortValue(this.container, null);
-    setLineupSortPosition(this.container, null);
-    setLineupSortDataReady(this.container, null);
-    this.container.removeAttribute(lineupSortLightweightReadyAttribute);
-    this.container.removeAttribute(lineupSortFullDataRevisionAttribute);
+    if (!options.preserveLineupSortData) {
+      setLineupGoalSortValue(this.container, null);
+      setLineupAaSortValue(this.container, null);
+      setLineupSortPosition(this.container, null);
+      setLineupSortDataReady(this.container, null);
+      this.container.removeAttribute(lineupSortLightweightReadyAttribute);
+      this.container.removeAttribute(lineupSortFullDataRevisionAttribute);
+    }
     this.stopPackBracketSettling();
     if (this.packMotionProbeFrame !== undefined) {
       cancelPositionFrame(this.packMotionProbeFrame);
@@ -3508,16 +3510,22 @@ export class OverlayView {
   }
 
   loading(): void {
-    if (!this.container.hasAttribute(lineupSortLightweightReadyAttribute)) {
+    const preserveLineupSortValues = this.container.hasAttribute(
+      lineupSortLightweightReadyAttribute,
+    );
+    if (!preserveLineupSortValues) {
       setLineupSortDataReady(this.container, false);
     }
     this.clearLineupOdds();
     this.clearPlayerMarketTooltip();
-    this.state('Lade L10 …', 'pulse');
+    this.state('Lade L10 …', 'pulse', undefined, preserveLineupSortValues);
   }
 
   retrying(): void {
-    if (!this.container.hasAttribute(lineupSortLightweightReadyAttribute)) {
+    const preserveLineupSortValues = this.container.hasAttribute(
+      lineupSortLightweightReadyAttribute,
+    );
+    if (!preserveLineupSortValues) {
       setLineupSortDataReady(this.container, false);
     }
     this.clearLineupOdds();
@@ -3526,16 +3534,21 @@ export class OverlayView {
       'Lade L10 erneut …',
       'pulse',
       'Die letzte Anfrage ist fehlgeschlagen oder läuft im Hintergrund weiter. Die Extension versucht es automatisch erneut.',
+      preserveLineupSortValues,
     );
   }
 
   error(): void {
+    const preserveLineupSortValues = this.container.hasAttribute(
+      lineupSortLightweightReadyAttribute,
+    );
     this.clearLineupOdds();
     this.clearPlayerMarketTooltip();
     this.state(
       'Kurz nicht verfügbar',
       'error',
       'Die zuletzt angefragten Daten konnten nicht geladen werden. Die Extension versucht es automatisch erneut.',
+      preserveLineupSortValues,
     );
     setLineupSortDataReady(this.container, true);
   }
@@ -4062,11 +4075,14 @@ export class OverlayView {
     message: string,
     modifier: string,
     title?: string,
+    preserveLineupSortValues = false,
   ): void {
     if (this.destroyed) return;
     this.lastRawStats = null;
     this.renderedFixturePresentationKey = 'null';
-    setLineupGoalSortValue(this.container, null);
+    if (!preserveLineupSortValues) {
+      setLineupGoalSortValue(this.container, null);
+    }
     this.stopPackBracketSettling();
     this.panel.replaceChildren();
     if (modifier === 'no-data') {

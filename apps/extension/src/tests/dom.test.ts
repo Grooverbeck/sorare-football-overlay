@@ -265,6 +265,9 @@ describe('Sorare card DOM discovery', () => {
       lineupSortLightweightReadyAttribute,
       'name:prehydrated player:Midfielder',
     );
+    card.setAttribute('data-sorare-overlay-goal-sort-probability', '0.42');
+    card.setAttribute('data-sorare-overlay-goal-sort-source', 'market');
+    card.setAttribute('data-sorare-overlay-aa-sort-value', '13');
 
     const view = new OverlayView(
       card,
@@ -273,8 +276,15 @@ describe('Sorare card DOM discovery', () => {
     );
 
     expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    expect(
+      card.getAttribute('data-sorare-overlay-goal-sort-probability'),
+    ).toBe('0.42');
+    expect(card.getAttribute('data-sorare-overlay-aa-sort-value')).toBe('13');
     view.retrying();
     expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    expect(
+      card.getAttribute('data-sorare-overlay-goal-sort-probability'),
+    ).toBe('0.42');
     view.render({
       slug: 'prehydrated-player',
       displayName: 'Prehydrated Player',
@@ -3121,6 +3131,184 @@ describe('Sorare card DOM discovery', () => {
     vi.unstubAllGlobals();
   });
 
+  it('demotes inactive lineup-pool overlays without losing their sort values', async () => {
+    let intersectionCallback: IntersectionObserverCallback | undefined;
+    const observe = vi.fn();
+    const unobserve = vi.fn();
+    const disconnect = vi.fn();
+    class TestIntersectionObserver {
+      readonly root = null;
+      readonly rootMargin = '';
+      readonly thresholds: readonly number[] = [];
+
+      constructor(callback: IntersectionObserverCallback) {
+        intersectionCallback = callback;
+      }
+
+      observe = observe;
+      unobserve = unobserve;
+      disconnect = disconnect;
+      takeRecords(): IntersectionObserverEntry[] {
+        return [];
+      }
+    }
+    vi.stubGlobal('IntersectionObserver', TestIntersectionObserver);
+    document.body.innerHTML = `
+      <div data-testid="managed-lineup-pool">
+        <article data-testid="managed-offscreen-card" data-position="Forward">
+          <a href="/football/players/managed-player">Managed player</a>
+        </article>
+      </div>
+      <article data-testid="ordinary-offscreen-card" data-position="Forward">
+        <a href="/football/players/ordinary-player">Ordinary player</a>
+      </article>
+    `;
+    const pool = document.querySelector<HTMLElement>(
+      '[data-testid="managed-lineup-pool"]',
+    );
+    const managedCard = document.querySelector<HTMLElement>(
+      '[data-testid="managed-offscreen-card"]',
+    );
+    const ordinaryCard = document.querySelector<HTMLElement>(
+      '[data-testid="ordinary-offscreen-card"]',
+    );
+    if (!pool || !managedCard || !ordinaryCard) {
+      throw new Error('Expected managed and ordinary offscreen cards');
+    }
+    for (const card of [managedCard, ordinaryCard]) {
+      vi.spyOn(card, 'getBoundingClientRect').mockReturnValue(
+        DOMRect.fromRect({ x: 20, y: 4_000, width: 120, height: 194 }),
+      );
+    }
+    const fetcher = vi.fn(
+      async (
+        request: PlayerStatsRequest,
+      ): Promise<PlayerStatsSuccessResponse> => ({
+        data: request.slugs.map((slug) => ({
+          slug,
+          displayName: slug,
+          position: 'Forward',
+          aaL10: { value: 12, sampleSize: 10 },
+          cleanSheetL10: { value: 0.2, sampleSize: 10 },
+          goalL10: { value: 0.45, sampleSize: 10 },
+          nextGame: null,
+          excludedLowCoverage: 0,
+        })),
+        meta: {
+          requested: request.slugs.length,
+          returned: request.slugs.length,
+          cacheHits: 0,
+          source: 'sorare',
+        },
+      }),
+    );
+    const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const scanner = new SorareCardScanner(coordinator);
+    const overlayFor = (slug: string): HTMLElement | null =>
+      document.querySelector(
+        `[data-sorare-overlay-root][data-player-slug="${slug}"]`,
+      );
+
+    try {
+      scanner.start();
+      expect(overlayFor('managed-player')).not.toBeNull();
+      expect(overlayFor('ordinary-player')).not.toBeNull();
+      managedCard.setAttribute(
+        'data-sorare-overlay-goal-sort-probability',
+        '0.45',
+      );
+      managedCard.setAttribute(
+        'data-sorare-overlay-goal-sort-source',
+        'market',
+      );
+      managedCard.setAttribute('data-sorare-overlay-aa-sort-value', '12');
+      managedCard.setAttribute('data-sorare-overlay-sort-position', 'Forward');
+      managedCard.setAttribute(lineupSortDataReadyAttribute, 'true');
+      managedCard.setAttribute(
+        'data-sorare-overlay-sort-full-data-revision',
+        '3',
+      );
+
+      pool.dispatchEvent(
+        new CustomEvent(lineupPoolProgressEvent, { bubbles: true }),
+      );
+
+      await vi.waitFor(() =>
+        expect(overlayFor('managed-player')).toBeNull(),
+      );
+      expect(overlayFor('ordinary-player')).not.toBeNull();
+      expect(managedCard.hasAttribute('data-sorare-overlay-deferred-key')).toBe(
+        true,
+      );
+      expect(
+        managedCard.getAttribute('data-sorare-overlay-goal-sort-probability'),
+      ).toBe('0.45');
+      expect(
+        managedCard.getAttribute('data-sorare-overlay-goal-sort-source'),
+      ).toBe('market');
+      expect(
+        managedCard.getAttribute('data-sorare-overlay-aa-sort-value'),
+      ).toBe('12');
+      expect(managedCard.getAttribute(lineupSortDataReadyAttribute)).toBe(
+        'true',
+      );
+      expect(
+        managedCard.getAttribute(lineupSortLightweightReadyAttribute),
+      ).toContain('managed-player');
+      expect(
+        managedCard.getAttribute('data-sorare-overlay-sort-full-data-revision'),
+      ).toBe('3');
+
+      intersectionCallback?.(
+        [
+          {
+            target: managedCard,
+            isIntersecting: true,
+            boundingClientRect: DOMRect.fromRect({
+              x: 20,
+              y: 800,
+              width: 120,
+              height: 194,
+            }),
+          } as IntersectionObserverEntry,
+        ],
+        {} as IntersectionObserver,
+      );
+      expect(overlayFor('managed-player')).not.toBeNull();
+      expect(
+        managedCard.getAttribute('data-sorare-overlay-goal-sort-probability'),
+      ).toBe('0.45');
+      expect(managedCard.getAttribute(lineupSortDataReadyAttribute)).toBe(
+        'true',
+      );
+
+      intersectionCallback?.(
+        [
+          {
+            target: managedCard,
+            isIntersecting: false,
+            boundingClientRect: DOMRect.fromRect({
+              x: 20,
+              y: 4_000,
+              width: 120,
+              height: 194,
+            }),
+          } as IntersectionObserverEntry,
+        ],
+        {} as IntersectionObserver,
+      );
+      expect(overlayFor('managed-player')).toBeNull();
+      expect(
+        managedCard.getAttribute('data-sorare-overlay-goal-sort-probability'),
+      ).toBe('0.45');
+      expect(unobserve).toHaveBeenCalled();
+    } finally {
+      scanner.stop();
+      vi.unstubAllGlobals();
+    }
+    expect(disconnect).toHaveBeenCalledTimes(1);
+  });
+
   it('hydrates far-offscreen cards when a complete lineup pool is ready', async () => {
     const observe = vi.fn();
     const disconnect = vi.fn();
@@ -3220,7 +3408,9 @@ describe('Sorare card DOM discovery', () => {
       offscreenCard.getAttribute('data-sorare-overlay-aa-sort-value'),
     ).toBe('10');
     scanner.stop();
-    expect(observe).toHaveBeenCalledTimes(2);
+    // The inactive card is re-observed after its full overlay is demoted to
+    // the lightweight pool representation.
+    expect(observe).toHaveBeenCalledTimes(3);
     expect(disconnect).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
   });
