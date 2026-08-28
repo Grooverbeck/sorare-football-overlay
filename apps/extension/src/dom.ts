@@ -10,6 +10,7 @@ export interface CardTarget {
 
 export interface FindCardTargetsOptions {
   activeLineupPosition?: FootballPosition | null;
+  skipMiniatureCardCheck?: boolean;
 }
 
 const playerPath = /\/(?:football\/)?players\/([a-z0-9]+(?:-[a-z0-9]+)*)/i;
@@ -433,7 +434,12 @@ export function findCardTargets(
     if (!slug || !container) continue;
     if (targetContainers.has(container)) continue;
     if (isScoreDetailsDialogTarget(container)) continue;
-    if (isMiniatureCardTarget(container)) continue;
+    if (
+      !options.skipMiniatureCardCheck &&
+      isMiniatureCardTarget(container)
+    ) {
+      continue;
+    }
     const position =
       inferCardPosition(container) ??
       (hasActiveLineupPosition
@@ -456,7 +462,12 @@ export function findCardTargets(
     if (!playerName || !container) continue;
     if (targetContainers.has(container)) continue;
     if (isScoreDetailsDialogTarget(container)) continue;
-    if (isMiniatureCardTarget(container)) continue;
+    if (
+      !options.skipMiniatureCardCheck &&
+      isMiniatureCardTarget(container)
+    ) {
+      continue;
+    }
     if (!extractPlayerName(image) && !hasNearbyTeamRow(container)) continue;
     const concretePosition = inferCardPosition(container);
     const lineupSlotPosition = inferLineupSlotPosition(container);

@@ -7225,29 +7225,77 @@ describe('Sorare card DOM discovery', () => {
     requestAnimationFrame.mockClear();
 
     const fragment = document.createDocumentFragment();
+    const layoutReadCounts: Array<() => number> = [];
     for (let index = 0; index < 40; index += 1) {
       const cell = document.createElement('article');
       cell.dataset.testid = `lazy-card-${index}`;
       cell.innerHTML = `<button type="button" data-position="Midfielder">
         <img alt="Lazy Player ${index} - limited" src="/lazy-card-${index}.png">
       </button>`;
+      const button = cell.querySelector<HTMLElement>('button');
+      const image = cell.querySelector<HTMLImageElement>('img');
+      if (!button || !image) throw new Error('Expected lazy card elements');
+      const buttonRect = vi
+        .spyOn(button, 'getBoundingClientRect')
+        .mockReturnValue(
+          DOMRect.fromRect({ x: 20, y: 4_000, width: 120, height: 194 }),
+        );
+      const imageRect = vi
+        .spyOn(image, 'getBoundingClientRect')
+        .mockReturnValue(
+          DOMRect.fromRect({ x: 20, y: 4_000, width: 120, height: 194 }),
+        );
+      layoutReadCounts.push(
+        () => buttonRect.mock.calls.length,
+        () => imageRect.mock.calls.length,
+      );
       fragment.append(cell);
     }
     pool.append(fragment);
     await vi.waitFor(() => expect(requestAnimationFrame).toHaveBeenCalled());
-    frameCallbacks.shift()?.(performance.now());
+    let flushFrames = 0;
+    while (frameCallbacks.length > 0 && flushFrames < 100) {
+      flushFrames += 1;
+      frameCallbacks.shift()?.(performance.now());
+    }
 
     const scannedRoots = scan.mock.calls.map(([root]) => root);
     scanner.stop();
     vi.unstubAllGlobals();
+    expect(flushFrames).toBeGreaterThanOrEqual(3);
+    expect(flushFrames).toBeLessThan(100);
     expect(scannedRoots).toHaveLength(40);
     expect(
       scannedRoots.every(
         (root) => root instanceof HTMLElement && root.parentElement === pool,
       ),
     ).toBe(true);
+    expect(layoutReadCounts.every((count) => count() === 0)).toBe(true);
     expect(hydrate).toHaveBeenCalledTimes(1);
     expect(hydrate.mock.calls[0]?.[1]).toHaveLength(40);
+  });
+
+  it('does not reposition the existing pool for direct lazy-grid growth', () => {
+    document.body.innerHTML = `
+      <div ${lineupSortHydrationGridAttribute}="true" data-testid="pool">
+        <article data-testid="cell"><button><img alt="Player - limited"></button></article>
+      </div>
+    `;
+    const pool = document.querySelector<HTMLElement>('[data-testid="pool"]');
+    const cell = document.querySelector<HTMLElement>('[data-testid="cell"]');
+    const image = cell?.querySelector('img');
+    if (!pool || !cell || !image) throw new Error('Expected lineup pool');
+    const scanner = new SorareCardScanner();
+    const internals = scanner as unknown as {
+      queuePositionContext: (node: Node) => void;
+      pendingPositionScopes: Set<Element>;
+    };
+
+    internals.queuePositionContext(pool);
+    expect(internals.pendingPositionScopes.size).toBe(0);
+
+    internals.queuePositionContext(image);
+    expect([...internals.pendingPositionScopes]).toEqual([cell]);
   });
 
   it('ignores native sort option mutations owned by the extension', async () => {

@@ -107,7 +107,7 @@ export class LineupSortHydrator {
 
   constructor(
     private readonly fetcher: SortValuesFetcher = fetchLineupSortValues,
-    private readonly batchSize = 25,
+    private readonly batchSize = 50,
     private readonly retryDelaysMs: readonly number[] = [1_000, 5_000],
   ) {}
 

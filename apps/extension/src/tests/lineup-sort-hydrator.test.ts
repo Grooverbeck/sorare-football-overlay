@@ -90,7 +90,7 @@ describe('LineupSortHydrator', () => {
     document.body.replaceChildren();
   });
 
-  it('hydrates a large pool in provider-free batches of twenty-five', async () => {
+  it('hydrates a large pool in provider-free batches of fifty', async () => {
     const grid = renderGrid(51);
     const fetcher = vi.fn(async (request: LineupSortValuesRequest) =>
       responseFor(request),
@@ -100,8 +100,7 @@ describe('LineupSortHydrator', () => {
     await hydrator.hydrate(grid);
 
     expect(fetcher.mock.calls.map(([request]) => request.slugs?.length)).toEqual([
-      25,
-      25,
+      50,
       1,
     ]);
     expect(fetcher.mock.calls[0]?.[0]).toMatchObject({
@@ -116,17 +115,18 @@ describe('LineupSortHydrator', () => {
     hydrator.stop();
   });
 
-  it('supports a measured fifty-player batch without changing the default', async () => {
-    const grid = renderGrid(50);
+  it('caps configured batches at the fifty-player API contract', async () => {
+    const grid = renderGrid(51);
     const fetcher = vi.fn(async (request: LineupSortValuesRequest) =>
       responseFor(request),
     );
-    const hydrator = new LineupSortHydrator(fetcher, 50);
+    const hydrator = new LineupSortHydrator(fetcher, 100);
 
     await hydrator.hydrate(grid);
 
-    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledTimes(2);
     expect(fetcher.mock.calls[0]?.[0].slugs).toHaveLength(50);
+    expect(fetcher.mock.calls[1]?.[0].slugs).toHaveLength(1);
     hydrator.stop();
   });
 

@@ -80,6 +80,8 @@ const viewportPriorityVerticalMargin = 500;
 const viewportPriorityHorizontalMargin = 240;
 const viewportPriorityVisible = 2;
 const viewportPriorityNearby = 1;
+const mutationFlushBudgetMs = 7;
+const mutationFlushMaxRoots = 16;
 const defaultMaxCachedAliases = 8_192;
 const defaultCachedAliasTtlMs = 6 * 60 * 60 * 1_000;
 
@@ -149,13 +151,15 @@ function isElementNode(node: Node): node is Element {
 }
 
 function outermostElements(elements: Iterable<Element>): Element[] {
-  const candidates = [...elements];
-  return candidates.filter(
-    (candidate) =>
-      !candidates.some(
-        (other) => other !== candidate && other.contains(candidate),
-      ),
-  );
+  const candidates = new Set(elements);
+  return [...candidates].filter((candidate) => {
+    let ancestor = candidate.parentElement;
+    while (ancestor) {
+      if (candidates.has(ancestor)) return false;
+      ancestor = ancestor.parentElement;
+    }
+    return true;
+  });
 }
 
 function conflictFreeBatches(
@@ -1453,6 +1457,12 @@ export class SorareCardScanner {
   private readonly layoutViewsByTarget = new Map<Element, Set<OverlayView>>();
   private layoutTargetsDirty = false;
   private readonly pendingScanRoots = new Set<Element>();
+  private mutationScanBacklog: Element[] = [];
+  private mutationBacklogLineupPosition:
+    | FootballPosition
+    | null
+    | undefined;
+  private readonly mutationHydrationTargets: CardTarget[] = [];
   private readonly pendingPositionScopes = new Set<Element>();
   private readonly pendingPictureNameRescanIds = new Set<string>();
   private pictureNameRescanTimer: number | undefined;
@@ -1671,6 +1681,9 @@ export class SorareCardScanner {
       this.mutationFrame = undefined;
     }
     this.pendingScanRoots.clear();
+    this.mutationScanBacklog = [];
+    this.mutationBacklogLineupPosition = undefined;
+    this.mutationHydrationTargets.length = 0;
     this.pendingPositionScopes.clear();
     if (this.pictureNameRescanTimer !== undefined) {
       window.clearTimeout(this.pictureNameRescanTimer);
@@ -1695,6 +1708,7 @@ export class SorareCardScanner {
     refreshLayoutTargets = true,
     knownLineupPosition = activeLineupPosition(),
     hydrateLineupSortTargets = true,
+    knownHydrationPriority?: number,
   ): CardTarget[] {
     decorateNativeSorareLineupProbabilities(root);
     this.lineupSorter.scan(root);
@@ -1704,12 +1718,17 @@ export class SorareCardScanner {
             `[${lineupSortHydrationGridAttribute}]`,
           )
         : null;
-    const targets =
-      !rootHydrationGrid || knownLineupPosition === undefined
-        ? findCardTargets(root)
-        : findCardTargets(root, {
-            activeLineupPosition: knownLineupPosition,
-          });
+    const targets = rootHydrationGrid
+      ? findCardTargets(root, {
+          ...(knownLineupPosition !== undefined
+            ? { activeLineupPosition: knownLineupPosition }
+            : {}),
+          // The active Sorare picker grid contains full-size selectable cards
+          // by construction. Measuring every image here would synchronously
+          // force layout once per lazy-loaded card.
+          skipMiniatureCardCheck: true,
+        })
+      : findCardTargets(root);
     const discoveredPictureNames = drainDiscoveredCardPictureNames();
     if (Object.keys(discoveredPictureNames).length > 0) {
       this.onCardPictureNamesDiscovered?.(discoveredPictureNames);
@@ -1719,7 +1738,10 @@ export class SorareCardScanner {
       this.schedulePictureNameRescans();
     }
     for (const target of targets) {
-      this.mountTarget(target);
+      this.mountTarget(
+        target,
+        rootHydrationGrid ? knownHydrationPriority : undefined,
+      );
     }
     if (hydrateLineupSortTargets) this.hydrateLineupTargets(targets);
     if (refreshLayoutTargets) this.refreshLayoutObserverTargets();
@@ -1746,14 +1768,18 @@ export class SorareCardScanner {
     const key = targetKey(target);
     const mounted = this.overlays.get(target.container);
     if (mounted?.key === key) return;
-    const priority = knownPriority ?? (this.visibilityObserver
-      ? viewportPriorityForRect(target.container.getBoundingClientRect())
-      : viewportPriorityNearby);
     const deferred = this.deferredOverlays.get(target.container);
+    // IntersectionObserver owns promotion of an unchanged deferred card. A
+    // later pool-wide reconciliation must not synchronously measure hundreds
+    // of offscreen cards merely to rediscover that they are still offscreen.
+    if (deferred?.key === key && knownPriority === undefined) return;
+    const priority = this.visibilityObserver
+      ? knownPriority ??
+        viewportPriorityForRect(target.container.getBoundingClientRect())
+      : viewportPriorityNearby;
     if (deferred?.key === key && priority === 0) return;
     if (deferred) {
-      this.visibilityObserver?.unobserve(target.container);
-      this.deferredOverlays.delete(target.container);
+      this.releaseDeferredOverlay(target.container);
     }
     if (mounted) {
       this.releaseMountedOverlay(target.container, mounted);
@@ -1800,17 +1826,35 @@ export class SorareCardScanner {
     if (mountedOverlay.viewportActive) this.requestStats(mountedOverlay, priority);
   }
 
-  private reconcileMountedOverlays(scopes: readonly Element[]): void {
+  private reconcileMountedOverlays(
+    scopes: readonly Element[],
+    knownLineupPosition = activeLineupPosition(),
+    alreadyScannedContainers: ReadonlySet<HTMLElement> = new Set(),
+  ): void {
     const candidates =
       scopes.length > 0
         ? this.trackedOverlayContainersForScopes(scopes)
         : new Set([...this.overlays.keys(), ...this.deferredOverlays.keys()]);
     for (const container of candidates) {
+      if (alreadyScannedContainers.has(container)) continue;
       const mounted = this.overlays.get(container);
       const deferred = this.deferredOverlays.get(container);
       if (!mounted && !deferred) continue;
+      const hydrationGrid = container.closest<HTMLElement>(
+        `[${lineupSortHydrationGridAttribute}]`,
+      );
       const currentTarget = container.isConnected
-        ? findCardTargets(container).find(
+        ? findCardTargets(
+            container,
+            hydrationGrid
+              ? {
+                  ...(knownLineupPosition !== undefined
+                    ? { activeLineupPosition: knownLineupPosition }
+                    : {}),
+                  skipMiniatureCardCheck: true,
+                }
+              : {},
+          ).find(
             (candidate) => candidate.container === container,
           )
         : undefined;
@@ -1823,7 +1867,14 @@ export class SorareCardScanner {
       if (currentKey === (mounted?.key ?? deferred?.key)) continue;
       if (mounted) this.releaseMountedOverlay(container, mounted);
       else this.releaseDeferredOverlay(container);
-      this.mountTarget(currentTarget);
+      this.mountTarget(
+        currentTarget,
+        hydrationGrid
+          ? mounted?.viewportActive
+            ? viewportPriorityNearby
+            : 0
+          : undefined,
+      );
     }
   }
 
@@ -2037,6 +2088,26 @@ export class SorareCardScanner {
 
   private queuePositionContext(node: Node): void {
     let context = isElementNode(node) ? node : node.parentElement;
+    const hydrationGrid = context?.closest<HTMLElement>(
+      `[${lineupSortHydrationGridAttribute}]`,
+    );
+    if (context && hydrationGrid) {
+      // Appending another row at the end of the picker does not move the
+      // already mounted cards. New cards position themselves when their
+      // IntersectionObserver entry arrives; inner-card mutations only need
+      // to refresh that card's direct grid cell.
+      if (context === hydrationGrid) return;
+      while (
+        context.parentElement &&
+        context.parentElement !== hydrationGrid
+      ) {
+        context = context.parentElement;
+      }
+      if (context.parentElement === hydrationGrid) {
+        this.pendingPositionScopes.add(context);
+      }
+      return;
+    }
     for (let depth = 0; context && depth < 3; depth += 1) {
       if (context === document.body || context === document.documentElement) {
         this.shouldRefreshAllPositions = true;
@@ -2051,6 +2122,7 @@ export class SorareCardScanner {
     if (
       this.mutationFrame !== undefined ||
       (this.pendingScanRoots.size === 0 &&
+        this.mutationScanBacklog.length === 0 &&
         this.pendingPositionScopes.size === 0 &&
         !this.shouldRefreshAllPositions)
     ) {
@@ -2066,23 +2138,77 @@ export class SorareCardScanner {
         : window.setTimeout(flush, 0);
   }
 
+  private takeMutationScanRoots(): Element[] {
+    const incoming = outermostElements(this.pendingScanRoots);
+    this.pendingScanRoots.clear();
+    if (this.mutationScanBacklog.length === 0) return incoming;
+    if (incoming.length === 0) {
+      const backlog = this.mutationScanBacklog;
+      this.mutationScanBacklog = [];
+      return backlog;
+    }
+    const combined = outermostElements([
+      ...this.mutationScanBacklog,
+      ...incoming,
+    ]);
+    this.mutationScanBacklog = [];
+    return combined;
+  }
+
   private flushMutations(): void {
-    const roots = outermostElements(this.pendingScanRoots);
+    const continuesBacklog = this.mutationScanBacklog.length > 0;
+    const knownLineupPosition = continuesBacklog
+      ? this.mutationBacklogLineupPosition
+      : activeLineupPosition();
+    const roots = this.takeMutationScanRoots();
     const positionScopes = outermostElements(this.pendingPositionScopes);
     const refreshAllPositions = this.shouldRefreshAllPositions;
-    this.pendingScanRoots.clear();
     this.pendingPositionScopes.clear();
     this.shouldRefreshAllPositions = false;
-    const knownLineupPosition = activeLineupPosition();
-    const hydrationTargets: CardTarget[] = [];
-    for (const root of roots) {
-      hydrationTargets.push(
-        ...this.scan(root, false, knownLineupPosition, false),
+    const processedRoots: Element[] = [];
+    const processedTargets: CardTarget[] = [];
+    const startedAt = performance.now();
+    let processedCount = 0;
+    while (processedCount < roots.length) {
+      const root = roots[processedCount];
+      if (!root) break;
+      const targets = this.scan(
+        root,
+        false,
+        knownLineupPosition,
+        false,
+        0,
       );
+      processedTargets.push(...targets);
+      this.mutationHydrationTargets.push(...targets);
+      processedRoots.push(root);
+      processedCount += 1;
+      if (
+        processedCount >= mutationFlushMaxRoots ||
+        performance.now() - startedAt >= mutationFlushBudgetMs
+      ) {
+        break;
+      }
     }
-    this.hydrateLineupTargets(hydrationTargets);
-    if (roots.length > 0) {
-      this.reconcileMountedOverlays(roots);
+    this.mutationScanBacklog = roots.slice(processedCount);
+    this.mutationBacklogLineupPosition =
+      this.mutationScanBacklog.length > 0
+        ? knownLineupPosition
+        : undefined;
+    if (
+      this.mutationScanBacklog.length === 0 &&
+      this.pendingScanRoots.size === 0 &&
+      this.mutationHydrationTargets.length > 0
+    ) {
+      this.hydrateLineupTargets(this.mutationHydrationTargets);
+      this.mutationHydrationTargets.length = 0;
+    }
+    if (processedRoots.length > 0) {
+      this.reconcileMountedOverlays(
+        processedRoots,
+        knownLineupPosition,
+        new Set(processedTargets.map(({ container }) => container)),
+      );
     } else {
       this.cleanupDisconnectedOverlays();
     }
@@ -2098,6 +2224,7 @@ export class SorareCardScanner {
         view.refreshPosition();
       }
     }
+    this.scheduleMutationFlush();
   }
 
   private startVisibilityObserver(): void {
