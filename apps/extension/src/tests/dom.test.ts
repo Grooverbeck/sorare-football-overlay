@@ -1535,6 +1535,140 @@ describe('Sorare card DOM discovery', () => {
     view.destroy();
   });
 
+  it('borrows only team odds from a canonical opponent fixture without leaking stale player props', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/de/football/series/test-series/compose-team',
+    );
+    document.body.innerHTML = `
+      <section>
+        <button data-testid="gross-card">
+          <img alt="Pascal Groß - common" src="/gross.png">
+        </button>
+        <button>
+          <div data-testid="che-bri-teams">
+            <div aria-label="Team">
+              <img alt="chelsea-london" src="/chelsea.png">
+              <span>CHE</span>
+            </div>
+            <div aria-label="Team" class="highlighted">
+              <img
+                alt="brighton-hove-albion-brighton-east-sussex"
+                src="/brighton.png"
+              >
+              <span>BRI</span>
+            </div>
+          </div>
+        </button>
+      </section>
+    `;
+    const card = document.querySelector<HTMLElement>('[data-testid="gross-card"]');
+    const teamRow = document.querySelector<HTMLElement>(
+      '[data-testid="che-bri-teams"]',
+    );
+    if (!card || !teamRow) throw new Error('Expected CHE–BRI fixture');
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 40, y: 100, width: 110, height: 178 }),
+    );
+    vi.spyOn(teamRow, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 40, y: 300, width: 110, height: 20 }),
+    );
+
+    const grossStats: PlayerStats = {
+      slug: 'pascal-gross',
+      displayName: 'Pascal Groß',
+      position: 'Midfielder',
+      aaL10: { value: 14.1, sampleSize: 10 },
+      cleanSheetL10: { value: 0.2, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-27T18:30:00.000Z',
+        homeTeamName: 'Brighton & Hove Albion',
+        awayTeamName: 'Tromsø',
+        homeTeamSlug: 'brighton-hove-albion-brighton-east-sussex',
+        awayTeamSlug: 'tromso-tromso',
+        playerTeamName: 'Brighton & Hove Albion',
+        opponentTeamName: 'Tromsø',
+        playerTeamSlug: 'brighton-hove-albion-brighton-east-sussex',
+        cleanSheetProbability: 0.8,
+        matchProbabilities: { win: 0.8, draw: 0.15, loss: 0.05 },
+        marketOdds: {
+          source: 'odds-api-io',
+          capturedAt: '2026-08-26T23:32:15.264Z',
+          goal: { probability: 0.27, bookmakerCount: 2 },
+          assist: { probability: 0.19, bookmakerCount: 1 },
+          decisive: null,
+        },
+      },
+      excludedLowCoverage: 0,
+    };
+    const rogersStats: PlayerStats = {
+      slug: 'morgan-rogers',
+      displayName: 'Morgan Rogers',
+      position: 'Midfielder',
+      aaL10: { value: 17.4, sampleSize: 10 },
+      cleanSheetL10: { value: 0.1, sampleSize: 10 },
+      goalL10: { value: 0.2, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-30T13:00:00.000Z',
+        homeTeamName: 'Chelsea',
+        awayTeamName: 'Brighton & Hove Albion',
+        homeTeamSlug: 'chelsea-london',
+        awayTeamSlug: 'brighton-hove-albion-brighton-east-sussex',
+        playerTeamName: 'Chelsea',
+        opponentTeamName: 'Brighton & Hove Albion',
+        playerTeamSlug: 'chelsea-london',
+        cleanSheetProbability: 0.31,
+        matchProbabilities: { win: 0.48, draw: 0.25, loss: 0.27 },
+        marketOdds: {
+          source: 'the-odds-api',
+          capturedAt: '2026-08-28T00:00:00.000Z',
+          goal: { probability: 0.31, bookmakerCount: 3 },
+          assist: { probability: 0.21, bookmakerCount: 2 },
+          decisive: null,
+        },
+      },
+      excludedLowCoverage: 0,
+    };
+    const view = new OverlayView(
+      card,
+      { playerName: 'Pascal Groß' },
+      'Midfielder',
+    );
+
+    view.render(grossStats);
+    expect(
+      document.querySelector('[data-sorare-overlay-companion="lineup-odds"]'),
+    ).toBeNull();
+    expect(card.dataset.sorareOverlayGoalSortProbability).toBe('0.1');
+    expect(card.dataset.sorareOverlayGoalSortSource).toBe('historical');
+    expect(
+      view.host.shadowRoot?.querySelector('[data-market="goal"]'),
+    ).toBeNull();
+
+    view.refreshFixturePresentation([rogersStats]);
+    const companion = document.querySelector<HTMLElement>(
+      '[data-sorare-overlay-companion="lineup-odds"]',
+    );
+    expect(
+      companion?.shadowRoot?.querySelector('.lineup-odds-bar')?.textContent,
+    ).toBe('48%25%27%');
+    expect(
+      document
+        .querySelector<HTMLElement>(
+          '[data-sorare-overlay-companion="lineup-tooltip"]',
+        )
+        ?.shadowRoot?.querySelector('.tooltip-fixture')?.textContent,
+    ).toBe('Chelsea–Brighton & Hove Albion');
+    expect(card.dataset.sorareOverlayGoalSortProbability).toBe('0.1');
+    expect(card.dataset.sorareOverlayGoalSortSource).toBe('historical');
+    expect(
+      view.host.shadowRoot?.querySelector('[data-market="goal"]'),
+    ).toBeNull();
+    view.destroy();
+  });
+
   it('reuses known team fixture odds when a teammate response is temporarily incomplete', async () => {
     const completeFixture = {
       date: '2026-08-08T02:30:00.000Z',
@@ -4428,6 +4562,111 @@ describe('Sorare card DOM discovery', () => {
     );
 
     expect(view.host.style.display).toBe('none');
+    view.destroy();
+  });
+
+  it('keeps a visible lineup odds bar stable when only the card top is clipped', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/de/football/series/test-series/compose-team',
+    );
+    document.body.innerHTML = `
+      <header data-sticky-toolbar></header>
+      <div data-scroll-clip style="overflow-y: hidden">
+        <section>
+          <button data-testid="clipped-lineup-card">
+            <img alt="Pascal Groß - common" src="/gross.png">
+          </button>
+          <button>
+            <div data-testid="visible-team-row">
+              <div aria-label="Team">
+                <img alt="chelsea-london" src="/chelsea.png">
+                <span>CHE</span>
+              </div>
+              <div aria-label="Team" class="highlighted">
+                <img
+                  alt="brighton-hove-albion-brighton-east-sussex"
+                  src="/brighton.png"
+                >
+                <span>BRI</span>
+              </div>
+            </div>
+          </button>
+        </section>
+      </div>
+    `;
+    const clip = document.querySelector<HTMLElement>('[data-scroll-clip]');
+    const card = document.querySelector<HTMLElement>(
+      '[data-testid="clipped-lineup-card"]',
+    );
+    const image = card?.querySelector<HTMLImageElement>('img');
+    const teamRow = document.querySelector<HTMLElement>(
+      '[data-testid="visible-team-row"]',
+    );
+    if (!clip || !card || !image || !teamRow || !teamRow.firstElementChild) {
+      throw new Error('Expected partially clipped lineup card');
+    }
+    vi.spyOn(clip, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 0, y: 120, width: 800, height: 500 }),
+    );
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 100, y: 100, width: 130, height: 240 }),
+    );
+    vi.spyOn(image, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 100, y: 100, width: 130, height: 170 }),
+    );
+    vi.spyOn(teamRow, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 100, y: 300, width: 130, height: 20 }),
+    );
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true,
+      value: vi.fn((_x: number, y: number) =>
+        y >= 300 ? teamRow.firstElementChild : null,
+      ),
+    });
+
+    const view = new OverlayView(
+      card,
+      { playerName: 'Pascal Groß' },
+      'Midfielder',
+    );
+    view.render({
+      slug: 'pascal-gross',
+      displayName: 'Pascal Groß',
+      position: 'Midfielder',
+      aaL10: { value: 14.1, sampleSize: 10 },
+      cleanSheetL10: { value: 0.2, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-30T13:00:00.000Z',
+        homeTeamName: 'Chelsea',
+        awayTeamName: 'Brighton & Hove Albion',
+        homeTeamSlug: 'chelsea-london',
+        awayTeamSlug: 'brighton-hove-albion-brighton-east-sussex',
+        playerTeamName: 'Brighton & Hove Albion',
+        opponentTeamName: 'Chelsea',
+        playerTeamSlug: 'brighton-hove-albion-brighton-east-sussex',
+        cleanSheetProbability: 0.22,
+        matchProbabilities: { win: 0.27, draw: 0.25, loss: 0.48 },
+      },
+      excludedLowCoverage: 0,
+    });
+
+    const companion = document.querySelector<HTMLElement>(
+      '[data-sorare-overlay-companion="lineup-odds"]',
+    );
+    expect(view.host.style.display).toBe('none');
+    expect(companion?.hidden).toBe(false);
+    expect(
+      companion?.shadowRoot?.querySelector('.lineup-odds-bar')?.textContent,
+    ).toBe('48%25%27%');
+
+    for (let pass = 0; pass < 3; pass += 1) {
+      view.refreshPositionNow({ modalScope: null, occludingSurfaces: [] });
+      expect(companion?.hidden).toBe(false);
+      expect(teamRow.nextElementSibling).toBe(companion);
+    }
     view.destroy();
   });
 

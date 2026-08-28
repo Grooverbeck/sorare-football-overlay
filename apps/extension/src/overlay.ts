@@ -1286,6 +1286,217 @@ function visualLineupProbabilities(
   };
 }
 
+function fixtureMatchesCanonicalLineupSides(
+  nextGame: NonNullable<PlayerStats['nextGame']>,
+  sides: readonly LineupTeamSide[],
+): boolean | null {
+  if (
+    sides.length !== 2 ||
+    !sides[0]?.slug ||
+    !sides[1]?.slug ||
+    !nextGame.homeTeamSlug ||
+    !nextGame.awayTeamSlug
+  ) {
+    return null;
+  }
+
+  const homeIndex = sides.findIndex(({ slug }) =>
+    teamSlugsLikelyMatch(slug, nextGame.homeTeamSlug),
+  );
+  const awayIndex = sides.findIndex(({ slug }) =>
+    teamSlugsLikelyMatch(slug, nextGame.awayTeamSlug),
+  );
+  return homeIndex >= 0 && awayIndex >= 0 && homeIndex !== awayIndex;
+}
+
+function fixtureSideForTeamSlug(
+  nextGame: NonNullable<PlayerStats['nextGame']>,
+  teamSlug: string | undefined,
+): 'home' | 'away' | null {
+  if (!teamSlug) return null;
+  const home = teamSlugsLikelyMatch(nextGame.homeTeamSlug, teamSlug);
+  const away = teamSlugsLikelyMatch(nextGame.awayTeamSlug, teamSlug);
+  return home === away ? null : home ? 'home' : 'away';
+}
+
+function lineupFixtureDefinitelyMismatches(
+  nextGame: NonNullable<PlayerStats['nextGame']>,
+  sides: readonly LineupTeamSide[],
+): boolean {
+  const canonicalPairMatches = fixtureMatchesCanonicalLineupSides(
+    nextGame,
+    sides,
+  );
+  if (canonicalPairMatches !== null) return !canonicalPairMatches;
+
+  let playerIndex: number | undefined;
+  if (nextGame.playerTeamSlug && sides.every(({ slug }) => Boolean(slug))) {
+    const canonicalMatches = sides
+      .map(({ slug }, index) =>
+        teamSlugsLikelyMatch(slug, nextGame.playerTeamSlug) ? index : -1,
+      )
+      .filter((index) => index >= 0);
+    if (canonicalMatches.length !== 1) return true;
+    playerIndex = canonicalMatches[0];
+  }
+  if (playerIndex === undefined) {
+    const selected = sides
+      .map((side, index) => (side.selected ? index : -1))
+      .filter((index) => index >= 0);
+    if (selected.length === 1) playerIndex = selected[0];
+  }
+  if (playerIndex === undefined) return false;
+
+  const opponentIndex = playerIndex === 0 ? 1 : 0;
+  return (
+    lineupTeamSideMatches(
+      sides[playerIndex]!,
+      nextGame.playerTeamSlug,
+      nextGame.playerTeamName,
+    ) === false ||
+    lineupTeamSideMatches(
+      sides[opponentIndex]!,
+      fixtureOpponentSlug(nextGame),
+      nextGame.opponentTeamName,
+    ) === false
+  );
+}
+
+function lineupFixtureProbabilityCount(stats: PlayerStats): number {
+  const probabilities = stats.nextGame?.matchProbabilities;
+  return probabilities
+    ? [probabilities.win, probabilities.draw, probabilities.loss].filter(
+        (value) => value !== null,
+      ).length
+    : 0;
+}
+
+function compareLineupFixtureCandidates(
+  left: PlayerStats,
+  right: PlayerStats,
+): number {
+  const leftKickoff = Date.parse(left.nextGame?.date ?? '');
+  const rightKickoff = Date.parse(right.nextGame?.date ?? '');
+  const kickoffDifference =
+    (Number.isFinite(rightKickoff) ? rightKickoff : 0) -
+    (Number.isFinite(leftKickoff) ? leftKickoff : 0);
+  return (
+    kickoffDifference ||
+    lineupFixtureProbabilityCount(right) -
+      lineupFixtureProbabilityCount(left)
+  );
+}
+
+function adaptFixtureCandidateToPlayer(
+  stats: PlayerStats,
+  candidate: PlayerStats,
+): PlayerStats | null {
+  const targetFixture = stats.nextGame;
+  const sourceFixture = candidate.nextGame;
+  const targetTeamSlug = targetFixture?.playerTeamSlug;
+  if (!targetFixture || !sourceFixture || !targetTeamSlug) return null;
+
+  const targetSide = fixtureSideForTeamSlug(sourceFixture, targetTeamSlug);
+  const sourceSide = fixtureSideForTeamSlug(
+    sourceFixture,
+    sourceFixture.playerTeamSlug,
+  );
+  if (!targetSide || !sourceSide) return null;
+
+  const sourceProbabilities = sourceFixture.matchProbabilities;
+  const homeProbability = sourceProbabilities
+    ? sourceSide === 'home'
+      ? sourceProbabilities.win
+      : sourceProbabilities.loss
+    : null;
+  const awayProbability = sourceProbabilities
+    ? sourceSide === 'away'
+      ? sourceProbabilities.win
+      : sourceProbabilities.loss
+    : null;
+  const samePlayer = candidate.slug === stats.slug;
+  const playerTeamName =
+    targetSide === 'home'
+      ? sourceFixture.homeTeamName
+      : sourceFixture.awayTeamName;
+  const opponentTeamName =
+    targetSide === 'home'
+      ? sourceFixture.awayTeamName
+      : sourceFixture.homeTeamName;
+
+  return {
+    ...stats,
+    nextGame: {
+      ...sourceFixture,
+      playerTeamSlug: targetTeamSlug,
+      playerTeamName,
+      opponentTeamName,
+      cleanSheetProbability:
+        targetSide === sourceSide ? sourceFixture.cleanSheetProbability : null,
+      matchProbabilities: sourceProbabilities
+        ? {
+            win: targetSide === 'home' ? homeProbability : awayProbability,
+            draw: sourceProbabilities.draw,
+            loss: targetSide === 'home' ? awayProbability : homeProbability,
+          }
+        : null,
+      marketOdds: samePlayer ? sourceFixture.marketOdds ?? null : null,
+    },
+  };
+}
+
+function statsForVisibleLineupFixture(
+  stats: PlayerStats,
+  teamRow: HTMLElement | null,
+  fixtureCandidates: readonly PlayerStats[],
+): PlayerStats {
+  if (!stats.nextGame || !teamRow) return stats;
+  const sides = lineupTeamSides(teamRow);
+  if (!sides) return stats;
+
+  const currentPairMatches = fixtureMatchesCanonicalLineupSides(
+    stats.nextGame,
+    sides,
+  );
+  if (
+    currentPairMatches === true &&
+    lineupFixtureProbabilityCount(stats) === 3
+  ) {
+    return stats;
+  }
+
+  const candidates = fixtureCandidates
+    .filter(
+      (candidate) =>
+        candidate.nextGame &&
+        fixtureMatchesCanonicalLineupSides(candidate.nextGame, sides) === true,
+    )
+    .sort(compareLineupFixtureCandidates);
+  for (const candidate of candidates) {
+    const adapted = adaptFixtureCandidateToPlayer(stats, candidate);
+    if (adapted) return adapted;
+  }
+
+  if (!lineupFixtureDefinitelyMismatches(stats.nextGame, sides)) return stats;
+  // The visible Sorare row is already on another fixture. Keep the historical
+  // form values, but never let player props, clean-sheet odds or H-D-A values
+  // from the held fixture leak onto that row while no canonical replacement is
+  // known yet.
+  return {
+    ...stats,
+    nextGame: {
+      ...stats.nextGame,
+      cleanSheetProbability: null,
+      matchProbabilities: null,
+      marketOdds: null,
+    },
+  };
+}
+
+function fixturePresentationKey(stats: PlayerStats): string {
+  return JSON.stringify(stats.nextGame ?? null);
+}
+
 function usesCompactMarketBrackets(container: HTMLElement): boolean {
   // Sorare's five-slot team grid is shared by lineup and squad views. Cards
   // offered in pickers live outside that grid and keep the larger scouting
@@ -2873,6 +3084,8 @@ export class OverlayView {
   private packLayoutPhase: 'none' | 'reveal' | 'result' = 'none';
   private viewportPriorityActive = true;
   private destroyed = false;
+  private lastRawStats: PlayerStats | null = null;
+  private renderedFixturePresentationKey = 'null';
   private readonly openMarketBracketForCardHover = (): void => {
     if (marketBracketCompactView) {
       this.host.dataset.marketBracketCardHover = 'true';
@@ -2942,44 +3155,43 @@ export class OverlayView {
       this.host.dataset.packPrimary = String(isPrimaryPackCard);
       const visibilityAnchor = cardImage?.image ?? this.container;
       const visibilityRect = cardImage?.rect ?? rect;
-      const isVisible =
+      const modalScope = context ? context.modalScope : activeModalScope();
+      const bracketIsVisible =
         isPrimaryPackCard &&
         isVisiblyRendered(
           this.container,
           visibilityRect,
           visibilityAnchor,
-          context?.modalScope,
+          modalScope,
         );
-      this.host.style.display = isVisible ? '' : 'none';
-      if (!isVisible) {
-        this.lineupOddsHost.hidden = true;
-        this.bindLineupTeamRow(null);
+      this.host.style.display = bracketIsVisible ? '' : 'none';
+      if (!bracketIsVisible) {
         this.closePlayerMarketTooltip();
-        this.closeLineupTooltip();
-        return;
       }
       const teamRow = lineupBuilderTeamRow(this.container);
       this.bindLineupTeamRow(teamRow);
       if (
-        this.host.style.display === 'none' ||
         this.lineupOddsBar.dataset.ready !== 'true' ||
-        !teamRow
+        !teamRow ||
+        !isPrimaryPackCard
       ) {
-        this.lineupOddsHost.hidden = true;
+        if (!this.lineupOddsHost.hidden) this.lineupOddsHost.hidden = true;
         this.closeLineupTooltip();
         if (!teamRow) this.lineupOddsHost.remove();
       } else {
         const teamRowRect = teamRow.getBoundingClientRect();
-        const isVisible =
-          teamRowRect.width > 0 &&
-          teamRowRect.height > 0 &&
-          teamRowRect.bottom > 0 &&
-          teamRowRect.top < window.innerHeight &&
-          teamRowRect.right > 0 &&
-          teamRowRect.left < window.innerWidth;
-        this.lineupOddsHost.hidden = !isVisible;
-        if (!isVisible) this.closeLineupTooltip();
-        if (isVisible) {
+        const teamRowIsVisible = isVisiblyRendered(
+          teamRow,
+          teamRowRect,
+          teamRow,
+          modalScope,
+        );
+        const shouldHideTeamOdds = !teamRowIsVisible;
+        if (this.lineupOddsHost.hidden !== shouldHideTeamOdds) {
+          this.lineupOddsHost.hidden = shouldHideTeamOdds;
+        }
+        if (!teamRowIsVisible) this.closeLineupTooltip();
+        if (teamRowIsVisible) {
           if (teamRow.nextElementSibling !== this.lineupOddsHost) {
             teamRow.insertAdjacentElement('afterend', this.lineupOddsHost);
           }
@@ -2988,6 +3200,7 @@ export class OverlayView {
           }
         }
       }
+      if (!bracketIsVisible) return;
       const nextPackLayoutPhase = !packScope
         ? 'none'
         : isPackResultScope(packScope)
@@ -3336,33 +3549,44 @@ export class OverlayView {
     setLineupSortDataReady(this.container, true);
   }
 
-  render(stats: PlayerStats): void {
+  render(
+    stats: PlayerStats,
+    fixtureCandidates: readonly PlayerStats[] = [],
+  ): void {
     if (this.destroyed) return;
+    this.lastRawStats = stats;
+    const teamRow = lineupBuilderTeamRow(this.container);
+    const displayStats = statsForVisibleLineupFixture(
+      stats,
+      teamRow,
+      fixtureCandidates,
+    );
+    this.renderedFixturePresentationKey = fixturePresentationKey(displayStats);
     const hadRenderedBracket = Boolean(
       this.panel.querySelector('.market-bracket'),
     );
     const wasPackDataPending =
       this.host.dataset.packDataPending === 'true';
     delete this.host.dataset.packDataPending;
-    this.host.dataset.position = stats.position;
-    setLineupSortPosition(this.container, stats.position);
-    if (!hasAnyDisplayData(stats)) {
+    this.host.dataset.position = displayStats.position;
+    setLineupSortPosition(this.container, displayStats.position);
+    if (!hasAnyDisplayData(displayStats)) {
       this.noData();
       return;
     }
-    const sortValue = goalSortValue(stats);
+    const sortValue = goalSortValue(displayStats);
     setLineupGoalSortValue(
       this.container,
       sortValue?.probability ?? null,
       sortValue?.source,
     );
-    setLineupAaSortValue(this.container, stats.aaL10.value);
+    setLineupAaSortValue(this.container, displayStats.aaL10.value);
     setLineupSortDataReady(this.container, true);
-    this.renderLineupOdds(stats, lineupBuilderTeamRow(this.container));
-    this.renderPlayerMarketTooltip(stats);
+    this.renderLineupOdds(displayStats, teamRow);
+    this.renderPlayerMarketTooltip(displayStats);
     this.panel.replaceChildren();
     this.panel.classList.add('bracket-only');
-    const marketBracket = marketBracketNode(stats);
+    const marketBracket = marketBracketNode(displayStats);
     if (marketBracket) {
       for (const marketCell of marketBracket.querySelectorAll('[data-market]')) {
         marketCell.addEventListener(
@@ -3395,6 +3619,26 @@ export class OverlayView {
         this.startPackBracketSettling();
       }
     }
+  }
+
+  refreshFixturePresentation(
+    fixtureCandidates: readonly PlayerStats[],
+  ): void {
+    if (this.destroyed || !this.lastRawStats) return;
+    const teamRow = lineupBuilderTeamRow(this.container);
+    if (!teamRow) return;
+    const displayStats = statsForVisibleLineupFixture(
+      this.lastRawStats,
+      teamRow,
+      fixtureCandidates,
+    );
+    if (
+      fixturePresentationKey(displayStats) ===
+      this.renderedFixturePresentationKey
+    ) {
+      return;
+    }
+    this.render(this.lastRawStats, fixtureCandidates);
   }
 
   private stopPackBracketSettling(): void {
@@ -3816,6 +4060,8 @@ export class OverlayView {
     title?: string,
   ): void {
     if (this.destroyed) return;
+    this.lastRawStats = null;
+    this.renderedFixturePresentationKey = 'null';
     setLineupGoalSortValue(this.container, null);
     this.stopPackBracketSettling();
     this.panel.replaceChildren();

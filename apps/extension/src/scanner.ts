@@ -132,6 +132,20 @@ function normalizeName(name: string): string {
     .toLocaleLowerCase();
 }
 
+function teamSlugsLikelyMatch(
+  candidate: string | undefined,
+  expected: string | undefined,
+): boolean {
+  if (!candidate || !expected) return false;
+  const candidateNormalized = candidate.trim().toLowerCase();
+  const expectedNormalized = expected.trim().toLowerCase();
+  return (
+    candidateNormalized === expectedNormalized ||
+    candidateNormalized.startsWith(`${expectedNormalized}-`) ||
+    expectedNormalized.startsWith(`${candidateNormalized}-`)
+  );
+}
+
 function namesLikelyMatch(query: string, displayName: string): boolean {
   const requested = normalizeName(query).split(/\s+/);
   const candidate = normalizeName(displayName).split(/\s+/);
@@ -410,7 +424,7 @@ export class StatsBatchCoordinator {
         },
         rendered: summarizeStats(cached),
       });
-      view.render(cached);
+      view.render(cached, this.cachedStatsValues());
       if (shouldForceRefresh) {
         this.clearPendingRefresh(key);
       } else if (cached.pendingRefreshes?.length) {
@@ -742,7 +756,7 @@ export class StatsBatchCoordinator {
               },
               rendered: summarizeStats(stats),
             });
-            view.render(stats);
+            view.render(stats, fixtureCandidates);
           } else if (isDeferred) {
             view.retrying();
           } else {
@@ -779,6 +793,7 @@ export class StatsBatchCoordinator {
           );
         }
       }
+      this.refreshTrackedFixturePresentations(responseData);
     } catch (error) {
       const message =
         error instanceof Error && error.message
@@ -809,7 +824,7 @@ export class StatsBatchCoordinator {
             transient: true,
           });
           for (const view of target.views) {
-            if (cached) view.render(cached);
+            if (cached) view.render(cached, this.cachedStatsValues());
             else if (retryScheduled) view.retrying();
             else view.error();
           }
@@ -829,7 +844,7 @@ export class StatsBatchCoordinator {
           transient: isFirstTransientFailure,
         });
         for (const view of target.views) {
-          if (cached) view.render(cached);
+          if (cached) view.render(cached, this.cachedStatsValues());
           else if (retryScheduled) view.retrying();
           else view.error();
         }
@@ -1058,12 +1073,47 @@ export class StatsBatchCoordinator {
     stats: PlayerStats,
   ): void {
     if (!hasAnyDisplayData(stats)) return;
+    const fixtureCandidates = this.cachedStatsValues();
     for (const [view, target] of this.trackedViews) {
       if (!view.host.isConnected) {
         this.releaseView(view);
         continue;
       }
-      if (changedKeys.has(targetKey(target))) view.render(stats);
+      if (changedKeys.has(targetKey(target))) {
+        view.render(stats, fixtureCandidates);
+      }
+    }
+  }
+
+  private refreshTrackedFixturePresentations(
+    changedCandidates: readonly PlayerStats[],
+  ): void {
+    const affectedTeamSlugs = new Set(
+      changedCandidates.flatMap(({ nextGame }) =>
+        nextGame
+          ? [nextGame.homeTeamSlug, nextGame.awayTeamSlug].filter(
+              (slug): slug is string => Boolean(slug),
+            )
+          : [],
+      ),
+    );
+    if (affectedTeamSlugs.size === 0) return;
+
+    const fixtureCandidates = this.cachedStatsValues();
+    const affectedTeams = [...affectedTeamSlugs];
+    for (const [view, target] of this.trackedViews) {
+      if (!view.host.isConnected) continue;
+      const stats = this.cachedStatsForTarget(target);
+      const teamSlug = stats?.nextGame?.playerTeamSlug ?? target.teamSlug;
+      if (
+        !stats ||
+        !affectedTeams.some((candidateTeamSlug) =>
+          teamSlugsLikelyMatch(candidateTeamSlug, teamSlug),
+        )
+      ) {
+        continue;
+      }
+      view.refreshFixturePresentation(fixtureCandidates);
     }
   }
 
