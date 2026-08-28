@@ -1,4 +1,5 @@
 import {
+  PlayerMarketSnapshotsRequestSchema,
   PlayerStatsRequestSchema,
   type FootballPosition,
   type MatchProbabilities,
@@ -34,6 +35,116 @@ import {
   DEFAULT_NAME_RESOLUTION_BUDGET_MS,
   StatsService,
 } from '../services/stats-service.js';
+
+describe('StatsService market snapshot reads', () => {
+  it('returns batched cache state without scheduling provider work', async () => {
+    const load = vi.fn<PlayerMarketOddsProvider['load']>(
+      async (players, options) => {
+        expect(options?.cacheOnly).toBe(true);
+        expect(options?.cacheOnlyDeadlineMs).toBeTypeOf('number');
+        if (options?.refreshDueState) options.refreshDueState.complete = true;
+        const pending = players.find(({ slug }) => slug === 'pending-player');
+        if (pending) {
+          options?.refreshDuePlayerKeys?.add(playerMarketOddsKey(pending));
+        }
+        return new Map(
+          players.map((player) => [
+            playerMarketOddsKey(player),
+            player.slug === 'settled-player'
+              ? {
+                  source: 'odds-api-io' as const,
+                  capturedAt: '2026-08-28T08:00:00.000Z',
+                  goal: { probability: 0.31, bookmakerCount: 2 },
+                  assist: null,
+                  decisive: null,
+                }
+              : null,
+          ]),
+        );
+      },
+    );
+    const provider: PlayerMarketOddsProvider = {
+      reportsRefreshDue: true,
+      supports: (player) => player.position !== 'Goalkeeper',
+      supportsMarket: (player) => player.position !== 'Goalkeeper',
+      drivesMarketRequest: (player, market) =>
+        player.position !== 'Goalkeeper' && market === 'goal',
+      load,
+    };
+    const scheduleBackground = vi.fn();
+    const service = new StatsService(
+      new MockDataSource(),
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      provider,
+      scheduleBackground,
+    );
+    const nextGame = {
+      date: '2026-08-29T18:00:00.000Z',
+      competitionSlug: 'bundesliga-de',
+      homeTeamName: 'Home FC',
+      awayTeamName: 'Away FC',
+      homeTeamSlug: 'home-fc',
+      awayTeamSlug: 'away-fc',
+      playerTeamName: 'Home FC',
+      opponentTeamName: 'Away FC',
+      playerTeamSlug: 'home-fc',
+      cleanSheetProbability: null,
+      matchProbabilities: null,
+      marketOdds: {
+        source: 'mock' as const,
+        capturedAt: '2026-08-28T07:00:00.000Z',
+        goal: { probability: 0.99, bookmakerCount: 1 },
+        assist: null,
+      },
+    };
+
+    const result = await service.getPlayerMarketSnapshots(
+      PlayerMarketSnapshotsRequestSchema.parse({
+        players: [
+          {
+            slug: 'pending-player',
+            displayName: 'Pending Player',
+            position: 'Forward',
+            nextGame,
+          },
+          {
+            slug: 'settled-player',
+            displayName: 'Settled Player',
+            position: 'Forward',
+            nextGame,
+          },
+          {
+            slug: 'unsupported-player',
+            displayName: 'Unsupported Player',
+            position: 'Goalkeeper',
+            nextGame,
+          },
+        ],
+      }),
+    );
+
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(load.mock.calls[0]?.[0]).toHaveLength(2);
+    expect(scheduleBackground).not.toHaveBeenCalled();
+    expect(
+      result.data.map(({ slug, refreshState }) => ({ slug, refreshState })),
+    ).toEqual([
+      { slug: 'pending-player', refreshState: 'pending' },
+      { slug: 'settled-player', refreshState: 'settled' },
+      { slug: 'unsupported-player', refreshState: 'unsupported' },
+    ]);
+    expect(result.data[1]?.marketOdds?.goal?.probability).toBe(0.31);
+    expect(result.data[1]?.marketOdds?.goal?.probability).not.toBe(0.99);
+    expect(result.data[1]?.fixture).toEqual({
+      date: nextGame.date,
+      homeTeamSlug: 'home-fc',
+      awayTeamSlug: 'away-fc',
+      playerTeamSlug: 'home-fc',
+    });
+  });
+});
 
 class FillMissingCache implements Cache<PlayerStats> {
   fillMissingCalls = 0;

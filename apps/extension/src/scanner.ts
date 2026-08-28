@@ -2,12 +2,15 @@ import type {
   FootballPosition,
   HistoricalMarketWindow,
   PlayerMarketOdds,
+  PlayerMarketSnapshot,
+  PlayerMarketSnapshotsRequest,
+  PlayerMarketSnapshotsSuccessResponse,
   PlayerStats,
   PlayerStatsRequest,
   PlayerStatsSuccessResponse,
 } from '@sorare-overlay/shared';
 import { hasAnyDisplayData } from '@sorare-overlay/shared';
-import { fetchPlayerStats } from './api.js';
+import { fetchPlayerMarketSnapshots, fetchPlayerStats } from './api.js';
 import {
   drainDiscoveredCardPictureNames,
   findCardTargets,
@@ -43,6 +46,9 @@ import {
 } from './stats-diagnostics.js';
 
 type StatsFetcher = (request: PlayerStatsRequest) => Promise<PlayerStatsSuccessResponse>;
+type MarketSnapshotsFetcher = (
+  request: PlayerMarketSnapshotsRequest,
+) => Promise<PlayerMarketSnapshotsSuccessResponse>;
 const extensionMountSelector =
   '[data-sorare-overlay-root], [data-sorare-overlay-companion]';
 const extensionMutationSelector =
@@ -77,6 +83,8 @@ interface CachedAliasMetadata {
 export interface StatsBatchCoordinatorOptions {
   maxCachedAliases?: number;
   cachedAliasTtlMs?: number;
+  marketSnapshotBatchSize?: number;
+  marketSnapshotsFetcher?: MarketSnapshotsFetcher;
 }
 
 interface PendingTarget {
@@ -104,11 +112,12 @@ interface ScheduledTargetWork {
 
 interface PendingRefreshWork extends ScheduledTargetWork {
   refreshFixture: boolean;
-  isolateMarketOdds: boolean;
+  refreshMarketOdds: boolean;
 }
 
 interface BatchJob {
   batch: PendingTarget[];
+  kind: 'stats' | 'market-snapshots';
   priority: number;
   sequence: number;
   resolve: () => void;
@@ -231,6 +240,27 @@ function samePlayerFixture(
   );
 }
 
+function marketSnapshotMatchesStats(
+  snapshot: PlayerMarketSnapshot,
+  stats: PlayerStats,
+): boolean {
+  if (!snapshot.fixture || !stats.nextGame) return false;
+  if (snapshot.fixture.date !== stats.nextGame.date) return false;
+  const comparableSlugs: Array<
+    [string | undefined, string | undefined]
+  > = [
+    [snapshot.fixture.homeTeamSlug, stats.nextGame.homeTeamSlug],
+    [snapshot.fixture.awayTeamSlug, stats.nextGame.awayTeamSlug],
+    [snapshot.fixture.playerTeamSlug, stats.nextGame.playerTeamSlug],
+  ];
+  return comparableSlugs.every(
+    ([snapshotSlug, currentSlug]) =>
+      !snapshotSlug ||
+      !currentSlug ||
+      snapshotSlug.toLocaleLowerCase() === currentSlug.toLocaleLowerCase(),
+  );
+}
+
 function mergePlayerMarketOdds(
   cached: PlayerMarketOdds | null | undefined,
   incoming: PlayerMarketOdds | null | undefined,
@@ -256,12 +286,6 @@ function mergePlayerMarketOdds(
     assist: incoming.assist ?? cached.assist,
     decisive: incoming.decisive ?? cached.decisive ?? null,
   };
-}
-
-function hasIncompleteDisplayedMarketOdds(stats: PlayerStats): boolean {
-  if (stats.position === 'Goalkeeper' || !stats.nextGame) return false;
-  const odds = stats.nextGame.marketOdds;
-  return !odds?.goal || !odds.assist;
 }
 
 function mergeSharedFixtureTeamData(
@@ -334,9 +358,7 @@ export class StatsBatchCoordinator {
   private readonly refreshAttempts = new Map<string, number>();
   private readonly refreshWork = new Map<string, PendingRefreshWork>();
   private readonly fixtureRefreshTargets = new Set<string>();
-  private readonly isolatedMarketRefreshKeys = new Set<string>();
-  private readonly marketWarmupKeys = new Set<string>();
-  private readonly cacheOnlyOddsRequestKeys = new Set<string>();
+  private readonly marketSnapshotRequestKeys = new Set<string>();
   private activeBatchCount = 0;
   private batchSequence = 0;
   private cacheSequence = 0;
@@ -344,6 +366,8 @@ export class StatsBatchCoordinator {
   private includeHistoricalAssists = false;
   private readonly maxCachedAliases: number;
   private readonly cachedAliasTtlMs: number;
+  private readonly marketSnapshotBatchSize: number;
+  private readonly marketSnapshotsFetcher: MarketSnapshotsFetcher;
 
   constructor(
     private readonly fetcher: StatsFetcher = fetchPlayerStats,
@@ -368,6 +392,12 @@ export class StatsBatchCoordinator {
       1,
       Math.floor(options.cachedAliasTtlMs ?? defaultCachedAliasTtlMs),
     );
+    this.marketSnapshotBatchSize = Math.max(
+      1,
+      Math.floor(options.marketSnapshotBatchSize ?? 24),
+    );
+    this.marketSnapshotsFetcher =
+      options.marketSnapshotsFetcher ?? fetchPlayerMarketSnapshots;
   }
 
   setIncludeHistoricalAssists(enabled: boolean): boolean {
@@ -542,32 +572,42 @@ export class StatsBatchCoordinator {
     for (const target of queued) {
       this.inFlightTargets.set(targetKey(target), target);
     }
-    const isolatedBatches: PendingTarget[][] = [];
+    const marketSnapshotTargets: PendingTarget[] = [];
     const regularTargets: PendingTarget[] = [];
     for (const target of queued) {
       const key = targetKey(target);
-      if (this.isolatedMarketRefreshKeys.delete(key)) {
-        isolatedBatches.push([target]);
+      if (this.marketSnapshotRequestKeys.delete(key)) {
+        marketSnapshotTargets.push(target);
       } else {
         regularTargets.push(target);
       }
     }
-    const batches = [
-      ...isolatedBatches,
+    const batches: Array<{
+      batch: PendingTarget[];
+      kind: BatchJob['kind'];
+    }> = [
+      ...conflictFreeBatches(
+        marketSnapshotTargets,
+        this.marketSnapshotBatchSize,
+      ).map((batch) => ({ batch, kind: 'market-snapshots' as const })),
       ...conflictFreeBatches(
         regularTargets,
         Math.max(1, this.progressiveBatchSize),
-      ),
+      ).map((batch) => ({ batch, kind: 'stats' as const })),
     ];
     await Promise.all(
-      batches.map((batch) => this.scheduleBatch(batch)),
+      batches.map(({ batch, kind }) => this.scheduleBatch(batch, kind)),
     );
   }
 
-  private scheduleBatch(batch: PendingTarget[]): Promise<void> {
+  private scheduleBatch(
+    batch: PendingTarget[],
+    kind: BatchJob['kind'],
+  ): Promise<void> {
     return new Promise((resolve) => {
       this.batchQueue.push({
         batch,
+        kind,
         priority: Math.max(...batch.map((target) => target.priority)),
         sequence: this.batchSequence,
         resolve,
@@ -593,11 +633,15 @@ export class StatsBatchCoordinator {
 
   private async runBatchJob(job: BatchJob): Promise<void> {
     try {
-      await this.loadBatch(job.batch);
+      if (job.kind === 'market-snapshots') {
+        await this.loadMarketSnapshotBatch(job.batch);
+      } else {
+        await this.loadBatch(job.batch);
+      }
     } finally {
       for (const target of job.batch) {
         const key = targetKey(target);
-        this.cacheOnlyOddsRequestKeys.delete(key);
+        this.marketSnapshotRequestKeys.delete(key);
         this.inFlightFixtureRefreshKeys.delete(key);
         if (this.inFlightTargets.get(key) === target) {
           this.inFlightTargets.delete(key);
@@ -629,12 +673,6 @@ export class StatsBatchCoordinator {
     const refreshFixtures = batch.some((target) =>
       this.fixtureRefreshTargets.has(targetKey(target)),
     );
-    const oddsCacheOnly =
-      batch.length === 1 &&
-      batch.every((target) =>
-        this.cacheOnlyOddsRequestKeys.has(targetKey(target)),
-      ) &&
-      !refreshFixtures;
     const playerTeams = Object.fromEntries(
       batch.flatMap(({ slug, playerName, teamSlug }) => {
         const identity = slug ?? playerName;
@@ -658,7 +696,6 @@ export class StatsBatchCoordinator {
           ? { includeHistoricalAssists: true }
           : {}),
         ...(refreshFixtures ? { refreshFixtures: true } : {}),
-        ...(oddsCacheOnly ? { oddsCacheOnly: true } : {}),
       });
       const diagnosticRequestId = statsDiagnosticRequestId(response);
       if (includeHistoricalAssists !== this.includeHistoricalAssists) {
@@ -705,12 +742,6 @@ export class StatsBatchCoordinator {
             (target.playerName &&
               deferredPlayerNames.has(normalizeName(target.playerName))),
         );
-        const continueKnownMarketWarmup = Boolean(
-          stats &&
-            this.marketWarmupKeys.has(key) &&
-            !stats.pendingRefreshes?.includes('marketOdds') &&
-            hasIncompleteDisplayedMarketOdds(stats),
-        );
         logStatsDiagnostic('target-resolution', {
           requestId: diagnosticRequestId ?? null,
           target: {
@@ -753,14 +784,13 @@ export class StatsBatchCoordinator {
             isDeferred,
           );
         }
-        if (stats?.pendingRefreshes?.length || continueKnownMarketWarmup) {
+        if (stats?.pendingRefreshes?.length) {
           this.schedulePendingRefresh(
             target,
             target.views,
             stats?.pendingRefreshes?.includes('fixture') ?? false,
             target.priority,
-            (stats?.pendingRefreshes?.includes('marketOdds') ?? false) ||
-              continueKnownMarketWarmup,
+            stats?.pendingRefreshes?.includes('marketOdds') ?? false,
           );
         } else if (stats) {
           this.clearPendingRefresh(
@@ -779,33 +809,6 @@ export class StatsBatchCoordinator {
       for (const target of batch) {
         const key = targetKey(target);
         const cached = this.cachedStatsForTarget(target);
-        if (oddsCacheOnly && this.marketWarmupKeys.has(key)) {
-          this.schedulePendingRefresh(
-            target,
-            target.views,
-            false,
-            target.priority,
-            true,
-          );
-          const retryScheduled = this.marketWarmupKeys.has(key);
-          logStatsDiagnostic('request-failed', {
-            target: {
-              slug: target.slug ?? null,
-              playerName: target.playerName ?? null,
-              position: target.position ?? null,
-            },
-            message,
-            retained: cached ? summarizeStats(cached) : null,
-            retryScheduled,
-            transient: true,
-          });
-          for (const view of target.views) {
-            if (cached) view.render(cached, this.cachedStatsValues());
-            else if (retryScheduled) view.retrying();
-            else view.error();
-          }
-          continue;
-        }
         const isFirstTransientFailure = !this.deferredRetryUsed.has(key);
         const retryScheduled = this.scheduleRetry(target, true);
         logStatsDiagnostic('request-failed', {
@@ -828,17 +831,152 @@ export class StatsBatchCoordinator {
     }
   }
 
+  private async loadMarketSnapshotBatch(
+    batch: PendingTarget[],
+  ): Promise<void> {
+    const cachedByTarget = new Map<PendingTarget, PlayerStats>();
+    const players = new Map<
+      string,
+      PlayerMarketSnapshotsRequest['players'][number]
+    >();
+    for (const target of batch) {
+      const cached = this.cachedStatsForTarget(target);
+      if (!cached?.nextGame) {
+        this.clearPendingRefresh(targetKey(target));
+        continue;
+      }
+      cachedByTarget.set(target, cached);
+      players.set(`${cached.slug}:${cached.position}:${cached.nextGame.date}`, {
+        slug: cached.slug,
+        displayName: cached.displayName,
+        position: cached.position,
+        nextGame: cached.nextGame,
+      });
+    }
+    if (players.size === 0) return;
+
+    try {
+      const response = await this.marketSnapshotsFetcher({
+        players: [...players.values()],
+      });
+      const snapshotsByPlayer = new Map(
+        response.data.map((snapshot) => [
+          `${snapshot.slug}:${snapshot.position}`,
+          snapshot,
+        ]),
+      );
+      for (const target of batch) {
+        const key = targetKey(target);
+        const cached = cachedByTarget.get(target);
+        if (!cached) continue;
+        const snapshot = snapshotsByPlayer.get(
+          `${cached.slug}:${cached.position}`,
+        );
+        if (!snapshot || !marketSnapshotMatchesStats(snapshot, cached)) {
+          this.schedulePendingRefresh(
+            target,
+            target.views,
+            false,
+            target.priority,
+            true,
+          );
+          continue;
+        }
+
+        const pending = new Set(cached.pendingRefreshes ?? []);
+        if (snapshot.refreshState === 'pending') pending.add('marketOdds');
+        else pending.delete('marketOdds');
+        const merged: PlayerStats = {
+          ...cached,
+          nextGame: cached.nextGame
+            ? {
+                ...cached.nextGame,
+                marketOdds: mergePlayerMarketOdds(
+                  cached.nextGame.marketOdds,
+                  snapshot.marketOdds,
+                ),
+              }
+            : null,
+          ...(pending.size > 0
+            ? { pendingRefreshes: [...pending] }
+            : { pendingRefreshes: undefined }),
+        };
+        const changedKeys = this.cacheStatsAliases(merged, [target]);
+        this.renderTrackedAliases(changedKeys, merged);
+        this.clearRetry(key);
+        if (snapshot.refreshState === 'pending') {
+          this.schedulePendingRefresh(
+            target,
+            target.views,
+            false,
+            target.priority,
+            true,
+          );
+        } else if (pending.size > 0) {
+          this.schedulePendingRefresh(
+            target,
+            target.views,
+            pending.has('fixture'),
+            target.priority,
+            false,
+          );
+        } else {
+          this.clearPendingRefresh(key);
+        }
+        logStatsDiagnostic('market-snapshot-resolution', {
+          target: {
+            slug: target.slug ?? null,
+            playerName: target.playerName ?? null,
+            position: target.position ?? null,
+          },
+          resolvedSlug: snapshot.slug,
+          refreshState: snapshot.refreshState,
+          rendered: summarizeStats(merged),
+        });
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'UNKNOWN_ERROR: Marktquoten nicht verfügbar';
+      console.warn('[Sorare Overlay] Marktcache-Abruf fehlgeschlagen:', error);
+      for (const target of batch) {
+        const cached = cachedByTarget.get(target);
+        this.schedulePendingRefresh(
+          target,
+          target.views,
+          false,
+          target.priority,
+          true,
+        );
+        logStatsDiagnostic('market-snapshots-request-failed', {
+          target: {
+            slug: target.slug ?? null,
+            playerName: target.playerName ?? null,
+            position: target.position ?? null,
+          },
+          message,
+          retained: cached ? summarizeStats(cached) : null,
+        });
+        if (cached) {
+          for (const view of target.views) {
+            view.render(cached, this.cachedStatsValues());
+          }
+        }
+      }
+    }
+  }
+
   private schedulePendingRefresh(
     target: TargetIdentity,
     views: Iterable<OverlayView>,
     refreshFixture = false,
     priority = 0,
-    isolateMarketOdds = false,
+    refreshMarketOdds = false,
   ): void {
     const key = targetKey(target);
     const connectedViews = this.connectedViews(views);
     if (refreshFixture) this.fixtureRefreshTargets.add(key);
-    if (isolateMarketOdds) this.marketWarmupKeys.add(key);
     const existing = this.refreshWork.get(key);
     if (existing) {
       for (const view of connectedViews) existing.views.add(view);
@@ -848,7 +986,7 @@ export class StatsBatchCoordinator {
       }
       existing.priority = Math.max(existing.priority, priority);
       existing.refreshFixture ||= refreshFixture;
-      existing.isolateMarketOdds ||= isolateMarketOdds;
+      existing.refreshMarketOdds ||= refreshMarketOdds;
       this.startRefreshWork(key, existing);
       return;
     }
@@ -859,10 +997,10 @@ export class StatsBatchCoordinator {
     const attempt = this.refreshAttempts.get(key) ?? 0;
     const delay = this.refreshDelaysMs[attempt];
     if (delay === undefined) {
+      this.refreshAttempts.delete(key);
+      this.refreshWork.delete(key);
       this.fixtureRefreshTargets.delete(key);
-      this.isolatedMarketRefreshKeys.delete(key);
-      this.marketWarmupKeys.delete(key);
-      this.cacheOnlyOddsRequestKeys.delete(key);
+      this.marketSnapshotRequestKeys.delete(key);
       return;
     }
 
@@ -873,7 +1011,7 @@ export class StatsBatchCoordinator {
       priority,
       remainingMs: delay,
       refreshFixture,
-      isolateMarketOdds,
+      refreshMarketOdds,
     };
     this.refreshWork.set(key, work);
     this.startRefreshWork(key, work);
@@ -891,9 +1029,7 @@ export class StatsBatchCoordinator {
         this.refreshWork.delete(key);
         this.refreshAttempts.delete(key);
         this.fixtureRefreshTargets.delete(key);
-        this.isolatedMarketRefreshKeys.delete(key);
-        this.marketWarmupKeys.delete(key);
-        this.cacheOnlyOddsRequestKeys.delete(key);
+        this.marketSnapshotRequestKeys.delete(key);
         return;
       }
       const activeViews = connectedViews.filter((view) =>
@@ -901,9 +1037,8 @@ export class StatsBatchCoordinator {
       );
       if (activeViews.length === 0) return;
       this.refreshWork.delete(key);
-      if (work.isolateMarketOdds) {
-        this.isolatedMarketRefreshKeys.add(key);
-        this.cacheOnlyOddsRequestKeys.add(key);
+      if (work.refreshMarketOdds && !work.refreshFixture) {
+        this.marketSnapshotRequestKeys.add(key);
       }
       this.queueTarget(work.target, connectedViews, work.priority);
     }, work.remainingMs);
@@ -1155,9 +1290,7 @@ export class StatsBatchCoordinator {
     if (work?.timer !== undefined) window.clearTimeout(work.timer);
     this.refreshWork.delete(key);
     this.refreshAttempts.delete(key);
-    this.isolatedMarketRefreshKeys.delete(key);
-    this.marketWarmupKeys.delete(key);
-    this.cacheOnlyOddsRequestKeys.delete(key);
+    this.marketSnapshotRequestKeys.delete(key);
     if (!preserveFixtureRefresh) this.fixtureRefreshTargets.delete(key);
   }
 

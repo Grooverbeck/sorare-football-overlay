@@ -1056,6 +1056,53 @@ describe('SportsGameOddsPlayerMarketOddsProvider', () => {
 });
 
 describe('SupplementingPlayerMarketOddsProvider', () => {
+  it('propagates a due fallback when it is the only provider that can fill a missing request market', async () => {
+    const stats = player();
+    const primary: PlayerMarketOddsProvider = {
+      reportsRefreshDue: true,
+      supportsMarket: () => true,
+      drivesMarketRequest: () => false,
+      load: vi.fn(async (players, options) => {
+        if (options?.refreshDueState) options.refreshDueState.complete = true;
+        return new Map(
+          players.map((candidate) => [playerMarketOddsKey(candidate), null]),
+        );
+      }),
+    };
+    const fallback: PlayerMarketOddsProvider = {
+      reportsRefreshDue: true,
+      supportsMarket: (_player, market) => market === 'goal',
+      drivesMarketRequest: (_player, market) => market === 'goal',
+      load: vi.fn(async (players, options) => {
+        if (options?.refreshDueState) options.refreshDueState.complete = true;
+        for (const candidate of players) {
+          options?.refreshDuePlayerKeys?.add(playerMarketOddsKey(candidate));
+        }
+        return new Map(
+          players.map((candidate) => [playerMarketOddsKey(candidate), null]),
+        );
+      }),
+    };
+    const combined = new SupplementingPlayerMarketOddsProvider(
+      primary,
+      fallback,
+      ['goal', 'assist'],
+      undefined,
+      ['goal'],
+    );
+    const refreshDuePlayerKeys = new Set<string>();
+    const refreshDueState = { complete: false };
+
+    await combined.load([stats], {
+      cacheOnly: true,
+      refreshDuePlayerKeys,
+      refreshDueState,
+    });
+
+    expect(refreshDueState.complete).toBe(true);
+    expect(refreshDuePlayerKeys).toContain(playerMarketOddsKey(stats));
+  });
+
   it('propagates a successful fallback price refresh only while the fallback contributes', async () => {
     const stats = player();
     const fallbackOdds: PlayerMarketOdds = {

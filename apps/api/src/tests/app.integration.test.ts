@@ -272,6 +272,74 @@ describe('POST /api/lineup-sort-values', () => {
   });
 });
 
+describe('POST /api/player-market-snapshots', () => {
+  it('returns a compact cache-only market update for a canonical fixture', async () => {
+    const app = testApp();
+    const statsResponse = await app.request('/api/player-stats', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        slugs: ['jude-bellingham'],
+        positions: { 'jude-bellingham': 'Midfielder' },
+      }),
+    });
+    const statsBody = await statsResponse.json();
+    const stats = statsBody.data[0];
+
+    const response = await app.request('/api/player-market-snapshots', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        players: [
+          {
+            slug: stats.slug,
+            displayName: stats.displayName,
+            position: stats.position,
+            nextGame: stats.nextGame,
+          },
+        ],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('server-timing')).toMatch(
+      /^market-snapshots;dur=\d+(?:\.\d)?$/,
+    );
+    const body = await response.json();
+    expect(body).toMatchObject({
+      data: [
+        {
+          slug: 'jude-bellingham',
+          position: 'Midfielder',
+          marketOdds: { source: 'mock' },
+          refreshState: 'settled',
+        },
+      ],
+      meta: {
+        requested: 1,
+        returned: 1,
+        source: 'mock',
+        durationMs: expect.any(Number),
+      },
+    });
+    expect(body.data[0]).not.toHaveProperty('aaL10');
+    expect(body.data[0]).not.toHaveProperty('nextGame');
+  });
+
+  it('rejects an empty market snapshot batch', async () => {
+    const response = await testApp().request('/api/player-market-snapshots', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ players: [] }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: { code: 'INVALID_REQUEST' },
+    });
+  });
+});
+
 describe('public extension pages', () => {
   it('resolves request-local services once per request on a reusable app', async () => {
     const service = new StatsService(

@@ -1,6 +1,8 @@
 import type {
   LineupSortValuesRequest,
   LineupSortValuesSuccessResponse,
+  PlayerMarketSnapshotsRequest,
+  PlayerMarketSnapshotsSuccessResponse,
   PlayerStats,
   PlayerStatsRequest,
   PlayerStatsSuccessResponse,
@@ -2754,7 +2756,7 @@ describe('Sorare card DOM discovery', () => {
         async (): Promise<PlayerStatsSuccessResponse> => ({
           data: [
             fetcher.mock.calls.length === 1
-              ? { ...baseStats, pendingRefreshes: ['marketOdds'] }
+              ? { ...baseStats, pendingRefreshes: ['formHistory'] }
               : {
                   ...baseStats,
                   aaL10: { value: 17.3, sampleSize: 10 },
@@ -3475,7 +3477,7 @@ describe('Sorare card DOM discovery', () => {
       async (): Promise<PlayerStatsSuccessResponse> => ({
         data: [
           fetcher.mock.calls.length === 1
-            ? { ...baseStats, pendingRefreshes: ['marketOdds'] }
+            ? { ...baseStats, pendingRefreshes: ['formHistory'] }
             : { ...baseStats, aaL10: { value: 13.7, sampleSize: 10 } },
         ],
         meta: {
@@ -3576,9 +3578,7 @@ describe('Sorare card DOM discovery', () => {
       };
       const fetcher = vi.fn(
         async (): Promise<PlayerStatsSuccessResponse> => ({
-          data: [
-            fetcher.mock.calls.length < 4 ? partialStats : completeStats,
-          ],
+          data: [partialStats],
           meta: {
             requested: 1,
             returned: 1,
@@ -3587,12 +3587,48 @@ describe('Sorare card DOM discovery', () => {
           },
         }),
       );
+      let marketRead = 0;
+      const marketSnapshotsFetcher = vi.fn(
+        async (
+          request: PlayerMarketSnapshotsRequest,
+        ): Promise<PlayerMarketSnapshotsSuccessResponse> => {
+          marketRead += 1;
+          const settled = marketRead === 3;
+          return {
+            data: request.players.map((player) => ({
+              slug: player.slug,
+              position: player.position,
+              fixture: player.nextGame
+                ? {
+                    date: player.nextGame.date,
+                    ...(player.nextGame.playerTeamSlug
+                      ? { playerTeamSlug: player.nextGame.playerTeamSlug }
+                      : {}),
+                  }
+                : null,
+              marketOdds: settled
+                ? completeStats.nextGame!.marketOdds!
+                : partialStats.nextGame!.marketOdds!,
+              refreshState: settled ? 'settled' : 'pending',
+            })),
+            meta: {
+              requested: request.players.length,
+              returned: request.players.length,
+              source: 'sorare',
+              durationMs: 1,
+            },
+          };
+        },
+      );
       const coordinator = new StatsBatchCoordinator(
         fetcher,
         60_000,
         undefined,
         8,
         2,
+        undefined,
+        undefined,
+        { marketSnapshotsFetcher },
       );
       coordinator.setIncludeHistoricalAssists(true);
       const card = document.createElement('article');
@@ -3624,7 +3660,8 @@ describe('Sorare card DOM discovery', () => {
         await coordinator.flush();
       }
 
-      expect(fetcher).toHaveBeenCalledTimes(4);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(marketSnapshotsFetcher).toHaveBeenCalledTimes(3);
       assist = view.host.shadowRoot?.querySelector<HTMLElement>(
         '[data-market="assist"]',
       );
@@ -3636,7 +3673,7 @@ describe('Sorare card DOM discovery', () => {
     }
   });
 
-  it('keeps polling a known warmup from cache when an intermediate response clears pending', async () => {
+  it('stops polling when the backend settles a deliberately missing assist market', async () => {
     vi.useFakeTimers();
     try {
       applyHistoricalAssistFallbackSettings(true, 15);
@@ -3672,45 +3709,40 @@ describe('Sorare card DOM discovery', () => {
         pendingRefreshes: ['marketOdds'],
         excludedLowCoverage: 0,
       };
-      const intermediateStats: PlayerStats = {
-        ...initialStats,
-        nextGame: {
-          ...initialStats.nextGame!,
-          marketOdds: {
-            ...initialStats.nextGame!.marketOdds!,
-            capturedAt: '2026-08-22T08:00:02.000Z',
-            goal: { probability: 0.36, bookmakerCount: 3 },
-          },
-        },
-        pendingRefreshes: undefined,
-      };
-      const completeStats: PlayerStats = {
-        ...intermediateStats,
-        nextGame: {
-          ...intermediateStats.nextGame!,
-          marketOdds: {
-            source: 'mixed',
-            capturedAt: '2026-08-22T08:00:03.000Z',
-            goal: { probability: 0.35, bookmakerCount: 2 },
-            assist: { probability: 0.22, bookmakerCount: 1 },
-            decisive: null,
-          },
-        },
-      };
       const fetcher = vi.fn(
         async (): Promise<PlayerStatsSuccessResponse> => ({
-          data: [
-            fetcher.mock.calls.length === 1
-              ? initialStats
-              : fetcher.mock.calls.length === 2
-                ? intermediateStats
-                : completeStats,
-          ],
+          data: [initialStats],
           meta: {
             requested: 1,
             returned: 1,
             cacheHits: 1,
             source: 'sorare',
+          },
+        }),
+      );
+      const marketSnapshotsFetcher = vi.fn(
+        async (
+          request: PlayerMarketSnapshotsRequest,
+        ): Promise<PlayerMarketSnapshotsSuccessResponse> => ({
+          data: request.players.map((player) => ({
+            slug: player.slug,
+            position: player.position,
+            fixture: player.nextGame
+              ? {
+                  date: player.nextGame.date,
+                  ...(player.nextGame.playerTeamSlug
+                    ? { playerTeamSlug: player.nextGame.playerTeamSlug }
+                    : {}),
+                }
+              : null,
+            marketOdds: initialStats.nextGame!.marketOdds!,
+            refreshState: 'settled',
+          })),
+          meta: {
+            requested: request.players.length,
+            returned: request.players.length,
+            source: 'sorare',
+            durationMs: 1,
           },
         }),
       );
@@ -3721,6 +3753,8 @@ describe('Sorare card DOM discovery', () => {
         8,
         2,
         [5, 10],
+        undefined,
+        { marketSnapshotsFetcher },
       );
       coordinator.setIncludeHistoricalAssists(true);
       const card = document.createElement('article');
@@ -3743,42 +3777,40 @@ describe('Sorare card DOM discovery', () => {
       await vi.advanceTimersByTimeAsync(5);
       await coordinator.flush();
 
-      expect(fetcher).toHaveBeenCalledTimes(2);
-      expect(fetcher.mock.calls[1]?.[0]).toMatchObject({
-        oddsCacheOnly: true,
-      });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(marketSnapshotsFetcher).toHaveBeenCalledTimes(1);
       expect(
         view.host.shadowRoot?.querySelector<HTMLElement>(
           '[data-market="assist"]',
         )?.dataset.benchmarkSource,
       ).toBe('historical');
 
-      await vi.advanceTimersByTimeAsync(10);
+      await vi.advanceTimersByTimeAsync(50);
       await coordinator.flush();
 
-      expect(fetcher).toHaveBeenCalledTimes(3);
-      expect(fetcher.mock.calls[2]?.[0]).toMatchObject({
-        oddsCacheOnly: true,
-      });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(marketSnapshotsFetcher).toHaveBeenCalledTimes(1);
       const assist = view.host.shadowRoot?.querySelector<HTMLElement>(
         '[data-market="assist"]',
       );
-      expect(assist?.dataset.benchmarkSource).toBe('market');
-      expect(assist?.textContent).toBe('22%');
-      await vi.advanceTimersByTimeAsync(50);
-      expect(fetcher).toHaveBeenCalledTimes(3);
+      expect(assist?.dataset.benchmarkSource).toBe('historical');
+      expect(assist?.textContent).toBe('(20%)');
       view.destroy();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('retries incomplete market odds as isolated player requests instead of rebuilding the failing batch', async () => {
+  it('polls twenty player markets in one compact batch without copying props between players', async () => {
     vi.useFakeTimers();
     const views: OverlayView[] = [];
     try {
       applyHistoricalAssistFallbackSettings(true, 15);
-      const names = ['Batch Player One', 'Lionel Messi', 'Batch Player Three'];
+      const names = Array.from(
+        { length: 20 },
+        (_, index) =>
+          index === 7 ? 'Lionel Messi' : `Batch Player ${index + 1}`,
+      );
       const statsFor = (name: string, complete: boolean): PlayerStats => ({
         slug: name.toLocaleLowerCase().replaceAll(' ', '-'),
         displayName: name,
@@ -3819,12 +3851,7 @@ describe('Sorare card DOM discovery', () => {
         async (request: PlayerStatsRequest): Promise<PlayerStatsSuccessResponse> => {
           const requestedNames = request.playerNames ?? [];
           return {
-            data: requestedNames.map((name) =>
-              statsFor(
-                name,
-                requestedNames.length === 1 && name === 'Lionel Messi',
-              ),
-            ),
+            data: requestedNames.map((name) => statsFor(name, false)),
             meta: {
               requested: requestedNames.length,
               returned: requestedNames.length,
@@ -3834,6 +3861,36 @@ describe('Sorare card DOM discovery', () => {
           };
         },
       );
+      const marketSnapshotsFetcher = vi.fn(
+        async (
+          request: PlayerMarketSnapshotsRequest,
+        ): Promise<PlayerMarketSnapshotsSuccessResponse> => ({
+          data: request.players.map((player) => {
+            const complete = player.slug === 'lionel-messi';
+            return {
+              slug: player.slug,
+              position: player.position,
+              fixture: player.nextGame
+                ? {
+                    date: player.nextGame.date,
+                    ...(player.nextGame.playerTeamSlug
+                      ? { playerTeamSlug: player.nextGame.playerTeamSlug }
+                      : {}),
+                  }
+                : null,
+              marketOdds: statsFor(player.displayName, complete).nextGame!
+                .marketOdds!,
+              refreshState: 'settled',
+            };
+          }),
+          meta: {
+            requested: request.players.length,
+            returned: request.players.length,
+            source: 'sorare',
+            durationMs: 2,
+          },
+        }),
+      );
       const coordinator = new StatsBatchCoordinator(
         fetcher,
         60_000,
@@ -3841,6 +3898,8 @@ describe('Sorare card DOM discovery', () => {
         12,
         2,
         [5],
+        undefined,
+        { marketSnapshotsFetcher },
       );
       coordinator.setIncludeHistoricalAssists(true);
 
@@ -3856,25 +3915,29 @@ describe('Sorare card DOM discovery', () => {
       }
 
       await coordinator.flush();
-      expect(fetcher.mock.calls[0]?.[0].playerNames).toHaveLength(3);
+      expect(
+        fetcher.mock.calls.map(([request]) => request.playerNames?.length),
+      ).toEqual([12, 8]);
 
       await vi.advanceTimersByTimeAsync(5);
       await coordinator.flush();
 
-      const refreshRequests = fetcher.mock.calls.slice(1).map(([request]) => request);
-      expect(refreshRequests).toHaveLength(3);
-      expect(
-        refreshRequests.every(
-          (request) =>
-            (request.slugs?.length ?? 0) + (request.playerNames?.length ?? 0) === 1,
-        ),
-      ).toBe(true);
-      const messiView = views[1];
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(marketSnapshotsFetcher).toHaveBeenCalledTimes(1);
+      expect(marketSnapshotsFetcher.mock.calls[0]?.[0].players).toHaveLength(
+        20,
+      );
+      const messiView = views[7];
       const assist = messiView?.host.shadowRoot?.querySelector<HTMLElement>(
         '[data-market="assist"]',
       );
       expect(assist?.dataset.benchmarkSource).toBe('market');
       expect(assist?.textContent).toBe('41%');
+      const teammateAssist = views[0]?.host.shadowRoot?.querySelector<HTMLElement>(
+        '[data-market="assist"]',
+      );
+      expect(teammateAssist?.dataset.benchmarkSource).toBe('historical');
+      expect(teammateAssist?.textContent).toBe('(47%)');
     } finally {
       for (const view of views) view.destroy();
       vi.useRealTimers();
@@ -3914,7 +3977,7 @@ describe('Sorare card DOM discovery', () => {
             l40: { value: 0.25, sampleSize: 40 },
           },
           nextGame: null,
-          pendingRefreshes: ['marketOdds'],
+          pendingRefreshes: ['fixture'],
           excludedLowCoverage: 1,
         };
         const partialStats: PlayerStatsSuccessResponse['data'][number] = {
@@ -4068,13 +4131,7 @@ describe('Sorare card DOM discovery', () => {
       excludedLowCoverage: 0,
     };
     const fetcher = vi.fn(
-      async (): Promise<PlayerStatsSuccessResponse> => {
-        if (fetcher.mock.calls.length > 1) {
-          throw new Error(
-            'BACKEND_UNAVAILABLE: Statistikdienst ist nicht erreichbar',
-          );
-        }
-        return {
+      async (): Promise<PlayerStatsSuccessResponse> => ({
           data: [cachedStats],
           meta: {
             requested: 1,
@@ -4082,7 +4139,13 @@ describe('Sorare card DOM discovery', () => {
             cacheHits: 1,
             source: 'sorare',
           },
-        };
+        }),
+    );
+    const marketSnapshotsFetcher = vi.fn(
+      async (): Promise<PlayerMarketSnapshotsSuccessResponse> => {
+        throw new Error(
+          'BACKEND_UNAVAILABLE: Statistikdienst ist nicht erreichbar',
+        );
       },
     );
     const coordinator = new StatsBatchCoordinator(
@@ -4092,6 +4155,8 @@ describe('Sorare card DOM discovery', () => {
       8,
       2,
       [5],
+      undefined,
+      { marketSnapshotsFetcher },
     );
     const card = document.createElement('article');
     document.body.append(card);
@@ -4110,7 +4175,10 @@ describe('Sorare card DOM discovery', () => {
     );
 
     await coordinator.flush();
-    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(marketSnapshotsFetcher).toHaveBeenCalledTimes(1),
+    );
+    expect(fetcher).toHaveBeenCalledTimes(1);
 
     expect(
       view.host.shadowRoot?.querySelector(

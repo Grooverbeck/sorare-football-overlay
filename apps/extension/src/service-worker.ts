@@ -2,6 +2,8 @@ import {
   ApiErrorResponseSchema,
   LineupSortValuesRequestSchema,
   LineupSortValuesSuccessResponseSchema,
+  PlayerMarketSnapshotsRequestSchema,
+  PlayerMarketSnapshotsSuccessResponseSchema,
   PlayerStatsRequestSchema,
   PlayerStatsSuccessResponseSchema,
 } from '@sorare-overlay/shared';
@@ -60,7 +62,8 @@ export async function handleMessage(
   }
   if (
     message?.type !== 'FETCH_PLAYER_STATS' &&
-    message?.type !== 'FETCH_LINEUP_SORT_VALUES'
+    message?.type !== 'FETCH_LINEUP_SORT_VALUES' &&
+    message?.type !== 'FETCH_PLAYER_MARKET_SNAPSHOTS'
   ) {
     return errorResponse(
       'UNKNOWN_MESSAGE',
@@ -70,9 +73,13 @@ export async function handleMessage(
     );
   }
   const isLineupSortRequest = message.type === 'FETCH_LINEUP_SORT_VALUES';
+  const isMarketSnapshotRequest =
+    message.type === 'FETCH_PLAYER_MARKET_SNAPSHOTS';
   const request = isLineupSortRequest
     ? LineupSortValuesRequestSchema.safeParse(message.payload)
-    : PlayerStatsRequestSchema.safeParse(message.payload);
+    : isMarketSnapshotRequest
+      ? PlayerMarketSnapshotsRequestSchema.safeParse(message.payload)
+      : PlayerStatsRequestSchema.safeParse(message.payload);
   if (!request.success) {
     return errorResponse(
       'INVALID_REQUEST',
@@ -94,7 +101,9 @@ export async function handleMessage(
       `${apiBaseUrl}${
         isLineupSortRequest
           ? '/api/lineup-sort-values'
-          : '/api/player-stats'
+          : isMarketSnapshotRequest
+            ? '/api/player-market-snapshots'
+            : '/api/player-stats'
       }`,
       {
         method: 'POST',
@@ -143,7 +152,9 @@ export async function handleMessage(
     }
     const parsed = isLineupSortRequest
       ? LineupSortValuesSuccessResponseSchema.safeParse(json)
-      : PlayerStatsSuccessResponseSchema.safeParse(json);
+      : isMarketSnapshotRequest
+        ? PlayerMarketSnapshotsSuccessResponseSchema.safeParse(json)
+        : PlayerStatsSuccessResponseSchema.safeParse(json);
     return parsed.success
       ? {
           ok: true,

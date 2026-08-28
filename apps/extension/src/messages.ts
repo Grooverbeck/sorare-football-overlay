@@ -2,6 +2,8 @@ import type {
   ApiErrorResponse,
   LineupSortValuesRequest,
   LineupSortValuesSuccessResponse,
+  PlayerMarketSnapshotsRequest,
+  PlayerMarketSnapshotsSuccessResponse,
   PlayerStatsRequest,
   PlayerStatsSuccessResponse,
 } from '@sorare-overlay/shared';
@@ -18,9 +20,16 @@ export interface FetchLineupSortValuesMessage {
   requestId: string;
 }
 
+export interface FetchPlayerMarketSnapshotsMessage {
+  type: 'FETCH_PLAYER_MARKET_SNAPSHOTS';
+  payload: PlayerMarketSnapshotsRequest;
+  requestId: string;
+}
+
 export type ExtensionMessage =
   | FetchPlayerStatsMessage
-  | FetchLineupSortValuesMessage;
+  | FetchLineupSortValuesMessage
+  | FetchPlayerMarketSnapshotsMessage;
 
 export type WorkerResponse<T> =
   | {
@@ -40,4 +49,7 @@ export type WorkerResponse<T> =
 export type PlayerStatsWorkerResponse = WorkerResponse<PlayerStatsSuccessResponse>;
 export type LineupSortValuesWorkerResponse = WorkerResponse<
   LineupSortValuesSuccessResponse
+>;
+export type PlayerMarketSnapshotsWorkerResponse = WorkerResponse<
+  PlayerMarketSnapshotsSuccessResponse
 >;

@@ -136,4 +136,78 @@ describe('extension service worker player-stats requests', () => {
       },
     });
   });
+
+  it('forwards batched market polling to the cache-only snapshot endpoint', async () => {
+    const nextGame = {
+      date: '2026-08-29T18:00:00.000Z',
+      homeTeamSlug: 'home-fc',
+      awayTeamSlug: 'away-fc',
+      playerTeamSlug: 'home-fc',
+      cleanSheetProbability: null,
+      matchProbabilities: null,
+      marketOdds: null,
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe(
+        'https://overlay.example/api/player-market-snapshots',
+      );
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        players: [{ slug: 'market-player', nextGame }],
+      });
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              slug: 'market-player',
+              position: 'Forward',
+              fixture: {
+                date: nextGame.date,
+                homeTeamSlug: 'home-fc',
+                awayTeamSlug: 'away-fc',
+                playerTeamSlug: 'home-fc',
+              },
+              marketOdds: null,
+              refreshState: 'settled',
+            },
+          ],
+          meta: {
+            requested: 1,
+            returned: 1,
+            source: 'sorare',
+            durationMs: 2.1,
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      );
+    });
+
+    const response = await handleMessage(
+      {
+        type: 'FETCH_PLAYER_MARKET_SNAPSHOTS',
+        payload: {
+          players: [
+            {
+              slug: 'market-player',
+              displayName: 'Market Player',
+              position: 'Forward',
+              nextGame,
+            },
+          ],
+        },
+        requestId: 'extension-market-request-1',
+      },
+      { url: 'https://sorare.com/football' },
+      { apiBaseUrl: 'https://overlay.example', fetchImpl },
+    );
+
+    expect(response).toMatchObject({
+      ok: true,
+      value: {
+        data: [{ slug: 'market-player', refreshState: 'settled' }],
+      },
+    });
+  });
 });

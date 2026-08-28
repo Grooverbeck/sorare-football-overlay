@@ -4,7 +4,9 @@ import {
   calculateHistoricalGoalMetrics,
   calculatePlayerMetrics,
   type FootballPosition,
+  type PlayerMarketSnapshot,
   type PlayerStats,
+  type ValidatedPlayerMarketSnapshotsRequest,
   type ValidatedPlayerStatsRequest,
 } from '@sorare-overlay/shared';
 import {
@@ -85,6 +87,12 @@ function hasRequestedHistoricalWindows(
       stats.historicalGoals !== undefined &&
       stats.historicalDecisives !== undefined)
   );
+}
+
+export interface PlayerMarketSnapshotsResult {
+  data: PlayerMarketSnapshot[];
+  source: 'sorare' | 'mock';
+  durationMs: number;
 }
 
 function hasNoUsablePlayerData(stats: PlayerStats): boolean {
@@ -387,6 +395,101 @@ export class StatsService {
           total: this.responseBudgetMs,
         },
       },
+    };
+  }
+
+  async getPlayerMarketSnapshots(
+    request: ValidatedPlayerMarketSnapshotsRequest,
+  ): Promise<PlayerMarketSnapshotsResult> {
+    const startedAt = performance.now();
+    const emptyMetric = { value: null, sampleSize: 0 } as const;
+    const players = request.players.map((target): PlayerStats => {
+      const nextGame = target.nextGame
+        ? (() => {
+            const { marketOdds: _clientMarketOdds, ...fixture } =
+              target.nextGame;
+            return { ...fixture, marketOdds: null };
+          })()
+        : null;
+      return {
+        slug: target.slug,
+        displayName: target.displayName,
+        position: target.position,
+        aaL10: emptyMetric,
+        cleanSheetL10: emptyMetric,
+        goalL10: emptyMetric,
+        nextGame,
+        excludedLowCoverage: 0,
+      };
+    });
+    const eligiblePlayers = players.filter((player) =>
+      playerMarketOddsSupported(this.marketOddsProvider, player),
+    );
+    const refreshDuePlayerKeys = new Set<string>();
+    const refreshDueState = { complete: false };
+    const marketOdds = await this.loadCacheOnlyWithinBudget(
+      this.marketOddsProvider.load(eligiblePlayers, {
+        cacheOnly: true,
+        cacheOnlyDeadlineMs: Date.now() + this.cacheOnlyOddsBudgetMs,
+        refreshDuePlayerKeys,
+        refreshDueState,
+      }),
+    );
+
+    const data = players.map((player): PlayerMarketSnapshot => {
+      const key = playerMarketOddsKey(player);
+      const supported = playerMarketOddsSupported(
+        this.marketOddsProvider,
+        player,
+      );
+      const odds = supported ? marketOdds.get(key) ?? null : null;
+      const missingRequestDrivingMarket = (
+        ['goal', 'assist'] as const
+      ).some(
+        (market) =>
+          playerMarketFieldDrivesRequest(
+            this.marketOddsProvider,
+            player,
+            market,
+          ) && !odds?.[market],
+      );
+      const refreshState = !supported
+        ? ('unsupported' as const)
+        : this.marketOddsProvider.reportsRefreshDue === true &&
+            refreshDueState.complete
+          ? refreshDuePlayerKeys.has(key)
+            ? ('pending' as const)
+            : ('settled' as const)
+          : missingRequestDrivingMarket
+            ? ('pending' as const)
+            : ('settled' as const);
+      const fixture = player.nextGame
+        ? {
+            date: player.nextGame.date,
+            ...(player.nextGame.homeTeamSlug
+              ? { homeTeamSlug: player.nextGame.homeTeamSlug }
+              : {}),
+            ...(player.nextGame.awayTeamSlug
+              ? { awayTeamSlug: player.nextGame.awayTeamSlug }
+              : {}),
+            ...(player.nextGame.playerTeamSlug
+              ? { playerTeamSlug: player.nextGame.playerTeamSlug }
+              : {}),
+          }
+        : null;
+      return {
+        slug: player.slug,
+        position: player.position,
+        fixture,
+        marketOdds: odds,
+        refreshState,
+      };
+    });
+
+    return {
+      data,
+      source: this.dataSource.source,
+      durationMs: elapsedMs(startedAt),
     };
   }
 

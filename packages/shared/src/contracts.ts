@@ -301,6 +301,69 @@ export const ApiErrorResponseSchema = z.object({
 export type PlayerStatsSuccessResponse = z.infer<typeof PlayerStatsSuccessResponseSchema>;
 export type ApiErrorResponse = z.infer<typeof ApiErrorResponseSchema>;
 
+// A market follow-up already has canonical player and fixture data from the
+// preceding player-stats response. Sending that compact context back avoids a
+// second form/fixture lookup while the backend only reads immutable provider
+// snapshots. The endpoint using this contract must stay cache-only.
+export const PlayerMarketSnapshotTargetSchema = PlayerStatsSchema.pick({
+  slug: true,
+  displayName: true,
+  position: true,
+  nextGame: true,
+});
+
+export const PlayerMarketSnapshotsRequestSchema = z.object({
+  players: z.array(PlayerMarketSnapshotTargetSchema).min(1).max(50),
+});
+
+export const PlayerMarketRefreshStateSchema = z.enum([
+  'pending',
+  'settled',
+  'unsupported',
+]);
+
+export const PlayerMarketSnapshotSchema = z.object({
+  slug: z.string(),
+  position: FootballPositionSchema,
+  fixture: z
+    .object({
+      date: z.string().datetime(),
+      homeTeamSlug: z.string().trim().min(1).max(180).optional(),
+      awayTeamSlug: z.string().trim().min(1).max(180).optional(),
+      playerTeamSlug: z.string().trim().min(1).max(180).optional(),
+    })
+    .nullable(),
+  marketOdds: PlayerMarketOddsSchema.nullable(),
+  refreshState: PlayerMarketRefreshStateSchema,
+});
+
+export const PlayerMarketSnapshotsSuccessResponseSchema = z.object({
+  data: z.array(PlayerMarketSnapshotSchema),
+  meta: z.object({
+    requested: z.number().int().nonnegative(),
+    returned: z.number().int().nonnegative(),
+    source: z.enum(['sorare', 'mock']),
+    durationMs: z.number().nonnegative(),
+  }),
+});
+
+export type PlayerMarketSnapshotTarget = z.infer<
+  typeof PlayerMarketSnapshotTargetSchema
+>;
+export type PlayerMarketSnapshotsRequest = z.input<
+  typeof PlayerMarketSnapshotsRequestSchema
+>;
+export type ValidatedPlayerMarketSnapshotsRequest = z.output<
+  typeof PlayerMarketSnapshotsRequestSchema
+>;
+export type PlayerMarketRefreshState = z.infer<
+  typeof PlayerMarketRefreshStateSchema
+>;
+export type PlayerMarketSnapshot = z.infer<typeof PlayerMarketSnapshotSchema>;
+export type PlayerMarketSnapshotsSuccessResponse = z.infer<
+  typeof PlayerMarketSnapshotsSuccessResponseSchema
+>;
+
 export const LineupSortValueSchema = z.object({
   slug: z.string(),
   displayName: z.string(),

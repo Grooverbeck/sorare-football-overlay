@@ -1801,10 +1801,20 @@ export class SupplementingPlayerMarketOddsProvider
         if (!fallbackRefreshDue.has(key)) continue;
         const primary = primaryValues.get(key) ?? null;
         const fallback = fallbackValues.get(key) ?? null;
+        const combinedOdds = supplementPlayerMarketOdds(
+          primary,
+          fallback,
+          this.supplementMarkets,
+        );
         const fallbackContributes = this.supplementMarkets.some(
           (market) => !primary?.[market] && Boolean(fallback?.[market]),
         );
-        if (fallbackContributes) {
+        const fallbackRequestNeeded = this.requestMarkets.some(
+          (market) =>
+            playerMarketFieldDrivesRequest(this.fallback, player, market) &&
+            !combinedOdds?.[market],
+        );
+        if (fallbackContributes || fallbackRequestNeeded) {
           loadOptions.refreshDuePlayerKeys.add(key);
         }
       }

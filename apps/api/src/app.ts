@@ -3,6 +3,8 @@ import {
   lineupSortValueForPlayer,
   LineupSortValuesRequestSchema,
   LineupSortValuesSuccessResponseSchema,
+  PlayerMarketSnapshotsRequestSchema,
+  PlayerMarketSnapshotsSuccessResponseSchema,
   PlayerStatsRequestSchema,
   PlayerStatsSuccessResponseSchema,
 } from '@sorare-overlay/shared';
@@ -180,6 +182,44 @@ export function createApp<TBindings extends object = Record<string, never>>(
         ...(result.deferredPlayerSlugs.length > 0
           ? { deferredPlayerSlugs: result.deferredPlayerSlugs }
           : {}),
+      },
+    });
+    return context.json(response);
+  });
+
+  app.post('/api/player-market-snapshots', async (context) => {
+    const services = context.get('services');
+    const body = await context.req
+      .json<unknown>()
+      .catch(() => {
+        throw new AppError(400, 'INVALID_JSON', 'Request body must be valid JSON');
+      });
+    const parsed = PlayerMarketSnapshotsRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new AppError(
+        400,
+        'INVALID_REQUEST',
+        parsed.error.issues.map((issue) => issue.message).join('; '),
+      );
+    }
+
+    // The supplied fixture context came from an earlier canonical API
+    // response. This endpoint never resolves players, refreshes fixtures or
+    // starts bookmaker work; it only observes immutable provider snapshots.
+    const result = await services.statsService.getPlayerMarketSnapshots(
+      parsed.data,
+    );
+    context.header(
+      'server-timing',
+      `market-snapshots;dur=${result.durationMs.toFixed(1)}`,
+    );
+    const response = PlayerMarketSnapshotsSuccessResponseSchema.parse({
+      data: result.data,
+      meta: {
+        requested: parsed.data.players.length,
+        returned: result.data.length,
+        source: result.source,
+        durationMs: result.durationMs,
       },
     });
     return context.json(response);

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   LineupSortValuesRequestSchema,
   LineupSortValuesSuccessResponseSchema,
+  PlayerMarketSnapshotsRequestSchema,
+  PlayerMarketSnapshotsSuccessResponseSchema,
   PlayerStatsRequestSchema,
   PlayerStatsSchema,
 } from '../contracts.js';
@@ -119,5 +121,70 @@ describe('LineupSortValues contracts', () => {
 
     expect(response.data[0]).not.toHaveProperty('nextGame');
     expect(response.data[0]).not.toHaveProperty('historicalGoals');
+  });
+});
+
+describe('Player market snapshot contracts', () => {
+  it('accepts canonical response context without requiring full form metrics', () => {
+    const request = PlayerMarketSnapshotsRequestSchema.parse({
+      players: [
+        {
+          slug: fixture.slug,
+          displayName: fixture.displayName,
+          position: fixture.position,
+          nextGame: {
+            ...fixture.nextGame,
+            playerTeamSlug: 'home-fc',
+            marketOdds: null,
+          },
+        },
+      ],
+    });
+
+    expect(request.players).toHaveLength(1);
+    expect(request.players[0]).not.toHaveProperty('aaL10');
+  });
+
+  it('distinguishes pending, settled and unsupported cache reads', () => {
+    const base = {
+      slug: fixture.slug,
+      position: fixture.position,
+      fixture: {
+        date: fixture.nextGame.date,
+        playerTeamSlug: 'home-fc',
+      },
+      marketOdds: null,
+    };
+    const response = PlayerMarketSnapshotsSuccessResponseSchema.parse({
+      data: [
+        { ...base, refreshState: 'pending' },
+        { ...base, refreshState: 'settled' },
+        { ...base, refreshState: 'unsupported' },
+      ],
+      meta: {
+        requested: 3,
+        returned: 3,
+        source: 'sorare',
+        durationMs: 1.2,
+      },
+    });
+
+    expect(response.data.map(({ refreshState }) => refreshState)).toEqual([
+      'pending',
+      'settled',
+      'unsupported',
+    ]);
+  });
+
+  it('rejects more than fifty snapshot targets', () => {
+    const players = Array.from({ length: 51 }, (_, index) => ({
+      slug: `player-${index + 1}`,
+      displayName: `Player ${index + 1}`,
+      position: 'Forward' as const,
+      nextGame: fixture.nextGame,
+    }));
+    expect(
+      PlayerMarketSnapshotsRequestSchema.safeParse({ players }).success,
+    ).toBe(false);
   });
 });

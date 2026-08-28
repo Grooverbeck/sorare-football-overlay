@@ -1402,6 +1402,60 @@ describe('Cloudflare Worker', () => {
     ).not.toHaveProperty('nextGame');
   });
 
+  it('serves compact batched player-market snapshots through the Worker runtime', async () => {
+    const statsResponse = await SELF.fetch(
+      'https://overlay.example/api/player-stats',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          slugs: ['virgil-van-dijk'],
+          positions: { 'virgil-van-dijk': 'Defender' },
+        }),
+      },
+    );
+    const statsBody = await statsResponse.json<{
+      data: Array<{
+        slug: string;
+        displayName: string;
+        position: string;
+        nextGame: unknown;
+      }>;
+    }>();
+    const player = statsBody.data[0];
+    if (!player) throw new Error('Expected mock player stats');
+
+    const response = await SELF.fetch(
+      'https://overlay.example/api/player-market-snapshots',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ players: [player] }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('server-timing')).toContain(
+      'market-snapshots;dur=',
+    );
+    const body = await response.json<Record<string, unknown>>();
+    expect(body).toMatchObject({
+      data: [
+        {
+          slug: 'virgil-van-dijk',
+          position: 'Defender',
+          marketOdds: { source: 'mock' },
+          refreshState: 'settled',
+        },
+      ],
+      meta: {
+        requested: 1,
+        returned: 1,
+        source: 'mock',
+      },
+    });
+  });
+
   it('stores form, fixture, name hits, and name misses with separate TTLs', async () => {
     const nowMs = Date.now();
     const nowSeconds = Math.floor(nowMs / 1_000);
