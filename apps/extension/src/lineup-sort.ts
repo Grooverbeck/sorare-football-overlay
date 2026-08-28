@@ -824,6 +824,7 @@ export class LineupCardSorter {
   private readonly nativeRadioStates = new Map<HTMLInputElement, boolean>();
   private activeMode: LineupSortMode | null = null;
   private sortFrame: number | undefined;
+  private sortRefreshPending = false;
   private poolStartTimer: number | undefined;
   private poolGeneration = 0;
   private poolLoading = false;
@@ -849,8 +850,7 @@ export class LineupCardSorter {
 
   private readonly handleSortValueChange = (): void => {
     if (!this.activeMode || this.poolLoading || this.filterSuspended) return;
-    this.refreshHydrationProgress();
-    this.syncNativeSortUi();
+    this.sortRefreshPending = true;
     this.scheduleSort();
   };
 
@@ -1364,6 +1364,12 @@ export class LineupCardSorter {
     }
     const callback = (): void => {
       this.sortFrame = undefined;
+      if (this.sortRefreshPending) {
+        this.sortRefreshPending = false;
+        if (!this.activeMode || this.poolLoading || this.filterSuspended) return;
+        this.refreshHydrationProgress();
+        this.syncNativeSortUi();
+      }
       this.applySort();
     };
     this.sortFrame =
@@ -1373,6 +1379,7 @@ export class LineupCardSorter {
   }
 
   private cancelSortFrame(): void {
+    this.sortRefreshPending = false;
     if (this.sortFrame === undefined) return;
     if (typeof window.cancelAnimationFrame === 'function') {
       window.cancelAnimationFrame(this.sortFrame);

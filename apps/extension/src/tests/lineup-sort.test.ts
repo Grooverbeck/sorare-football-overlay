@@ -381,6 +381,44 @@ describe('lineup card sorting', () => {
     expect(market.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
   });
 
+  it('coalesces a burst of card value changes into one pool refresh', async () => {
+    const market = document.querySelector<HTMLElement>('[data-player="market"]');
+    const historical = document.querySelector<HTMLElement>(
+      '[data-player="historical"]',
+    );
+    const missing = document.querySelector<HTMLElement>('[data-player="missing"]');
+    if (!market || !historical || !missing) {
+      throw new Error('Expected lineup cards');
+    }
+
+    sorter.start();
+    document
+      .querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)
+      ?.click();
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector<HTMLElement>('[data-cell="market"]')?.style
+          .order,
+      ).not.toBe(''),
+    );
+
+    const refresh = vi.spyOn(
+      sorter as unknown as { refreshHydrationProgress: () => void },
+      'refreshHydrationProgress',
+    );
+    refresh.mockClear();
+
+    setLineupAaSortValue(market, 30);
+    setLineupAaSortValue(historical, 20);
+    setLineupAaSortValue(missing, 10);
+    setLineupSortDataReady(market, false);
+    setLineupSortDataReady(historical, false);
+    setLineupSortDataReady(missing, false);
+
+    expect(refresh).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+  });
+
   it('gives Sorare exclusive control while its native filter is open', async () => {
     sorter.stop();
     let loadCalls = 0;
