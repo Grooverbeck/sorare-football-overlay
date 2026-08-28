@@ -3700,6 +3700,10 @@ describe('Sorare card DOM discovery', () => {
       }),
     );
     const coordinator = new StatsBatchCoordinator(fetcher, 60_000);
+    const reconcileVisibleMarkets = vi.spyOn(
+      coordinator,
+      'reconcileMissingMarkets',
+    );
     const hydrator = new LineupSortHydrator(vi.fn());
     const reconcile = vi.spyOn(hydrator, 'reconcileMissingGoals');
     const scanner = new SorareCardScanner(coordinator, undefined, hydrator);
@@ -3709,6 +3713,10 @@ describe('Sorare card DOM discovery', () => {
 
     await vi.waitFor(() => expect(reconcile).toHaveBeenCalledTimes(1));
     expect(reconcile).toHaveBeenCalledWith(['home-fc', 'away-fc']);
+    expect(reconcileVisibleMarkets).toHaveBeenCalledWith([
+      'home-fc',
+      'away-fc',
+    ]);
 
     scanner.refreshAllOverlays(true);
     await coordinator.flush();
@@ -4230,6 +4238,273 @@ describe('Sorare card DOM discovery', () => {
       );
       expect(assist?.dataset.benchmarkSource).toBe('market');
       expect(assist?.textContent).toBe('41%');
+      view.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rechecks a stale historical goal fallback from the cache without another provider-driving stats request', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-08-28T12:00:00.000Z'));
+      applyHistoricalAssistFallbackSettings(true, 15);
+      const staleStats: PlayerStats = {
+        slug: 'antonio-eromonsele-nordby-nusa',
+        displayName: 'Antonio Nusa',
+        position: 'Forward',
+        aaL10: { value: 13.7, sampleSize: 10 },
+        cleanSheetL10: { value: 1 / 3, sampleSize: 3 },
+        goalL10: { value: 0.1, sampleSize: 10 },
+        historicalGoals: {
+          l10: { value: 0.1, sampleSize: 10 },
+          l15: { value: 0.2, sampleSize: 15 },
+          l40: { value: 6 / 37, sampleSize: 37 },
+        },
+        historicalAssists: {
+          l10: { value: 0, sampleSize: 10 },
+          l15: { value: 1 / 15, sampleSize: 15 },
+          l40: { value: 3 / 37, sampleSize: 37 },
+        },
+        nextGame: {
+          date: '2026-08-29T13:30:00.000Z',
+          homeTeamName: 'RB Leipzig',
+          awayTeamName: "Borussia M'gladbach",
+          playerTeamName: 'RB Leipzig',
+          opponentTeamName: "Borussia M'gladbach",
+          playerTeamSlug: 'rb-leipzig-leipzig',
+          homeTeamSlug: 'rb-leipzig-leipzig',
+          awayTeamSlug: 'borussia-m-gladbach-monchengladbach',
+          cleanSheetProbability: 0.357,
+          matchProbabilities: { win: 0.6, draw: 0.22, loss: 0.18 },
+          marketOdds: null,
+        },
+        excludedLowCoverage: 1,
+      };
+      const freshMarketOdds = {
+        source: 'odds-api-io' as const,
+        capturedAt: '2026-08-28T13:30:36.200Z',
+        goal: { probability: 0.3485, bookmakerCount: 2 },
+        assist: { probability: 0.25, bookmakerCount: 1 },
+        decisive: { probability: 0.5123, bookmakerCount: 1 },
+      };
+      const fetcher = vi.fn(
+        async (): Promise<PlayerStatsSuccessResponse> => ({
+          data: [staleStats],
+          meta: {
+            requested: 1,
+            returned: 1,
+            cacheHits: 1,
+            source: 'sorare',
+          },
+        }),
+      );
+      const marketSnapshotsFetcher = vi.fn(
+        async (
+          request: PlayerMarketSnapshotsRequest,
+        ): Promise<PlayerMarketSnapshotsSuccessResponse> => ({
+          data: request.players.map((player) => ({
+            slug: player.slug,
+            position: player.position,
+            fixture: player.nextGame
+              ? {
+                  date: player.nextGame.date,
+                  ...(player.nextGame.playerTeamSlug
+                    ? { playerTeamSlug: player.nextGame.playerTeamSlug }
+                    : {}),
+                }
+              : null,
+            marketOdds: freshMarketOdds,
+            refreshState: 'settled',
+          })),
+          meta: {
+            requested: request.players.length,
+            returned: request.players.length,
+            source: 'sorare',
+            durationMs: 1,
+          },
+        }),
+      );
+      const coordinator = new StatsBatchCoordinator(
+        fetcher,
+        60_000,
+        undefined,
+        8,
+        2,
+        undefined,
+        undefined,
+        {
+          marketSnapshotsFetcher,
+          marketSnapshotRecheckTtlMs: 60_000,
+        },
+      );
+      coordinator.setIncludeHistoricalAssists(true);
+      const firstCard = document.createElement('article');
+      document.body.append(firstCard);
+      const firstView = new OverlayView(
+        firstCard,
+        { slug: staleStats.slug },
+        'Forward',
+      );
+      const target = {
+        slug: staleStats.slug,
+        position: 'Forward' as const,
+        container: firstCard,
+      };
+      coordinator.enqueue(target, firstView);
+      await coordinator.flush();
+
+      expect(
+        firstView.host.shadowRoot?.querySelector<HTMLElement>(
+          '[data-market="goal"]',
+        )?.dataset.benchmarkSource,
+      ).toBe('historical');
+      expect(marketSnapshotsFetcher).not.toHaveBeenCalled();
+
+      const secondCard = document.createElement('article');
+      document.body.append(secondCard);
+      const secondView = new OverlayView(
+        secondCard,
+        { slug: staleStats.slug },
+        'Forward',
+      );
+      coordinator.enqueue(
+        { ...target, container: secondCard },
+        secondView,
+      );
+      await coordinator.flush();
+      expect(marketSnapshotsFetcher).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(60_001);
+      coordinator.setViewViewportActive(target, firstView, true, 2);
+      await coordinator.flush();
+
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(marketSnapshotsFetcher).toHaveBeenCalledTimes(1);
+      for (const view of [firstView, secondView]) {
+        const goal = view.host.shadowRoot?.querySelector<HTMLElement>(
+          '[data-market="goal"]',
+        );
+        expect(goal?.dataset.benchmarkSource).toBe('market');
+        expect(goal?.textContent).toBe('35%');
+      }
+      firstView.destroy();
+      secondView.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rechecks a visible teammate immediately after the fixture market cache changes', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-08-28T12:00:00.000Z'));
+      const stats: PlayerStats = {
+        slug: 'visible-teammate',
+        displayName: 'Visible Teammate',
+        position: 'Forward',
+        aaL10: { value: 11.2, sampleSize: 10 },
+        cleanSheetL10: { value: 0.2, sampleSize: 10 },
+        goalL10: { value: 0.1, sampleSize: 10 },
+        nextGame: {
+          date: '2026-08-29T13:30:00.000Z',
+          homeTeamName: 'Home FC',
+          awayTeamName: 'Away FC',
+          playerTeamName: 'Home FC',
+          opponentTeamName: 'Away FC',
+          playerTeamSlug: 'home-fc',
+          homeTeamSlug: 'home-fc',
+          awayTeamSlug: 'away-fc',
+          cleanSheetProbability: null,
+          matchProbabilities: null,
+          marketOdds: null,
+        },
+        excludedLowCoverage: 0,
+      };
+      const fetcher = vi.fn(
+        async (): Promise<PlayerStatsSuccessResponse> => ({
+          data: [stats],
+          meta: {
+            requested: 1,
+            returned: 1,
+            cacheHits: 1,
+            source: 'sorare',
+          },
+        }),
+      );
+      const marketSnapshotsFetcher = vi.fn(
+        async (
+          request: PlayerMarketSnapshotsRequest,
+        ): Promise<PlayerMarketSnapshotsSuccessResponse> => ({
+          data: request.players.map((player) => ({
+            slug: player.slug,
+            position: player.position,
+            fixture: player.nextGame
+              ? {
+                  date: player.nextGame.date,
+                  ...(player.nextGame.playerTeamSlug
+                    ? { playerTeamSlug: player.nextGame.playerTeamSlug }
+                    : {}),
+                }
+              : null,
+            marketOdds: {
+              source: 'odds-api-io',
+              capturedAt: '2026-08-28T12:00:01.000Z',
+              goal: { probability: 0.42, bookmakerCount: 2 },
+              assist: null,
+              decisive: null,
+            },
+            refreshState: 'settled',
+          })),
+          meta: {
+            requested: request.players.length,
+            returned: request.players.length,
+            source: 'sorare',
+            durationMs: 1,
+          },
+        }),
+      );
+      const coordinator = new StatsBatchCoordinator(
+        fetcher,
+        60_000,
+        undefined,
+        8,
+        2,
+        undefined,
+        undefined,
+        {
+          marketSnapshotsFetcher,
+          marketSnapshotRecheckTtlMs: 6 * 60 * 60 * 1_000,
+        },
+      );
+      const card = document.createElement('article');
+      document.body.append(card);
+      const view = new OverlayView(
+        card,
+        { slug: stats.slug },
+        'Forward',
+      );
+      vi.spyOn(view, 'isViewportPriorityActive').mockReturnValue(true);
+      coordinator.enqueue(
+        {
+          slug: stats.slug,
+          position: 'Forward',
+          container: card,
+        },
+        view,
+      );
+      await coordinator.flush();
+
+      coordinator.reconcileMissingMarkets(['home-fc']);
+      await coordinator.flush();
+
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(marketSnapshotsFetcher).toHaveBeenCalledTimes(1);
+      expect(
+        view.host.shadowRoot?.querySelector<HTMLElement>(
+          '[data-market="goal"] .market-value',
+        )?.textContent,
+      ).toBe('42%');
       view.destroy();
     } finally {
       vi.useRealTimers();

@@ -89,6 +89,7 @@ const poolOverlayDemotionBudgetMs = 7;
 const poolOverlayDemotionMaxCards = 16;
 const defaultMaxCachedAliases = 8_192;
 const defaultCachedAliasTtlMs = 6 * 60 * 60 * 1_000;
+const defaultMarketSnapshotRecheckTtlMs = 60_000;
 
 interface CachedAliasMetadata {
   lastAccessedAt: number;
@@ -98,6 +99,7 @@ interface CachedAliasMetadata {
 export interface StatsBatchCoordinatorOptions {
   maxCachedAliases?: number;
   cachedAliasTtlMs?: number;
+  marketSnapshotRecheckTtlMs?: number;
   marketSnapshotBatchSize?: number;
   marketSnapshotsFetcher?: MarketSnapshotsFetcher;
 }
@@ -264,6 +266,22 @@ function marketSnapshotMatchesStats(
   );
 }
 
+function marketSnapshotIdentity(stats: PlayerStats): string | null {
+  if (!stats.nextGame) return null;
+  return `${stats.slug}:${stats.position}:${stats.nextGame.date}`;
+}
+
+function needsCachedGoalMarketRecheck(
+  stats: PlayerStats,
+  now = Date.now(),
+): boolean {
+  if (stats.position === 'Goalkeeper' || stats.nextGame?.marketOdds?.goal) {
+    return false;
+  }
+  const kickoff = Date.parse(stats.nextGame?.date ?? '');
+  return Number.isFinite(kickoff) && kickoff > now;
+}
+
 function mergePlayerMarketOdds(
   cached: PlayerMarketOdds | null | undefined,
   incoming: PlayerMarketOdds | null | undefined,
@@ -362,6 +380,7 @@ export class StatsBatchCoordinator {
   private readonly refreshWork = new Map<string, PendingRefreshWork>();
   private readonly fixtureRefreshTargets = new Set<string>();
   private readonly marketSnapshotRequestKeys = new Set<string>();
+  private readonly marketSnapshotCheckedAt = new Map<string, number>();
   private activeBatchCount = 0;
   private batchSequence = 0;
   private cacheSequence = 0;
@@ -369,6 +388,7 @@ export class StatsBatchCoordinator {
   private includeHistoricalAssists = false;
   private readonly maxCachedAliases: number;
   private readonly cachedAliasTtlMs: number;
+  private readonly marketSnapshotRecheckTtlMs: number;
   private readonly marketSnapshotBatchSize: number;
   private readonly marketSnapshotsFetcher: MarketSnapshotsFetcher;
   private marketCacheUpdateListener: MarketCacheUpdateListener | undefined;
@@ -396,6 +416,13 @@ export class StatsBatchCoordinator {
     this.cachedAliasTtlMs = Math.max(
       1,
       Math.floor(options.cachedAliasTtlMs ?? defaultCachedAliasTtlMs),
+    );
+    this.marketSnapshotRecheckTtlMs = Math.max(
+      1,
+      Math.floor(
+        options.marketSnapshotRecheckTtlMs ??
+          defaultMarketSnapshotRecheckTtlMs,
+      ),
     );
     this.marketSnapshotBatchSize = Math.max(
       1,
@@ -446,6 +473,12 @@ export class StatsBatchCoordinator {
           priority,
           cached.pendingRefreshes.includes('marketOdds'),
         );
+      } else if (
+        this.queueCachedGoalMarketRecheck(target, [view], priority, cached)
+      ) {
+        // Keep rendering the complete cached form/fixture immediately while a
+        // compact cache-only market read checks whether a bookmaker warm-up
+        // has finished since this player snapshot was stored.
       } else {
         this.clearPendingRefresh(key);
       }
@@ -520,6 +553,58 @@ export class StatsBatchCoordinator {
       else if (!this.hasActiveViews(refresh.views)) {
         this.pauseScheduledWork(refresh);
       }
+    }
+
+    if (active) {
+      this.queueCachedGoalMarketRecheck(target, [view], priority);
+    }
+  }
+
+  reconcileMissingMarkets(teamSlugs: readonly string[]): void {
+    if (teamSlugs.length === 0) return;
+    const candidates = new Map<
+      string,
+      {
+        target: TargetIdentity;
+        views: Set<OverlayView>;
+        stats: PlayerStats;
+      }
+    >();
+
+    for (const [view, target] of this.trackedViews) {
+      if (!view.host.isConnected) {
+        this.releaseView(view);
+        continue;
+      }
+      if (!view.isViewportPriorityActive()) continue;
+      const stats = this.cachedStatsForTarget(target);
+      if (!stats || !needsCachedGoalMarketRecheck(stats)) continue;
+      const fixtureTeamSlugs = [
+        stats.nextGame?.playerTeamSlug,
+        stats.nextGame?.homeTeamSlug,
+        stats.nextGame?.awayTeamSlug,
+      ].filter((slug): slug is string => Boolean(slug));
+      if (
+        !teamSlugs.some((teamSlug) =>
+          fixtureTeamSlugs.some((fixtureTeamSlug) =>
+            teamSlugsLikelyMatch(teamSlug, fixtureTeamSlug),
+          ),
+        )
+      ) {
+        continue;
+      }
+      const key = targetKey(target);
+      const candidate = candidates.get(key) ?? {
+        target,
+        views: new Set<OverlayView>(),
+        stats,
+      };
+      candidate.views.add(view);
+      candidates.set(key, candidate);
+    }
+
+    for (const { target, views, stats } of candidates.values()) {
+      this.queueCachedGoalMarketRecheck(target, views, 1, stats, true);
     }
   }
 
@@ -732,6 +817,9 @@ export class StatsBatchCoordinator {
       const responseData = responseDataWithSharedFixtures.map((stats) =>
         this.mergeWithCachedStats(stats),
       );
+      for (const stats of responseData) {
+        this.recordMarketSnapshotCheck(stats);
+      }
       for (const mergedStats of responseData) {
         if (!canTrackStats(mergedStats)) continue;
         const changedKeys = this.cacheStatsAliases(mergedStats, batch);
@@ -871,6 +959,9 @@ export class StatsBatchCoordinator {
       const response = await this.marketSnapshotsFetcher({
         players: [...players.values()],
       });
+      for (const cached of cachedByTarget.values()) {
+        this.recordMarketSnapshotCheck(cached);
+      }
       const updatedStats: PlayerStats[] = [];
       const snapshotsByPlayer = new Map(
         response.data.map((snapshot) => [
@@ -1120,6 +1211,55 @@ export class StatsBatchCoordinator {
     }
     if (teamSlugs.size > 0) {
       this.marketCacheUpdateListener([...teamSlugs]);
+    }
+  }
+
+  private queueCachedGoalMarketRecheck(
+    target: TargetIdentity,
+    views: Iterable<OverlayView>,
+    priority: number,
+    cachedStats?: PlayerStats,
+    bypassCooldown = false,
+  ): boolean {
+    const connectedViews = this.connectedViews(views);
+    if (connectedViews.length === 0) return false;
+    const stats = cachedStats ?? this.cachedStatsForTarget(target);
+    if (!stats || !needsCachedGoalMarketRecheck(stats)) return false;
+    const snapshotIdentity = marketSnapshotIdentity(stats);
+    if (!snapshotIdentity) return false;
+    const checkedAt = this.marketSnapshotCheckedAt.get(snapshotIdentity) ?? 0;
+    if (
+      !bypassCooldown &&
+      Date.now() - checkedAt < this.marketSnapshotRecheckTtlMs
+    ) {
+      return false;
+    }
+
+    const key = targetKey(target);
+    if (
+      this.pending.has(key) ||
+      this.inFlightTargets.has(key) ||
+      this.refreshWork.has(key) ||
+      this.marketSnapshotRequestKeys.has(key)
+    ) {
+      return false;
+    }
+
+    this.recordMarketSnapshotCheck(stats);
+    this.marketSnapshotRequestKeys.add(key);
+    this.queueTarget(target, connectedViews, priority);
+    return true;
+  }
+
+  private recordMarketSnapshotCheck(stats: PlayerStats): void {
+    const identity = marketSnapshotIdentity(stats);
+    if (!identity) return;
+    this.marketSnapshotCheckedAt.delete(identity);
+    this.marketSnapshotCheckedAt.set(identity, Date.now());
+    while (this.marketSnapshotCheckedAt.size > this.maxCachedAliases) {
+      const oldest = this.marketSnapshotCheckedAt.keys().next().value;
+      if (!oldest) break;
+      this.marketSnapshotCheckedAt.delete(oldest);
     }
   }
 
@@ -1516,6 +1656,7 @@ export class SorareCardScanner {
       const pendingTeams = [...this.pendingMarketReconcileTeams];
       this.pendingMarketReconcileTeams.clear();
       if (pendingTeams.length > 0) {
+        this.coordinator.reconcileMissingMarkets(pendingTeams);
         void this.lineupSortHydrator.reconcileMissingGoals(pendingTeams);
       }
     }, 120);
