@@ -454,6 +454,7 @@ export class LineupSortHydrator {
       (state.preserveExistingGoalUnlessMarket &&
         value?.goal?.source !== 'market')
     ) {
+      setLineupSortDataReady(container, true);
       state.status = 'ready';
       delete state.reconcileFullOverlay;
       delete state.preserveExistingGoalUnlessMarket;

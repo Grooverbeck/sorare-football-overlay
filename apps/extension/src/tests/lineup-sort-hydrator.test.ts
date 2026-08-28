@@ -283,6 +283,9 @@ describe('LineupSortHydrator', () => {
     expect(
       firstCard.getAttribute('data-sorare-overlay-goal-sort-source'),
     ).toBe('historical');
+    expect(
+      firstCard.getAttribute('data-sorare-overlay-sort-data-ready'),
+    ).toBe('true');
     hydrator.stop();
   });
 
