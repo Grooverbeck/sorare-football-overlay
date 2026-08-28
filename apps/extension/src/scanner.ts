@@ -1972,6 +1972,25 @@ export class SorareCardScanner {
       isElementNode(node)
         ? node
         : node.parentElement;
+    const hydrationGrid = context?.closest<HTMLElement>(
+      `[${lineupSortHydrationGridAttribute}]`,
+    );
+    if (context && hydrationGrid) {
+      // New lineup cards are appended directly to an ever-growing grid. The
+      // added nodes themselves are already queued above, so scanning the grid
+      // again would turn every lazy-load pulse into another full-pool pass.
+      if (context === hydrationGrid) return;
+      while (
+        context.parentElement &&
+        context.parentElement !== hydrationGrid
+      ) {
+        context = context.parentElement;
+      }
+      if (context.parentElement === hydrationGrid) {
+        this.pendingScanRoots.add(context);
+      }
+      return;
+    }
     for (let depth = 0; context && depth < 4; depth += 1) {
       if (context === document.body || context === document.documentElement) {
         break;

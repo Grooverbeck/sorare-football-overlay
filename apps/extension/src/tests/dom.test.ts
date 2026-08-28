@@ -7168,6 +7168,77 @@ describe('Sorare card DOM discovery', () => {
     vi.unstubAllGlobals();
   });
 
+  it('keeps lazy lineup additions scoped to their new grid cells', async () => {
+    const frameCallbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      frameCallbacks.push(callback);
+      return frameCallbacks.length;
+    });
+    vi.stubGlobal('requestAnimationFrame', requestAnimationFrame);
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    class TestIntersectionObserver {
+      readonly root = null;
+      readonly rootMargin = '';
+      readonly thresholds: readonly number[] = [];
+      constructor(_callback: IntersectionObserverCallback) {}
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+      takeRecords(): IntersectionObserverEntry[] {
+        return [];
+      }
+    }
+    vi.stubGlobal('IntersectionObserver', TestIntersectionObserver);
+    document.body.innerHTML = `
+      <main data-testid="builder">
+        <div
+          data-testid="large-player-pool"
+          ${lineupSortHydrationGridAttribute}="true"
+        ></div>
+      </main>
+    `;
+    const pool = document.querySelector<HTMLElement>(
+      '[data-testid="large-player-pool"]',
+    );
+    if (!pool) throw new Error('Expected large player pool');
+    const scanner = new SorareCardScanner(
+      new StatsBatchCoordinator(vi.fn(), 60_000),
+      undefined,
+      new LineupSortHydrator(
+        vi.fn(async (request: LineupSortValuesRequest) =>
+          compactSortResponse(request),
+        ),
+      ),
+    );
+    const scan = vi.spyOn(scanner, 'scan');
+    scanner.start();
+    scan.mockClear();
+    requestAnimationFrame.mockClear();
+
+    const fragment = document.createDocumentFragment();
+    for (let index = 0; index < 40; index += 1) {
+      const cell = document.createElement('article');
+      cell.dataset.testid = `lazy-card-${index}`;
+      cell.innerHTML = `<button type="button" data-position="Midfielder">
+        <img alt="Lazy Player ${index} - limited" src="/lazy-card-${index}.png">
+      </button>`;
+      fragment.append(cell);
+    }
+    pool.append(fragment);
+    await vi.waitFor(() => expect(requestAnimationFrame).toHaveBeenCalled());
+    frameCallbacks.shift()?.(performance.now());
+
+    const scannedRoots = scan.mock.calls.map(([root]) => root);
+    scanner.stop();
+    vi.unstubAllGlobals();
+    expect(scannedRoots).toHaveLength(40);
+    expect(
+      scannedRoots.every(
+        (root) => root instanceof HTMLElement && root.parentElement === pool,
+      ),
+    ).toBe(true);
+  });
+
   it('ignores native sort option mutations owned by the extension', async () => {
     const frameCallbacks: FrameRequestCallback[] = [];
     const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
