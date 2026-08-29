@@ -893,6 +893,29 @@ describe('lineup card sorting', () => {
     expect(historicalCell.style.order).toBe('');
   });
 
+  it('infers a goalkeeper picker from its card pool without a position button', async () => {
+    document.querySelector('[data-lineup-positions]')?.remove();
+    for (const player of document.querySelectorAll<HTMLElement>(
+      '[data-player]',
+    )) {
+      setLineupSortPosition(player, 'Goalkeeper');
+    }
+
+    sorter.start();
+
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector(`[${lineupCleanSheetSortOptionAttribute}]`),
+      ).not.toBeNull(),
+    );
+    expect(
+      document.querySelector(`[${lineupGoalSortOptionAttribute}]`),
+    ).not.toBeNull();
+    expect(
+      document.querySelector(`[${lineupAaSortOptionAttribute}]`),
+    ).not.toBeNull();
+  });
+
   it('mixes market and historical probabilities in one descending order', async () => {
     const market = document.querySelector<HTMLElement>('[data-player="market"]');
     const historical = document.querySelector<HTMLElement>(

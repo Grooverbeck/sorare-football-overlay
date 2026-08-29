@@ -268,7 +268,9 @@ export function activeLineupPosition(): FootballPosition | null | undefined {
       button.classList.contains('highlighted');
     if (active) positions.add(position);
   }
-  return positions.size === 1 ? [...positions][0] : undefined;
+  if (positions.size === 1) return [...positions][0];
+  if (positions.size > 1) return undefined;
+  return dominantLineupGridPosition();
 }
 
 function isNativeSortButton(button: HTMLButtonElement): boolean {
@@ -581,6 +583,24 @@ function cellPosition(cell: HTMLElement): FootballPosition | undefined {
       ),
   );
   return positions.size === 1 ? [...positions][0] : undefined;
+}
+
+function dominantLineupGridPosition(): FootballPosition | undefined {
+  const grid = lineupPlayerGrid();
+  if (!grid) return undefined;
+  const positions = gridCardCells(grid).flatMap((cell) => {
+    const position = cellPosition(cell);
+    return position ? [position] : [];
+  });
+  if (positions.length === 0) return undefined;
+  const counts = new Map<FootballPosition, number>();
+  for (const position of positions) {
+    counts.set(position, (counts.get(position) ?? 0) + 1);
+  }
+  const dominant = [...counts].sort((left, right) => right[1] - left[1])[0];
+  return dominant && dominant[1] > positions.length / 2
+    ? dominant[0]
+    : undefined;
 }
 
 function gridMatchesPosition(
