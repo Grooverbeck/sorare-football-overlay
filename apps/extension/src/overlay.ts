@@ -19,6 +19,7 @@ import {
   lineupSortLightweightReadyAttribute,
   markLineupSortFullDataUpdated,
   setLineupAaSortValue,
+  setLineupCleanSheetSortValue,
   setLineupGoalSortValue,
   setLineupSortDataReady,
   setLineupSortPosition,
@@ -3436,6 +3437,7 @@ export class OverlayView {
     if (!options.preserveLineupSortData) {
       setLineupGoalSortValue(this.container, null);
       setLineupAaSortValue(this.container, null);
+      setLineupCleanSheetSortValue(this.container, null);
       setLineupSortPosition(this.container, null);
       setLineupSortDataReady(this.container, null);
       this.container.removeAttribute(lineupSortLightweightReadyAttribute);
@@ -3503,6 +3505,7 @@ export class OverlayView {
     this.container.removeAttribute(lineupSortLightweightReadyAttribute);
     setLineupGoalSortValue(this.container, null);
     setLineupAaSortValue(this.container, null);
+    setLineupCleanSheetSortValue(this.container, null);
     this.clearLineupOdds();
     this.clearPlayerMarketTooltip();
     this.state('Keine L10-Daten', 'no-data');
@@ -3543,6 +3546,12 @@ export class OverlayView {
       sortValue?.source,
     );
     setLineupAaSortValue(this.container, displayStats.aaL10.value);
+    setLineupCleanSheetSortValue(
+      this.container,
+      displayStats.position === 'Goalkeeper'
+        ? (displayStats.nextGame?.cleanSheetProbability ?? null)
+        : null,
+    );
     setLineupSortDataReady(this.container, true);
     this.renderLineupOdds(displayStats, teamRow);
     this.renderPlayerMarketTooltip(displayStats);
@@ -4027,6 +4036,7 @@ export class OverlayView {
     this.renderedFixturePresentationKey = 'null';
     if (!preserveLineupSortValues) {
       setLineupGoalSortValue(this.container, null);
+      setLineupCleanSheetSortValue(this.container, null);
     }
     this.stopPackBracketSettling();
     this.panel.replaceChildren();

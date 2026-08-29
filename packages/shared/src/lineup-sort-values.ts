@@ -36,5 +36,9 @@ export function lineupSortValueForPlayer(
     position: stats.position,
     goal: lineupGoalSortValue(stats, historicalGoalWindow),
     aa: stats.aaL10.value,
+    cleanSheet:
+      stats.position === 'Goalkeeper'
+        ? (stats.nextGame?.cleanSheetProbability ?? null)
+        : null,
   };
 }

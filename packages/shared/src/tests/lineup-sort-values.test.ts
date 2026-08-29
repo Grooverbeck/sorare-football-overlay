@@ -62,7 +62,34 @@ describe('lineup sort values', () => {
 
   it('returns the compact AA value and excludes goalkeeper goal values', () => {
     expect(
-      lineupSortValueForPlayer(stats({ position: 'Goalkeeper' }), 15),
-    ).toMatchObject({ aa: 17.5, goal: null });
+      lineupSortValueForPlayer(
+        stats({
+          position: 'Goalkeeper',
+          nextGame: {
+            date: '2026-08-29T18:00:00.000Z',
+            cleanSheetProbability: 0.43,
+            matchProbabilities: null,
+            marketOdds: null,
+          },
+        }),
+        15,
+      ),
+    ).toMatchObject({ aa: 17.5, goal: null, cleanSheet: 0.43 });
+  });
+
+  it('does not expose clean-sheet sort values for outfield players', () => {
+    expect(
+      lineupSortValueForPlayer(
+        stats({
+          position: 'Defender',
+          nextGame: {
+            date: '2026-08-29T18:00:00.000Z',
+            cleanSheetProbability: 0.43,
+            matchProbabilities: null,
+            marketOdds: null,
+          },
+        }),
+      ).cleanSheet,
+    ).toBeNull();
   });
 });

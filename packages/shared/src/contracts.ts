@@ -375,6 +375,9 @@ export const LineupSortValueSchema = z.object({
     })
     .nullable(),
   aa: z.number().finite().nullable(),
+  // Optional so a newly updated extension can still read responses from an
+  // older worker during a rolling deployment.
+  cleanSheet: z.number().min(0).max(1).nullable().optional(),
 });
 
 export const LineupSortValuesSuccessResponseSchema = z.object({

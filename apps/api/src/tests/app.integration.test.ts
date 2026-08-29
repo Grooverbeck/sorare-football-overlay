@@ -241,6 +241,7 @@ describe('POST /api/lineup-sort-values', () => {
           position: 'Midfielder',
           goal: { probability: expect.any(Number) },
           aa: expect.any(Number),
+          cleanSheet: null,
         },
       ],
       meta: {

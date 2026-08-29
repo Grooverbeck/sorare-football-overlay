@@ -3,6 +3,8 @@ import {
   LineupCardSorter,
   lineupAaSortOptionAttribute,
   lineupAaSortValueAttribute,
+  lineupCleanSheetSortOptionAttribute,
+  lineupCleanSheetSortProbabilityAttribute,
   lineupGoalSortOptionAttribute,
   lineupGoalSortProbabilityAttribute,
   lineupGoalSortSourceAttribute,
@@ -10,6 +12,7 @@ import {
   lineupSortDataReadyAttribute,
   loadCompleteLineupPool,
   setLineupAaSortValue,
+  setLineupCleanSheetSortValue,
   setLineupGoalSortValue,
   setLineupSortDataReady,
   setLineupSortPosition,
@@ -777,7 +780,7 @@ describe('lineup card sorting', () => {
     expect(scrollTo).not.toHaveBeenCalled();
   });
 
-  it('adds both custom options only while Sorare has its sort dialog open', () => {
+  it('adds the outfield sort options only while Sorare has its sort dialog open', () => {
     const trigger = document.querySelector<HTMLButtonElement>('[data-native-sort]');
     const dialog = document.querySelector<HTMLElement>('#sort-dialog');
     const chevron = trigger?.querySelector<SVGElement>('[data-icon]');
@@ -803,6 +806,91 @@ describe('lineup card sorting', () => {
     expect(
       document.querySelector(`[${lineupAaSortOptionAttribute}]`),
     ).not.toBeNull();
+    expect(
+      document.querySelector(`[${lineupCleanSheetSortOptionAttribute}]`),
+    ).toBeNull();
+  });
+
+  it('sorts the goalkeeper slot by clean-sheet probability', async () => {
+    const positionButtons = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(
+        '[data-lineup-positions] button',
+      ),
+    );
+    const goalkeeperButton = positionButtons[0];
+    const midfielderButton = positionButtons.find(
+      (button) => button.textContent?.trim() === 'MF',
+    );
+    const market = document.querySelector<HTMLElement>('[data-player="market"]');
+    const historical = document.querySelector<HTMLElement>(
+      '[data-player="historical"]',
+    );
+    const marketCell = document.querySelector<HTMLElement>(
+      '[data-cell="market"]',
+    );
+    const historicalCell = document.querySelector<HTMLElement>(
+      '[data-cell="historical"]',
+    );
+    const missingCell = document.querySelector<HTMLElement>(
+      '[data-cell="missing"]',
+    );
+    if (
+      !goalkeeperButton ||
+      !midfielderButton ||
+      !market ||
+      !historical ||
+      !marketCell ||
+      !historicalCell ||
+      !missingCell
+    ) {
+      throw new Error('Expected goalkeeper sorting fixture');
+    }
+    setLineupSortPosition(market, 'Goalkeeper');
+    setLineupSortPosition(historical, 'Goalkeeper');
+    setLineupSortPosition(
+      document.querySelector<HTMLElement>('[data-player="missing"]')!,
+      'Goalkeeper',
+    );
+    setLineupCleanSheetSortValue(market, 0.31);
+    setLineupCleanSheetSortValue(historical, 0.48);
+
+    sorter.start();
+    expect(
+      document.querySelector(`[${lineupCleanSheetSortOptionAttribute}]`),
+    ).toBeNull();
+    goalkeeperButton.querySelector('span')!.textContent = 'TW';
+    goalkeeperButton.click();
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector(`[${lineupCleanSheetSortOptionAttribute}]`),
+      ).not.toBeNull(),
+    );
+    const option = document.querySelector<HTMLButtonElement>(
+      `[${lineupCleanSheetSortOptionAttribute}]`,
+    );
+    expect(option?.textContent).toContain('Chance im nächsten Spiel');
+    option?.click();
+
+    await vi.waitFor(() => expect(historicalCell.style.order).toBe('-3'));
+    expect(marketCell.style.order).toBe('-2');
+    expect(missingCell.style.order).toBe('-1');
+    expect(
+      market.getAttribute(lineupCleanSheetSortProbabilityAttribute),
+    ).toBe('0.31');
+    expect(
+      document.querySelector<HTMLElement>('[data-native-trigger-label]')
+        ?.textContent,
+    ).toBe('Clean Sheet');
+
+    goalkeeperButton.classList.remove('highlighted');
+    midfielderButton.classList.add('highlighted');
+    midfielderButton.click();
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector(`[${lineupCleanSheetSortOptionAttribute}]`),
+      ).toBeNull(),
+    );
+    expect(historicalCell.style.order).toBe('');
   });
 
   it('mixes market and historical probabilities in one descending order', async () => {

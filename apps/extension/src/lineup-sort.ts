@@ -11,6 +11,10 @@ export const lineupAaSortOptionAttribute =
   'data-sorare-overlay-aa-sort-option';
 export const lineupAaSortValueAttribute =
   'data-sorare-overlay-aa-sort-value';
+export const lineupCleanSheetSortOptionAttribute =
+  'data-sorare-overlay-clean-sheet-sort-option';
+export const lineupCleanSheetSortProbabilityAttribute =
+  'data-sorare-overlay-clean-sheet-sort-probability';
 export const lineupSortPositionAttribute =
   'data-sorare-overlay-sort-position';
 export const lineupSortDataReadyAttribute =
@@ -29,7 +33,7 @@ export const lineupPoolProgressEvent =
   'sorare-overlay:lineup-pool-progress';
 
 export type LineupGoalSortSource = 'market' | 'historical';
-export type LineupSortMode = 'goal' | 'aa';
+export type LineupSortMode = 'goal' | 'aa' | 'clean-sheet';
 
 interface LineupSortConfig {
   mode: LineupSortMode;
@@ -40,6 +44,7 @@ interface LineupSortConfig {
   missingValueDescription: string;
   optionAttribute: string;
   valueAttribute: string;
+  supportedPositions?: readonly FootballPosition[];
 }
 
 const lineupSortConfigs: Record<LineupSortMode, LineupSortConfig> = {
@@ -68,7 +73,37 @@ const lineupSortConfigs: Record<LineupSortMode, LineupSortConfig> = {
     optionAttribute: lineupAaSortOptionAttribute,
     valueAttribute: lineupAaSortValueAttribute,
   },
+  'clean-sheet': {
+    mode: 'clean-sheet',
+    label: 'Clean Sheet',
+    description: 'Chance im nächsten Spiel',
+    title:
+      'Torhüter nach ihrer Clean-Sheet-Wahrscheinlichkeit im nächsten Spiel sortieren.',
+    loadingDescription: 'Clean-Sheet-Wahrscheinlichkeiten werden abgeglichen.',
+    missingValueDescription:
+      'Torhüter ohne verfügbare Clean-Sheet-Wahrscheinlichkeit stehen am Ende.',
+    optionAttribute: lineupCleanSheetSortOptionAttribute,
+    valueAttribute: lineupCleanSheetSortProbabilityAttribute,
+    supportedPositions: ['Goalkeeper'],
+  },
 };
+
+function lineupSortConfigSupportsPosition(
+  config: LineupSortConfig,
+  position: FootballPosition | null | undefined,
+): boolean {
+  return !config.supportedPositions ||
+    (position !== null &&
+      position !== undefined &&
+      config.supportedPositions.includes(position));
+}
+
+function availableLineupSortConfigs(): LineupSortConfig[] {
+  const position = activeLineupPosition();
+  return Object.values(lineupSortConfigs).filter((config) =>
+    lineupSortConfigSupportsPosition(config, position),
+  );
+}
 
 const cardImageSelector =
   'img[src*="/cardsamplepicture/"], img[alt$=" - common" i], img[alt$=" - limited" i], img[alt$=" - rare" i], img[alt$=" - super rare" i], img[alt$=" - unique" i]';
@@ -263,6 +298,28 @@ function nativeSortButton(root: ParentNode = document): HTMLButtonElement | null
         ),
       ),
     ].find(isNativeSortButton) ?? null
+  );
+}
+
+export function setLineupCleanSheetSortValue(
+  container: HTMLElement,
+  probability: number | null,
+): void {
+  if (
+    probability === null ||
+    !Number.isFinite(probability) ||
+    probability < 0 ||
+    probability > 1
+  ) {
+    container.removeAttribute(lineupCleanSheetSortProbabilityAttribute);
+  } else {
+    container.setAttribute(
+      lineupCleanSheetSortProbabilityAttribute,
+      probability.toString(),
+    );
+  }
+  container.dispatchEvent(
+    new CustomEvent(lineupSortValueChangedEvent, { bubbles: true }),
   );
 }
 
@@ -874,16 +931,31 @@ export class LineupCardSorter {
   };
 
   private readonly handleDocumentClick = (event: Event): void => {
-    if (!this.activeMode || !(event.target instanceof Element)) return;
+    if (!(event.target instanceof Element)) return;
     const button = event.target.closest<HTMLButtonElement>('button');
-    if (button && isNativeFilterButton(button)) {
-      window.setTimeout(() => this.scan(document), 0);
-      return;
-    }
     const requestedPosition = lineupPositionFromButton(button);
     if (requestedPosition !== undefined) {
+      if (!this.activeMode) {
+        window.setTimeout(() => this.scan(document), 0);
+        return;
+      }
+      if (
+        !lineupSortConfigSupportsPosition(
+          lineupSortConfigs[this.activeMode],
+          requestedPosition,
+        )
+      ) {
+        this.setActiveMode(null);
+        window.setTimeout(() => this.scan(document), 0);
+        return;
+      }
       this.requestedPosition = requestedPosition;
       this.restartCompleteSort(120);
+      return;
+    }
+    if (!this.activeMode) return;
+    if (button && isNativeFilterButton(button)) {
+      window.setTimeout(() => this.scan(document), 0);
       return;
     }
     if ([...this.menuOptions.values()].includes(button as HTMLButtonElement)) {
@@ -1124,9 +1196,11 @@ export class LineupCardSorter {
   }
 
   private mountMenuOptions(dialog: HTMLElement): void {
+    const configs = availableLineupSortConfigs();
     if (
       this.nativeMenu === dialog &&
-      this.menuOptions.size === Object.keys(lineupSortConfigs).length &&
+      this.menuOptions.size === configs.length &&
+      configs.every((config) => this.menuOptions.has(config.mode)) &&
       [...this.menuOptions.values()].every((option) => option.isConnected)
     ) {
       this.updateMenuSelection();
@@ -1138,7 +1212,7 @@ export class LineupCardSorter {
     const parent = template?.parentElement;
     if (!template || !parent) return;
     this.nativeMenu = dialog;
-    for (const config of Object.values(lineupSortConfigs)) {
+    for (const config of configs) {
       const option = createNativeSortOption(template, config);
       if (!option) continue;
       option.addEventListener('click', (event) => {

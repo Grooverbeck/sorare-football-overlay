@@ -8,6 +8,7 @@ import { findCardTargets } from '../dom.js';
 import {
   markLineupSortFullDataUpdated,
   setLineupAaSortValue,
+  lineupCleanSheetSortProbabilityAttribute,
   setLineupGoalSortValue,
   setLineupSortPosition,
 } from '../lineup-sort.js';
@@ -74,6 +75,7 @@ function responseFor(
       position: 'Midfielder',
       goal: { probability: (index + 1) / 100, source: 'historical' },
       aa: index + 10,
+      cleanSheet: (index + 20) / 100,
     })),
     meta: {
       requested: slugs.length,
@@ -166,6 +168,9 @@ describe('LineupSortHydrator', () => {
     expect(
       card?.getAttribute('data-sorare-overlay-goal-sort-probability'),
     ).toBe('0.01');
+    expect(
+      card?.getAttribute(lineupCleanSheetSortProbabilityAttribute),
+    ).toBe('0.2');
     hydrator.stop();
   });
 

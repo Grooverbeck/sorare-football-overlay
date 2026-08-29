@@ -8,6 +8,7 @@ import { fetchLineupSortValues } from './api.js';
 import { findCardTargets, type CardTarget } from './dom.js';
 import {
   setLineupAaSortValue,
+  setLineupCleanSheetSortValue,
   setLineupGoalSortValue,
   lineupGoalSortProbabilityAttribute,
   lineupGoalSortSourceAttribute,
@@ -491,6 +492,7 @@ export class LineupSortHydrator {
       value?.goal?.source,
     );
     setLineupAaSortValue(container, value?.aa ?? null);
+    setLineupCleanSheetSortValue(container, value?.cleanSheet ?? null);
     container.setAttribute(lineupSortLightweightReadyAttribute, state.key);
     setLineupSortDataReady(container, true);
     state.status = 'ready';
@@ -509,6 +511,7 @@ export class LineupSortHydrator {
   private clearTargetValues(container: HTMLElement): void {
     setLineupGoalSortValue(container, null);
     setLineupAaSortValue(container, null);
+    setLineupCleanSheetSortValue(container, null);
     setLineupSortPosition(container, null);
     setLineupSortDataReady(container, null);
     container.removeAttribute(lineupSortLightweightReadyAttribute);
