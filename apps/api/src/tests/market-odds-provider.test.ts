@@ -1863,6 +1863,85 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     expect(playerNameMatchScore('Adam Markhiev', 'Adam Markhiyev')).toBe(100);
   });
 
+  it('matches written and abbreviated junior suffixes', () => {
+    expect(playerNameMatchScore('Vinícius Júnior', 'Vinicius Jr.')).toBe(100);
+  });
+
+  it('merges legacy market aliases for one uniquely identified junior', () => {
+    const vini = player({
+      slug: 'vinicius-jose-paixao-de-oliveira-junior',
+      displayName: 'Vinícius Júnior',
+    });
+    const snapshot = {
+      status: 'available' as const,
+      market: 'player_goal_scorer_anytime' as const,
+      eventId: 'real-madrid-malaga',
+      capturedAt: new Date(now).toISOString(),
+      players: {
+        vinicius: {
+          probability: 1 / 1.909,
+          bookmakerCount: 1,
+          bookmakerQuotes: [
+            {
+              key: 'bet365',
+              title: 'Bet365',
+              decimalOdds: 1.909,
+              probability: 1 / 1.909,
+            },
+          ],
+        },
+        'vinicius junior': {
+          probability: 1 / 2.05,
+          bookmakerCount: 1,
+          bookmakerQuotes: [
+            {
+              key: 'unibet',
+              title: 'Unibet',
+              decimalOdds: 2.05,
+              probability: 1 / 2.05,
+            },
+          ],
+        },
+      },
+    };
+
+    expect(resolvePlayerProbability(snapshot, vini, [vini])).toMatchObject({
+      status: 'available',
+      probability: {
+        probability: (1 / 1.909 + 1 / 2.05) / 2,
+        bookmakerCount: 2,
+        bookmakerQuotes: [
+          expect.objectContaining({ key: 'bet365' }),
+          expect.objectContaining({ key: 'unibet' }),
+        ],
+      },
+    });
+  });
+
+  it('fails closed when removing a junior suffix fits two fixture players', () => {
+    const seniorName = player({
+      slug: 'vinicius-santos',
+      displayName: 'Vinícius',
+    });
+    const juniorName = player({
+      slug: 'vinicius-jose-paixao-de-oliveira-junior',
+      displayName: 'Vinícius Júnior',
+    });
+    const snapshot = {
+      status: 'available' as const,
+      market: 'player_assists' as const,
+      eventId: 'ambiguous-vinicius-fixture',
+      capturedAt: new Date(now).toISOString(),
+      players: {
+        vinicius: { probability: 0.4, bookmakerCount: 1 },
+      },
+    };
+
+    expect(
+      resolvePlayerProbability(snapshot, juniorName, [seniorName, juniorName]),
+    ).toMatchObject({ status: 'roster_ambiguous' });
+  });
+
   it("matches Tah D'Avilla to his Djé D'Avilla bookmaker identity only", () => {
     expect(playerNameMatchScore("Tah D'Avilla", "Djé D'Avilla")).toBe(100);
     expect(playerNameMatchScore('Tah Traoré', 'Djé Traoré')).toBe(0);

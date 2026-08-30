@@ -109,7 +109,7 @@ interface ParsedOddsApiIoMultiOdds {
   ignoredPlayerMarkets: ReadonlySet<string>;
 }
 
-const ODDS_API_IO_PLAYER_MARKET_PARSER_VERSION = 3;
+const ODDS_API_IO_PLAYER_MARKET_PARSER_VERSION = 4;
 const ODDS_API_IO_EVIDENCE_AFTER_KICKOFF_MS = 48 * 60 * 60 * 1_000;
 
 const OddsApiIoMarketEvidenceSchema = z.object({

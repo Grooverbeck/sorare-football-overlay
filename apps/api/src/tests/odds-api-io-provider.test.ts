@@ -585,6 +585,105 @@ describe('OddsApiIoPlayerMarketOddsProvider', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it("maps Bet365's Vinicius Jr. assist to Sorare's Vinícius Júnior", async () => {
+    const vini = player({
+      slug: 'vinicius-jose-paixao-de-oliveira-junior',
+      displayName: 'Vinícius Júnior',
+      position: 'Forward',
+      nextGame: {
+        ...player().nextGame!,
+        competitionSlug: 'laliga-es',
+        homeTeamName: 'Real Madrid',
+        awayTeamName: 'Málaga',
+        playerTeamName: 'Real Madrid',
+        opponentTeamName: 'Málaga',
+      },
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/events')) {
+        return json([
+          {
+            id: 'real-madrid-malaga',
+            date: kickoff,
+            home: 'Real Madrid',
+            away: 'Málaga',
+          },
+        ]);
+      }
+      if (url.pathname.endsWith('/odds/multi')) {
+        return json([
+          {
+            id: 'real-madrid-malaga',
+            date: kickoff,
+            home: 'Real Madrid',
+            away: 'Málaga',
+            bookmakers: {
+              Bet365: [
+                {
+                  name: 'Anytime Goalscorer',
+                  odds: [{ label: 'Vinicius Jr.', over: '1.909' }],
+                },
+                {
+                  name: 'Player To Score or Assist',
+                  odds: [
+                    {
+                      label: 'Vinicius Jr. (Assist) (1)',
+                      over: '2.25',
+                    },
+                    {
+                      label: 'Vinicius Jr. (Score or Assist) (1)',
+                      over: '1.333',
+                    },
+                  ],
+                },
+              ],
+              Unibet: [
+                {
+                  name: 'Anytime Goalscorer',
+                  odds: [{ label: 'Vinicius Junior', over: '2.05' }],
+                },
+              ],
+            },
+          },
+        ]);
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    const { provider } = createProvider(
+      fetchImpl,
+      new InMemoryProviderQuotaUsageStore(() => now),
+      [
+        {
+          competitionSlugs: ['laliga-es'],
+          leagueSlugs: ['spain-laliga'],
+          playerMarkets: ['goal'],
+          matchOdds: false,
+        },
+      ],
+    );
+
+    const result = await provider.load([vini]);
+
+    expect(result.get(playerMarketOddsKey(vini))).toMatchObject({
+      source: 'odds-api-io',
+      goal: {
+        probability: (1 / 1.909 + 1 / 2.05) / 2,
+        bookmakerCount: 2,
+      },
+      assist: {
+        probability: 1 / 2.25,
+        bookmakerQuotes: [
+          expect.objectContaining({
+            providerSelectionLabel: 'Vinicius Jr. (Assist) (1)',
+          }),
+        ],
+      },
+      decisive: { probability: 1 / 1.333 },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("maps Bet365's combined home- and away-side player selections", async () => {
     const dAvilla = player({
       slug: 'tah-ange-innocent-d-avilla-dje',

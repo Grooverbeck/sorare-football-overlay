@@ -1413,7 +1413,12 @@ export function normalizePlayerName(value: string): string {
     .map((part) => canonicalPlayerNameParts[part] ?? part);
   while (
     parts.length > 1 &&
-    ['jr', 'sr', 'ii', 'iii', 'iv'].includes(parts[parts.length - 1] ?? '')
+    // Providers alternate between abbreviated and written-out generational
+    // suffixes (for example `Vinicius Jr.` vs Sorare's `Vinícius Júnior`).
+    // Strip both forms so they keep one stable market identity.
+    ['jr', 'junior', 'sr', 'ii', 'iii', 'iv'].includes(
+      parts[parts.length - 1] ?? '',
+    )
   ) {
     parts.pop();
   }
@@ -1689,6 +1694,42 @@ function diagnosticCandidateScore(
   return Math.min(49, shared * 15 + (shared === marketTokens.length ? 4 : 0));
 }
 
+function mergeEquivalentMarketProbabilities(
+  candidates: readonly { probability: MarketProbability }[],
+): MarketProbability {
+  const completeQuotes = candidates.every(
+    ({ probability }) =>
+      probability.bookmakerQuotes !== undefined &&
+      probability.bookmakerQuotes.length === probability.bookmakerCount,
+  );
+  if (!completeQuotes) {
+    return candidates.reduce(
+      (best, candidate) =>
+        candidate.probability.bookmakerCount > best.bookmakerCount
+          ? candidate.probability
+          : best,
+      candidates[0]!.probability,
+    );
+  }
+
+  const quotesByBookmaker = new Map<string, BookmakerMarketQuote>();
+  for (const { probability } of candidates) {
+    for (const quote of probability.bookmakerQuotes ?? []) {
+      if (!quotesByBookmaker.has(quote.key)) {
+        quotesByBookmaker.set(quote.key, quote);
+      }
+    }
+  }
+  const bookmakerQuotes = [...quotesByBookmaker.values()].sort((left, right) =>
+    left.title.localeCompare(right.title),
+  );
+  return MarketProbabilitySchema.parse({
+    probability: median(bookmakerQuotes.map(({ probability }) => probability)),
+    bookmakerCount: bookmakerQuotes.length,
+    bookmakerQuotes,
+  });
+}
+
 export function resolvePlayerProbability(
   snapshot: FrozenMarketSnapshot | undefined,
   player: MarketSupplementPlayer,
@@ -1718,7 +1759,13 @@ export function resolvePlayerProbability(
   const equallyRankedMarketCandidates = marketCandidates.filter(
     ({ score }) => score === selected.score,
   );
-  if (equallyRankedMarketCandidates.length !== 1) {
+  const selectedIdentity = normalizePlayerName(selected.marketName);
+  const equivalentMarketCandidates = equallyRankedMarketCandidates.filter(
+    ({ marketName }) => normalizePlayerName(marketName) === selectedIdentity,
+  );
+  if (
+    equivalentMarketCandidates.length !== equallyRankedMarketCandidates.length
+  ) {
     return {
       status: 'market_ambiguous',
       candidates: equallyRankedMarketCandidates.map(({ marketName, score }) => ({
@@ -1726,6 +1773,11 @@ export function resolvePlayerProbability(
         score,
       })),
     };
+  }
+  if (equivalentMarketCandidates.length > 1) {
+    selected.probability = mergeEquivalentMarketProbabilities(
+      equivalentMarketCandidates,
+    );
   }
 
   const logicalPlayers = [
