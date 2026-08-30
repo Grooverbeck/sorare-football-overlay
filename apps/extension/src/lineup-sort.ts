@@ -506,6 +506,35 @@ function gridCardCells(grid: HTMLElement): HTMLElement[] {
   );
 }
 
+function cardCellIdentity(cell: HTMLElement): string | null {
+  const image = cell.querySelector<HTMLImageElement>(cardImageSelector);
+  if (!image) return null;
+  const playerLink =
+    image.closest<HTMLAnchorElement>('a[href*="/football/players/"]') ??
+    cell.querySelector<HTMLAnchorElement>('a[href*="/football/players/"]');
+  const playerSlug = playerLink
+    ?.getAttribute('href')
+    ?.match(/\/football\/players\/([^/?#]+)/i)?.[1];
+  if (playerSlug) return `slug:${playerSlug.toLocaleLowerCase()}`;
+  const playerName = image
+    .getAttribute('alt')
+    ?.replace(/\s+-\s+(?:common|limited|rare|super rare|unique)\s*$/i, '')
+    .trim()
+    .toLocaleLowerCase();
+  return playerName ? `name:${playerName}` : null;
+}
+
+function directGridChild(
+  target: HTMLElement,
+  grid: HTMLElement,
+): HTMLElement | null {
+  let candidate: HTMLElement | null = target;
+  while (candidate?.parentElement && candidate.parentElement !== grid) {
+    candidate = candidate.parentElement;
+  }
+  return candidate?.parentElement === grid ? candidate : null;
+}
+
 function gridCardCount(grid: HTMLElement): number {
   return gridCardCells(grid).length;
 }
@@ -936,6 +965,8 @@ export class LineupCardSorter {
   private failedCells = new Set<HTMLElement>();
   private hydrationGrid: HTMLElement | null = null;
   private gridObserver: MutationObserver | undefined;
+  private gridReconcileTimer: number | undefined;
+  private readonly pendingReplacementCells = new Set<HTMLElement>();
   private requestedPosition: FootballPosition | null | undefined;
   private filterSuspended = false;
   private readonly originalOrders = new Map<HTMLElement, OriginalOrder>();
@@ -944,8 +975,18 @@ export class LineupCardSorter {
     private readonly poolLoader: LineupPoolLoader = loadCompleteLineupPool,
   ) {}
 
-  private readonly handleSortValueChange = (): void => {
+  private readonly handleSortValueChange = (event: Event): void => {
     if (!this.activeMode || this.poolLoading || this.filterSuspended) return;
+    if (event.target instanceof HTMLElement && this.completedGrid) {
+      const cell = directGridChild(event.target, this.completedGrid);
+      if (cell && this.completedCells.has(cell)) {
+        if (cellSortDataIsReady(cell)) {
+          this.pendingReplacementCells.delete(cell);
+        } else {
+          this.pendingReplacementCells.add(cell);
+        }
+      }
+    }
     this.sortRefreshPending = true;
     this.scheduleSort();
   };
@@ -1071,7 +1112,8 @@ export class LineupCardSorter {
       cells.every((cell) => this.failedCells.has(cell));
     if (sameFailedPool) return;
     if (!sameCompletedPool) {
-      this.restartCompleteSort(80);
+      if (this.poolLoadFailed) this.restartCompleteSort(80);
+      else this.scheduleGridReconciliation(grid);
       return;
     }
     this.refreshHydrationProgress();
@@ -1368,8 +1410,13 @@ export class LineupCardSorter {
     this.completedCells.clear();
     this.failedGrid = null;
     this.failedCells.clear();
+    this.pendingReplacementCells.clear();
     this.gridObserver?.disconnect();
     this.gridObserver = undefined;
+    if (this.gridReconcileTimer !== undefined) {
+      window.clearTimeout(this.gridReconcileTimer);
+      this.gridReconcileTimer = undefined;
+    }
   }
 
   private rememberFailedPool(
@@ -1584,9 +1631,83 @@ export class LineupCardSorter {
       ) {
         return;
       }
-      this.restartCompleteSort(80);
+      if (this.poolLoadFailed) {
+        this.restartCompleteSort(80);
+        return;
+      }
+      if (this.adoptEquivalentGridReplacements(grid)) return;
+      this.scheduleGridReconciliation(grid);
     });
     this.gridObserver.observe(grid, { childList: true });
+  }
+
+  private adoptEquivalentGridReplacements(grid: HTMLElement): boolean {
+    if (grid !== this.completedGrid || !grid.isConnected) return false;
+    const previousCells = [...this.completedCells];
+    const currentCells = gridCardCells(grid);
+    if (previousCells.length !== currentCells.length) return false;
+
+    const replacements: Array<{
+      previous: HTMLElement;
+      current: HTMLElement;
+    }> = [];
+    for (let index = 0; index < currentCells.length; index += 1) {
+      const previous = previousCells[index];
+      const current = currentCells[index];
+      if (!previous || !current || previous === current) continue;
+      const previousIdentity = cardCellIdentity(previous);
+      if (!previousIdentity || previousIdentity !== cardCellIdentity(current)) {
+        return false;
+      }
+      replacements.push({ previous, current });
+    }
+
+    if (replacements.length === 0) return true;
+    for (const { previous, current } of replacements) {
+      const order = previous.style.getPropertyValue('order');
+      const priority = previous.style.getPropertyPriority('order');
+      if (order) current.style.setProperty('order', order, priority);
+      else current.style.removeProperty('order');
+
+      const originalOrder = this.originalOrders.get(previous);
+      if (originalOrder) this.originalOrders.set(current, originalOrder);
+      this.originalOrders.delete(previous);
+      this.pendingReplacementCells.delete(previous);
+      if (!cellSortDataIsReady(current)) {
+        this.pendingReplacementCells.add(current);
+      }
+    }
+    this.completedCells = new Set(currentCells);
+    if (this.gridReconcileTimer !== undefined) {
+      window.clearTimeout(this.gridReconcileTimer);
+      this.gridReconcileTimer = undefined;
+    }
+    this.sortRefreshPending = true;
+    this.scheduleSort();
+    logStatsDiagnostic('lineup-sort-card-remount', {
+      players: replacements.length,
+    });
+    return true;
+  }
+
+  private scheduleGridReconciliation(
+    grid: HTMLElement,
+    delayMs = 80,
+  ): void {
+    if (this.gridReconcileTimer !== undefined) return;
+    this.gridReconcileTimer = window.setTimeout(() => {
+      this.gridReconcileTimer = undefined;
+      if (
+        !this.activeMode ||
+        this.poolLoading ||
+        this.filterSuspended ||
+        grid !== this.completedGrid
+      ) {
+        return;
+      }
+      if (this.adoptEquivalentGridReplacements(grid)) return;
+      this.restartCompleteSort();
+    }, Math.max(0, delayMs));
   }
 
   private scheduleSort(): void {
@@ -1640,7 +1761,7 @@ export class LineupCardSorter {
       currentCells.length !== this.completedCells.size ||
       currentCells.some((cell) => !this.completedCells.has(cell))
     ) {
-      this.restartCompleteSort(80);
+      this.scheduleGridReconciliation(grid);
       return;
     }
     const expectedPosition = this.requestedPosition;
@@ -1650,6 +1771,18 @@ export class LineupCardSorter {
       this.syncNativeSortUi();
       return;
     }
+
+    let waitsForReplacementData = false;
+    for (const cell of this.pendingReplacementCells) {
+      if (!grid.contains(cell) || !this.completedCells.has(cell)) {
+        this.pendingReplacementCells.delete(cell);
+      } else if (cellSortDataIsReady(cell)) {
+        this.pendingReplacementCells.delete(cell);
+      } else {
+        waitsForReplacementData = true;
+      }
+    }
+    if (waitsForReplacementData) return;
 
     const cells: SortableCell[] = currentCells.map((cell, originalIndex) => ({
       cell,

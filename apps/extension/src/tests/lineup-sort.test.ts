@@ -1111,6 +1111,59 @@ describe('lineup card sorting', () => {
     ).toBe(false);
   });
 
+  it('keeps a sorted card in place while Sorare remounts it on hover', async () => {
+    sorter.stop();
+    let loadCalls = 0;
+    sorter = new LineupCardSorter(async (context) => {
+      loadCalls += 1;
+      return immediatePoolLoader(context);
+    });
+    const market = document.querySelector<HTMLElement>('[data-player="market"]');
+    const historical = document.querySelector<HTMLElement>(
+      '[data-player="historical"]',
+    );
+    const historicalCell = document.querySelector<HTMLElement>(
+      '[data-cell="historical"]',
+    );
+    if (!market || !historical || !historicalCell) {
+      throw new Error('Expected hover-remount sorting fixture');
+    }
+    setLineupAaSortValue(market, 10);
+    setLineupAaSortValue(historical, 20);
+
+    sorter.start();
+    document
+      .querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)
+      ?.click();
+    await vi.waitFor(() => expect(historicalCell.style.order).toBe('-3'));
+    expect(loadCalls).toBe(1);
+
+    const replacementCell = document.createElement('div');
+    replacementCell.dataset.cell = 'historical';
+    replacementCell.innerHTML = `
+      <article
+        data-player="historical"
+        data-sorare-overlay-sort-data-ready="false"
+      >
+        <img alt="Historical Player - limited">
+      </article>
+    `;
+    historicalCell.replaceWith(replacementCell);
+
+    await vi.waitFor(() => expect(replacementCell.style.order).toBe('-3'));
+    expect(loadCalls).toBe(1);
+    const replacementPlayer = replacementCell.querySelector<HTMLElement>(
+      '[data-player="historical"]',
+    );
+    if (!replacementPlayer) throw new Error('Expected replacement player');
+    setLineupAaSortValue(replacementPlayer, 20);
+    setLineupSortDataReady(replacementPlayer, true);
+
+    await new Promise((resolve) => window.setTimeout(resolve, 120));
+    expect(replacementCell.style.order).toBe('-3');
+    expect(loadCalls).toBe(1);
+  });
+
   it('restores the old grid before loading and sorting a newly selected position', async () => {
     sorter.stop();
     const grid = document.querySelector<HTMLElement>('[data-player-grid]');

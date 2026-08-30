@@ -9,6 +9,9 @@ import {
   markLineupSortFullDataUpdated,
   setLineupAaSortValue,
   lineupCleanSheetSortProbabilityAttribute,
+  lineupSortDataReadyAttribute,
+  lineupSortLightweightReadyAttribute,
+  setLineupCleanSheetSortValue,
   setLineupGoalSortValue,
   setLineupSortPosition,
 } from '../lineup-sort.js';
@@ -147,6 +150,70 @@ describe('LineupSortHydrator', () => {
     expect(
       grid.querySelectorAll('[data-sorare-overlay-sort-data-ready="true"]'),
     ).toHaveLength(1);
+    hydrator.stop();
+  });
+
+  it('reuses exact sort values when Sorare remounts the same card on hover', async () => {
+    const grid = renderGrid(1);
+    const fetcher = vi.fn(async (request: LineupSortValuesRequest) =>
+      responseFor(request),
+    );
+    const hydrator = new LineupSortHydrator(fetcher);
+
+    await hydrator.hydrate(grid);
+    const originalTarget = findCardTargets(grid)[0];
+    const originalCell = grid.firstElementChild;
+    if (!originalTarget || !(originalCell instanceof HTMLElement)) {
+      throw new Error('Expected original card target');
+    }
+    setLineupGoalSortValue(originalTarget.container, 0.63, 'market');
+    setLineupAaSortValue(originalTarget.container, 37);
+    setLineupCleanSheetSortValue(originalTarget.container, 0.44);
+    hydrator.preserve(originalTarget);
+
+    const replacementCell = document.createElement('div');
+    replacementCell.innerHTML = `
+      <article data-testid="card-1" data-position="Midfielder">
+        <a href="/football/players/sort-player-1">
+          <img alt="Sort Player 1 - limited">
+        </a>
+      </article>
+    `;
+    originalCell.replaceWith(replacementCell);
+    const replacementTarget = findCardTargets(grid)[0];
+    if (!replacementTarget) throw new Error('Expected replacement card target');
+
+    await hydrator.hydrate(grid, [replacementTarget]);
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(
+      replacementTarget.container.getAttribute(
+        'data-sorare-overlay-goal-sort-probability',
+      ),
+    ).toBe('0.63');
+    expect(
+      replacementTarget.container.getAttribute(
+        'data-sorare-overlay-goal-sort-source',
+      ),
+    ).toBe('market');
+    expect(
+      replacementTarget.container.getAttribute(
+        'data-sorare-overlay-aa-sort-value',
+      ),
+    ).toBe('37');
+    expect(
+      replacementTarget.container.getAttribute(
+        lineupCleanSheetSortProbabilityAttribute,
+      ),
+    ).toBe('0.44');
+    expect(
+      replacementTarget.container.getAttribute(lineupSortDataReadyAttribute),
+    ).toBe('true');
+    expect(
+      replacementTarget.container.getAttribute(
+        lineupSortLightweightReadyAttribute,
+      ),
+    ).toBe('slug:sort-player-1:Midfielder');
     hydrator.stop();
   });
 

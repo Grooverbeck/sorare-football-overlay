@@ -1,4 +1,5 @@
 import type {
+  FootballPosition,
   HistoricalMarketWindow,
   LineupSortValue,
   LineupSortValuesRequest,
@@ -10,13 +11,17 @@ import {
   setLineupAaSortValue,
   setLineupCleanSheetSortValue,
   setLineupGoalSortValue,
+  lineupAaSortValueAttribute,
+  lineupCleanSheetSortProbabilityAttribute,
   lineupGoalSortProbabilityAttribute,
   lineupGoalSortSourceAttribute,
   lineupSortDataReadyAttribute,
   lineupSortFullDataRevisionAttribute,
   lineupSortLightweightReadyAttribute,
+  lineupSortPositionAttribute,
   setLineupSortDataReady,
   setLineupSortPosition,
+  type LineupGoalSortSource,
 } from './lineup-sort.js';
 import {
   normalizePlayerName,
@@ -41,6 +46,69 @@ interface HydrationState {
   reconcileFullOverlay?: boolean;
   preserveExistingGoalUnlessMarket?: boolean;
   fullDataRevisionAtRequest?: string | null;
+}
+
+interface SortValueSnapshot {
+  position: FootballPosition | null;
+  goal: {
+    probability: number;
+    source: LineupGoalSortSource;
+  } | null;
+  aa: number | null;
+  cleanSheet: number | null;
+}
+
+function finiteAttribute(
+  container: HTMLElement,
+  attribute: string,
+): number | null {
+  if (!container.hasAttribute(attribute)) return null;
+  const value = Number(container.getAttribute(attribute));
+  return Number.isFinite(value) ? value : null;
+}
+
+function sortPositionFromContainer(
+  container: HTMLElement,
+  fallback: FootballPosition | undefined,
+): FootballPosition | null {
+  const value = container.getAttribute(lineupSortPositionAttribute);
+  if (
+    value === 'Goalkeeper' ||
+    value === 'Defender' ||
+    value === 'Midfielder' ||
+    value === 'Forward'
+  ) {
+    return value;
+  }
+  return fallback ?? null;
+}
+
+function snapshotForTarget(target: CardTarget): SortValueSnapshot | null {
+  const container = target.container;
+  if (container.getAttribute(lineupSortDataReadyAttribute) !== 'true') {
+    return null;
+  }
+  const goalProbability = finiteAttribute(
+    container,
+    lineupGoalSortProbabilityAttribute,
+  );
+  const rawGoalSource = container.getAttribute(lineupGoalSortSourceAttribute);
+  const goalSource =
+    rawGoalSource === 'market' || rawGoalSource === 'historical'
+      ? rawGoalSource
+      : null;
+  return {
+    position: sortPositionFromContainer(container, target.position),
+    goal:
+      goalProbability !== null && goalSource
+        ? { probability: goalProbability, source: goalSource }
+        : null,
+    aa: finiteAttribute(container, lineupAaSortValueAttribute),
+    cleanSheet: finiteAttribute(
+      container,
+      lineupCleanSheetSortProbabilityAttribute,
+    ),
+  };
 }
 
 function targetMatchesValue(
@@ -97,6 +165,7 @@ function roundedDuration(startedAt: number): number {
 export class LineupSortHydrator {
   private grid: HTMLElement | null = null;
   private readonly states = new Map<HTMLElement, HydrationState>();
+  private readonly snapshots = new Map<string, SortValueSnapshot>();
   private readonly queue: HydrationState[] = [];
   private readonly retryTimers = new Map<HTMLElement, number>();
   private generation = 0;
@@ -125,6 +194,17 @@ export class LineupSortHydrator {
     void this.hydrate(grid);
   }
 
+  preserve(target: CardTarget): void {
+    const key = playerTargetKey(target);
+    if (this.states.get(target.container)?.key !== key) return;
+    this.rememberSnapshot(target, key);
+  }
+
+  private rememberSnapshot(target: CardTarget, key: string): void {
+    const snapshot = snapshotForTarget(target);
+    if (snapshot) this.snapshots.set(key, snapshot);
+  }
+
   hydrate(
     grid: HTMLElement,
     targets: readonly CardTarget[] = findCardTargets(grid),
@@ -138,7 +218,10 @@ export class LineupSortHydrator {
     for (const target of targets) {
       const key = playerTargetKey(target);
       const existing = this.states.get(target.container);
-      if (existing?.key === key) continue;
+      if (existing?.key === key) {
+        this.preserve(target);
+        continue;
+      }
       if (existing) {
         this.removeState(target.container);
         this.clearTargetValues(target.container);
@@ -151,10 +234,10 @@ export class LineupSortHydrator {
         this.clearTargetValues(target.container);
       }
 
-      setLineupSortPosition(target.container, target.position ?? null);
       if (
         target.container.getAttribute(lineupSortDataReadyAttribute) === 'true'
       ) {
+        this.rememberSnapshot(target, key);
         this.states.set(target.container, {
           key,
           target,
@@ -163,6 +246,20 @@ export class LineupSortHydrator {
         });
         continue;
       }
+
+      const snapshot = this.snapshots.get(key);
+      if (snapshot) {
+        this.applySnapshot(target, key, snapshot);
+        this.states.set(target.container, {
+          key,
+          target,
+          status: 'ready',
+          attempts: 0,
+        });
+        continue;
+      }
+
+      setLineupSortPosition(target.container, target.position ?? null);
 
       const state: HydrationState = {
         key,
@@ -252,6 +349,7 @@ export class LineupSortHydrator {
       this.clearTargetValues(target.container);
     }
     this.states.clear();
+    this.snapshots.clear();
     this.queue.length = 0;
     this.grid = null;
     this.phaseCompleted = true;
@@ -272,6 +370,7 @@ export class LineupSortHydrator {
       }
     }
     this.states.clear();
+    this.snapshots.clear();
     this.queue.length = 0;
     this.grid = grid;
     this.phaseCompleted = true;
@@ -448,6 +547,7 @@ export class LineupSortHydrator {
       (!state.reconcileFullOverlay || fullOverlayChangedDuringRequest)
     ) {
       state.status = 'ready';
+      this.preserve(state.target);
       delete state.reconcileFullOverlay;
       delete state.preserveExistingGoalUnlessMarket;
       delete state.fullDataRevisionAtRequest;
@@ -463,6 +563,7 @@ export class LineupSortHydrator {
     ) {
       setLineupSortDataReady(container, true);
       state.status = 'ready';
+      this.preserve(state.target);
       delete state.reconcileFullOverlay;
       delete state.preserveExistingGoalUnlessMarket;
       delete state.fullDataRevisionAtRequest;
@@ -477,6 +578,7 @@ export class LineupSortHydrator {
         value?.goal?.source,
       );
       state.status = 'ready';
+      this.preserve(state.target);
       delete state.reconcileFullOverlay;
       delete state.preserveExistingGoalUnlessMarket;
       delete state.fullDataRevisionAtRequest;
@@ -496,6 +598,7 @@ export class LineupSortHydrator {
     container.setAttribute(lineupSortLightweightReadyAttribute, state.key);
     setLineupSortDataReady(container, true);
     state.status = 'ready';
+    this.preserve(state.target);
     delete state.reconcileFullOverlay;
     delete state.preserveExistingGoalUnlessMarket;
     delete state.fullDataRevisionAtRequest;
@@ -506,6 +609,24 @@ export class LineupSortHydrator {
     if (timer !== undefined) window.clearTimeout(timer);
     this.retryTimers.delete(container);
     this.states.delete(container);
+  }
+
+  private applySnapshot(
+    target: CardTarget,
+    key: string,
+    snapshot: SortValueSnapshot,
+  ): void {
+    const container = target.container;
+    setLineupSortPosition(container, snapshot.position);
+    setLineupGoalSortValue(
+      container,
+      snapshot.goal?.probability ?? null,
+      snapshot.goal?.source,
+    );
+    setLineupAaSortValue(container, snapshot.aa);
+    setLineupCleanSheetSortValue(container, snapshot.cleanSheet);
+    container.setAttribute(lineupSortLightweightReadyAttribute, key);
+    setLineupSortDataReady(container, true);
   }
 
   private clearTargetValues(container: HTMLElement): void {

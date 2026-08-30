@@ -2203,6 +2203,11 @@ export class SorareCardScanner {
     mounted: MountedOverlay,
   ): void {
     this.visibilityObserver?.unobserve(container);
+    // Sorare replaces otherwise identical card nodes while their native hover
+    // details open. Preserve the already resolved sort values before the old
+    // overlay clears its attributes so the replacement can inherit them in
+    // the same frame without another backend request.
+    this.lineupSortHydrator.preserve(mounted.target);
     this.coordinator.releaseView(mounted.view);
     mounted.view.destroy();
     delete container.dataset.sorareOverlayKey;
