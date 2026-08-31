@@ -7,7 +7,7 @@ import {
   type PlayerMarketOdds,
   type PlayerStats,
 } from '@sorare-overlay/shared';
-import { z } from 'zod';
+import * as z from 'zod';
 import type { AppLogger } from '../logger.js';
 import {
   providerProtection,
@@ -1621,34 +1621,152 @@ const playerIdentityNoiseTokens = new Set([
   'von',
 ]);
 
-function significantPlayerTokens(value: string): string[] {
-  return normalizePlayerName(value)
-    .split(' ')
-    .filter(
-      (token) =>
-        token.length >= 3 && !playerIdentityNoiseTokens.has(token),
-    );
+interface PreparedPlayerName {
+  normalized: string;
+  tokens: readonly string[];
+  sortedTokens: string;
+  first: string;
+  family: ReadonlySet<string>;
+  last: string | undefined;
+  strictCanonical: boolean;
+  significantTokens: readonly string[];
+  significantTokenSet: ReadonlySet<string>;
 }
 
-function slugIdentityMatchScore(
-  player: MarketSupplementPlayer,
-  oddsName: string,
-): number {
-  const oddsTokens = significantPlayerTokens(oddsName);
-  if (oddsTokens.length < 2) return 0;
-  const slugTokens = new Set(
-    significantPlayerTokens(player.slug.replace(/-+/g, ' ')),
+interface PreparedRosterPlayer {
+  player: MarketSupplementPlayer;
+  displayName: PreparedPlayerName;
+  slug: PreparedPlayerName;
+  diagnosticTokens: ReadonlySet<string>;
+}
+
+interface PreparedMarketPlayer {
+  marketName: string;
+  probability: MarketProbability;
+  identity: PreparedPlayerName;
+}
+
+function preparePlayerName(value: string): PreparedPlayerName {
+  const normalized = normalizePlayerName(value);
+  const tokens = normalized.split(' ').filter(Boolean);
+  const significantTokens = tokens.filter(
+    (token) =>
+      token.length >= 3 && !playerIdentityNoiseTokens.has(token),
   );
-  return oddsTokens.every((token) => slugTokens.has(token)) ? 90 : 0;
+  return {
+    normalized,
+    tokens,
+    sortedTokens: [...tokens].sort().join(' '),
+    first: canonicalGivenName(tokens[0]),
+    family: new Set(tokens.slice(1)),
+    last: tokens.at(-1),
+    strictCanonical: strictCanonicalPlayerNames.has(normalized),
+    significantTokens,
+    significantTokenSet: new Set(significantTokens),
+  };
+}
+
+function prepareRosterPlayer(
+  player: MarketSupplementPlayer,
+): PreparedRosterPlayer {
+  const displayName = preparePlayerName(player.displayName);
+  const slug = preparePlayerName(player.slug.replace(/-+/g, ' '));
+  return {
+    player,
+    displayName,
+    slug,
+    diagnosticTokens: new Set([
+      ...displayName.significantTokens,
+      ...slug.significantTokens,
+    ]),
+  } satisfies PreparedRosterPlayer;
+}
+
+function prepareFixtureRoster(
+  fixturePlayers: readonly MarketSupplementPlayer[],
+): readonly PreparedRosterPlayer[] {
+  return [
+    ...new Map(
+      fixturePlayers.map((player) => [player.slug, player]),
+    ).values(),
+  ].map(prepareRosterPlayer);
+}
+
+function prepareSnapshotPlayers(
+  snapshot: FrozenMarketSnapshot,
+): readonly PreparedMarketPlayer[] {
+  return Object.entries(snapshot.players).map(
+    ([marketName, probability]) => ({
+      marketName,
+      probability,
+      identity: preparePlayerName(marketName),
+    }),
+  );
+}
+
+function playerNameMatchScorePrepared(
+  sorare: PreparedPlayerName,
+  odds: PreparedPlayerName,
+): number {
+  if (sorare.normalized === odds.normalized) return 100;
+  if (sorare.strictCanonical || odds.strictCanonical) return 0;
+  if (
+    sorare.tokens.length === odds.tokens.length &&
+    sorare.sortedTokens === odds.sortedTokens
+  ) {
+    return 95;
+  }
+  const sharedFamilyNames = [...sorare.family].filter((part) =>
+    odds.family.has(part),
+  ).length;
+  if (
+    sorare.first &&
+    sorare.first === odds.first &&
+    sharedFamilyNames > 0
+  ) {
+    return 80 + Math.min(9, sharedFamilyNames);
+  }
+  if (
+    sorare.first &&
+    odds.first &&
+    sorare.first[0] === odds.first[0] &&
+    sorare.last &&
+    sorare.last === odds.last
+  ) {
+    return 50;
+  }
+  return 0;
+}
+
+function slugIdentityMatchScorePrepared(
+  player: PreparedRosterPlayer,
+  odds: PreparedPlayerName,
+): number {
+  if (odds.significantTokens.length < 2) return 0;
+  return odds.significantTokens.every((token) =>
+    player.slug.significantTokenSet.has(token),
+  )
+    ? 90
+    : 0;
+}
+
+function playerIdentityMatchScorePrepared(
+  player: PreparedRosterPlayer,
+  odds: PreparedPlayerName,
+): number {
+  return Math.max(
+    playerNameMatchScorePrepared(player.displayName, odds),
+    slugIdentityMatchScorePrepared(player, odds),
+  );
 }
 
 export function playerIdentityMatchScore(
   player: MarketSupplementPlayer,
   oddsName: string,
 ): number {
-  return Math.max(
-    playerNameMatchScore(player.displayName, oddsName),
-    slugIdentityMatchScore(player, oddsName),
+  return playerIdentityMatchScorePrepared(
+    prepareRosterPlayer(player),
+    preparePlayerName(oddsName),
   );
 }
 
@@ -1680,18 +1798,19 @@ export type PlayerProbabilityResolution =
       matchedBy: 'display_name' | 'sorare_slug';
     };
 
-function diagnosticCandidateScore(
-  player: MarketSupplementPlayer,
-  marketName: string,
+function diagnosticCandidateScorePrepared(
+  player: PreparedRosterPlayer,
+  market: PreparedPlayerName,
 ): number {
-  const playerTokens = new Set([
-    ...significantPlayerTokens(player.displayName),
-    ...significantPlayerTokens(player.slug.replace(/-+/g, ' ')),
-  ]);
-  const marketTokens = significantPlayerTokens(marketName);
-  const shared = marketTokens.filter((token) => playerTokens.has(token)).length;
+  const shared = market.significantTokens.filter((token) =>
+    player.diagnosticTokens.has(token),
+  ).length;
   if (shared === 0) return 0;
-  return Math.min(49, shared * 15 + (shared === marketTokens.length ? 4 : 0));
+  return Math.min(
+    49,
+    shared * 15 +
+      (shared === market.significantTokens.length ? 4 : 0),
+  );
 }
 
 function mergeEquivalentMarketProbabilities(
@@ -1730,26 +1849,31 @@ function mergeEquivalentMarketProbabilities(
   });
 }
 
-export function resolvePlayerProbability(
-  snapshot: FrozenMarketSnapshot | undefined,
+function calculatePlayerProbabilityResolution(
   player: MarketSupplementPlayer,
-  fixturePlayers: readonly MarketSupplementPlayer[],
+  preparedPlayer: PreparedRosterPlayer,
+  preparedRoster: readonly PreparedRosterPlayer[],
+  preparedMarkets: readonly PreparedMarketPlayer[],
 ): PlayerProbabilityResolution {
-  if (!snapshot) return { status: 'snapshot_unavailable' };
-  const marketCandidates = Object.entries(snapshot.players)
-    .map(([marketName, probability]) => ({
-      marketName,
-      probability,
-      score: playerIdentityMatchScore(player, marketName),
+  const marketCandidates = preparedMarkets
+    .map((market) => ({
+      ...market,
+      score: playerIdentityMatchScorePrepared(
+        preparedPlayer,
+        market.identity,
+      ),
     }))
     .filter(({ score }) => score > 0)
     .sort((left, right) => right.score - left.score);
   const selected = marketCandidates[0];
   if (!selected) {
-    const candidates = Object.keys(snapshot.players)
-      .map((marketName) => ({
-        marketName,
-        score: diagnosticCandidateScore(player, marketName),
+    const candidates = preparedMarkets
+      .map((market) => ({
+        marketName: market.marketName,
+        score: diagnosticCandidateScorePrepared(
+          preparedPlayer,
+          market.identity,
+        ),
       }))
       .filter(({ score }) => score > 0)
       .sort((left, right) => right.score - left.score)
@@ -1759,9 +1883,9 @@ export function resolvePlayerProbability(
   const equallyRankedMarketCandidates = marketCandidates.filter(
     ({ score }) => score === selected.score,
   );
-  const selectedIdentity = normalizePlayerName(selected.marketName);
+  const selectedIdentity = selected.identity.normalized;
   const equivalentMarketCandidates = equallyRankedMarketCandidates.filter(
-    ({ marketName }) => normalizePlayerName(marketName) === selectedIdentity,
+    ({ identity }) => identity.normalized === selectedIdentity,
   );
   if (
     equivalentMarketCandidates.length !== equallyRankedMarketCandidates.length
@@ -1780,15 +1904,13 @@ export function resolvePlayerProbability(
     );
   }
 
-  const logicalPlayers = [
-    ...new Map(
-      fixturePlayers.map((candidate) => [candidate.slug, candidate]),
-    ).values(),
-  ];
-  const rosterCandidates = logicalPlayers
+  const rosterCandidates = preparedRoster
     .map((candidate) => ({
-      slug: candidate.slug,
-      score: playerIdentityMatchScore(candidate, selected.marketName),
+      slug: candidate.player.slug,
+      score: playerIdentityMatchScorePrepared(
+        candidate,
+        selected.identity,
+      ),
     }))
     .filter(({ score }) => score > 0)
     .sort((left, right) => right.score - left.score);
@@ -1808,11 +1930,14 @@ export function resolvePlayerProbability(
       })),
     };
   }
-  const displayScore = playerNameMatchScore(
-    player.displayName,
-    selected.marketName,
+  const displayScore = playerNameMatchScorePrepared(
+    preparedPlayer.displayName,
+    selected.identity,
   );
-  const slugScore = slugIdentityMatchScore(player, selected.marketName);
+  const slugScore = slugIdentityMatchScorePrepared(
+    preparedPlayer,
+    selected.identity,
+  );
   return {
     status: 'available',
     probability: selected.probability,
@@ -1820,6 +1945,86 @@ export function resolvePlayerProbability(
     score: selected.score,
     matchedBy: slugScore > displayScore ? 'sorare_slug' : 'display_name',
   };
+}
+
+export interface PlayerProbabilityResolver {
+  resolve(
+    snapshot: FrozenMarketSnapshot | undefined,
+    player: MarketSupplementPlayer,
+  ): PlayerProbabilityResolution;
+  probability(
+    snapshot: FrozenMarketSnapshot | undefined,
+    player: MarketSupplementPlayer,
+  ): MarketProbability | null;
+}
+
+export function createPlayerProbabilityResolver(
+  fixturePlayers: readonly MarketSupplementPlayer[],
+): PlayerProbabilityResolver {
+  const preparedRoster = prepareFixtureRoster(fixturePlayers);
+  const preparedByPlayer = new WeakMap<
+    MarketSupplementPlayer,
+    PreparedRosterPlayer
+  >();
+  for (const prepared of preparedRoster) {
+    preparedByPlayer.set(prepared.player, prepared);
+  }
+  const preparedMarkets = new WeakMap<
+    FrozenMarketSnapshot,
+    readonly PreparedMarketPlayer[]
+  >();
+  const resolutions = new WeakMap<
+    FrozenMarketSnapshot,
+    WeakMap<MarketSupplementPlayer, PlayerProbabilityResolution>
+  >();
+  const resolve = (
+    snapshot: FrozenMarketSnapshot | undefined,
+    player: MarketSupplementPlayer,
+  ): PlayerProbabilityResolution => {
+    if (!snapshot) return { status: 'snapshot_unavailable' };
+    let byPlayer = resolutions.get(snapshot);
+    if (!byPlayer) {
+      byPlayer = new WeakMap();
+      resolutions.set(snapshot, byPlayer);
+    }
+    const existing = byPlayer.get(player);
+    if (existing) return existing;
+    let snapshotPlayers = preparedMarkets.get(snapshot);
+    if (!snapshotPlayers) {
+      snapshotPlayers = prepareSnapshotPlayers(snapshot);
+      preparedMarkets.set(snapshot, snapshotPlayers);
+    }
+    const preparedPlayer =
+      preparedByPlayer.get(player) ?? prepareRosterPlayer(player);
+    const resolution = calculatePlayerProbabilityResolution(
+      player,
+      preparedPlayer,
+      preparedRoster,
+      snapshotPlayers,
+    );
+    byPlayer.set(player, resolution);
+    return resolution;
+  };
+  return {
+    resolve,
+    probability: (snapshot, player) => {
+      const resolution = resolve(snapshot, player);
+      return resolution.status === 'available'
+        ? resolution.probability
+        : null;
+    },
+  };
+}
+
+export function resolvePlayerProbability(
+  snapshot: FrozenMarketSnapshot | undefined,
+  player: MarketSupplementPlayer,
+  fixturePlayers: readonly MarketSupplementPlayer[],
+): PlayerProbabilityResolution {
+  return createPlayerProbabilityResolver(fixturePlayers).resolve(
+    snapshot,
+    player,
+  );
 }
 
 export function playerProbability(
@@ -1855,9 +2060,10 @@ export function needsFrozenSnapshotSupplement(
     lastFixtureCheck < finalRetryAt
       ? Math.min(lastFixtureCheck + firstMarketRetryDelayMs, finalRetryAt)
       : null;
+  const resolver = createPlayerProbabilityResolver(fixturePlayers);
   return fixturePlayers.some(
     (player) => {
-      if (playerProbability(snapshot, player, fixturePlayers) !== null) {
+      if (resolver.probability(snapshot, player) !== null) {
         return false;
       }
       const check =
@@ -1903,9 +2109,10 @@ export function supplementFrozenSnapshot(
   const missingPlayerChecks = {
     ...(existing?.missingPlayerChecks ?? {}),
   };
+  const resolver = createPlayerProbabilityResolver(fixturePlayers);
   for (const player of fixturePlayers) {
     const key = playerMarketOddsKey(player);
-    if (playerProbability(supplemented, player, fixturePlayers) === null) {
+    if (resolver.probability(supplemented, player) === null) {
       missingPlayerChecks[key] = nextMarketRetryState(
         missingPlayerChecks[key],
         Date.parse(incoming.capturedAt),
@@ -1933,9 +2140,10 @@ export function recordFrozenSnapshotCheck(
   const missingPlayerChecks = {
     ...(existing.missingPlayerChecks ?? {}),
   };
+  const resolver = createPlayerProbabilityResolver(fixturePlayers);
   for (const player of fixturePlayers) {
     const key = playerMarketOddsKey(player);
-    if (playerProbability(existing, player, fixturePlayers) === null) {
+    if (resolver.probability(existing, player) === null) {
       missingPlayerChecks[key] = nextMarketRetryState(
         missingPlayerChecks[key],
         checkedAt,
@@ -2062,56 +2270,10 @@ export function playerNameMatchScore(
   sorareDisplayName: string,
   oddsName: string,
 ): number {
-  const sorare = normalizePlayerName(sorareDisplayName).split(' ');
-  const odds = normalizePlayerName(oddsName).split(' ');
-  if (sorare.join(' ') === odds.join(' ')) return 100;
-  // Full-name aliases represent manually confirmed identities. Once either
-  // side resolves to one, do not fall through to the broader nickname or
-  // initial heuristics for a different name that merely shares some tokens.
-  if (
-    strictCanonicalPlayerNames.has(sorare.join(' ')) ||
-    strictCanonicalPlayerNames.has(odds.join(' '))
-  ) {
-    return 0;
-  }
-  // Some feeds use the Korean family-name-first order (`Son Heung Min`)
-  // while Sorare displays the same person as `Heung-min Son`. Matching an
-  // identical token multiset is safe here because `playerProbability` still
-  // requires a unique best match across every player in the fixture.
-  if (
-    sorare.length === odds.length &&
-    [...sorare].sort().join(' ') === [...odds].sort().join(' ')
-  ) {
-    return 95;
-  }
-
-  const sorareFirst = canonicalGivenName(sorare[0]);
-  const oddsFirst = canonicalGivenName(odds[0]);
-  const sorareFamily = new Set(sorare.slice(1));
-  const oddsFamily = new Set(odds.slice(1));
-  const sharedFamilyNames = [...sorareFamily].filter((part) =>
-    oddsFamily.has(part),
-  ).length;
-  if (
-    sorareFirst &&
-    sorareFirst === oddsFirst &&
-    sharedFamilyNames > 0
-  ) {
-    return 80 + Math.min(9, sharedFamilyNames);
-  }
-
-  const sorareLast = sorare.at(-1);
-  const oddsLast = odds.at(-1);
-  if (
-    sorareFirst &&
-    oddsFirst &&
-    sorareFirst[0] === oddsFirst[0] &&
-    sorareLast &&
-    sorareLast === oddsLast
-  ) {
-    return 50;
-  }
-  return 0;
+  return playerNameMatchScorePrepared(
+    preparePlayerName(sorareDisplayName),
+    preparePlayerName(oddsName),
+  );
 }
 
 function responseQuota(headers: Headers): Record<string, string | null> {
@@ -2337,12 +2499,13 @@ export class TheOddsApiPlayerMarketOddsProvider
     markets: readonly OddsMarketKey[],
     snapshots: Map<OddsMarketKey, MarketSnapshot>,
   ): MarketSupplementPlayer[] {
+    const resolver = createPlayerProbabilityResolver(fixture.players);
     const missing = fixture.players.filter((player) =>
       markets.some((market) => {
         const snapshot = snapshots.get(market);
         return (
           snapshot?.status === 'available' &&
-          playerProbability(snapshot, player, fixture.players) === null
+          resolver.probability(snapshot, player) === null
         );
       }),
     );
@@ -2661,14 +2824,15 @@ export class TheOddsApiPlayerMarketOddsProvider
       const byMarket = snapshots.get(fixture.key);
       const goalSnapshot = byMarket?.get('player_goal_scorer_anytime');
       const assistSnapshot = byMarket?.get('player_assists');
+      const resolver = createPlayerProbabilityResolver(fixture.players);
       for (const player of fixture.players) {
         const goal =
           goalSnapshot?.status === 'available'
-            ? playerProbability(goalSnapshot, player, fixture.players)
+            ? resolver.probability(goalSnapshot, player)
             : null;
         const assist =
           assistSnapshot?.status === 'available'
-            ? playerProbability(assistSnapshot, player, fixture.players)
+            ? resolver.probability(assistSnapshot, player)
             : null;
         if (!goal && !assist) continue;
         const capturedAt = [
@@ -2814,13 +2978,14 @@ export class TheOddsApiPlayerMarketOddsProvider
     ) {
       return [];
     }
+    const resolver = createPlayerProbabilityResolver(fixture.players);
     return markets.filter((market) => {
       const snapshot = snapshots.get(market);
       return (
         snapshot?.status !== 'available' ||
         fixture.players.some(
           (player) =>
-            playerProbability(snapshot, player, fixture.players) === null,
+            resolver.probability(snapshot, player) === null,
         )
       );
     });
@@ -2958,6 +3123,7 @@ export class TheOddsApiPlayerMarketOddsProvider
   ): Promise<void> {
     const parsed = EventOddsSchema.parse(responseBody);
     const capturedAt = new Date(this.now()).toISOString();
+    const resolver = createPlayerProbabilityResolver(fixture.players);
     for (const market of markets) {
       const extracted = extractMarketSnapshot(parsed, market, capturedAt);
       if (!extracted) continue;
@@ -2973,12 +3139,8 @@ export class TheOddsApiPlayerMarketOddsProvider
       const resolvedRequestedPlayer = fixture.players.some(
         (player) =>
           (!existingAvailable ||
-            playerProbability(
-              existingAvailable,
-              player,
-              fixture.players,
-            ) === null) &&
-          playerProbability(supplemented, player, fixture.players) !== null,
+            resolver.probability(existingAvailable, player) === null) &&
+          resolver.probability(supplemented, player) !== null,
       );
       const addedUsefulFallbackData =
         !existingAvailable ||

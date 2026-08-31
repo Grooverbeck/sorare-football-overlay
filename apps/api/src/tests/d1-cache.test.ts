@@ -66,6 +66,74 @@ describe('D1JsonKeyValueStore', () => {
     );
   });
 
+  it('uses one D1 batch call when a cache read needs multiple statements', async () => {
+    const boundStatements: Array<{
+      values: unknown[];
+      all: ReturnType<typeof vi.fn>;
+    }> = [];
+    const prepare = vi.fn(() => ({
+      bind: (...values: unknown[]) => {
+        const statement = {
+          values,
+          all: vi.fn(async () => ({ results: [] })),
+        };
+        boundStatements.push(statement);
+        return statement;
+      },
+    }));
+    const batch = vi.fn(async () => [
+      {
+        results: [
+          { cache_key: 'key-0', value: JSON.stringify({ value: 0 }) },
+        ],
+      },
+      {
+        results: [
+          { cache_key: 'key-99', value: JSON.stringify({ value: 99 }) },
+        ],
+      },
+    ]);
+    const store = new D1JsonKeyValueStore(
+      { prepare, batch } as unknown as D1Database,
+      undefined,
+      () => 456,
+    );
+    const keys = Array.from({ length: 100 }, (_, index) => `key-${index}`);
+
+    const values = await store.getMany<{ value: number }>(keys, 'json');
+
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(batch).toHaveBeenCalledTimes(1);
+    expect(boundStatements[0]?.values).toHaveLength(100);
+    expect(boundStatements[0]?.values.at(-1)).toBe(456);
+    expect(boundStatements[1]?.values).toEqual(['key-99', 456]);
+    expect(boundStatements.every(({ all }) => all.mock.calls.length === 0)).toBe(
+      true,
+    );
+    expect(values).toEqual(
+      new Map([
+        ['key-0', { value: 0 }],
+        ['key-99', { value: 99 }],
+      ]),
+    );
+  });
+
+  it('deletes expired cache entries in a bounded batch', async () => {
+    const run = vi.fn(async () => ({ meta: { changes: 37 } }));
+    const bind = vi.fn(() => ({ run }));
+    const prepare = vi.fn(() => ({ bind }));
+    const store = new D1JsonKeyValueStore(
+      { prepare } as unknown as D1Database,
+      undefined,
+      () => 789,
+    );
+
+    await expect(store.deleteExpired(20_000)).resolves.toBe(37);
+
+    expect(bind).toHaveBeenCalledWith(789, 5_000);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it('uses the KV fallback when the D1 read fails', async () => {
     const d1Error = new Error('D1 unavailable');
     const get = vi.fn(async () => ({ source: 'kv' }));

@@ -6,11 +6,12 @@ import {
   type PlayerMarketOdds,
   type PlayerStats,
 } from '@sorare-overlay/shared';
-import { z } from 'zod';
+import * as z from 'zod';
 import type { AppLogger } from '../logger.js';
 import {
   FIXTURE_IDENTITY_VERSION,
   cacheOnlySnapshotReadBudgetMs,
+  createPlayerProbabilityResolver,
   fixtureIdentityCooldownActive,
   groupFixtures,
   marketFixtureKey,
@@ -21,7 +22,6 @@ import {
   playerMarketFieldDrivesRequest,
   playerMarketFieldSupported,
   playerMarketOddsKey,
-  playerProbability,
   recordFrozenSnapshotCheck,
   readMarketSnapshotsWithin,
   rememberFixtureIdentityCooldown,
@@ -49,6 +49,7 @@ import {
 import {
   MatchOddsSnapshotSchema,
   fixtureOddsForPlayer,
+  readMatchOddsSnapshotsWithin,
   type FixtureOdds,
   type FixtureMatchOddsProvider,
   type MatchOddsSnapshot,
@@ -821,22 +822,11 @@ export class SportsGameOddsPlayerMarketOddsProvider
       const goalSnapshot = available('player_goal_scorer_anytime');
       const assistSnapshot = available('player_assists');
       const decisiveSnapshot = available('player_goal_or_assist');
+      const resolver = createPlayerProbabilityResolver(fixture.players);
       for (const player of fixture.players) {
-        const goal = playerProbability(
-          goalSnapshot,
-          player,
-          fixture.players,
-        );
-        const assist = playerProbability(
-          assistSnapshot,
-          player,
-          fixture.players,
-        );
-        const decisive = playerProbability(
-          decisiveSnapshot,
-          player,
-          fixture.players,
-        );
+        const goal = resolver.probability(goalSnapshot, player);
+        const assist = resolver.probability(assistSnapshot, player);
+        const decisive = resolver.probability(decisiveSnapshot, player);
         if (!goal && !assist && !decisive) continue;
         const capturedAt = [
           goalSnapshot?.capturedAt,
@@ -880,20 +870,14 @@ export class SportsGameOddsPlayerMarketOddsProvider
 
     const cacheOnly = loadOptions?.cacheOnly === true;
     const matchSnapshots = new Map<string, MatchOddsSnapshot>();
-    const reads = fixtures.map(async (fixture) => ({
-      fixture,
-      snapshot: await settleCacheReadWithin(
-        matchStore.get(fixtureStoreKey(fixture.key)),
-        cacheOnly,
-      ),
-    }));
-    const loaded = cacheOnly
-      ? (await Promise.allSettled(reads)).flatMap((result) =>
-          result.status === 'fulfilled' ? [result.value] : [],
-        )
-      : await Promise.all(reads);
+    const loaded = await readMatchOddsSnapshotsWithin(
+      matchStore,
+      fixtures.map((fixture) => fixtureStoreKey(fixture.key)),
+      cacheOnly,
+    );
     const pending: PendingSportsGameOddsFixture[] = [];
-    for (const { fixture, snapshot } of loaded) {
+    for (const fixture of fixtures) {
+      const snapshot = loaded.get(fixtureStoreKey(fixture.key));
       if (snapshot && this.matchSnapshotIsReusable(snapshot)) {
         matchSnapshots.set(fixture.key, snapshot);
         continue;
@@ -914,6 +898,9 @@ export class SportsGameOddsPlayerMarketOddsProvider
         string,
         Map<OddsMarketKey, MarketSnapshot>
       >();
+      const pendingByFixture = new Map(
+        pending.map((entry) => [entry.fixture.key, entry]),
+      );
       const snapshotReads = await Promise.allSettled(
         pending.map(async ({ fixture }) => ({
           fixture,
@@ -925,9 +912,7 @@ export class SportsGameOddsPlayerMarketOddsProvider
         const { fixture, snapshots: byMarket } = result.value;
         snapshots.set(fixture.key, byMarket);
         if (this.insideWindow(fixture.date, this.options.fetchWindowMs)) {
-          const pendingFixture = pending.find(
-            ({ fixture: candidate }) => candidate.key === fixture.key,
-          );
+          const pendingFixture = pendingByFixture.get(fixture.key);
           if (pendingFixture) {
             pendingFixture.markets = this.playerMarketsNeedingRefresh(
               fixture,

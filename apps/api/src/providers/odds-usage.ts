@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 import type { AppLogger } from '../logger.js';
 
 export const OddsProviderNameSchema = z.enum([

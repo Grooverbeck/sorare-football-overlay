@@ -1,4 +1,3 @@
-import { gql } from 'graphql-tag';
 import pino from 'pino';
 import { describe, expect, it, vi } from 'vitest';
 import { SorareGraphqlClient } from '../graphql/client.js';
@@ -27,7 +26,7 @@ describe('SorareGraphqlClient', () => {
     });
 
     const result = await client.request<{ value: number }, Record<string, never>>(
-      gql`query Test { value }`,
+      /* GraphQL */ `query Test { value }`,
       {},
     );
 

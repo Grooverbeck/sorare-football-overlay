@@ -3,7 +3,7 @@ import {
   type MatchProbabilities,
   type PlayerStats,
 } from '@sorare-overlay/shared';
-import { z } from 'zod';
+import * as z from 'zod';
 import type { AppLogger } from '../logger.js';
 import {
   FIXTURE_IDENTITY_VERSION,
@@ -59,6 +59,9 @@ export type FixtureOdds = MatchProbabilities & {
 
 export interface MatchOddsSnapshotStore {
   get(fixtureKey: string): Promise<MatchOddsSnapshot | undefined>;
+  getMany?(
+    fixtureKeys: readonly string[],
+  ): Promise<Map<string, MatchOddsSnapshot>>;
   set(fixtureKey: string, snapshot: MatchOddsSnapshot): void | Promise<void>;
   claimRefreshLease?(
     fixtureKey: string,
@@ -96,6 +99,23 @@ export class InMemoryMatchOddsSnapshotStore
     return snapshot;
   }
 
+  async getMany(
+    fixtureKeys: readonly string[],
+  ): Promise<Map<string, MatchOddsSnapshot>> {
+    const uniqueKeys = [...new Set(fixtureKeys)];
+    const values = await Promise.all(
+      uniqueKeys.map(async (fixtureKey) => [
+        fixtureKey,
+        await this.get(fixtureKey),
+      ] as const),
+    );
+    return new Map(
+      values.flatMap(([fixtureKey, snapshot]) =>
+        snapshot ? [[fixtureKey, snapshot] as const] : [],
+      ),
+    );
+  }
+
   set(fixtureKey: string, snapshot: MatchOddsSnapshot): void {
     this.entries.set(fixtureKey, MatchOddsSnapshotSchema.parse(snapshot));
   }
@@ -126,6 +146,37 @@ export interface FixtureMatchOddsProvider {
     options?: { cacheOnly?: boolean },
   ): Promise<Map<string, FixtureOdds | null>>;
   supports(player: PlayerStats): boolean;
+}
+
+export async function readMatchOddsSnapshotsWithin(
+  store: MatchOddsSnapshotStore,
+  fixtureKeys: readonly string[],
+  cacheOnly: boolean,
+): Promise<Map<string, MatchOddsSnapshot>> {
+  const uniqueKeys = [...new Set(fixtureKeys)];
+  if (uniqueKeys.length === 0) return new Map();
+  if (store.getMany) {
+    return (
+      (await settleCacheReadWithin(
+        store.getMany(uniqueKeys),
+        cacheOnly,
+      )) ?? new Map()
+    );
+  }
+  const reads = uniqueKeys.map(async (fixtureKey) => [
+    fixtureKey,
+    await settleCacheReadWithin(store.get(fixtureKey), cacheOnly),
+  ] as const);
+  const loaded = cacheOnly
+    ? (await Promise.allSettled(reads)).flatMap((result) =>
+        result.status === 'fulfilled' ? [result.value] : [],
+      )
+    : await Promise.all(reads);
+  return new Map(
+    loaded.flatMap(([fixtureKey, snapshot]) =>
+      snapshot ? [[fixtureKey, snapshot] as const] : [],
+    ),
+  );
 }
 
 export class UnavailableFixtureMatchOddsProvider
@@ -530,6 +581,7 @@ export class TheOddsApiFixtureMatchOddsProvider
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly now: () => number;
+  private readonly routesByCompetition = new Map<string, MatchOddsRoute>();
 
   constructor(private readonly options: TheOddsApiFixtureMatchOddsOptions) {
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -538,6 +590,14 @@ export class TheOddsApiFixtureMatchOddsProvider
       ((milliseconds) =>
         new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
     this.now = options.now ?? Date.now;
+    for (const route of options.routes) {
+      for (const competitionSlug of route.competitionSlugs) {
+        const normalized = competitionSlug.trim().toLocaleLowerCase();
+        if (!this.routesByCompetition.has(normalized)) {
+          this.routesByCompetition.set(normalized, route);
+        }
+      }
+    }
   }
 
   supports(player: PlayerStats): boolean {
@@ -557,26 +617,13 @@ export class TheOddsApiFixtureMatchOddsProvider
 
     const snapshots = new Map<string, MatchOddsSnapshot>();
     const missing: FixtureGroup[] = [];
-    const snapshotReads = fixtures.map(async (fixture) => ({
-      fixture,
-      storedSnapshot: await settleCacheReadWithin(
-        this.options.store.get(fixture.key),
-        loadOptions?.cacheOnly === true,
-      ),
-    }));
-    let storedSnapshots: Array<{
-      fixture: FixtureGroup;
-      storedSnapshot: MatchOddsSnapshot | undefined;
-    }>;
-    if (loadOptions?.cacheOnly === true) {
-      const settledSnapshots = await Promise.allSettled(snapshotReads);
-      storedSnapshots = settledSnapshots.flatMap((result) =>
-        result.status === 'fulfilled' ? [result.value] : [],
-      );
-    } else {
-      storedSnapshots = await Promise.all(snapshotReads);
-    }
-    for (const { fixture, storedSnapshot } of storedSnapshots) {
+    const storedSnapshots = await readMatchOddsSnapshotsWithin(
+      this.options.store,
+      fixtures.map(({ key }) => key),
+      loadOptions?.cacheOnly === true,
+    );
+    for (const fixture of fixtures) {
+      const storedSnapshot = storedSnapshots.get(fixture.key);
       const snapshot =
         storedSnapshot && this.snapshotIsReusable(storedSnapshot)
           ? storedSnapshot
@@ -738,6 +785,18 @@ export class TheOddsApiFixtureMatchOddsProvider
   }
 
   private routeFor(player: PlayerStats): MatchOddsRoute | null {
+    const competitionSlug = player.nextGame?.competitionSlug;
+    if (competitionSlug !== undefined) {
+      if (competitionSlug === null) return null;
+      return (
+        this.routesByCompetition.get(
+          competitionSlug.trim().toLocaleLowerCase(),
+        ) ?? null
+      );
+    }
+    // Legacy fixture snapshots have no competition slug. Preserve the
+    // provider's deliberately narrow team-based compatibility check only for
+    // those rows while current fixtures stay on the constant-time route.
     return (
       this.options.routes.find((route) =>
         supportsFixtureCompetition(player, route.competitionSlugs),

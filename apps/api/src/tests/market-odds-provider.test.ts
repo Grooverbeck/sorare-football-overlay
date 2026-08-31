@@ -5,6 +5,7 @@ import {
   FIXTURE_IDENTITY_VERSION,
   InMemoryMarketSnapshotStore,
   TheOddsApiPlayerMarketOddsProvider,
+  createPlayerProbabilityResolver,
   marketFixtureKey,
   missingMarketSnapshot,
   normalizeTeamName,
@@ -1916,6 +1917,33 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
         ],
       },
     });
+  });
+
+  it('reuses one prepared fixture identity result within a provider load', () => {
+    const target = player({
+      slug: 'cached-player',
+      displayName: 'Cached Player',
+    });
+    const snapshot = {
+      status: 'available' as const,
+      market: 'player_goal_scorer_anytime' as const,
+      eventId: 'cached-event',
+      capturedAt: new Date(now).toISOString(),
+      players: {
+        'cached player': {
+          probability: 0.25,
+          bookmakerCount: 1,
+        },
+      },
+    };
+    const resolver = createPlayerProbabilityResolver([target]);
+
+    const first = resolver.resolve(snapshot, target);
+
+    expect(resolver.resolve(snapshot, target)).toBe(first);
+    expect(resolver.probability(snapshot, target)).toBe(
+      first.status === 'available' ? first.probability : null,
+    );
   });
 
   it('fails closed when removing a junior suffix fits two fixture players', () => {

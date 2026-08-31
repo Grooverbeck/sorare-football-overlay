@@ -1,5 +1,5 @@
 import type { PlayerStats } from '@sorare-overlay/shared';
-import type { DocumentNode } from 'graphql';
+import { parse } from 'graphql';
 import { describe, expect, it, vi } from 'vitest';
 import type { AppLogger } from '../logger.js';
 import type { PlayerMarketOddsProvider } from '../providers/market-odds-provider.js';
@@ -18,9 +18,10 @@ class FakeGraphqlClient {
   constructor(private readonly responses: readonly unknown[]) {}
 
   async request<TData, TVariables>(
-    _document: DocumentNode,
+    document: string,
     _variables: TVariables,
   ): Promise<TData> {
+    parse(document);
     const response = this.responses[this.index];
     this.index += 1;
     return response as TData;

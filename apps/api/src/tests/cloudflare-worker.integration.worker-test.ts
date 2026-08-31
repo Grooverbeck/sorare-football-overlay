@@ -5,10 +5,10 @@ import {
   SELF,
   waitOnExecutionContext,
 } from 'cloudflare:test';
-import { parse } from 'graphql';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   CloudflareMarketSnapshotStore,
+  CloudflareMatchOddsSnapshotStore,
   CloudflareNameResolutionCache,
   CloudflarePlayerStatsCache,
   fixtureOddsRefreshIntervalMs,
@@ -20,7 +20,10 @@ import {
 import { D1JsonKeyValueStore } from '../cloudflare/d1-cache.js';
 import { SorareGraphqlClient } from '../graphql/client.js';
 import type { AppLogger } from '../logger.js';
-import { normalizeTeamName } from '../providers/market-odds-provider.js';
+import {
+  FIXTURE_IDENTITY_VERSION,
+  normalizeTeamName,
+} from '../providers/market-odds-provider.js';
 
 const silentLogger: AppLogger = {
   debug: () => undefined,
@@ -1064,7 +1067,7 @@ describe('Cloudflare Worker', () => {
     );
   });
 
-  it('keeps successful market snapshots and expires only temporary misses', async () => {
+  it('retains successful market snapshots for two weeks and expires temporary misses', async () => {
     const context = createExecutionContext();
     const store = new CloudflareMarketSnapshotStore(
       env.STATS_CACHE,
@@ -1075,6 +1078,8 @@ describe('Cloudflare Worker', () => {
     const missExpiration = Math.floor(
       (Date.now() + 24 * 60 * 60 * 1_000) / 1_000,
     );
+    const successfulExpirationFloor =
+      Math.floor(Date.now() / 1_000) + 14 * 24 * 60 * 60;
 
     await store.set(fixtureKey, {
       status: 'available',
@@ -1106,7 +1111,12 @@ describe('Cloudflare Worker', () => {
     const assistKey = listed.keys.find((key) =>
       key.name.endsWith(':player_assists'),
     );
-    expect(goalKey?.expiration).toBeUndefined();
+    expect(goalKey?.expiration).toBeGreaterThanOrEqual(
+      successfulExpirationFloor,
+    );
+    expect(goalKey?.expiration).toBeLessThanOrEqual(
+      successfulExpirationFloor + 1,
+    );
     expect(assistKey?.expiration).toBe(missExpiration);
   });
 
@@ -1216,6 +1226,41 @@ describe('Cloudflare Worker', () => {
       { status: 'available', eventId: 'batch-fixture-2' },
       undefined,
     ]);
+  });
+
+  it('reads multiple match-odds snapshots through one D1 batch path', async () => {
+    const probe = Date.now();
+    const firstFixture = `${probe}|match home one|match away one`;
+    const secondFixture = `${probe + 1}|match home two|match away two`;
+    const store = new CloudflareMatchOddsSnapshotStore(
+      new D1JsonKeyValueStore(env.CACHE_DB, env.STATS_CACHE),
+    );
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString();
+    await store.set(firstFixture, {
+      status: 'available',
+      eventId: 'match-batch-1',
+      capturedAt: new Date().toISOString(),
+      expiresAt,
+      home: 0.5,
+      draw: 0.3,
+      away: 0.2,
+      bookmakerCount: 2,
+    });
+    await store.set(secondFixture, {
+      status: 'unavailable',
+      fixtureIdentityVersion: FIXTURE_IDENTITY_VERSION,
+      checkedAt: new Date().toISOString(),
+      expiresAt,
+    });
+
+    await expect(
+      store.getMany([firstFixture, secondFixture, 'missing-fixture']),
+    ).resolves.toEqual(
+      new Map([
+        [firstFixture, expect.objectContaining({ eventId: 'match-batch-1' })],
+        [secondFixture, expect.objectContaining({ status: 'unavailable' })],
+      ]),
+    );
   });
 
   it('coordinates market refreshes and supplement batches through D1', async () => {
@@ -1664,7 +1709,7 @@ describe('Cloudflare Worker', () => {
 
     await expect(
       client.request<{ probe: string }, Record<string, never>>(
-        parse('query WorkerFetchProbe { probe }'),
+        /* GraphQL */ 'query WorkerFetchProbe { probe }',
         {},
       ),
     ).resolves.toEqual({ probe: 'ok' });

@@ -1,6 +1,4 @@
-import { gql } from 'graphql-tag';
-
-export const PLAYER_STATS_BATCH_QUERY = gql`
+export const PLAYER_STATS_BATCH_QUERY = /* GraphQL */ `
   query PlayerStatsBatch($slugs: [String!], $position: Position) {
     players(slugs: $slugs) {
       __typename
@@ -81,7 +79,7 @@ export const PLAYER_STATS_BATCH_QUERY = gql`
   }
 `;
 
-export const PLAYER_NEXT_GAMES_QUERY = gql`
+export const PLAYER_NEXT_GAMES_QUERY = /* GraphQL */ `
   query PlayerNextGames($slugs: [String!]) {
     players(slugs: $slugs) {
       __typename
@@ -134,7 +132,7 @@ export const PLAYER_NEXT_GAMES_QUERY = gql`
   }
 `;
 
-export const PLAYER_APPEARANCE_HISTORY_QUERY = gql`
+export const PLAYER_APPEARANCE_HISTORY_QUERY = /* GraphQL */ `
   query PlayerAppearanceHistory(
     $slug: String!
     $position: Position

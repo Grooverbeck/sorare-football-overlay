@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 const booleanFromEnv = z.preprocess((value) => {
   if (typeof value !== 'string') return value;

@@ -9,7 +9,10 @@ interface D1CacheManyRow extends D1CacheRow {
   cache_key: string;
 }
 
-const getManyChunkSize = 40;
+// D1 accepts at most 100 bound parameters per statement. Reserve the final
+// parameter for the expiration timestamp and use the remaining 99 for keys.
+const getManyChunkSize = 99;
+const maximumCleanupBatchSize = 5_000;
 
 interface CacheWriteOptions {
   expiration?: number;
@@ -85,21 +88,28 @@ export class D1JsonKeyValueStore implements JsonKeyValueStore {
 
     const rows: D1CacheManyRow[] = [];
     try {
+      const now = this.nowSeconds();
+      const statements: D1PreparedStatement[] = [];
       for (let offset = 0; offset < uniqueKeys.length; offset += getManyChunkSize) {
         const chunk = uniqueKeys.slice(offset, offset + getManyChunkSize);
         const placeholders = chunk.map((_, index) => `?${index + 1}`).join(', ');
         const expirationParameter = `?${chunk.length + 1}`;
-        const result = await this.database
-          .prepare(
-            `SELECT cache_key, value
-             FROM cache_entries
-             WHERE cache_key IN (${placeholders})
-               AND (expires_at IS NULL OR expires_at > ${expirationParameter})`,
-          )
-          .bind(...chunk, this.nowSeconds())
-          .all<D1CacheManyRow>();
-        rows.push(...result.results);
+        statements.push(
+          this.database
+            .prepare(
+              `SELECT cache_key, value
+               FROM cache_entries
+               WHERE cache_key IN (${placeholders})
+                 AND (expires_at IS NULL OR expires_at > ${expirationParameter})`,
+            )
+            .bind(...chunk, now),
+        );
       }
+      const results =
+        statements.length === 1
+          ? [await statements[0]!.all<D1CacheManyRow>()]
+          : await this.database.batch<D1CacheManyRow>(statements);
+      for (const result of results) rows.push(...result.results);
     } catch (d1Error) {
       if (!this.fallback) {
         this.logger?.error(
@@ -326,6 +336,28 @@ export class D1JsonKeyValueStore implements JsonKeyValueStore {
       .prepare('DELETE FROM cache_entries WHERE cache_key = ?1')
       .bind(key)
       .run();
+  }
+
+  async deleteExpired(limit = 2_000): Promise<number> {
+    const boundedLimit = Math.max(
+      1,
+      Math.min(maximumCleanupBatchSize, Math.floor(limit)),
+    );
+    const result = await this.database
+      .prepare(
+        `DELETE FROM cache_entries
+         WHERE cache_key IN (
+           SELECT cache_key
+           FROM cache_entries
+           WHERE expires_at IS NOT NULL
+             AND expires_at <= ?1
+           ORDER BY expires_at
+           LIMIT ?2
+         )`,
+      )
+      .bind(this.nowSeconds(), boundedLimit)
+      .run();
+    return result.meta.changes ?? 0;
   }
 
 }

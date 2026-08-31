@@ -25,13 +25,6 @@ export interface Cache<T> {
   fillMissing?(key: string, value: T): T | Promise<T>;
 }
 
-export interface ReadonlyCache<T> {
-  get(key: string): T | undefined | Promise<T | undefined>;
-  getMany?(
-    keys: readonly string[],
-  ): Map<string, T> | Promise<Map<string, T>>;
-}
-
 const playerPositions = new Set([
   'auto-v3',
   'Goalkeeper',
@@ -151,7 +144,6 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
   constructor(
     private readonly formCache: Cache<PlayerFormStats>,
     private readonly fixtureCache: Cache<PlayerFixtureStats>,
-    private readonly legacyCache?: ReadonlyCache<PlayerStats>,
     private readonly now: () => number = Date.now,
   ) {}
 
@@ -160,27 +152,6 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
       this.formCache.get(key),
       this.getFixture(key),
     ]);
-
-    // Only consult the old combined cache before either new cache part exists.
-    // This migrates existing entries without allowing a 24h legacy fixture to
-    // override an intentionally shorter fixture TTL later.
-    if (form === undefined && fixture === undefined && this.legacyCache) {
-      const legacy = await this.legacyCache.get(key);
-      if (legacy) {
-        const {
-          nextGame,
-          pendingRefreshes: _pendingRefreshes,
-          mlsAaContext: _mlsAaContext,
-          ...legacyForm
-        } = legacy;
-        if (legacyForm.aaL10TeamWinRate === undefined) {
-          await this.fixtureCache.set(playerFixtureCacheKey(key), nextGame);
-          return { fixture: nextGame };
-        }
-        await this.set(key, legacy);
-        return { form: legacyForm, fixture: nextGame };
-      }
-    }
 
     return {
       ...(form !== undefined ? { form } : {}),
@@ -236,38 +207,8 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
       );
     }
 
-    // Consult the combined v1 cache only when neither split part exists,
-    // preserving the original migration policy without N+1 reads.
-    const legacyCandidates = uniqueKeys.filter(
-      (key) => !forms.has(key) && !fixtureByPlayer.has(key),
-    );
-    const legacyPlayers = this.legacyCache
-      ? await this.readMany(this.legacyCache, legacyCandidates)
-      : new Map<string, PlayerStats>();
-    const legacyMigrations: Promise<unknown>[] = [];
     const result = new Map<string, PlayerStatsCacheParts>();
     for (const key of uniqueKeys) {
-      const legacy = legacyPlayers.get(key);
-      if (legacy) {
-        const {
-          nextGame,
-          pendingRefreshes: _pendingRefreshes,
-          mlsAaContext: _mlsAaContext,
-          ...legacyForm
-        } = legacy;
-        if (legacyForm.aaL10TeamWinRate === undefined) {
-          result.set(key, { fixture: nextGame });
-          legacyMigrations.push(
-            Promise.resolve(
-              this.fixtureCache.set(playerFixtureCacheKey(key), nextGame),
-            ),
-          );
-          continue;
-        }
-        result.set(key, { form: legacyForm, fixture: nextGame });
-        legacyMigrations.push(Promise.resolve(this.set(key, legacy)));
-        continue;
-      }
       const parts: PlayerStatsCacheParts = {};
       if (forms.has(key)) parts.form = forms.get(key)!;
       if (fixtureByPlayer.has(key)) {
@@ -275,7 +216,7 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
       }
       result.set(key, parts);
     }
-    await Promise.all([...fixtureMigrations, ...legacyMigrations]);
+    await Promise.all(fixtureMigrations);
     return result;
   }
 
@@ -471,7 +412,7 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
   }
 
   private async readMany<TValue>(
-    cache: ReadonlyCache<TValue>,
+    cache: Cache<TValue>,
     keys: readonly string[],
   ): Promise<Map<string, TValue>> {
     const uniqueKeys = [...new Set(keys)];

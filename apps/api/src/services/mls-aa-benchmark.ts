@@ -9,8 +9,7 @@ import {
   type MlsAaContext,
   type PlayerStats,
 } from '@sorare-overlay/shared';
-import { parse } from 'graphql';
-import { z } from 'zod';
+import * as z from 'zod';
 import type { SorareGraphqlClient } from '../graphql/client.js';
 import type { AppLogger } from '../logger.js';
 
@@ -90,7 +89,7 @@ export function mlsAaContextForPlayer(
   };
 }
 
-const MLS_PLAYERS_QUERY = parse(`
+const MLS_PLAYERS_QUERY = /* GraphQL */ `
   query WeeklyMlsAaPlayers($first: Int!, $after: String) {
     football {
       competition(slug: "mlspa") {
@@ -107,9 +106,9 @@ const MLS_PLAYERS_QUERY = parse(`
       }
     }
   }
-`);
+`;
 
-const MLS_PLAYER_SCORES_QUERY = parse(`
+const MLS_PLAYER_SCORES_QUERY = /* GraphQL */ `
   query WeeklyMlsAaScores($slugs: [String!], $position: Position) {
     players(slugs: $slugs) {
       __typename
@@ -132,7 +131,7 @@ const MLS_PLAYER_SCORES_QUERY = parse(`
       }
     }
   }
-`);
+`;
 
 interface MlsPlayerSeed {
   slug: string;

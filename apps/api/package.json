@@ -34,8 +34,6 @@
     "@hono/node-server": "^2.0.11",
     "@sorare-overlay/shared": "*",
     "dotenv": "^17.2.0",
-    "graphql": "^16.11.0",
-    "graphql-tag": "^2.12.6",
     "hono": "^4.8.5",
     "pino": "^9.7.0",
     "zod": "^4.0.5"
@@ -47,6 +45,7 @@
     "@graphql-codegen/typescript": "^4.1.6",
     "@graphql-codegen/typescript-operations": "^4.6.1",
     "@types/node": "^24.0.10",
+    "graphql": "^16.11.0",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4",

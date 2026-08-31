@@ -56,6 +56,8 @@ const configKeys = [
 
 const WEEKLY_MLS_AA_CRON = '0 10 * * MON';
 const DAILY_MARKET_PREWARM_CRON = '0 5 * * *';
+const CACHE_CLEANUP_BATCH_SIZE = 2_000;
+const CACHE_CLEANUP_MAX_BATCHES = 12;
 
 function stringBindings(env: CloudflareBindings): Record<string, string | undefined> {
   const bindings = env as unknown as Readonly<Record<string, unknown>>;
@@ -255,6 +257,33 @@ export default {
       windowMs: config.oddsFetchWindowMs,
     });
     context.waitUntil((async () => {
+      try {
+        let deleted = 0;
+        for (
+          let batch = 0;
+          batch < CACHE_CLEANUP_MAX_BATCHES;
+          batch += 1
+        ) {
+          const batchDeleted = await cacheStore.deleteExpired(
+            CACHE_CLEANUP_BATCH_SIZE,
+          );
+          deleted += batchDeleted;
+          if (batchDeleted < CACHE_CLEANUP_BATCH_SIZE) break;
+        }
+        logger.info(
+          { deleted },
+          'Expired cache entries cleaned',
+        );
+      } catch (error) {
+        logger.warn(
+          {
+            cron: controller.cron,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Expired cache cleanup failed; continuing scheduled refresh',
+        );
+      }
+
       try {
         const usages =
           (await runtime.marketOddsProvider.refreshUsage?.()) ?? [];

@@ -38,6 +38,7 @@ import {
   playerTeamFixtureIdentity,
   sameFixtureIdentity,
 } from './fixture-identity.js';
+import { mapSettledWithConcurrency } from './concurrency.js';
 
 export interface StatsServiceResult {
   data: PlayerStats[];
@@ -97,6 +98,17 @@ export interface PlayerMarketSnapshotsResult {
 
 const CACHE_ONLY_ODDS_BATCH_EXTRA_PER_PLAYER_MS = 25;
 const CACHE_ONLY_ODDS_BATCH_MAX_MS = 1_600;
+const BACKGROUND_PLAYER_LOAD_CHUNK_SIZE = 8;
+const BACKGROUND_PLAYER_LOAD_CONCURRENCY = 2;
+const HISTORY_COMPLETION_CONCURRENCY = 4;
+
+function chunks<T>(values: readonly T[], size: number): T[][] {
+  const output: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    output.push(values.slice(index, index + size));
+  }
+  return output;
+}
 
 function hasNoUsablePlayerData(stats: PlayerStats): boolean {
   return (
@@ -1171,16 +1183,17 @@ export class StatsService {
         }),
       ).values(),
     ];
-    // A cold or invalid player must not prevent the other newly resolved
-    // gallery cards from reaching the cache.
-    await Promise.allSettled(
-      requests.map((request) =>
-        this.loadBatch([request], {
+    // Small isolated chunks preserve Sorare's invalid-player splitting while
+    // avoiding one full request and history fan-out per resolved card.
+    await mapSettledWithConcurrency(
+      chunks(requests, BACKGROUND_PLAYER_LOAD_CHUNK_SIZE),
+      BACKGROUND_PLAYER_LOAD_CONCURRENCY,
+      (batch) =>
+        this.loadBatch(batch, {
           completeHistory: true,
           overwriteForm: true,
           scheduleHistoryCompletion: false,
         }),
-      ),
     );
   }
 
@@ -1192,6 +1205,18 @@ export class StatsService {
     includeHistoricalAssists: boolean,
     allowPartialHistory: boolean,
   ): Promise<PlayerStats[]> {
+    const statsByExactPlayer = new Map(
+      loadedStats.map((stats) => [
+        `${stats.slug}:${stats.position}`,
+        stats,
+      ]),
+    );
+    const firstStatsBySlug = new Map<string, PlayerStats>();
+    for (const stats of loadedStats) {
+      if (!firstStatsBySlug.has(stats.slug)) {
+        firstStatsBySlug.set(stats.slug, stats);
+      }
+    }
     const emptyNameMatches = playerRequests.flatMap((playerRequest) => {
       if (
         !playerRequest.resolvedFromName ||
@@ -1199,12 +1224,11 @@ export class StatsService {
       ) {
         return [];
       }
-      const stats = loadedStats.find(
-        (candidate) =>
-          candidate.slug === playerRequest.slug &&
-          (!playerRequest.position ||
-            candidate.position === playerRequest.position),
-      );
+      const stats = playerRequest.position
+        ? statsByExactPlayer.get(
+            `${playerRequest.slug}:${playerRequest.position}`,
+          )
+        : firstStatsBySlug.get(playerRequest.slug);
       return stats &&
         !stats.pendingRefreshes?.includes('formHistory') &&
         hasNoUsablePlayerData(stats)
@@ -1593,32 +1617,40 @@ export class StatsService {
     const splitCache = supportsSplitPlayerStatsCache(this.cache)
       ? this.cache
       : undefined;
-    const tasks = unique.map(async (request) => {
-      const refreshKey = inFlightKey(request, this.excludeLowCoverage);
-      const claimed =
-        splitCache === undefined ||
-        (await splitCache.claimFormHistoryRefresh(refreshKey));
-      if (!claimed) return;
-      try {
-        const loaded = await this.loadBatch([request], {
-          allowPartialHistory: true,
-          completeHistory: true,
-          overwriteForm: true,
-          scheduleHistoryCompletion: false,
-        });
-        const stats = loaded.get(cacheKey(request, this.excludeLowCoverage));
-        if (!stats || stats.pendingRefreshes?.includes('formHistory')) {
-          throw new Error('Player form history remained incomplete');
-        }
-      } catch (error) {
-        if (splitCache) {
-          await splitCache.releaseFormHistoryRefresh(refreshKey);
-        }
-        throw error;
-      }
-    });
     this.scheduleBackground(
-      Promise.allSettled(tasks).then((settled) => {
+      mapSettledWithConcurrency(
+        unique,
+        HISTORY_COMPLETION_CONCURRENCY,
+        async (request) => {
+          const refreshKey = inFlightKey(
+            request,
+            this.excludeLowCoverage,
+          );
+          const claimed =
+            splitCache === undefined ||
+            (await splitCache.claimFormHistoryRefresh(refreshKey));
+          if (!claimed) return;
+          try {
+            const loaded = await this.loadBatch([request], {
+              allowPartialHistory: true,
+              completeHistory: true,
+              overwriteForm: true,
+              scheduleHistoryCompletion: false,
+            });
+            const stats = loaded.get(
+              cacheKey(request, this.excludeLowCoverage),
+            );
+            if (!stats || stats.pendingRefreshes?.includes('formHistory')) {
+              throw new Error('Player form history remained incomplete');
+            }
+          } catch (error) {
+            if (splitCache) {
+              await splitCache.releaseFormHistoryRefresh(refreshKey);
+            }
+            throw error;
+          }
+        },
+      ).then((settled) => {
         const failed = settled.filter(
           (entry) => entry.status === 'rejected',
         ).length;

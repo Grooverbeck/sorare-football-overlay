@@ -1,4 +1,3 @@
-import { print, type DocumentNode } from 'graphql';
 import { AppError } from '../errors.js';
 import type { AppLogger } from '../logger.js';
 
@@ -26,18 +25,6 @@ export interface SorareGraphqlClientOptions {
 const defaultSleep = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
-// Query documents are static module objects. Printing their AST on every
-// Sorare request adds avoidable synchronous work to cold player batches.
-const printedDocuments = new WeakMap<DocumentNode, string>();
-
-function printedDocument(document: DocumentNode): string {
-  const existing = printedDocuments.get(document);
-  if (existing) return existing;
-  const value = print(document);
-  printedDocuments.set(document, value);
-  return value;
-}
-
 function retryAfterMs(value: string | null, attempt: number): number {
   if (value) {
     const seconds = Number(value);
@@ -58,7 +45,7 @@ export class SorareGraphqlClient {
   }
 
   async request<TData, TVariables>(
-    document: DocumentNode,
+    document: string,
     variables: TVariables,
   ): Promise<TData> {
     for (let attempt = 0; attempt <= this.options.maxRetries; attempt += 1) {
@@ -69,7 +56,7 @@ export class SorareGraphqlClient {
         const response = await this.fetchImpl(this.options.url, {
           method: 'POST',
           headers: this.headers(),
-          body: JSON.stringify({ query: printedDocument(document), variables }),
+          body: JSON.stringify({ query: document, variables }),
           signal: controller.signal,
         });
 

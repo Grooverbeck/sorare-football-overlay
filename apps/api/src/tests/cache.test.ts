@@ -247,21 +247,6 @@ describe('SplitPlayerStatsCache', () => {
     });
   });
 
-  it('migrates a legacy entry once without reviving its stale fixture later', async () => {
-    let now = 0;
-    const formCache = new TtlCache<PlayerFormStats>(24_000, () => now);
-    const fixtureCache = new TtlCache<PlayerFixtureStats>(4_000, () => now);
-    const legacyCache = new TtlCache<PlayerStats>(24_000, () => now);
-    legacyCache.set('player', stats);
-    const cache = new SplitPlayerStatsCache(formCache, fixtureCache, legacyCache);
-
-    await expect(cache.get('player')).resolves.toEqual(stats);
-
-    now = 5_000;
-    await expect(cache.get('player')).resolves.toBeUndefined();
-    expect(legacyCache.get('player')).toEqual(stats);
-  });
-
   it('shares one held fixture across card positions while keeping form values separate', async () => {
     const formCache = new TtlCache<PlayerFormStats>(24_000);
     const fixtureCache = new TtlCache<PlayerFixtureStats>(24_000);

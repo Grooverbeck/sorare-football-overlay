@@ -4,6 +4,9 @@
   "main": "src/cloudflare/worker.ts",
   "compatibility_date": "2026-07-25",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "minify": true,
+  "keep_names": true,
+  "upload_source_maps": true,
   "workers_dev": true,
   "placement": {
     "mode": "smart"

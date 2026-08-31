@@ -8,14 +8,13 @@ import {
   type MlsAaBenchmarkSnapshot,
   type PlayerStats,
 } from '@sorare-overlay/shared';
-import { z } from 'zod';
+import * as z from 'zod';
 import {
   SplitPlayerStatsCache,
   type Cache,
   type PlayerFixtureStats,
   type PlayerFormStats,
   type PlayerStatsCacheParts,
-  type ReadonlyCache,
   type SplitPlayerStatsCacheAccess,
 } from '../cache.js';
 import {
@@ -227,6 +226,7 @@ const FIXTURE_ODDS_REFRESH_LEASE_SECONDS = 15 * 60;
 const FIXTURE_ODDS_CHECK_PREFIX = 'sorare-fixture-odds-check:v1:';
 const PLAYER_TEAM_FIXTURE_PREFIX = 'player-team-fixture:v1:';
 const PLAYER_TEAM_FIXTURE_SLUG_PREFIX = 'player-team-fixture:v2:';
+const SUCCESSFUL_MARKET_SNAPSHOT_RETENTION_SECONDS = 14 * 24 * 60 * 60;
 
 export function nextMondayFormExpiration(
   nowMs: number,
@@ -571,7 +571,16 @@ export class CloudflareMarketSnapshotStore
     if (snapshot.status === 'available') {
       // A successful pre-match market capture is immutable by design. This
       // avoids paid API re-fetches and keeps every user on the same snapshot.
-      await this.namespace.put(key, value);
+      // The fixture cache rolls over much earlier, so retaining the frozen
+      // quote for two weeks is conservative while preventing unbounded D1
+      // growth from fixtures that can never be requested again.
+      await this.namespace.put(key, value, {
+        expiration:
+          Math.floor(
+            Math.max(Date.now(), Date.parse(snapshot.capturedAt)) / 1_000,
+          ) +
+          SUCCESSFUL_MARKET_SNAPSHOT_RETENTION_SECONDS,
+      });
       return;
     }
     if (snapshot.expiresAt) {
@@ -808,6 +817,52 @@ export class CloudflareMatchOddsSnapshotStore
     const key = this.key(fixtureKey);
     const raw = await this.namespace.get<unknown>(key, 'json');
     if (raw === null) return undefined;
+    return this.parse(key, raw);
+  }
+
+  async getMany(
+    fixtureKeys: readonly string[],
+  ): Promise<Map<string, MatchOddsSnapshot>> {
+    const keyByFixture = new Map(
+      [...new Set(fixtureKeys)].map((fixtureKey) => [
+        fixtureKey,
+        this.key(fixtureKey),
+      ]),
+    );
+    if (keyByFixture.size === 0) return new Map();
+    const rawByKey = this.namespace.getMany
+      ? await this.namespace.getMany<unknown>(
+          [...keyByFixture.values()],
+          'json',
+        )
+      : new Map(
+          await Promise.all(
+            [...keyByFixture.values()].map(async (key) => [
+              key,
+              (await this.namespace.get<unknown>(key, 'json')) ?? undefined,
+            ] as const),
+          ),
+        );
+    const loaded = await Promise.all(
+      [...keyByFixture].map(async ([fixtureKey, key]) => {
+        const raw = rawByKey.get(key);
+        return [
+          fixtureKey,
+          raw === undefined ? undefined : await this.parse(key, raw),
+        ] as const;
+      }),
+    );
+    return new Map(
+      loaded.flatMap(([fixtureKey, snapshot]) =>
+        snapshot ? [[fixtureKey, snapshot] as const] : [],
+      ),
+    );
+  }
+
+  private async parse(
+    key: string,
+    raw: unknown,
+  ): Promise<MatchOddsSnapshot | undefined> {
     const parsed = MatchOddsSnapshotSchema.safeParse(raw);
     if (!parsed.success) {
       await this.namespace.delete(key);
@@ -871,9 +926,31 @@ export class CloudflareMatchOddsSnapshotStore
 export class CloudflareProviderQuotaUsageStore
   implements ProviderQuotaUsageStore
 {
+  private readonly usageReads = new Map<
+    OddsProviderName,
+    Promise<ProviderQuotaUsage | undefined>
+  >();
+  private readonly requestBlockReads = new Map<
+    OddsProviderName,
+    Promise<number | undefined>
+  >();
+
   constructor(private readonly namespace: JsonKeyValueStore) {}
 
-  async get(
+  get(
+    provider: OddsProviderName,
+  ): Promise<ProviderQuotaUsage | undefined> {
+    const existing = this.usageReads.get(provider);
+    if (existing) return existing;
+    const pending = this.readUsage(provider).catch((error: unknown) => {
+      this.usageReads.delete(provider);
+      throw error;
+    });
+    this.usageReads.set(provider, pending);
+    return pending;
+  }
+
+  private async readUsage(
     provider: OddsProviderName,
   ): Promise<ProviderQuotaUsage | undefined> {
     const key = this.key(provider);
@@ -893,9 +970,25 @@ export class CloudflareProviderQuotaUsageStore
       this.key(value.provider),
       JSON.stringify(value),
     );
+    this.usageReads.set(value.provider, Promise.resolve(value));
   }
 
-  async getRequestBlockedUntil(
+  getRequestBlockedUntil(
+    provider: OddsProviderName,
+  ): Promise<number | undefined> {
+    const existing = this.requestBlockReads.get(provider);
+    if (existing) return existing;
+    const pending = this.readRequestBlockedUntil(provider).catch(
+      (error: unknown) => {
+        this.requestBlockReads.delete(provider);
+        throw error;
+      },
+    );
+    this.requestBlockReads.set(provider, pending);
+    return pending;
+  }
+
+  private async readRequestBlockedUntil(
     provider: OddsProviderName,
   ): Promise<number | undefined> {
     const key = this.requestBlockKey(provider);
@@ -923,6 +1016,7 @@ export class CloudflareProviderQuotaUsageStore
       !Number.isFinite(expiration) ||
       expiration <= Math.floor(Date.now() / 1_000)
     ) {
+      this.requestBlockReads.set(provider, Promise.resolve(undefined));
       return;
     }
     await this.namespace.put(
@@ -933,6 +1027,10 @@ export class CloudflareProviderQuotaUsageStore
         }),
       ),
       { expiration },
+    );
+    this.requestBlockReads.set(
+      provider,
+      Promise.resolve(blockedUntil),
     );
   }
 
@@ -1684,41 +1782,6 @@ class CloudflarePlayerFixtureCache
   }
 }
 
-class CloudflareLegacyPlayerStatsCache
-  extends CloudflareKvCache
-  implements ReadonlyCache<PlayerStats>
-{
-  async get(key: string): Promise<PlayerStats | undefined> {
-    const cacheKey = `player-stats:v1:${key}`;
-    const raw = await this.namespace.get<unknown>(cacheKey, 'json');
-    if (raw === null) return undefined;
-    const parsed = PlayerStatsSchema.safeParse(raw);
-    if (!parsed.success) {
-      this.removeInvalid(cacheKey);
-      return undefined;
-    }
-    return parsed.data;
-  }
-
-  async getMany(keys: readonly string[]): Promise<Map<string, PlayerStats>> {
-    const cacheKeyByPlayer = new Map(
-      [...new Set(keys)].map((key) => [key, `player-stats:v1:${key}`]),
-    );
-    const raw = await this.readMany<unknown>([...cacheKeyByPlayer.values()]);
-    const values = new Map<string, PlayerStats>();
-    for (const [key, cacheKey] of cacheKeyByPlayer) {
-      if (!raw.has(cacheKey)) continue;
-      const parsed = PlayerStatsSchema.safeParse(raw.get(cacheKey));
-      if (!parsed.success) {
-        this.removeInvalid(cacheKey);
-        continue;
-      }
-      values.set(key, parsed.data);
-    }
-    return values;
-  }
-}
-
 export class CloudflarePlayerStatsCache
   implements SplitPlayerStatsCacheAccess
 {
@@ -1739,7 +1802,6 @@ export class CloudflarePlayerStatsCache
         context,
         now,
       ),
-      new CloudflareLegacyPlayerStatsCache(namespace, context),
     );
   }
 

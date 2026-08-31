@@ -5,7 +5,11 @@ const schemaLock = JSON.parse(readFileSync('schema/schema.lock.json', 'utf8')) a
 
 const config: CodegenConfig = {
   schema: `schema/${schemaLock.file}`,
-  documents: ['src/graphql/**/*.ts'],
+  documents: [
+    'src/graphql/**/*.ts',
+    'src/services/mls-aa-benchmark.ts',
+    'src/services/mls-market-prewarmer.ts',
+  ],
   generates: {
     'src/generated/sorare.ts': {
       plugins: ['typescript', 'typescript-operations'],

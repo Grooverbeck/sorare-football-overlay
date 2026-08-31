@@ -3,7 +3,6 @@ import {
   type FootballPosition,
   type PlayerAppearance,
 } from '@sorare-overlay/shared';
-import { parse } from 'graphql';
 import { AppError } from '../errors.js';
 import type {
   PlayerAppearanceHistoryQuery,
@@ -22,6 +21,7 @@ import type {
   SourcePlayerFixture,
   SourcePlayerRequest,
 } from '../services/data-source.js';
+import { mapWithConcurrency } from '../services/concurrency.js';
 import { SorareGraphqlClient } from './client.js';
 import {
   PLAYER_APPEARANCE_HISTORY_QUERY,
@@ -248,6 +248,8 @@ interface SlugCandidatePlayer {
 }
 
 type HistoryLoadMode = 'base' | 'complete';
+const NAME_SEARCH_CONCURRENCY = 6;
+const HISTORY_LOAD_CONCURRENCY = 4;
 
 function batchFailureCanBeSplit(error: unknown): boolean {
   return (
@@ -259,16 +261,16 @@ function batchFailureCanBeSplit(error: unknown): boolean {
   );
 }
 
-const RESOLVE_SLUG_CANDIDATES_QUERY = parse(`
+const RESOLVE_SLUG_CANDIDATES_QUERY = /* GraphQL */ `
   query ResolveSlugCandidates($slugs: [String!]!) {
     players(slugs: $slugs) {
       __typename
       ... on Player { slug displayName position activeClub { slug } }
     }
   }
-`);
+`;
 
-const RESOLVE_PLAYER_NAME_QUERY = parse(`
+const RESOLVE_PLAYER_NAME_QUERY = /* GraphQL */ `
   query ResolvePlayerName($query: String!) {
     searchPlayers(query: $query, pageSize: 5) {
       hits {
@@ -311,7 +313,7 @@ const RESOLVE_PLAYER_NAME_QUERY = parse(`
       }
     }
   }
-`);
+`;
 
 export class SorareDataSource implements PlayerStatsDataSource {
   readonly source = 'sorare' as const;
@@ -403,8 +405,10 @@ export class SorareDataSource implements PlayerStatsDataSource {
           return !this.resolvedNames.has(resolutionKey(name, position, teamSlug));
         });
     const completedSearches = new Set<string>();
-    await Promise.all(
-      searchFallbacks.map(async (name) => {
+    await mapWithConcurrency(
+      searchFallbacks,
+      NAME_SEARCH_CONCURRENCY,
+      async (name) => {
         const position = expectedPositionForName(name, expectedPositions);
         const teamSlug = expectedTeamSlugForName(name, expectedTeamSlugs);
         const key = resolutionKey(name, position, teamSlug);
@@ -421,7 +425,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
           // Do not fail or negative-cache the entire batch when one Sorare
           // search times out. The extension can retry only this player later.
         }
-      }),
+      },
     );
     const unresolved = searchFallbacks.filter((name) => {
       const position = expectedPositionForName(name, expectedPositions);
@@ -429,14 +433,16 @@ export class SorareDataSource implements PlayerStatsDataSource {
       const key = resolutionKey(name, position, teamSlug);
       return completedSearches.has(key) && !this.resolvedNames.has(key);
     });
-    await Promise.all(
-      unresolved.map(async (name) => {
+    await mapWithConcurrency(
+      unresolved,
+      NAME_SEARCH_CONCURRENCY,
+      async (name) => {
         const position = expectedPositionForName(name, expectedPositions);
         const teamSlug = expectedTeamSlugForName(name, expectedTeamSlugs);
         if (!this.resolvedNames.has(resolutionKey(name, position, teamSlug))) {
           await this.persistResolution(name, position, teamSlug, null);
         }
-      }),
+      },
     );
     return this.resolvedRequestsForNames(
       names,
@@ -643,6 +649,9 @@ export class SorareDataSource implements PlayerStatsDataSource {
     requests: readonly SourcePlayerRequest[],
   ): Promise<SourcePlayerFixture[]> {
     const calls = chunks(requests, this.fixtureBatchSize).map(async (batch) => {
+      const requestBySlug = new Map(
+        batch.map((request) => [request.slug, request]),
+      );
       const variables: PlayerNextGamesQueryVariables = {
         slugs: batch.map(({ slug }) => slug),
       };
@@ -652,9 +661,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
       >(PLAYER_NEXT_GAMES_QUERY, variables);
       return data.players.flatMap((player): SourcePlayerFixture[] => {
         if (player.__typename !== 'Player') return [];
-        const matchingRequest = batch.find(
-          (request) => request.slug === player.slug,
-        );
+        const matchingRequest = requestBySlug.get(player.slug);
         // Only a server-resolved name may use its confirmed team to repair a
         // stale activeClub. Raw DOM team hints remain response-local and must
         // never become persistent fixture identity by themselves.
@@ -904,6 +911,9 @@ export class SorareDataSource implements PlayerStatsDataSource {
       PLAYER_STATS_BATCH_QUERY,
       variables,
     );
+    const requestBySlug = new Map(
+      requests.map((request) => [request.slug, request]),
+    );
 
     const candidates = data.players.flatMap(
       (player): Array<{ player: SourcePlayer; scoreWindowWasFull: boolean }> => {
@@ -914,9 +924,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
           fromSorarePosition[player.position];
         if (!position) return [];
         const activeClubId = player.activeClub?.id;
-        const matchingRequest = requests.find(
-          (request) => request.slug === player.slug,
-        );
+        const matchingRequest = requestBySlug.get(player.slug);
         const expectedTeamSlug = matchingRequest?.resolvedFromName
           ? matchingRequest.teamSlug
           : undefined;
@@ -971,8 +979,10 @@ export class SorareDataSource implements PlayerStatsDataSource {
       },
     );
 
-    return Promise.all(
-      candidates.map(async ({ player, scoreWindowWasFull }) => {
+    return mapWithConcurrency(
+      candidates,
+      HISTORY_LOAD_CONCURRENCY,
+      async ({ player, scoreWindowWasFull }) => {
         const validForSelectedPosition = this.validAaAppearanceCount(
           player.appearances,
           player.position,
@@ -1029,7 +1039,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
         } catch {
           return { ...player, historyStatus: 'partial' as const };
         }
-      }),
+      },
     );
   }
 

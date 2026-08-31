@@ -3,8 +3,7 @@ import {
   type FootballPosition,
   type PlayerStats,
 } from '@sorare-overlay/shared';
-import { parse, type DocumentNode } from 'graphql';
-import { z } from 'zod';
+import * as z from 'zod';
 import type { SorareGraphqlClient } from '../graphql/client.js';
 import type { AppLogger } from '../logger.js';
 import type { PlayerMarketOddsProvider } from '../providers/market-odds-provider.js';
@@ -51,7 +50,7 @@ const ClubsResponseSchema = z.object({
   football: z.record(z.string(), ClubSchema.nullable()),
 });
 
-const UPCOMING_FIXTURES_QUERY = parse(`
+const UPCOMING_FIXTURES_QUERY = /* GraphQL */ `
   query MlsUpcomingFixtures($first: Int!) {
     football {
       competition(slug: "mlspa") {
@@ -66,7 +65,7 @@ const UPCOMING_FIXTURES_QUERY = parse(`
       }
     }
   }
-`);
+`;
 
 const positionPriority: Readonly<Record<FootballPosition, number>> = {
   Forward: 0,
@@ -77,7 +76,7 @@ const positionPriority: Readonly<Record<FootballPosition, number>> = {
 
 interface GraphqlRequester {
   request<TData, TVariables>(
-    document: DocumentNode,
+    document: string,
     variables: TVariables,
   ): Promise<TData>;
 }
@@ -112,7 +111,7 @@ function representativePosition(
   return parsed.success ? parsed.data : null;
 }
 
-function clubBatchQuery(size: number): DocumentNode {
+function clubBatchQuery(size: number): string {
   const definitions = Array.from(
     { length: size },
     (_, index) => `$club${index}: String!`,
@@ -133,13 +132,13 @@ function clubBatchQuery(size: number): DocumentNode {
       }
     `,
   ).join('\n');
-  return parse(`
+  return `
     query MlsPrewarmClubRepresentatives(${definitions}) {
       football {
         ${fields}
       }
     }
-  `);
+  `;
 }
 
 function representativeStats(
