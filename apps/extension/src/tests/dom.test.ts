@@ -275,6 +275,16 @@ describe('Sorare card DOM discovery', () => {
       { playerName: 'Prehydrated Player' },
       'Midfielder',
     );
+    const fixture = {
+      date: '2026-08-31T18:00:00.000Z',
+      homeTeamName: 'Home FC',
+      awayTeamName: 'Away FC',
+      playerTeamName: 'Home FC',
+      opponentTeamName: 'Away FC',
+      cleanSheetProbability: null,
+      matchProbabilities: null,
+      marketOdds: null,
+    };
 
     expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
     expect(
@@ -293,11 +303,58 @@ describe('Sorare card DOM discovery', () => {
       aaL10: { value: 15, sampleSize: 10 },
       cleanSheetL10: { value: 0.2, sampleSize: 10 },
       goalL10: { value: 0.3, sampleSize: 10 },
-      nextGame: null,
+      nextGame: fixture,
       excludedLowCoverage: 0,
     });
     expect(card.hasAttribute(lineupSortLightweightReadyAttribute)).toBe(false);
     expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    expect(
+      card.getAttribute('data-sorare-overlay-goal-sort-probability'),
+    ).toBe('0.42');
+    expect(card.getAttribute('data-sorare-overlay-goal-sort-source')).toBe(
+      'market',
+    );
+    expect(card.getAttribute('data-sorare-overlay-aa-sort-value')).toBe('15');
+
+    // A later full response for the same fixture can temporarily miss the
+    // cached market snapshot. It must not downgrade the already known market
+    // value to history merely because the card entered the viewport again.
+    view.render({
+      slug: 'prehydrated-player',
+      displayName: 'Prehydrated Player',
+      position: 'Midfielder',
+      aaL10: { value: 16, sampleSize: 10 },
+      cleanSheetL10: { value: 0.2, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      nextGame: fixture,
+      excludedLowCoverage: 0,
+    });
+    expect(
+      card.getAttribute('data-sorare-overlay-goal-sort-probability'),
+    ).toBe('0.42');
+    expect(card.getAttribute('data-sorare-overlay-goal-sort-source')).toBe(
+      'market',
+    );
+
+    view.render({
+      slug: 'prehydrated-player',
+      displayName: 'Prehydrated Player',
+      position: 'Midfielder',
+      aaL10: { value: 17, sampleSize: 10 },
+      cleanSheetL10: { value: 0.2, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      nextGame: {
+        ...fixture,
+        date: '2026-09-07T18:00:00.000Z',
+      },
+      excludedLowCoverage: 0,
+    });
+    expect(
+      card.getAttribute('data-sorare-overlay-goal-sort-probability'),
+    ).toBe('0.1');
+    expect(card.getAttribute('data-sorare-overlay-goal-sort-source')).toBe(
+      'historical',
+    );
     view.destroy();
   });
 

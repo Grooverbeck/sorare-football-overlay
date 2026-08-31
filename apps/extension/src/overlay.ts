@@ -13,6 +13,8 @@ import { supportsCompactViewPath } from './compact-view-route.js';
 import { isScoreDetailsDialogTarget } from './dom.js';
 import {
   isLineupPoolProbeScrollEvent,
+  lineupGoalSortProbabilityAttribute,
+  lineupGoalSortSourceAttribute,
   lineupSortFullDataRevisionAttribute,
   lineupSortDataReadyAttribute,
   lineupSortHydrationGridAttribute,
@@ -1892,6 +1894,33 @@ function goalSortValue(
   );
 }
 
+function currentMarketGoalSortValue(
+  container: HTMLElement,
+): { probability: number; source: 'market' } | null {
+  if (
+    container.getAttribute(lineupGoalSortSourceAttribute) !== 'market'
+  ) {
+    return null;
+  }
+  const probability = Number(
+    container.getAttribute(lineupGoalSortProbabilityAttribute),
+  );
+  return Number.isFinite(probability) && probability >= 0 && probability <= 1
+    ? { probability, source: 'market' }
+    : null;
+}
+
+function lineupSortFixtureKey(stats: PlayerStats): string {
+  const fixture = stats.nextGame;
+  if (!fixture) return 'null';
+  return [
+    fixture.date,
+    fixture.homeTeamSlug ?? fixture.homeTeamName ?? '',
+    fixture.awayTeamSlug ?? fixture.awayTeamName ?? '',
+    fixture.playerTeamSlug ?? fixture.playerTeamName ?? '',
+  ].join('|');
+}
+
 function marketBracketNode(stats: PlayerStats): HTMLElement | null {
   const marketOdds = stats.nextGame?.marketOdds;
   const canShowMarkets = stats.position !== 'Goalkeeper';
@@ -3026,6 +3055,7 @@ export class OverlayView {
   private destroyed = false;
   private lastRawStats: PlayerStats | null = null;
   private renderedFixturePresentationKey = 'null';
+  private renderedLineupSortFixtureKey = 'null';
   private readonly openMarketBracketForCardHover = (): void => {
     if (marketBracketCompactView) {
       this.host.dataset.marketBracketCardHover = 'true';
@@ -3500,15 +3530,22 @@ export class OverlayView {
     setLineupSortDataReady(this.container, true);
   }
 
-  noData(): void {
+  noData(
+    preservedMarketGoal: { probability: number; source: 'market' } | null = null,
+  ): void {
     markLineupSortFullDataUpdated(this.container);
     this.container.removeAttribute(lineupSortLightweightReadyAttribute);
-    setLineupGoalSortValue(this.container, null);
+    if (!preservedMarketGoal) setLineupGoalSortValue(this.container, null);
     setLineupAaSortValue(this.container, null);
     setLineupCleanSheetSortValue(this.container, null);
     this.clearLineupOdds();
     this.clearPlayerMarketTooltip();
-    this.state('Keine L10-Daten', 'no-data');
+    this.state(
+      'Keine L10-Daten',
+      'no-data',
+      undefined,
+      preservedMarketGoal !== null,
+    );
     setLineupSortDataReady(this.container, true);
   }
 
@@ -3524,6 +3561,16 @@ export class OverlayView {
       teamRow,
       fixtureCandidates,
     );
+    const nextLineupSortFixtureKey = lineupSortFixtureKey(displayStats);
+    const existingMarketGoal = currentMarketGoalSortValue(this.container);
+    const preservedMarketGoal =
+      existingMarketGoal &&
+      (this.container.hasAttribute(lineupSortLightweightReadyAttribute) ||
+        (this.renderedLineupSortFixtureKey !== 'null' &&
+          this.renderedLineupSortFixtureKey === nextLineupSortFixtureKey))
+        ? existingMarketGoal
+        : null;
+    this.renderedLineupSortFixtureKey = nextLineupSortFixtureKey;
     this.renderedFixturePresentationKey = fixturePresentationKey(displayStats);
     const hadRenderedBracket = Boolean(
       this.panel.querySelector('.market-bracket'),
@@ -3533,18 +3580,20 @@ export class OverlayView {
     delete this.host.dataset.packDataPending;
     this.host.dataset.position = displayStats.position;
     if (!hasAnyDisplayData(displayStats)) {
-      this.noData();
+      this.noData(preservedMarketGoal);
       return;
     }
     markLineupSortFullDataUpdated(this.container);
     this.container.removeAttribute(lineupSortLightweightReadyAttribute);
     setLineupSortPosition(this.container, displayStats.position);
     const sortValue = goalSortValue(displayStats);
-    setLineupGoalSortValue(
-      this.container,
-      sortValue?.probability ?? null,
-      sortValue?.source,
-    );
+    if (!preservedMarketGoal || sortValue?.source === 'market') {
+      setLineupGoalSortValue(
+        this.container,
+        sortValue?.probability ?? null,
+        sortValue?.source,
+      );
+    }
     setLineupAaSortValue(this.container, displayStats.aaL10.value);
     setLineupCleanSheetSortValue(
       this.container,
