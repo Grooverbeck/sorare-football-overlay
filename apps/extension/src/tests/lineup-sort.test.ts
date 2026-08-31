@@ -330,6 +330,43 @@ describe('lineup card sorting', () => {
     expect(progress.at(-1)).toBe(256);
   });
 
+  it('continues loading pools beyond the former 32-pulse ceiling', async () => {
+    const grid = document.querySelector<HTMLElement>('[data-player-grid]');
+    if (!grid) throw new Error('Expected player grid');
+    grid.replaceChildren();
+    appendLoadingCell(grid);
+    let loadedCards = 0;
+
+    const result = await loadCompleteLineupPool(
+      {
+        isCancelled: () => false,
+        onProgress: () => undefined,
+      },
+      {
+        getGrid: () => grid,
+        revealGridEnd: async () => {
+          if (loadedCards >= 480) return true;
+          grid.querySelector('[data-loading-cell]')?.remove();
+          for (let index = 0; index < 8; index += 1) {
+            const cell = document.createElement('div');
+            cell.innerHTML = `<img alt="Very Large Pool Player ${loadedCards + 1} - limited">`;
+            grid.append(cell);
+            loadedCards += 1;
+          }
+          if (loadedCards < 480) appendLoadingCell(grid);
+          return true;
+        },
+        waitForGrowth: async (_currentGrid, previousCount) =>
+          grid.querySelectorAll('img').length > previousCount,
+        stableMissesRequired: 2,
+      },
+    );
+
+    expect(result).toBe(grid);
+    expect(loadedCards).toBe(480);
+    expect(grid.querySelector('[aria-busy="true"]')).toBeNull();
+  });
+
   it('announces the complete pool so offscreen cards can be hydrated', async () => {
     const grid = document.querySelector<HTMLElement>('[data-player-grid]');
     if (!grid) throw new Error('Expected player grid');
@@ -653,6 +690,7 @@ describe('lineup card sorting', () => {
     );
     if (!grid || !lastCell) throw new Error('Expected player grid');
     const progress: number[] = [];
+    const growthTimeouts: number[] = [];
     vi.spyOn(lastCell, 'getBoundingClientRect').mockReturnValue(
       DOMRect.fromRect({ x: 100, y: 1_200, width: 120, height: 280 }),
     );
@@ -670,7 +708,15 @@ describe('lineup card sorting', () => {
       },
       {
         getGrid: () => grid,
-        waitForGrowth: async () => false,
+        waitForGrowth: async (
+          _grid,
+          _previousCount,
+          _isCancelled,
+          timeoutMs,
+        ) => {
+          growthTimeouts.push(timeoutMs ?? 0);
+          return false;
+        },
         maxPulses: 2,
         stableMissesRequired: 2,
       },
@@ -678,6 +724,7 @@ describe('lineup card sorting', () => {
 
     expect(result).toBe(grid);
     expect(progress).toEqual([3, 3, 3]);
+    expect(growthTimeouts).toEqual([300, 300]);
     expect(grid.querySelector('[aria-busy="true"]')).toBeNull();
     expect(scrollTo).not.toHaveBeenCalled();
     expect(lastCell.getAttribute('style')).toBeNull();
@@ -1038,6 +1085,7 @@ describe('lineup card sorting', () => {
     await vi.waitFor(() => expect(historicalCell.style.order).toBe('-3'));
     expect(loadCalls).toBe(1);
     aaOption?.click();
+    expect(historicalCell.style.order).toBe('-3');
     await vi.waitFor(() => expect(marketCell.style.order).toBe('-3'));
     expect(loadCalls).toBe(1);
     expect(historicalCell.style.order).toBe('-2');
@@ -1053,9 +1101,13 @@ describe('lineup card sorting', () => {
       aaOption?.querySelector<HTMLInputElement>('input[type="radio"]')?.checked,
     ).toBe(true);
 
+    const untouchedMarketQueries = vi.spyOn(marketCell, 'querySelectorAll');
+    const untouchedMissingQueries = vi.spyOn(missingCell, 'querySelectorAll');
     setLineupAaSortValue(historical, 12.5);
     await vi.waitFor(() => expect(historicalCell.style.order).toBe('-3'));
     expect(historical.getAttribute(lineupAaSortValueAttribute)).toBe('12.5');
+    expect(untouchedMarketQueries).not.toHaveBeenCalled();
+    expect(untouchedMissingQueries).not.toHaveBeenCalled();
   });
 
   it('re-sorts when a late historical value arrives and restores Sorare order', async () => {
