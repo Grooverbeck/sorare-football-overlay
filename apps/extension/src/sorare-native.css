@@ -1,16 +1,16 @@
 [data-sorare-overlay-native-lineup="true"] {
   color: #0d1117;
   font-family:
-    Arial,
+    "Segoe UI Variable Small",
     "Segoe UI",
+    Arial,
     ui-sans-serif,
     system-ui,
     sans-serif;
   font-variant-numeric: lining-nums tabular-nums;
-  font-optical-sizing: none;
-  font-synthesis: none;
-  -webkit-font-smoothing: antialiased;
-  text-rendering: geometricPrecision;
+  font-optical-sizing: auto;
+  -webkit-font-smoothing: auto;
+  text-rendering: auto;
 }
 
 [data-sorare-overlay-native-lineup-surface="true"] {
@@ -29,7 +29,7 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.3),
     -2px 2px 5px rgba(0, 0, 0, 0.34) !important;
   color: #0d1117 !important;
-  filter: none !important;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.2));
 }
 
 [data-sorare-overlay-native-lineup-tone="very-low"] {
@@ -83,18 +83,18 @@
   padding: 0 !important;
   color: currentColor !important;
   font-family:
-    Arial,
+    "Segoe UI Variable Small",
     "Segoe UI",
+    Arial,
     ui-sans-serif,
     system-ui,
     sans-serif !important;
-  font-size: 9px !important;
-  font-weight: 700 !important;
+  font-size: 9.5px !important;
+  font-weight: 750 !important;
   font-feature-settings: "lnum" 1, "tnum" 1 !important;
   font-kerning: none !important;
-  font-synthesis: none !important;
-  letter-spacing: 0 !important;
-  line-height: 10px !important;
+  letter-spacing: .005em !important;
+  line-height: 1.05 !important;
   text-align: right !important;
   white-space: nowrap !important;
 }
@@ -138,8 +138,6 @@
   position: relative !important;
   text-overflow: ellipsis !important;
   white-space: nowrap !important;
-  -webkit-font-smoothing: antialiased !important;
-  text-rendering: geometricPrecision !important;
 }
 
 [data-sorare-overlay-lineup-sort-player-status] {
