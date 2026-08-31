@@ -115,12 +115,16 @@ const styles = `
     width: 46px;
     gap: 0;
     border-radius: 6px 0 0 6px;
-    box-shadow: -2px 2px 5px rgba(0,0,0,.34);
-    filter: drop-shadow(0 1px 1px rgba(0,0,0,.2));
+    box-shadow:
+      -2px 2px 5px rgba(0,0,0,.34),
+      -1px 1px 1px rgba(0,0,0,.2);
+    filter: none;
+    font-family: Arial, "Segoe UI", ui-sans-serif, system-ui, sans-serif;
     font-variant-numeric: lining-nums tabular-nums;
-    font-optical-sizing: auto;
-    -webkit-font-smoothing: auto;
-    text-rendering: auto;
+    font-optical-sizing: none;
+    font-synthesis: none;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: geometricPrecision;
     pointer-events: none;
   }
   :host([data-market-value-format="decimal"]) .market-bracket {
@@ -174,8 +178,16 @@ const styles = `
     align-items: center;
     justify-content: space-between;
     gap: 2px;
-    background: var(--market-tone, #64748b);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.3);
+    background-color: var(--market-tone, #64748b);
+    background-image: linear-gradient(
+      180deg,
+      rgba(255,255,255,.13) 0%,
+      rgba(255,255,255,0) 48%,
+      rgba(13,17,23,.08) 100%
+    );
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.38),
+      inset 0 -1px 0 rgba(13,17,23,.12);
     color: var(--market-ink);
     white-space: nowrap;
     pointer-events: auto;
@@ -236,6 +248,7 @@ const styles = `
     flex: 0 0 11px;
     color: var(--market-tone, #64748b);
     overflow: hidden;
+    shape-rendering: geometricPrecision;
   }
   .market-value {
     min-width: 22px;
@@ -243,19 +256,20 @@ const styles = `
     flex: 0 0 auto;
     overflow: visible;
     color: currentColor;
-    font-family: "Segoe UI Variable Small", "Segoe UI", Arial, ui-sans-serif, system-ui, sans-serif;
-    font-size: 9.5px;
-    font-weight: 750;
+    font-family: Arial, "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+    font-size: 9px;
+    font-weight: 700;
     font-feature-settings: "lnum" 1, "tnum" 1;
     font-kerning: none;
-    letter-spacing: .005em;
-    line-height: 1.05;
+    font-synthesis: none;
+    letter-spacing: 0;
+    line-height: 10px;
     padding: 0;
     background: transparent;
     text-align: right;
-    text-rendering: auto;
+    text-rendering: geometricPrecision;
     white-space: nowrap;
-    -webkit-font-smoothing: auto;
+    -webkit-font-smoothing: antialiased;
   }
   :host([data-compact-market-brackets="true"]) .market-bracket {
     width: 38px;
@@ -289,7 +303,7 @@ const styles = `
     min-width: 0;
     font-size: 8px;
     letter-spacing: 0;
-    line-height: 1;
+    line-height: 9px;
   }
   :host([data-market-bracket-compact-view="true"]) .market-bracket {
     width: 22px;
@@ -557,15 +571,16 @@ const styles = `
     align-items: center;
     justify-content: center;
     color: currentColor;
-    font-family: "Segoe UI Variable Small", "Segoe UI", Arial, ui-sans-serif, system-ui, sans-serif;
-    font-size: 6.5px;
-    font-weight: 800;
-    font-optical-sizing: auto;
+    font-family: Arial, "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+    font-size: 7px;
+    font-weight: 700;
+    font-optical-sizing: none;
     font-kerning: none;
-    letter-spacing: -.15px;
-    line-height: 1;
-    -webkit-font-smoothing: auto;
-    text-rendering: auto;
+    font-synthesis: none;
+    letter-spacing: -.2px;
+    line-height: 7px;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: geometricPrecision;
   }
   .cs-market-icon,
   :host([data-compact-market-brackets="true"]) .cs-market-icon,
@@ -607,6 +622,8 @@ const styles = `
   :host([data-market-bracket-compact-view="true"]) .no-data-market-icon {
     width: 14px;
     flex-basis: 14px;
+    font-size: 6px;
+    letter-spacing: -.25px;
   }
   :host([data-market-bracket-side="left"]) .aa-bracket-cell,
   :host([data-market-bracket-side="left"]) .aa-bracket-cell:first-child,
