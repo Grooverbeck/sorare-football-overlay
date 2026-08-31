@@ -540,7 +540,9 @@ describe('lineup card sorting', () => {
     const historical = document.querySelector<HTMLElement>(
       '[data-player="historical"]',
     );
-    const missing = document.querySelector<HTMLElement>('[data-player="missing"]');
+    const missing = document.querySelector<HTMLElement>(
+      '[data-player="missing"]',
+    );
     if (!market || !historical || !missing) {
       throw new Error('Expected lineup cards');
     }
@@ -832,7 +834,7 @@ describe('lineup card sorting', () => {
     expect(scrollTo).not.toHaveBeenCalled();
   });
 
-  it('adds the outfield sort options only while Sorare has its sort dialog open', () => {
+  it('shows clean-sheet sorting for defenders and removes it for midfielders', async () => {
     const trigger = document.querySelector<HTMLButtonElement>('[data-native-sort]');
     const dialog = document.querySelector<HTMLElement>('#sort-dialog');
     const chevron = trigger?.querySelector<SVGElement>('[data-icon]');
@@ -860,7 +862,62 @@ describe('lineup card sorting', () => {
     ).not.toBeNull();
     expect(
       document.querySelector(`[${lineupCleanSheetSortOptionAttribute}]`),
-    ).toBeNull();
+    ).not.toBeNull();
+
+    const midfielderButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(
+        '[data-lineup-positions] button',
+      ),
+    ).find((button) => button.textContent?.trim() === 'MF');
+    midfielderButton?.click();
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector(`[${lineupCleanSheetSortOptionAttribute}]`),
+      ).toBeNull(),
+    );
+  });
+
+  it('sorts the defender slot by team clean-sheet probability', async () => {
+    const market = document.querySelector<HTMLElement>('[data-player="market"]');
+    const historical = document.querySelector<HTMLElement>(
+      '[data-player="historical"]',
+    );
+    const missing = document.querySelector<HTMLElement>('[data-player="missing"]');
+    const marketCell = document.querySelector<HTMLElement>(
+      '[data-cell="market"]',
+    );
+    const historicalCell = document.querySelector<HTMLElement>(
+      '[data-cell="historical"]',
+    );
+    const missingCell = document.querySelector<HTMLElement>(
+      '[data-cell="missing"]',
+    );
+    if (
+      !market ||
+      !historical ||
+      !missing ||
+      !marketCell ||
+      !historicalCell ||
+      !missingCell
+    ) {
+      throw new Error('Expected defender sorting fixture');
+    }
+    for (const player of [market, historical, missing]) {
+      setLineupSortPosition(player, 'Defender');
+    }
+    setLineupCleanSheetSortValue(market, 0.31);
+    setLineupCleanSheetSortValue(historical, 0.48);
+
+    sorter.start();
+    document
+      .querySelector<HTMLButtonElement>(
+        `[${lineupCleanSheetSortOptionAttribute}]`,
+      )
+      ?.click();
+
+    await vi.waitFor(() => expect(historicalCell.style.order).toBe('-3'));
+    expect(marketCell.style.order).toBe('-2');
+    expect(missingCell.style.order).toBe('-1');
   });
 
   it('sorts the goalkeeper slot by clean-sheet probability', async () => {
@@ -873,9 +930,18 @@ describe('lineup card sorting', () => {
     const midfielderButton = positionButtons.find(
       (button) => button.textContent?.trim() === 'MF',
     );
+    const positionNavigation = document.querySelector<HTMLElement>(
+      '[data-lineup-positions]',
+    );
+    const defenderButton = document.createElement('button');
+    defenderButton.type = 'button';
+    defenderButton.innerHTML = '<span>VER</span>';
     const market = document.querySelector<HTMLElement>('[data-player="market"]');
     const historical = document.querySelector<HTMLElement>(
       '[data-player="historical"]',
+    );
+    const missing = document.querySelector<HTMLElement>(
+      '[data-player="missing"]',
     );
     const marketCell = document.querySelector<HTMLElement>(
       '[data-cell="market"]',
@@ -889,27 +955,27 @@ describe('lineup card sorting', () => {
     if (
       !goalkeeperButton ||
       !midfielderButton ||
+      !positionNavigation ||
       !market ||
       !historical ||
+      !missing ||
       !marketCell ||
       !historicalCell ||
       !missingCell
     ) {
       throw new Error('Expected goalkeeper sorting fixture');
     }
+    positionNavigation.insertBefore(defenderButton, midfielderButton);
     setLineupSortPosition(market, 'Goalkeeper');
     setLineupSortPosition(historical, 'Goalkeeper');
-    setLineupSortPosition(
-      document.querySelector<HTMLElement>('[data-player="missing"]')!,
-      'Goalkeeper',
-    );
+    setLineupSortPosition(missing, 'Goalkeeper');
     setLineupCleanSheetSortValue(market, 0.31);
     setLineupCleanSheetSortValue(historical, 0.48);
 
     sorter.start();
     expect(
       document.querySelector(`[${lineupCleanSheetSortOptionAttribute}]`),
-    ).toBeNull();
+    ).not.toBeNull();
     goalkeeperButton.querySelector('span')!.textContent = 'TW';
     goalkeeperButton.click();
     await vi.waitFor(() =>
@@ -934,8 +1000,27 @@ describe('lineup card sorting', () => {
         ?.textContent,
     ).toBe('Clean Sheet');
 
-    goalkeeperButton.classList.remove('highlighted');
-    midfielderButton.classList.add('highlighted');
+    defenderButton.addEventListener('click', () => {
+      goalkeeperButton.classList.remove('highlighted');
+      defenderButton.classList.add('highlighted');
+      for (const player of [market, historical, missing]) {
+        setLineupSortPosition(player, 'Defender');
+      }
+      setLineupCleanSheetSortValue(market, 0.61);
+      setLineupCleanSheetSortValue(historical, 0.18);
+    });
+    defenderButton.click();
+    await vi.waitFor(() => expect(marketCell.style.order).toBe('-3'));
+    expect(
+      document.querySelector(`[${lineupCleanSheetSortOptionAttribute}]`),
+    ).not.toBeNull();
+    expect(
+      document.querySelector<HTMLElement>('[data-native-trigger-label]')
+        ?.textContent,
+    ).toBe('Clean Sheet');
+
+    // Sorare can update the highlighted class after our captured click. The
+    // clicked MF slot must still deactivate the defensive sort at once.
     midfielderButton.click();
     await vi.waitFor(() =>
       expect(

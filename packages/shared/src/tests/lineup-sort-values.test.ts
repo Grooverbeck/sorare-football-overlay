@@ -77,11 +77,24 @@ describe('lineup sort values', () => {
     ).toMatchObject({ aa: 17.5, goal: null, cleanSheet: 0.43 });
   });
 
-  it('does not expose clean-sheet sort values for outfield players', () => {
+  it('exposes clean-sheet sort values for defenders only among outfield players', () => {
     expect(
       lineupSortValueForPlayer(
         stats({
           position: 'Defender',
+          nextGame: {
+            date: '2026-08-29T18:00:00.000Z',
+            cleanSheetProbability: 0.43,
+            matchProbabilities: null,
+            marketOdds: null,
+          },
+        }),
+      ).cleanSheet,
+    ).toBe(0.43);
+    expect(
+      lineupSortValueForPlayer(
+        stats({
+          position: 'Midfielder',
           nextGame: {
             date: '2026-08-29T18:00:00.000Z',
             cleanSheetProbability: 0.43,

@@ -78,13 +78,13 @@ const lineupSortConfigs: Record<LineupSortMode, LineupSortConfig> = {
     label: 'Clean Sheet',
     description: 'Chance im nächsten Spiel',
     title:
-      'Torhüter nach ihrer Clean-Sheet-Wahrscheinlichkeit im nächsten Spiel sortieren.',
+      'Torhüter und Verteidiger nach der Clean-Sheet-Wahrscheinlichkeit ihres Teams im nächsten Spiel sortieren.',
     loadingDescription: 'Clean-Sheet-Wahrscheinlichkeiten werden abgeglichen.',
     missingValueDescription:
-      'Torhüter ohne verfügbare Clean-Sheet-Wahrscheinlichkeit stehen am Ende.',
+      'Spieler ohne verfügbare Clean-Sheet-Wahrscheinlichkeit stehen am Ende.',
     optionAttribute: lineupCleanSheetSortOptionAttribute,
     valueAttribute: lineupCleanSheetSortProbabilityAttribute,
-    supportedPositions: ['Goalkeeper'],
+    supportedPositions: ['Goalkeeper', 'Defender'],
   },
 };
 
@@ -98,8 +98,9 @@ function lineupSortConfigSupportsPosition(
       config.supportedPositions.includes(position));
 }
 
-function availableLineupSortConfigs(): LineupSortConfig[] {
-  const position = activeLineupPosition();
+function availableLineupSortConfigs(
+  position: FootballPosition | null | undefined = activeLineupPosition(),
+): LineupSortConfig[] {
   return Object.values(lineupSortConfigs).filter((config) =>
     lineupSortConfigSupportsPosition(config, position),
   );
@@ -1013,6 +1014,7 @@ export class LineupCardSorter {
   private gridReconcileTimer: number | undefined;
   private readonly pendingReplacementCells = new Set<HTMLElement>();
   private requestedPosition: FootballPosition | null | undefined;
+  private menuPositionHint: FootballPosition | null | undefined;
   private filterSuspended = false;
   private readonly originalOrders = new Map<HTMLElement, OriginalOrder>();
 
@@ -1037,6 +1039,10 @@ export class LineupCardSorter {
     const button = event.target.closest<HTMLButtonElement>('button');
     const requestedPosition = lineupPositionFromButton(button);
     if (requestedPosition !== undefined) {
+      // Sorare updates the highlighted slot after the captured click. Keep the
+      // clicked position as an authoritative short-lived hint so an option
+      // from the previous slot cannot survive that transition.
+      this.menuPositionHint = requestedPosition;
       if (!this.activeMode) {
         window.setTimeout(() => this.scan(document), 0);
         return;
@@ -1117,6 +1123,12 @@ export class LineupCardSorter {
       return;
     }
     this.supportedPathActive = true;
+    if (
+      this.menuPositionHint !== undefined &&
+      activeLineupPosition() === this.menuPositionHint
+    ) {
+      this.menuPositionHint = undefined;
+    }
     this.syncNativeSortUi(root);
     if (!this.activeMode) return;
     if (nativeFilterIsOpen()) {
@@ -1303,7 +1315,10 @@ export class LineupCardSorter {
   }
 
   private mountMenuOptions(dialog: HTMLElement): void {
-    const configs = availableLineupSortConfigs();
+    const configs =
+      this.menuPositionHint === undefined
+        ? availableLineupSortConfigs()
+        : availableLineupSortConfigs(this.menuPositionHint);
     if (
       this.nativeMenu === dialog &&
       this.menuOptions.size === configs.length &&
@@ -1457,6 +1472,7 @@ export class LineupCardSorter {
     this.activeMode = null;
     this.filterSuspended = false;
     this.requestedPosition = undefined;
+    this.menuPositionHint = undefined;
   }
 
   private setActiveMode(mode: LineupSortMode | null): void {
@@ -1488,7 +1504,11 @@ export class LineupCardSorter {
     this.cancelPoolLoad();
     this.activeMode = mode;
     this.filterSuspended = false;
-    this.requestedPosition = mode ? activeLineupPosition() : undefined;
+    this.requestedPosition = mode
+      ? this.menuPositionHint === undefined
+        ? activeLineupPosition()
+        : this.menuPositionHint
+      : undefined;
     if (mode && reusableGrid) {
       this.completedGrid = reusableGrid;
       const cells = gridCardCells(reusableGrid);

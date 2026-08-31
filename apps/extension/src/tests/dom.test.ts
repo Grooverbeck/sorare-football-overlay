@@ -21,6 +21,7 @@ import {
   OverlayView,
 } from '../overlay.js';
 import {
+  lineupCleanSheetSortProbabilityAttribute,
   lineupGoalSortOptionAttribute,
   lineupPoolProgressEvent,
   lineupPoolReadyEvent,
@@ -8038,6 +8039,39 @@ describe('Sorare card DOM discovery', () => {
       includeHistoricalAssists: true,
       supportsPartialFormHistory: true,
     });
+    view.destroy();
+  });
+
+  it('publishes a defender team clean-sheet probability for lineup sorting', () => {
+    document.body.innerHTML = '<article data-testid="football-card"></article>';
+    const card = document.querySelector<HTMLElement>('article');
+    if (!card) throw new Error('Expected football card');
+    const view = new OverlayView(
+      card,
+      { slug: 'clean-sheet-defender' },
+      'Defender',
+    );
+    const defenderStats: PlayerStats = {
+      slug: 'clean-sheet-defender',
+      displayName: 'Clean Sheet Defender',
+      position: 'Defender',
+      aaL10: { value: 12, sampleSize: 10 },
+      cleanSheetL10: { value: 0.4, sampleSize: 10 },
+      goalL10: { value: 0.1, sampleSize: 10 },
+      nextGame: {
+        date: '2026-08-31T18:00:00.000Z',
+        cleanSheetProbability: 0.43,
+        matchProbabilities: null,
+        marketOdds: null,
+      },
+      excludedLowCoverage: 0,
+    };
+
+    view.render(defenderStats);
+
+    expect(
+      card.getAttribute(lineupCleanSheetSortProbabilityAttribute),
+    ).toBe('0.43');
     view.destroy();
   });
 

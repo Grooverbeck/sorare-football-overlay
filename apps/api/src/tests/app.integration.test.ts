@@ -255,6 +255,28 @@ describe('POST /api/lineup-sort-values', () => {
     expect(body.data[0]).not.toHaveProperty('historicalGoals');
   });
 
+  it('returns the team clean-sheet probability for defender sorting', async () => {
+    const response = await testApp().request('/api/lineup-sort-values', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        slugs: ['virgil-van-dijk'],
+        positions: { 'virgil-van-dijk': 'Defender' },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      data: [
+        {
+          slug: 'virgil-van-dijk',
+          position: 'Defender',
+          cleanSheet: expect.any(Number),
+        },
+      ],
+    });
+  });
+
   it('accepts a full fifty-player compact batch', async () => {
     const slugs = Array.from(
       { length: 50 },

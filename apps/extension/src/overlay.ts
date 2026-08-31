@@ -3548,7 +3548,8 @@ export class OverlayView {
     setLineupAaSortValue(this.container, displayStats.aaL10.value);
     setLineupCleanSheetSortValue(
       this.container,
-      displayStats.position === 'Goalkeeper'
+      displayStats.position === 'Goalkeeper' ||
+        displayStats.position === 'Defender'
         ? (displayStats.nextGame?.cleanSheetProbability ?? null)
         : null,
     );
