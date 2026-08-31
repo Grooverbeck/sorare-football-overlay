@@ -527,7 +527,12 @@ describe('lineup card sorting', () => {
     expect(label.title).toContain('74 Spieler bisher geladen.');
 
     finishLoad?.(null);
-    await vi.waitFor(() => expect(label.textContent).toBe('AA · Neu laden'));
+    await vi.waitFor(() => expect(label.textContent).toBe('AA · Wiederholen'));
+    expect(
+      document.querySelector(
+        '[data-sorare-overlay-lineup-sort-player-status-label]',
+      )?.textContent,
+    ).toBe('74 Spieler · unvollständig');
   });
 
   it('coalesces a burst of card value changes into one pool refresh', async () => {
@@ -1294,7 +1299,7 @@ describe('lineup card sorting', () => {
       expect(
         document.querySelector<HTMLElement>('[data-native-trigger-label]')
           ?.textContent,
-      ).toBe('AA · Neu laden');
+      ).toBe('AA · Wiederholen');
     });
     expect(marketCell.style.order).toBe('');
   });
@@ -1364,7 +1369,7 @@ describe('lineup card sorting', () => {
       expect(
         document.querySelector<HTMLElement>('[data-native-trigger-label]')
           ?.textContent,
-      ).toBe('AA · Neu laden');
+      ).toBe('AA · Wiederholen');
     });
     expect(marketCell.style.order).toBe('');
   });
@@ -1388,7 +1393,7 @@ describe('lineup card sorting', () => {
       expect(
         document.querySelector<HTMLElement>('[data-native-trigger-label]')
           ?.textContent,
-      ).toBe('AA · Neu laden');
+      ).toBe('AA · Wiederholen');
     });
 
     sorter.scan(document);

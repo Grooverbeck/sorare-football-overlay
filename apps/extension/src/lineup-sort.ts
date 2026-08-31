@@ -1216,21 +1216,25 @@ export class LineupCardSorter {
       label.toggleAttribute(nativeTriggerLoadingAttribute, loading);
       this.syncNativeTriggerPlayerStatus(
         trigger,
-        displayedPlayerCount > 0
-          ? `${displayedPlayerCount} Spieler ${loading || this.poolLoadFailed ? 'geladen' : 'sortiert'}`
-          : null,
+        this.poolLoadFailed
+          ? displayedPlayerCount > 0
+            ? `${displayedPlayerCount} Spieler · unvollständig`
+            : 'Spielerliste unvollständig'
+          : displayedPlayerCount > 0
+            ? `${displayedPlayerCount} Spieler ${loading ? 'geladen' : 'sortiert'}`
+            : null,
       );
       const nextLabel = loading
         ? `${baseLabel} lädt …`
         : this.poolLoadFailed
-          ? `${baseLabel} · Neu laden`
+          ? `${baseLabel} · Wiederholen`
           : baseLabel;
       const nextTitle = this.poolLoading
         ? `${loadingPlayerDescription}Die vollständige Spielerliste wird geladen. Danach wird automatisch sortiert.`
         : this.poolHydrationUiPending
           ? `${totalPlayerDescription}${config.loadingDescription} Die Sortierung aktualisiert sich automatisch.`
           : this.poolLoadFailed
-            ? `${loadingPlayerDescription}${baseLabel} konnte nicht vollständig geladen werden. Öffne das Menü und wähle „${baseLabel}“ erneut.`
+            ? `${loadingPlayerDescription}Die Spielerliste konnte nicht vollständig geladen werden. Öffne das Sortiermenü und wähle „${baseLabel}“ erneut.`
             : this.poolCardCount > 0 &&
                 this.poolValueCount < this.poolCardCount
               ? `${totalPlayerDescription}Nach ${baseLabel} sortiert. ${config.missingValueDescription}`
