@@ -990,6 +990,9 @@ describe('lineup card sorting', () => {
     option?.click();
 
     await vi.waitFor(() => expect(historicalCell.style.order).toBe('-3'));
+    expect(
+      option?.querySelector<HTMLInputElement>('input[type="radio"]')?.checked,
+    ).toBe(true);
     expect(marketCell.style.order).toBe('-2');
     expect(missingCell.style.order).toBe('-1');
     expect(

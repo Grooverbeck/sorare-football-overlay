@@ -423,6 +423,7 @@ function nativeSortOptions(dialog: HTMLElement): HTMLButtonElement[] {
     (button) =>
       !button.hasAttribute(lineupGoalSortOptionAttribute) &&
       !button.hasAttribute(lineupAaSortOptionAttribute) &&
+      !button.hasAttribute(lineupCleanSheetSortOptionAttribute) &&
       Boolean(button.querySelector('input[type="radio"]')),
   );
 }
