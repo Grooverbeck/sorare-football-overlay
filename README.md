@@ -5,6 +5,10 @@ Produktionsnahes TypeScript-Monorepo für eine Chrome-/Edge-Manifest-V3-Extensio
 > Du möchtest die fertige Erweiterung nur benutzen?
 > Zur [Installations- und Update-Anleitung](docs/INSTALLATION.md) – Node.js
 > oder ein eigener Build sind dafür nicht erforderlich.
+>
+> Entwicklung und Qualität:
+> Die öffentliche [Roadmap](docs/ROADMAP.md) zeigt die nächsten
+> Entwicklungsbereiche.
 
 ## Architektur
 
