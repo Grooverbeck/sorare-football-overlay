@@ -132,10 +132,14 @@ function mergeMatchProbabilities(
   };
 }
 
-function needsMatchProbabilitiesFallback(stats: PlayerStats): boolean {
+function needsFixtureTeamOddsFallback(stats: PlayerStats): boolean {
   if (!stats.nextGame) return false;
   const probabilities = stats.nextGame.matchProbabilities;
+  const needsCleanSheet =
+    (stats.position === 'Goalkeeper' || stats.position === 'Defender') &&
+    stats.nextGame.cleanSheetProbability === null;
   return (
+    needsCleanSheet ||
     (probabilities === null ||
       probabilities.win === null ||
       probabilities.draw === null ||
@@ -986,7 +990,7 @@ export class StatsService {
       if (
         canScheduleOddsRefresh &&
         this.fixtureMatchOddsProvider.supports(statsWithFallback) &&
-        needsMatchProbabilitiesFallback(statsWithFallback)
+        needsFixtureTeamOddsFallback(statsWithFallback)
       ) {
         pending.add('fixture');
         if (!playersWithFixtureRefresh.has(key)) {
@@ -1493,7 +1497,7 @@ export class StatsService {
     const matchOddsEligible = refreshedPlayers.filter(
       (stats) =>
         this.fixtureMatchOddsProvider.supports(stats) &&
-        needsMatchProbabilitiesFallback(stats),
+        needsFixtureTeamOddsFallback(stats),
     );
     await Promise.allSettled([
       oddsEligible.length > 0

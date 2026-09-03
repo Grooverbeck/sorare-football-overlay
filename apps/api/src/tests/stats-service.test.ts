@@ -2530,4 +2530,79 @@ describe('StatsService cache writes', () => {
     });
     expect(result.data[0]?.nextGame?.cleanSheetProbability).toBe(0.41);
   });
+
+  it('keeps a defender refresh pending when only the CS probability is missing', async () => {
+    const mock = new MockDataSource();
+    const source: PlayerStatsDataSource = {
+      source: 'sorare',
+      resolvePlayerNames: mock.resolvePlayerNames.bind(mock),
+      fetchNextGames: mock.fetchNextGames.bind(mock),
+      fetchPlayers: async (requests) =>
+        (await mock.fetchPlayers(requests)).map((player) => ({
+          ...player,
+          nextGame: player.nextGame
+            ? {
+                ...player.nextGame,
+                cleanSheetProbability: null,
+                matchProbabilities: {
+                  win: 0.48,
+                  draw: 0.27,
+                  loss: 0.25,
+                },
+              }
+            : null,
+        })),
+    };
+    const load = vi.fn<FixtureMatchOddsProvider['load']>(
+      async (players, options) =>
+        new Map(
+          players.map((player) => [
+            playerMarketOddsKey(player),
+            options?.cacheOnly
+              ? null
+              : {
+                  win: 0.48,
+                  draw: 0.27,
+                  loss: 0.25,
+                  cleanSheetProbability: 0.39,
+                },
+          ]),
+        ),
+    );
+    const fixtureProvider: FixtureMatchOddsProvider = {
+      supports: () => true,
+      load,
+    };
+    const backgroundTasks: Promise<void>[] = [];
+    const service = new StatsService(
+      source,
+      new HistoricalGoalscorerProvider(),
+      new TtlCache<PlayerStats>(60_000),
+      true,
+      new UnavailablePlayerMarketOddsProvider(),
+      (task) => backgroundTasks.push(task),
+      3_000,
+      fixtureProvider,
+    );
+
+    const result = await service.getPlayerStats(
+      PlayerStatsRequestSchema.parse({
+        slugs: ['virgil-van-dijk'],
+        positions: { 'virgil-van-dijk': 'Defender' },
+      }),
+    );
+
+    expect(result.data[0]?.nextGame).toMatchObject({
+      cleanSheetProbability: null,
+      matchProbabilities: { win: 0.48, draw: 0.27, loss: 0.25 },
+    });
+    expect(result.data[0]?.pendingRefreshes).toEqual(['fixture']);
+    expect(load).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({ cacheOnly: true }),
+    );
+
+    await Promise.all(backgroundTasks);
+    expect(load).toHaveBeenCalledWith(expect.any(Array));
+  });
 });
