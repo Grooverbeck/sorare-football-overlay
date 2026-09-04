@@ -58,6 +58,19 @@ interface SortValueSnapshot {
   cleanSheet: number | null;
 }
 
+interface PositionlessSnapshotAlias {
+  snapshot: SortValueSnapshot;
+  ambiguous: boolean;
+}
+
+function positionlessTargetKey(target: CardTarget): string {
+  return playerTargetKey({
+    ...(target.slug ? { slug: target.slug } : {}),
+    ...(target.playerName ? { playerName: target.playerName } : {}),
+    ...(target.teamSlug ? { teamSlug: target.teamSlug } : {}),
+  });
+}
+
 function finiteAttribute(
   container: HTMLElement,
   attribute: string,
@@ -166,6 +179,10 @@ export class LineupSortHydrator {
   private grid: HTMLElement | null = null;
   private readonly states = new Map<HTMLElement, HydrationState>();
   private readonly snapshots = new Map<string, SortValueSnapshot>();
+  private readonly positionlessSnapshots = new Map<
+    string,
+    PositionlessSnapshotAlias
+  >();
   private readonly queue: HydrationState[] = [];
   private readonly retryTimers = new Map<HTMLElement, number>();
   private generation = 0;
@@ -202,7 +219,41 @@ export class LineupSortHydrator {
 
   private rememberSnapshot(target: CardTarget, key: string): void {
     const snapshot = snapshotForTarget(target);
-    if (snapshot) this.snapshots.set(key, snapshot);
+    if (!snapshot) return;
+    this.snapshots.set(key, snapshot);
+    if (!snapshot.position) return;
+
+    const aliasKey = positionlessTargetKey(target);
+    const existing = this.positionlessSnapshots.get(aliasKey);
+    if (!existing) {
+      this.positionlessSnapshots.set(aliasKey, {
+        snapshot,
+        ambiguous: false,
+      });
+      return;
+    }
+    if (existing.ambiguous) return;
+    if (existing.snapshot.position !== snapshot.position) {
+      this.positionlessSnapshots.set(aliasKey, {
+        snapshot: existing.snapshot,
+        ambiguous: true,
+      });
+      return;
+    }
+    this.positionlessSnapshots.set(aliasKey, {
+      snapshot,
+      ambiguous: false,
+    });
+  }
+
+  private snapshotForTarget(
+    target: CardTarget,
+    key: string,
+  ): SortValueSnapshot | undefined {
+    const exact = this.snapshots.get(key);
+    if (exact || target.position !== undefined) return exact;
+    const alias = this.positionlessSnapshots.get(positionlessTargetKey(target));
+    return alias?.ambiguous ? undefined : alias?.snapshot;
   }
 
   hydrate(
@@ -247,7 +298,7 @@ export class LineupSortHydrator {
         continue;
       }
 
-      const snapshot = this.snapshots.get(key);
+      const snapshot = this.snapshotForTarget(target, key);
       if (snapshot) {
         this.applySnapshot(target, key, snapshot);
         this.states.set(target.container, {
@@ -350,6 +401,7 @@ export class LineupSortHydrator {
     }
     this.states.clear();
     this.snapshots.clear();
+    this.positionlessSnapshots.clear();
     this.queue.length = 0;
     this.grid = null;
     this.phaseCompleted = true;
@@ -371,6 +423,7 @@ export class LineupSortHydrator {
     }
     this.states.clear();
     this.snapshots.clear();
+    this.positionlessSnapshots.clear();
     this.queue.length = 0;
     this.grid = grid;
     this.phaseCompleted = true;

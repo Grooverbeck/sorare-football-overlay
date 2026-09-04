@@ -217,6 +217,122 @@ describe('LineupSortHydrator', () => {
     hydrator.stop();
   });
 
+  it('reuses a unique resolved-position snapshot when a remount temporarily loses its position', async () => {
+    const grid = renderGrid(1);
+    const fetcher = vi.fn(async (request: LineupSortValuesRequest) =>
+      responseFor(request),
+    );
+    const hydrator = new LineupSortHydrator(fetcher);
+
+    await hydrator.hydrate(grid);
+    const originalCell = grid.firstElementChild;
+    if (!(originalCell instanceof HTMLElement)) {
+      throw new Error('Expected original card cell');
+    }
+
+    const replacementCell = document.createElement('div');
+    replacementCell.innerHTML = `
+      <article data-testid="card-1">
+        <a href="/football/players/sort-player-1">
+          <img alt="Sort Player 1 - limited">
+        </a>
+      </article>
+    `;
+    originalCell.replaceWith(replacementCell);
+    const replacementTarget = findCardTargets(grid)[0];
+    if (!replacementTarget) throw new Error('Expected replacement card target');
+    expect(replacementTarget.position).toBeUndefined();
+
+    await hydrator.hydrate(grid, [replacementTarget]);
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(
+      replacementTarget.container.getAttribute(lineupSortDataReadyAttribute),
+    ).toBe('true');
+    expect(
+      replacementTarget.container.getAttribute(
+        'data-sorare-overlay-sort-position',
+      ),
+    ).toBe('Midfielder');
+    expect(
+      replacementTarget.container.getAttribute(
+        lineupSortLightweightReadyAttribute,
+      ),
+    ).toBe('slug:sort-player-1:default');
+    hydrator.stop();
+  });
+
+  it('does not reuse a positionless remount alias across conflicting card positions', async () => {
+    const grid = renderGrid(1);
+    const fetcher = vi.fn(
+      async (
+        request: LineupSortValuesRequest,
+      ): Promise<LineupSortValuesSuccessResponse> => {
+        const slug = request.slugs?.[0] ?? '';
+        const position = request.positions?.[slug] ?? 'Midfielder';
+        return {
+          data: [
+            {
+              slug,
+              displayName: slug,
+              position,
+              goal: {
+                probability: position === 'Forward' ? 0.4 : 0.2,
+                source: 'historical',
+              },
+              aa: position === 'Forward' ? 20 : 10,
+              cleanSheet: null,
+            },
+          ],
+          meta: {
+            requested: 1,
+            returned: 1,
+            cacheHits: 1,
+            source: 'sorare',
+            durationMs: 2,
+          },
+        };
+      },
+    );
+    const hydrator = new LineupSortHydrator(fetcher);
+
+    await hydrator.hydrate(grid);
+    const currentCell = grid.firstElementChild;
+    if (!(currentCell instanceof HTMLElement)) {
+      throw new Error('Expected initial card cell');
+    }
+    const forwardCell = document.createElement('div');
+    forwardCell.innerHTML = `
+      <article data-testid="card-1" data-position="Forward">
+        <a href="/football/players/sort-player-1">
+          <img alt="Sort Player 1 - limited">
+        </a>
+      </article>
+    `;
+    currentCell.replaceWith(forwardCell);
+    const forwardTarget = findCardTargets(grid)[0];
+    if (!forwardTarget) throw new Error('Expected forward replacement target');
+    await hydrator.hydrate(grid, [forwardTarget]);
+
+    const positionlessCell = document.createElement('div');
+    positionlessCell.innerHTML = `
+      <article data-testid="card-1">
+        <a href="/football/players/sort-player-1">
+          <img alt="Sort Player 1 - limited">
+        </a>
+      </article>
+    `;
+    forwardCell.replaceWith(positionlessCell);
+    const positionlessTarget = findCardTargets(grid)[0];
+    if (!positionlessTarget) {
+      throw new Error('Expected positionless replacement target');
+    }
+    await hydrator.hydrate(grid, [positionlessTarget]);
+
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    hydrator.stop();
+  });
+
   it('passes the selected historical window and writes compact values', async () => {
     const grid = renderGrid(1);
     const fetcher = vi.fn(async (request: LineupSortValuesRequest) =>
