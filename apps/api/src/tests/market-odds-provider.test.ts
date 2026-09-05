@@ -2005,6 +2005,37 @@ describe('TheOddsApiPlayerMarketOddsProvider', () => {
     );
   });
 
+  it('matches Rodri only through Rodrigo Hernandez Cascante\'s explicit slug alias', () => {
+    const rodri = player({
+      slug: 'rodrigo-hernandez-cascante',
+      displayName: 'Rodrigo',
+    });
+    const otherRodrigo = player({
+      slug: 'rodrigo-ribeiro',
+      displayName: 'Rodrigo',
+    });
+    const snapshot = {
+      status: 'available' as const,
+      market: 'player_goal_scorer_anytime' as const,
+      eventId: 'valencia-barcelona',
+      capturedAt: new Date(now).toISOString(),
+      players: {
+        rodri: { probability: 0.2, bookmakerCount: 1 },
+      },
+    };
+
+    expect(playerNameMatchScore(rodri.displayName, 'Rodri')).toBe(0);
+    expect(playerIdentityMatchScore(rodri, 'Rodri')).toBe(100);
+    expect(playerIdentityMatchScore(otherRodrigo, 'Rodri')).toBe(0);
+    expect(
+      resolvePlayerProbability(snapshot, rodri, [rodri, otherRodrigo]),
+    ).toMatchObject({
+      status: 'available',
+      matchedBy: 'player_alias',
+      probability: { probability: 0.2 },
+    });
+  });
+
   it('fails closed when the same slug alias fits two fixture players', () => {
     const first = player({
       slug: 'jose-pepe-martinez',

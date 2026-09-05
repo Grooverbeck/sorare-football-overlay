@@ -1637,6 +1637,7 @@ interface PreparedRosterPlayer {
   player: MarketSupplementPlayer;
   displayName: PreparedPlayerName;
   slug: PreparedPlayerName;
+  aliases: readonly PreparedPlayerName[];
   diagnosticTokens: ReadonlySet<string>;
 }
 
@@ -1645,6 +1646,14 @@ interface PreparedMarketPlayer {
   probability: MarketProbability;
   identity: PreparedPlayerName;
 }
+
+const providerPlayerAliasesBySorareSlug: Readonly<
+  Record<string, readonly string[]>
+> = {
+  // Sorare exposes the full display name "Rodrigo", while bookmakers list
+  // Rodrigo Hernandez Cascante by his unique football name "Rodri".
+  'rodrigo-hernandez-cascante': ['rodri'],
+};
 
 function preparePlayerName(value: string): PreparedPlayerName {
   const normalized = normalizePlayerName(value);
@@ -1671,13 +1680,18 @@ function prepareRosterPlayer(
 ): PreparedRosterPlayer {
   const displayName = preparePlayerName(player.displayName);
   const slug = preparePlayerName(player.slug.replace(/-+/g, ' '));
+  const aliases = (providerPlayerAliasesBySorareSlug[player.slug] ?? []).map(
+    preparePlayerName,
+  );
   return {
     player,
     displayName,
     slug,
+    aliases,
     diagnosticTokens: new Set([
       ...displayName.significantTokens,
       ...slug.significantTokens,
+      ...aliases.flatMap(({ significantTokens }) => significantTokens),
     ]),
   } satisfies PreparedRosterPlayer;
 }
@@ -1750,6 +1764,15 @@ function slugIdentityMatchScorePrepared(
     : 0;
 }
 
+function slugAliasMatchScorePrepared(
+  player: PreparedRosterPlayer,
+  odds: PreparedPlayerName,
+): number {
+  return player.aliases.some((alias) => alias.normalized === odds.normalized)
+    ? 100
+    : 0;
+}
+
 function playerIdentityMatchScorePrepared(
   player: PreparedRosterPlayer,
   odds: PreparedPlayerName,
@@ -1757,6 +1780,7 @@ function playerIdentityMatchScorePrepared(
   return Math.max(
     playerNameMatchScorePrepared(player.displayName, odds),
     slugIdentityMatchScorePrepared(player, odds),
+    slugAliasMatchScorePrepared(player, odds),
   );
 }
 
@@ -1795,7 +1819,7 @@ export type PlayerProbabilityResolution =
       probability: MarketProbability;
       matchedMarketName: string;
       score: number;
-      matchedBy: 'display_name' | 'sorare_slug';
+      matchedBy: 'display_name' | 'sorare_slug' | 'player_alias';
     };
 
 function diagnosticCandidateScorePrepared(
@@ -1938,12 +1962,21 @@ function calculatePlayerProbabilityResolution(
     preparedPlayer,
     selected.identity,
   );
+  const aliasScore = slugAliasMatchScorePrepared(
+    preparedPlayer,
+    selected.identity,
+  );
   return {
     status: 'available',
     probability: selected.probability,
     matchedMarketName: selected.marketName,
     score: selected.score,
-    matchedBy: slugScore > displayScore ? 'sorare_slug' : 'display_name',
+    matchedBy:
+      aliasScore > Math.max(displayScore, slugScore)
+        ? 'player_alias'
+        : slugScore > displayScore
+          ? 'sorare_slug'
+          : 'display_name',
   };
 }
 
