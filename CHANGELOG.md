@@ -3,6 +3,20 @@
 Alle wichtigen Änderungen am Sorare Football Stats Overlay werden in dieser
 Datei dokumentiert.
 
+## 0.4.11 – 8. September 2026
+
+### Verbesserungen
+
+- Ältere Spielerwerte werden bei erneuter Nutzung aktualisiert; fehlende Clean-Sheet-Chancen werden zuverlässiger nachgeladen.
+- Bereits verfügbare Werte bleiben bei langsam ladenden Mitspielern erhalten. Gleichzeitige Abrufe werden besser gebündelt.
+
+### Fehlerbehebungen
+
+- Die Torquoten-Sortierung schließt den Ladevorgang auch nach einem Neuaufbau der Kartenliste durch Sorare ab.
+- Abweichende Spielernamen bei Quotenanbietern, zum Beispiel „Rodri“, werden zuverlässiger zugeordnet.
+
+Die API begrenzt übergroße Anfragen; die Worker-Testumgebung wurde aktualisiert.
+
 ## 0.4.6 – 27. August 2026
 
 ### Torquote und AA jetzt auch im Squad Lineup Builder
