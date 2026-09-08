@@ -68,6 +68,7 @@ const discoveryAttributes = new Set([
   'href',
   'alt',
   'src',
+  'poster',
   'aria-label',
   'aria-expanded',
   'data-position',
@@ -2465,6 +2466,12 @@ export class SorareCardScanner {
       isElementNode(node)
         ? node
         : node.parentElement;
+    // Animated Set cards can gain their poster several wrappers below the
+    // identity link, outside the generic four-parent discovery window.
+    if (context?.matches('video, video source')) {
+      const anchor = context.closest<HTMLAnchorElement>('a[href]');
+      if (anchor) this.pendingScanRoots.add(anchor);
+    }
     const hydrationGrid = context?.closest<HTMLElement>(
       `[${lineupSortHydrationGridAttribute}]`,
     );

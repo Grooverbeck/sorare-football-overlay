@@ -16,6 +16,20 @@ export interface FindCardTargetsOptions {
 const playerPath = /\/(?:football\/)?players\/([a-z0-9]+(?:-[a-z0-9]+)*)/i;
 const cardImageAlt = /^(.+?)\s+-\s+(?:common|limited|rare|super rare|unique)$/i;
 const cardPicturePath = /\/cardsamplepicture\/([a-z0-9-]+)\//i;
+const linkedCardSlug = /^([a-z0-9]+(?:-[a-z0-9]+)*)-(?:19|20)\d{2}-(?:common|limited|rare|super-rare|unique)-(?:\d+|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i;
+
+export function isSorareCardVideo(video: HTMLVideoElement): boolean {
+  try {
+    const poster = new URL(video.poster, location.href);
+    return poster.hostname === 'assets.sorare.com' && cardPicturePath.test(poster.pathname);
+  } catch { return false; }
+}
+
+function linkedPlayerSlug(url: URL): string | null {
+  if (!url.pathname.includes('/football/')) return null;
+  const cards = url.searchParams.getAll('card');
+  return cards.length === 1 ? cards[0]!.match(linkedCardSlug)?.[1]?.toLowerCase() ?? null : null;
+}
 const minimumOverlayCardWidth = 72;
 const minimumOverlayCardHeight = 110;
 const knownPlayerNamesByPictureId = new Map<string, string>();
@@ -55,7 +69,7 @@ export function extractPlayerSlug(anchor: HTMLAnchorElement): string | null {
   try {
     const url = new URL(anchor.href, location.href);
     if (!['sorare.com', 'www.sorare.com'].includes(url.hostname)) return null;
-    return url.pathname.match(playerPath)?.[1]?.toLowerCase() ?? null;
+    return url.pathname.match(playerPath)?.[1]?.toLowerCase() ?? linkedPlayerSlug(url);
   } catch {
     return null;
   }
@@ -199,6 +213,16 @@ function inferLineupSlotPosition(
 }
 
 export function findCardContainer(anchor: HTMLAnchorElement): HTMLElement | null {
+  // Set editions use a card query parameter and may render only a video.
+  // Use the same semantic container as image discovery to avoid duplicates.
+  if (linkedPlayerSlug(new URL(anchor.href, location.href))) {
+    const media = Array.from(anchor.querySelectorAll<HTMLImageElement | HTMLVideoElement>('img[alt], video[poster]'))
+      .filter(node => node instanceof HTMLVideoElement ? isSorareCardVideo(node) : extractPlayerName(node) !== null);
+    if (media.length === 1) {
+      return media[0]!.closest<HTMLElement>('[data-player-slug], [data-card-slug], [data-testid*="card" i], button, [role="button"], article, li') ?? anchor;
+    }
+    return null;
+  }
   const explicitCard = anchor.closest<HTMLElement>(
     '[data-player-slug], [data-card-slug], [data-testid*="card" i]',
   );
@@ -206,7 +230,8 @@ export function findCardContainer(anchor: HTMLAnchorElement): HTMLElement | null
 
   const hasCardImage = (container: ParentNode): boolean =>
     [...container.querySelectorAll<HTMLImageElement>('img[alt]')]
-      .some((image) => extractPlayerName(image) !== null);
+      .some((image) => extractPlayerName(image) !== null) ||
+    [...container.querySelectorAll<HTMLVideoElement>('video[poster]')].some(isSorareCardVideo);
 
   if (hasCardImage(anchor)) return anchor;
 
@@ -366,9 +391,9 @@ function inferHighlightedPlayerTeamSlug(
 
 export function isMiniatureCardTarget(container: HTMLElement): boolean {
   const renderedCardRects = Array.from(
-    container.querySelectorAll<HTMLImageElement>('img[alt]'),
+    container.querySelectorAll<HTMLImageElement | HTMLVideoElement>('img[alt], video[poster]'),
   )
-    .filter((image) => extractPlayerName(image) !== null)
+    .filter((image) => image instanceof HTMLVideoElement ? isSorareCardVideo(image) : extractPlayerName(image) !== null)
     .map((image) => image.getBoundingClientRect())
     .filter((rect) => rect.width > 0 && rect.height > 0);
 
@@ -440,12 +465,14 @@ export function findCardTargets(
     ) {
       continue;
     }
-    const position =
-      inferCardPosition(container) ??
-      (hasActiveLineupPosition
-        ? options.activeLineupPosition ?? undefined
-        : inferNearbyPlayerPosition(container, slug));
-    targets.push({ slug, container, ...(position ? { position } : {}) });
+    const isLinkedCard = linkedPlayerSlug(new URL(anchor.href, location.href)) !== null;
+    const slotPosition = isLinkedCard ? inferLineupSlotPosition(container) : undefined;
+    const position = inferCardPosition(container) ??
+      (slotPosition === null ? undefined : slotPosition ??
+        (hasActiveLineupPosition ? options.activeLineupPosition ?? undefined :
+          isLinkedCard ? inferActivePositionSelection(container) : inferNearbyPlayerPosition(container, slug)));
+    const teamSlug = isLinkedCard ? inferHighlightedPlayerTeamSlug(container, lineupContextBoundary(container)) : undefined;
+    targets.push({ slug, container, ...(position ? { position } : {}), ...(teamSlug ? {teamSlug} : {}) });
     targetContainers.add(container);
   }
 

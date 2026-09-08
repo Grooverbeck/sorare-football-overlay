@@ -82,6 +82,50 @@ describe('Sorare card DOM discovery', () => {
     expect(extractPlayerSlug(invalid)).toBeNull();
   });
 
+  it('recognizes animated Set editions by their canonical card query without image alt text', () => {
+    const slugs = ['dayotchanculle-upamecano','gonzalo-garcia-torres','harold-voyer','nathan-de-cat','ethan-mbappe-lottin'];
+    document.body.innerHTML = slugs.map(slug => `<button><a href="/de/football/series/my-cards/cards/common/glitch?card=${slug}-2026-common-ee1aab80-2072-42d4-bb38-5d66082ea6c5"><div><video poster="https://assets.sorare.com/image-resize/cardsamplepicture/92b655c1-7b93-4dc6-8093-2a544042b0fc/picture/card.png"><source src="https://assets.sorare.com/cardsamplepicture/92b655c1-7b93-4dc6-8093-2a544042b0fc/video/card.webm"></video></div></a></button>`).join('');
+    const targets = findCardTargets(document);
+    expect(targets.map(target => target.slug)).toEqual(slugs);
+    expect(targets.every(target => target.container.tagName === 'BUTTON')).toBe(true);
+    expect(targets.every(target => target.position === undefined)).toBe(true);
+  });
+
+  it('does not double-mount an image card that also has a Set card link', () => {
+    document.body.innerHTML = `<button><a href="/de/football/series/my-cards?card=fabio-chiarodia-2026-common-ee1aab80-2072-42d4-bb38-5d66082ea6c5"><img alt="Fabio Chiarodia - common"></a></button>`;
+    expect(findCardTargets(document)).toMatchObject([{slug:'fabio-chiarodia'}]);
+    expect(findCardTargets(document)).toHaveLength(1);
+  });
+
+  it('rejects foreign, ambiguous and non-card video links', () => {
+    const card = 'player-one-2026-common-ee1aab80-2072-42d4-bb38-5d66082ea6c5';
+    document.body.innerHTML = `
+      <a href="https://example.com/football/series?card=${card}"><video poster="https://assets.sorare.com/cardsamplepicture/id/picture/a.png"></video></a>
+      <a href="/football/series?card=${card}&card=${card}"><video poster="https://assets.sorare.com/cardsamplepicture/id/picture/a.png"></video></a>
+      <a href="/football/series?card=${card}"><video poster="https://assets.sorare.com/marketing/banner.png"></video></a>
+      <a href="/football/series?card=player-one">No card</a>`;
+    expect(findCardTargets(document)).toEqual([]);
+  });
+
+  it('skips miniature animated cards', () => {
+    document.body.innerHTML = `<a href="/football/series?card=player-one-2026-common-ee1aab80-2072-42d4-bb38-5d66082ea6c5"><video poster="https://assets.sorare.com/cardsamplepicture/id/picture/a.png"></video></a>`;
+    vi.spyOn(document.querySelector('video')!, 'getBoundingClientRect').mockReturnValue(new DOMRect(0,0,36,58));
+    expect(findCardTargets(document)).toEqual([]);
+  });
+
+  it('anchors brackets to the animated card rather than its larger wrapper', () => {
+    document.body.innerHTML = `<button><a href="/football/series?card=player-one-2026-common-ee1aab80-2072-42d4-bb38-5d66082ea6c5"><video poster="https://assets.sorare.com/cardsamplepicture/id/picture/a.png"></video></a></button>`;
+    const card = document.querySelector('button')!;
+    const video = document.querySelector('video')!;
+    vi.spyOn(card,'getBoundingClientRect').mockReturnValue(new DOMRect(100,100,220,380));
+    vi.spyOn(video,'getBoundingClientRect').mockReturnValue(new DOMRect(110,105,200,324));
+    const view = new OverlayView(card,{slug:'player-one'},'Defender');
+    expect(view.host.dataset.horizontalAnchor).toBe('card-image');
+    expect(view.host.style.left).toBe('110px');
+    expect(view.host.style.width).toBe('200px');
+    view.destroy();
+  });
+
   it('uses stable data attributes and identifies the concrete card position', () => {
     document.body.innerHTML = `
       <article data-testid="football-card" data-position="Defender">
