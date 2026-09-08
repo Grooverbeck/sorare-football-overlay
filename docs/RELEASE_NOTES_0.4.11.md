@@ -1,17 +1,17 @@
 # Sorare Football Overlay 0.4.11
 
-Dieses Update macht das Laden und Aktualisieren der Spielerwerte zuverlässiger.
+Mit diesem Update werden Spielerwerte zuverlässiger angezeigt und fehlende Quoten besser nachgeladen.
 
 ## Verbesserungen
 
-- **Aktuellere Spielerwerte:** Ältere gespeicherte Daten werden bei erneuter Nutzung aktualisiert – auch wenn die Sorare-Seite schon länger geöffnet ist.
-- **Zuverlässigeres Nachladen:** Fehlende Clean-Sheet-Chancen werden zuverlässiger nachgeprüft und ergänzt, sobald sie verfügbar sind.
-- **Robusteres Laden:** Bereits verfügbare Spielerwerte gehen nicht mehr verloren, wenn einzelne andere Spieler länger laden. Gleichzeitige Abrufe werden besser gebündelt.
+- **Aktuellere Werte:** Wenn du später zu deinen Karten zurückkehrst, werden veraltete Spielerwerte zuverlässiger erneuert.
+- **Chancen auf ein Spiel ohne Gegentor:** Fehlende Clean-Sheet-Werte werden zuverlässiger nachgeladen, sobald sie verfügbar sind.
+- **Weniger fehlende Anzeigen:** Lädt ein Spieler länger, können die Werte der anderen Spieler trotzdem angezeigt werden.
 
 ## Fehlerbehebungen
 
-- **Torquoten-Sortierung:** Der Ladevorgang wird auch dann korrekt abgeschlossen, wenn Sorare die Kartenliste zwischendurch neu aufbaut.
-- **Spielernamen:** Abweichende Namen bei Quotenanbietern, zum Beispiel „Rodri“, werden zuverlässiger zugeordnet.
+- **Sortieren nach Torquote:** Ein Fehler wurde behoben, durch den die Sortierung beim Laden hängen bleiben konnte.
+- **Quoten zum richtigen Spieler:** Spieler wie Rodri werden auch dann besser erkannt, wenn ein Quotenanbieter einen anderen Namen verwendet.
 
 ## Vorhandene Installation aktualisieren
 
@@ -20,7 +20,7 @@ Dieses Update macht das Laden und Aktualisieren der Spielerwerte zuverlässiger.
 3. `chrome://extensions` oder `edge://extensions` öffnen und bei der Erweiterung auf **Neu laden** klicken.
 4. Bereits geöffnete Sorare-Seiten einmal aktualisieren.
 
-Die Backend-Verbesserungen sind bereits aktiv. Für die Änderungen an der Erweiterung bitte das neue Paket installieren.
+Bitte aktualisiere die Erweiterung, damit du alle Verbesserungen nutzen kannst.
 
 ## Neu installieren
 
@@ -28,4 +28,4 @@ Die ZIP unter **Assets** herunterladen und in einen dauerhaften Ordner entpacken
 
 [Ausführliche Installationsanleitung](https://github.com/Grooverbeck/sorare-football-overlay/blob/main/docs/INSTALLATION.md)
 
-Für Google Chrome und Microsoft Edge. Eigene API-Schlüssel oder Sorare-Zugangsdaten sind nicht erforderlich. Dies ist eine inoffizielle Erweiterung und kein Produkt von Sorare.
+Für Google Chrome und Microsoft Edge. Du musst keine zusätzlichen Zugangsdaten eintragen. Dies ist eine inoffizielle Erweiterung und kein Produkt von Sorare.
