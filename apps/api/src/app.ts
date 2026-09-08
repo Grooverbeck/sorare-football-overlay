@@ -13,6 +13,7 @@ import type { Context } from 'hono';
 import { cors } from 'hono/cors';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { AppError } from './errors.js';
+import { readApiJson } from './request-body.js';
 import type { AppLogger } from './logger.js';
 import {
   homePage,
@@ -171,11 +172,7 @@ export function createApp<TBindings extends object = Record<string, never>>(
 
   app.post('/api/player-stats', async (context) => {
     const services = context.get('services');
-    const body = await context.req
-      .json<unknown>()
-      .catch(() => {
-        throw new AppError(400, 'INVALID_JSON', 'Request body must be valid JSON');
-      });
+    const body = await readApiJson(context.req.raw);
     const parsed = PlayerStatsRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new AppError(
@@ -240,11 +237,7 @@ export function createApp<TBindings extends object = Record<string, never>>(
 
   app.post('/api/player-market-snapshots', async (context) => {
     const services = context.get('services');
-    const body = await context.req
-      .json<unknown>()
-      .catch(() => {
-        throw new AppError(400, 'INVALID_JSON', 'Request body must be valid JSON');
-      });
+    const body = await readApiJson(context.req.raw);
     const parsed = PlayerMarketSnapshotsRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new AppError(
@@ -278,11 +271,7 @@ export function createApp<TBindings extends object = Record<string, never>>(
 
   app.post('/api/lineup-sort-values', async (context) => {
     const services = context.get('services');
-    const body = await context.req
-      .json<unknown>()
-      .catch(() => {
-        throw new AppError(400, 'INVALID_JSON', 'Request body must be valid JSON');
-      });
+    const body = await readApiJson(context.req.raw);
     const parsed = LineupSortValuesRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new AppError(

@@ -1,11 +1,10 @@
 import {
   createExecutionContext,
   env,
-  fetchMock,
   SELF,
   waitOnExecutionContext,
 } from 'cloudflare:test';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CloudflareMarketSnapshotStore,
   CloudflareMatchOddsSnapshotStore,
@@ -35,8 +34,6 @@ const silentLogger: AppLogger = {
 };
 
 beforeAll(async () => {
-  fetchMock.activate();
-  fetchMock.disableNetConnect();
   await env.CACHE_DB.prepare(
     `CREATE TABLE IF NOT EXISTS cache_entries (
       cache_key TEXT PRIMARY KEY,
@@ -47,11 +44,24 @@ beforeAll(async () => {
   ).run();
 });
 
-afterEach(() => {
-  fetchMock.assertNoPendingInterceptors();
+beforeEach(async () => {
+  // Vitest 4 isolates storage per file; reset only this local test database.
+  await env.CACHE_DB.prepare('DELETE FROM cache_entries').run();
+  const keys = await env.STATS_CACHE.list();
+  await Promise.all(keys.keys.map(key => env.STATS_CACHE.delete(key.name)));
+  vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected outbound fetch in Worker test'));
 });
 
+afterEach(() => { vi.restoreAllMocks(); });
+
 describe('Cloudflare Worker', () => {
+  it('rejects oversized bodies on all public POST routes in the Worker runtime', async () => {
+    for (const path of ['player-stats','player-market-snapshots','lineup-sort-values']) {
+      const response = await SELF.fetch(`https://test/api/${path}`,{method:'POST',body:'x'.repeat(256*1024+1)});
+      expect(response.status).toBe(413);
+      expect(await response.json()).toMatchObject({error:{code:'PAYLOAD_TOO_LARGE'}});
+    }
+  });
   it('admits one cold-load owner and protects a replacement from a late release', async () => {
     let now = Date.parse('2032-01-01T12:00:00Z');
     const stores = Array.from({length:20}, () => new D1PlayerLoadLeases(env.CACHE_DB, () => now));
@@ -1742,11 +1752,11 @@ describe('Cloudflare Worker', () => {
     expect(fixtureKeys.keys).toHaveLength(1);
   });
 
-  it('preserves the Workerd receiver when using the global fetch implementation', async () => {
-    fetchMock
-      .get('https://api.sorare.com')
-      .intercept({ path: '/graphql', method: 'POST' })
-      .reply(200, { data: { probe: 'ok' } });
+  it('preserves the global receiver when using the default fetch implementation', async () => {
+    vi.mocked(globalThis.fetch).mockImplementation(async function(this: unknown) {
+      expect(this).toBe(globalThis);
+      return Response.json({data:{probe:'ok'}});
+    });
     const client = new SorareGraphqlClient({
       url: 'https://api.sorare.com/graphql',
       requestTimeoutMs: 1_000,

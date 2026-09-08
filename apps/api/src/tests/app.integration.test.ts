@@ -8,8 +8,63 @@ import { HistoricalGoalscorerProvider } from '../providers/goalscorer-provider.j
 import { MockPlayerMarketOddsProvider } from '../providers/market-odds-provider.js';
 import type { AppLogger } from '../logger.js';
 import { StatsService } from '../services/stats-service.js';
+import { MAX_API_BODY_BYTES } from '../request-body.js';
 
 const logger = pino({ level: 'silent' });
+
+describe('API request byte limits', () => {
+  for (const route of ['/api/player-stats','/api/player-market-snapshots','/api/lineup-sort-values']) {
+    it(`rejects oversized bodies before parsing on ${route}`, async () => {
+      const response = await testApp().request(route, {method:'POST',body:'x'.repeat(MAX_API_BODY_BYTES + 1)});
+      expect(response.status).toBe(413);
+      expect((await response.json()).error.code).toBe('PAYLOAD_TOO_LARGE');
+    });
+  }
+  it('counts streamed UTF-8 bytes, cancels on overflow, and ignores a falsely small length', async () => {
+    const cancel = vi.fn();
+    const chunk = new TextEncoder().encode('ä'.repeat(4096));
+    const body = new ReadableStream<Uint8Array>({pull(controller) {controller.enqueue(chunk);},cancel});
+    const init = {method:'POST',headers:{'content-length':'1'},body,duplex:'half'};
+    const response = await testApp().fetch(new Request('https://test/api/player-stats',init));
+    expect(response.status).toBe(413);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+  it('accepts exactly the byte limit and still reports malformed JSON as 400', async () => {
+    const base = JSON.stringify({slugs:['test-player'],padding:''});
+    const body = base.replace('"padding":""',`"padding":"${' '.repeat(MAX_API_BODY_BYTES - base.length)}"`);
+    expect(new TextEncoder().encode(body).length).toBe(MAX_API_BODY_BYTES);
+    expect((await testApp().request('/api/player-stats',{method:'POST',body})).status).toBe(200);
+    const invalid = await testApp().request('/api/player-stats',{method:'POST',body:'{'});
+    expect(invalid.status).toBe(400);
+    expect((await invalid.json()).error.code).toBe('INVALID_JSON');
+  });
+  it('accepts full fifty-player requests on all three endpoints', async () => {
+    const slugs = Array.from({length:50},(_,i) => `player-${i}`);
+    const positions = Object.fromEntries(slugs.map(slug => [slug,'Defender']));
+    const playerTeams = Object.fromEntries(slugs.map(slug => [slug,'test-club']));
+    const app = testApp();
+    for (const route of ['/api/player-stats','/api/lineup-sort-values']) {
+      expect((await app.request(route,{method:'POST',body:JSON.stringify({slugs,positions,playerTeams})})).status).toBe(200);
+    }
+    const statsResponse = await app.request('/api/player-stats',{method:'POST',body:JSON.stringify({slugs,positions,playerTeams})});
+    const statsBody = await statsResponse.json();
+    const players = (statsBody.data as PlayerStats[]).map(({slug,displayName,position,nextGame}) => ({slug,displayName,position,nextGame}));
+    expect((await app.request('/api/player-market-snapshots',{method:'POST',body:JSON.stringify({players})})).status).toBe(200);
+  });
+  it('rejects unrelated position and team mappings', async () => {
+    for (const route of ['/api/player-stats','/api/lineup-sort-values']) {
+      for (const field of ['positions','playerTeams']) {
+        const body = {slugs:['test-player'],[field]:{'other-player':field === 'positions'?'Defender':'test-club'}};
+        expect((await testApp().request(route,{method:'POST',body:JSON.stringify(body)})).status).toBe(400);
+      }
+    }
+  });
+  it('rejects more than fifty mappings even if their keys normalize to a requested player', async () => {
+    const positions = Object.fromEntries(Array.from({length:51},(_,i) => [`${' '.repeat(i)}test-player`,'Defender']));
+    const response = await testApp().request('/api/player-stats',{method:'POST',body:JSON.stringify({slugs:['test-player'],positions})});
+    expect(response.status).toBe(400);
+  });
+});
 
 function testApp() {
   const service = new StatsService(

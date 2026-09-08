@@ -19,6 +19,19 @@ export type HistoricalMarketWindow = z.infer<
   typeof HistoricalMarketWindowSchema
 >;
 
+function validatePlayerMappings(
+  request: {slugs: string[]; playerNames: string[]; positions?: Record<string, unknown> | undefined; playerTeams?: Record<string, unknown> | undefined},
+  context: z.RefinementCtx,
+): void {
+  const identities = new Set([...request.slugs, ...request.playerNames].map(value => value.trim().toLowerCase()));
+  for (const field of ['positions', 'playerTeams'] as const) {
+    const keys = Object.keys(request[field] ?? {});
+    if (keys.length > 50 || keys.some(key => !identities.has(key.trim().toLowerCase()))) {
+      context.addIssue({code: 'custom', path: [field], message: `${field} may contain at most 50 mappings for requested players only`});
+    }
+  }
+}
+
 export const PlayerStatsRequestSchema = z
   .object({
     slugs: z
@@ -54,6 +67,7 @@ export const PlayerStatsRequestSchema = z
     oddsCacheOnly: z.boolean().default(false),
   })
   .superRefine((request, context) => {
+    validatePlayerMappings(request, context);
     const total = request.slugs.length + request.playerNames.length;
     if (total < 1) {
       context.addIssue({ code: 'custom', message: 'At least one slug or player name is required' });
@@ -90,6 +104,7 @@ export const LineupSortValuesRequestSchema = z
     historicalGoalWindow: HistoricalMarketWindowSchema.nullable().default(null),
   })
   .superRefine((request, context) => {
+    validatePlayerMappings(request, context);
     const total = request.slugs.length + request.playerNames.length;
     if (total < 1) {
       context.addIssue({ code: 'custom', message: 'At least one slug or player name is required' });

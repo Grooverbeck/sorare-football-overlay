@@ -337,6 +337,13 @@ Die Worker-Konfiguration verwendet das aktuelle Compatibility Date, `nodejs_comp
 
 ## API
 
+Alle drei POST-Endpunkte akzeptieren höchstens 256 KiB Request-Body. Die API
+zählt die tatsächlich eingelesenen Bytes auch ohne `Content-Length`; größere
+Anfragen werden vor der JSON-Auswertung mit HTTP 413 (`PAYLOAD_TOO_LARGE`)
+abgelehnt. Pro Anfrage sind weiterhin höchstens 50 Spieler erlaubt.
+`positions` und `playerTeams` dürfen jeweils höchstens 50 Zuordnungen enthalten
+und sich nur auf die angefragten Spielernamen oder Slugs beziehen.
+
 ### `POST /api/player-stats`
 
 Mindestens eine Spielerreferenz ist Pflicht. Direkte Spieler-Links liefern `slugs`; Kartenbilder in Live- und Aufstellungsübersichten können alternativ über `playerNames` serverseitig zu Slug und Position aufgelöst werden. `positions` ist optional und kann sowohl Slugs als auch Spielernamen als Schlüssel verwenden, um die Position der konkreten Karte zu berücksichtigen. Bei Namen wird zuerst die offizielle Sorare-Spielersuche verwendet; ein aus dem Namen abgeleiteter Slug dient nur noch als Fallback. Das verhindert Fehlzuordnungen bei gleichnamigen Spielern wie Diego Luna oder Joaquín Pereyra.
@@ -578,7 +585,15 @@ npm run benchmark:mls-aa # MLS-AA-Verteilung als JSON analysieren
 npm run analyze:player-prediction -- --player <slug>:FWD # separate lokale Prognose
 ```
 
-Die API-Integrationstests laufen vollständig gegen die injizierte Mock-Datenquelle und benötigen weder Internetzugriff noch Zugangsdaten. Ein zusätzlicher Integrationstest startet den echten Worker lokal in Miniflare und prüft Health-Endpunkt, Hono-Routing, Mock-Statistiken, KV-Bindung und den korrekten Workerd-Aufruf des globalen `fetch`.
+Die API-Integrationstests laufen vollständig gegen die injizierte Mock-Datenquelle und benötigen weder Internetzugriff noch Zugangsdaten. Die Worker-Suite startet den echten Worker lokal in Miniflare und prüft Health-Endpunkt, Hono-Routing, Request-Größenlimits, Mock-Statistiken und D1/KV. Ausgehende Fetches sind gemockt; ein eigener Test prüft den Receiver-Vertrag des globalen `fetch`.
+
+Der API-Workspace nutzt Vitest 4 mit dem Cloudflare-Testplugin. D1/KV-Testdaten
+werden vor jedem Einzeltest geleert, da das Plugin Storage pro Datei isoliert.
+Vor dem Worker-Teststart vergleicht `scripts/check-worker-compatibility.mjs`
+das Produktionsdatum aus `wrangler.jsonc` mit der vom Testpool verwendeten
+workerd-Runtime. Eine zu alte Runtime beendet den Teststart mit Fehler, statt
+unbemerkt auf ein älteres Kompatibilitätsdatum zurückzufallen. Shared- und
+Extension-Tests verwenden weiterhin Vitest 3.
 
 Die Spieler-Prognose ist bewusst vom Overlay getrennt. Sie läuft nur bei einem
 manuellen Aufruf des Analysebefehls und verändert weder API-Antworten noch
