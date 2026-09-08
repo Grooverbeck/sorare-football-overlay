@@ -3,6 +3,14 @@
 Alle wichtigen Änderungen am Sorare Football Stats Overlay werden in dieser
 Datei dokumentiert.
 
+## 0.4.12 – 8. September 2026
+
+### Bugfix: Neue Set-Karten
+
+- Animierte Sondereditionen nach dem Sorare-Set-Update werden besser erkannt.
+- Erkannte Kartenbilder werden auch im Lineup-Builder und Squad ohne Kartenlink zugeordnet.
+- Spieleranzeigen richten sich auch bei Videokarten am sichtbaren Kartenbild aus.
+
 ## 0.4.11 – 8. September 2026
 
 ### Verbesserungen
