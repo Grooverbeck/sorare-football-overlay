@@ -36,6 +36,8 @@ export const ProviderQuotaUsageSchema = z.object({
 export type ProviderQuotaUsage = z.infer<typeof ProviderQuotaUsageSchema>;
 
 export interface ProviderQuotaUsageStore {
+  reserveOddsApiIo?(now: number, dailyLimit: number, hourlyLimit: number): Promise<boolean>;
+  reconcileOddsApiIo?(now: number, used: number | null, reset: number | null, blocked: boolean, reservedAt: number, reportedLimit: number | null): Promise<void>;
   get(provider: OddsProviderName): Promise<ProviderQuotaUsage | undefined>;
   set(usage: ProviderQuotaUsage): void | Promise<void>;
   getRequestBlockedUntil?(

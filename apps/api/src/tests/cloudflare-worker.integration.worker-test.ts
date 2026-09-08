@@ -18,6 +18,7 @@ import {
   playerFixtureExpiration,
 } from '../cloudflare/cache.js';
 import { D1JsonKeyValueStore } from '../cloudflare/d1-cache.js';
+import { D1OddsBudget } from '../cloudflare/odds-budget.js';
 import { SorareGraphqlClient } from '../graphql/client.js';
 import type { AppLogger } from '../logger.js';
 import {
@@ -50,6 +51,37 @@ afterEach(() => {
 });
 
 describe('Cloudflare Worker', () => {
+  it('reserves both odds budgets atomically across independent Workers', async () => {
+    const now = Date.parse('2030-01-01T12:00:00Z');
+    const stores = Array.from({length: 20}, () => new D1OddsBudget(env.CACHE_DB));
+    const accepted = await Promise.all(stores.map(store => store.reserve(now, 12, 7)));
+    expect(accepted.filter(Boolean)).toHaveLength(7);
+    expect(await stores[0]!.get('odds-api-io')).toMatchObject({used:7});
+    expect(await stores[1]!.get('odds-api-io-hourly')).toMatchObject({used:7});
+    await stores[0]!.reconcile(now, 2, null, false);
+    expect(await stores[1]!.get('odds-api-io-hourly')).toMatchObject({used:7});
+    const later = now + 3_600_001;
+    const second = await Promise.all(stores.map(store => store.reserve(later,12,7)));
+    expect(second.filter(Boolean)).toHaveLength(5);
+    expect(await stores[0]!.get('odds-api-io')).toMatchObject({used:12});
+    expect(await stores[0]!.reserve(later,12,7)).toBe(false);
+    expect(await stores[0]!.reserve(now + 86_400_000,12,7)).toBe(true);
+  });
+  it('honors provider limits and early resets without charging late responses to a new window', async () => {
+    const now = Date.parse('2031-01-01T12:00:00Z');
+    const a = new D1OddsBudget(env.CACHE_DB);
+    const b = new D1OddsBudget(env.CACHE_DB);
+    expect(await a.reserve(now, 500, 100)).toBe(true);
+    await a.reconcile(now + 1, 2, now + 60_000, false, now, 2);
+    expect(await b.get('odds-api-io-hourly')).toMatchObject({limit:2,used:2});
+    expect(await b.reserve(now + 2,500,100)).toBe(false);
+    expect(await b.reserve(now + 60_001,500,100)).toBe(true);
+    await a.reconcile(now + 60_002, 100, null, true, now, 100);
+    expect(await b.get('odds-api-io-hourly')).toMatchObject({used:1});
+    expect(await b.reserve(now + 60_003,500,100)).toBe(true);
+    expect(await b.reserve(now + 60_004,500,100)).toBe(false);
+    expect(await b.get('odds-api-io-hourly')).toMatchObject({limit:2,used:2});
+  });
   it('writes new cache values to D1 without reviving stale KV-only entries', async () => {
     const fallbackKey = 'd1-fallback-probe';
     const d1Key = 'd1-primary-probe';

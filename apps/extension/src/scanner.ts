@@ -371,6 +371,7 @@ export class StatsBatchCoordinator {
   private readonly afterFlightTargets = new Map<string, PendingTarget>();
   private readonly batchQueue: BatchJob[] = [];
   private readonly cache = new Map<string, PlayerStats>();
+  private readonly dataExpiry = new WeakMap<PlayerStats, number>();
   private readonly cacheMetadata = new Map<string, CachedAliasMetadata>();
   private readonly trackedViews = new Map<OverlayView, TargetIdentity>();
   private readonly retryAttempts = new Map<string, number>();
@@ -535,6 +536,12 @@ export class StatsBatchCoordinator {
   ): void {
     const key = targetKey(target);
     const retry = this.retryWork.get(key);
+    if (active && this.trackedViews.has(view) && !retry && !this.cachedStatsForTarget(target)) {
+      // A paused bookmaker refresh cannot restore expired form/fixture data.
+      this.clearPendingRefresh(key);
+      this.queueTarget(target, [view], priority);
+      return;
+    }
     if (retry) {
       retry.views.add(view);
       retry.priority = Math.max(retry.priority, priority);
@@ -1005,6 +1012,8 @@ export class StatsBatchCoordinator {
             ? { pendingRefreshes: [...pending] }
             : { pendingRefreshes: undefined }),
         };
+        // A bookmaker-only refresh must not renew form or fixture freshness.
+        this.dataExpiry.set(merged, this.dataExpiry.get(cached) ?? 0);
         const changedKeys = this.cacheStatsAliases(merged, [target]);
         this.renderTrackedAliases(changedKeys, merged);
         updatedStats.push(merged);
@@ -1332,6 +1341,11 @@ export class StatsBatchCoordinator {
 
   private getCachedStats(key: string): PlayerStats | undefined {
     const stats = this.cache.get(key);
+    if (stats && (this.dataExpiry.get(stats) ?? 0) <= Date.now()) {
+      this.cache.delete(key);
+      this.cacheMetadata.delete(key);
+      return undefined;
+    }
     if (stats) this.touchCachedAlias(key);
     return stats;
   }
@@ -1341,6 +1355,28 @@ export class StatsBatchCoordinator {
     stats: PlayerStats,
     prune = true,
   ): void {
+    if (!this.dataExpiry.has(stats)) {
+      const now = Date.now();
+      // Form: at most six hours locally, and never past the weekly rollover.
+      const monday = new Date(now);
+      monday.setUTCHours(10, 0, 0, 0);
+      monday.setUTCDate(monday.getUTCDate() + (8 - monday.getUTCDay()) % 7);
+      if (monday.getTime() <= now) monday.setUTCDate(monday.getUTCDate() + 7);
+      let expires = Math.min(now + defaultCachedAliasTtlMs, monday.getTime());
+      // Fixtures are checked more frequently; missing fixtures may appear soon.
+      expires = Math.min(expires, now + (stats.nextGame ? 4 * 60 * 60_000 : 15 * 60_000));
+      if (stats.nextGame) {
+        const kickoff = Date.parse(stats.nextGame.date);
+        const rollover = new Date(kickoff);
+        rollover.setUTCDate(rollover.getUTCDate() + 1);
+        rollover.setUTCHours(8, 0, 0, 0);
+        if (Number.isFinite(kickoff)) {
+          const boundary = Math.max(kickoff + 6 * 60 * 60_000, rollover.getTime());
+          expires = Math.min(expires, boundary > now ? boundary : now + 15 * 60_000);
+        }
+      }
+      this.dataExpiry.set(stats, expires);
+    }
     this.cache.set(key, stats);
     this.touchCachedAlias(key);
     if (prune) this.pruneStatsCache();
@@ -1362,7 +1398,9 @@ export class StatsBatchCoordinator {
   private pruneStatsCache(): void {
     const now = Date.now();
     for (const [key, metadata] of this.cacheMetadata) {
-      if (now - metadata.lastAccessedAt <= this.cachedAliasTtlMs) continue;
+      const stats = this.cache.get(key);
+      if (now - metadata.lastAccessedAt <= this.cachedAliasTtlMs &&
+          stats && (this.dataExpiry.get(stats) ?? 0) > now) continue;
       this.cacheMetadata.delete(key);
       this.cache.delete(key);
     }
@@ -1458,6 +1496,7 @@ export class StatsBatchCoordinator {
           ? { historicalDecisives: cached.historicalDecisives }
           : {}),
       };
+      this.dataExpiry.set(merged, this.dataExpiry.get(cached) ?? 0);
     }
 
     if (
@@ -1472,13 +1511,16 @@ export class StatsBatchCoordinator {
       merged.nextGame.marketOdds,
     );
     if (marketOdds === merged.nextGame.marketOdds) return merged;
-    return {
+    const result = {
       ...merged,
       nextGame: {
         ...merged.nextGame,
         marketOdds,
       },
     };
+    const expires = this.dataExpiry.get(merged);
+    if (expires !== undefined) this.dataExpiry.set(result, expires);
+    return result;
   }
 
   private clearPendingRefresh(

@@ -1781,6 +1781,11 @@ export class OddsApiIoPlayerMarketOddsProvider
     }
 
     for (let attempt = 0; attempt <= this.options.maxRetries; attempt += 1) {
+      const reservedAt = this.now();
+      if (this.options.usageStore?.reserveOddsApiIo &&
+          !(await this.options.usageStore.reserveOddsApiIo(reservedAt, this.options.dailyRequestLimit, this.options.hourlyRequestLimit))) {
+        throw new Error('Odds-API.io atomic request budget exhausted');
+      }
       const controller = new AbortController();
       const timeout = setTimeout(
         () => controller.abort(),
@@ -1791,7 +1796,7 @@ export class OddsApiIoPlayerMarketOddsProvider
           headers: { accept: 'application/json' },
           signal: controller.signal,
         });
-        await this.recordRequest(response.headers, response.status === 429);
+        await this.recordRequest(response.headers, response.status === 429, reservedAt);
         if (response.status === 429) {
           await response.body?.cancel();
           throw new OddsApiIoHttpError(response.status);
@@ -1832,9 +1837,19 @@ export class OddsApiIoPlayerMarketOddsProvider
   private async recordRequest(
     headers: Headers,
     rateLimited: boolean,
+    reservedAt = this.now(),
   ): Promise<void> {
     if (!this.options.usageStore) return;
     try {
+      if (this.options.usageStore.reconcileOddsApiIo) {
+        const limit = nonnegativeIntegerHeader(headers, 'x-ratelimit-limit');
+        const remaining = nonnegativeIntegerHeader(headers, 'x-ratelimit-remaining');
+        await this.options.usageStore.reconcileOddsApiIo(this.now(),
+          limit !== null && remaining !== null ? Math.max(0, limit - remaining) : null,
+          resetTimeFromHeaders(headers, this.now()), rateLimited, reservedAt,
+          limit !== null && limit > 0 ? limit : null);
+        return;
+      }
       const now = this.now();
       const checkedAt = new Date(now).toISOString();
       const dayStart = new Date(now);

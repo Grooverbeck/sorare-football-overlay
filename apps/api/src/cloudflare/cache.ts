@@ -935,11 +935,24 @@ export class CloudflareProviderQuotaUsageStore
     Promise<number | undefined>
   >();
 
-  constructor(private readonly namespace: JsonKeyValueStore) {}
+  constructor(private readonly namespace: JsonKeyValueStore, private readonly oddsBudget?: import('./odds-budget.js').D1OddsBudget) {}
+
+  async reserveOddsApiIo(now: number, daily: number, hourly: number): Promise<boolean> {
+    if (!this.oddsBudget) throw new Error('Atomic odds budget unavailable');
+    return this.oddsBudget.reserve(now, daily, hourly);
+  }
+
+  async reconcileOddsApiIo(now: number, used: number | null, reset: number | null, blocked: boolean, reservedAt: number, reportedLimit: number | null): Promise<void> {
+    if (!this.oddsBudget) throw new Error('Atomic odds budget unavailable');
+    await this.oddsBudget.reconcile(now, used, reset, blocked, reservedAt, reportedLimit);
+  }
 
   get(
     provider: OddsProviderName,
   ): Promise<ProviderQuotaUsage | undefined> {
+    if (this.oddsBudget && (provider === 'odds-api-io' || provider === 'odds-api-io-hourly')) {
+      return this.oddsBudget.get(provider).then(value => value ?? this.readUsage(provider));
+    }
     const existing = this.usageReads.get(provider);
     if (existing) return existing;
     const pending = this.readUsage(provider).catch((error: unknown) => {

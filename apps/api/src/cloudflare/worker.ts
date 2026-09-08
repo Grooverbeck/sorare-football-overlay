@@ -14,6 +14,7 @@ import {
   CloudflareProviderQuotaUsageStore,
 } from './cache.js';
 import { D1JsonKeyValueStore } from './d1-cache.js';
+import { D1OddsBudget } from './odds-budget.js';
 import { createWorkerLogger } from './logger.js';
 
 const configKeys = [
@@ -111,6 +112,7 @@ function createWorkerRuntime(
     matchOddsSnapshotStore: new CloudflareMatchOddsSnapshotStore(cacheStore),
     providerQuotaUsageStore: new CloudflareProviderQuotaUsageStore(
       cacheStore,
+      new D1OddsBudget(env.CACHE_DB),
     ),
     scheduleBackground: (task) => {
       context.waitUntil(

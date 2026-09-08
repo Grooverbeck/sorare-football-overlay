@@ -111,6 +111,32 @@ function createProvider(
 }
 
 describe('OddsApiIoPlayerMarketOddsProvider', () => {
+  it('keeps a successful reserved response when telemetry reconciliation fails', async () => {
+    const usage = Object.assign(new InMemoryProviderQuotaUsageStore(() => now), {
+      reserveOddsApiIo: vi.fn().mockResolvedValue(true),
+      reconcileOddsApiIo: vi.fn().mockRejectedValue(new Error('D1 temporarily unavailable')),
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(json({available:true}));
+    const {provider} = createProvider(fetchImpl, usage);
+    const request = provider as unknown as {requestJson(path:string, query:Record<string,string>):Promise<unknown>};
+    await expect(request.requestJson('/events', {})).resolves.toEqual({available:true});
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(usage.reserveOddsApiIo).toHaveBeenCalledTimes(1);
+  });
+  it('reserves quota before every retry and stops before fetch when denied', async () => {
+    const reserve = vi.fn().mockResolvedValueOnce(true).mockResolvedValue(false);
+    const reconcile = vi.fn().mockResolvedValue(undefined);
+    const usage = Object.assign(new InMemoryProviderQuotaUsageStore(() => now), {
+      reserveOddsApiIo: reserve, reconcileOddsApiIo: reconcile,
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(json({}, {status:503, headers:{'retry-after':'0'}}));
+    const {provider} = createProvider(fetchImpl, usage, [], 2);
+    const request = provider as unknown as {requestJson(path:string, query:Record<string,string>):Promise<unknown>};
+    await expect(request.requestJson('/events', {})).rejects.toThrow('atomic request budget exhausted');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(reserve).toHaveBeenCalledTimes(2);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+  });
   it('advertises opportunistic assists without letting them drive requests', () => {
     const { provider } = createProvider(vi.fn<typeof fetch>());
 
