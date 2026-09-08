@@ -1,5 +1,6 @@
 import type { PlayerStats } from '@sorare-overlay/shared';
 import type { Cache } from './cache.js';
+import type { PlayerLoadLeases } from './services/player-load-leases.js';
 import type { AppConfig } from './config.js';
 import { SorareGraphqlClient } from './graphql/client.js';
 import { SorareDataSource } from './graphql/sorare-data-source.js';
@@ -66,6 +67,7 @@ export interface CreateStatsRuntimeOptions {
   marketSnapshotStore?: MarketSnapshotStore;
   matchOddsSnapshotStore?: MatchOddsSnapshotStore;
   providerQuotaUsageStore?: ProviderQuotaUsageStore;
+  playerLoadLeases?: PlayerLoadLeases;
   scheduleBackground?: BackgroundTaskScheduler;
 }
 
@@ -419,6 +421,9 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
       options.scheduleBackground,
       DEFAULT_NAME_RESOLUTION_BUDGET_MS,
       fixtureMatchOddsProvider,
+      undefined,
+      undefined,
+      options.playerLoadLeases,
     ),
     marketOddsProvider,
     fixtureMatchOddsProvider,

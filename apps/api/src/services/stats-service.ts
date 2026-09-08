@@ -39,6 +39,7 @@ import {
   sameFixtureIdentity,
 } from './fixture-identity.js';
 import { mapSettledWithConcurrency } from './concurrency.js';
+import type { PlayerLoadLeases } from './player-load-leases.js';
 
 export interface StatsServiceResult {
   data: PlayerStats[];
@@ -314,6 +315,8 @@ export type BackgroundTaskScheduler = (task: Promise<void>) => void;
 export const DEFAULT_NAME_RESOLUTION_BUDGET_MS = 650;
 
 interface LoadBatchOptions {
+  onDeferred?: (request: SourcePlayerRequest) => void;
+  onLoaded?: (key: string, stats: PlayerStats) => void;
   allowPartialHistory?: boolean;
   completeHistory?: boolean;
   overwriteForm?: boolean;
@@ -358,7 +361,7 @@ function settleWithin<T>(
 }
 
 export class StatsService {
-  private readonly inFlight = new Map<string, Promise<PlayerStats | undefined>>();
+  private readonly inFlight = new Map<string, Promise<{stats: PlayerStats | undefined; deferred: boolean}>>();
 
   constructor(
     private readonly dataSource: PlayerStatsDataSource,
@@ -373,13 +376,15 @@ export class StatsService {
       new UnavailableFixtureMatchOddsProvider(),
     private readonly cacheOnlyOddsBudgetMs = 350,
     private readonly responseBudgetMs = 9_000,
+    private readonly playerLoadLeases?: PlayerLoadLeases,
   ) {}
 
   async getPlayerStats(
     request: ValidatedPlayerStatsRequest,
   ): Promise<StatsServiceResult> {
     if (!this.scheduleBackground) return this.loadPlayerStats(request);
-    const pending = this.loadPlayerStats(request);
+    const progress = { ready: new Map<string, PlayerStats>(), requests: [] as SourcePlayerRequest[], cacheHits: 0 };
+    const pending = this.loadPlayerStats(request, progress);
     const settled = await settleWithin(pending, this.responseBudgetMs);
     if (settled.status === 'fulfilled') return settled.value;
     if (settled.status === 'rejected') throw settled.reason;
@@ -392,19 +397,30 @@ export class StatsService {
         () => undefined,
       ),
     );
+    const data = [...progress.ready.values()].map((stats): PlayerStats => {
+      const pending = new Set(stats.pendingRefreshes ?? []);
+      if (stats.nextGame && playerMarketOddsSupported(this.marketOddsProvider, stats)) pending.add('marketOdds');
+      if (needsFixtureTeamOddsFallback(stats) && this.fixtureMatchOddsProvider.supports(stats)) pending.add('fixture');
+      return {...stats, ...(pending.size ? {pendingRefreshes: [...pending]} : {})};
+    });
+    const missing = (target: SourcePlayerRequest) => !progress.ready.has(cacheKey(target, this.excludeLowCoverage));
+    const deferredPlayerSlugs = request.slugs.filter(slug =>
+      !progress.requests.some(target => target.slug === slug && !missing(target)));
+    const deferredPlayerNames = request.playerNames.filter(name =>
+      !progress.requests.some(target => target.resolvedFromName === name && !missing(target)));
     return {
-      data: [],
-      cacheHits: 0,
+      data,
+      cacheHits: progress.cacheHits,
       source: this.dataSource.source,
-      deferredPlayerNames: [...request.playerNames],
-      deferredPlayerSlugs: [...request.slugs],
+      deferredPlayerNames,
+      deferredPlayerSlugs,
       diagnostics: {
         requestedPlayers: request.slugs.length + request.playerNames.length,
-        resolvedPlayers: 0,
-        returnedPlayers: 0,
-        cacheHits: 0,
-        deferredNames: request.playerNames.length,
-        partialHistories: 0,
+        resolvedPlayers: progress.requests.length,
+        returnedPlayers: data.length,
+        cacheHits: progress.cacheHits,
+        deferredNames: deferredPlayerNames.length,
+        partialHistories: data.filter(stats => stats.pendingRefreshes?.includes('formHistory')).length,
         responseBudgetExceeded: true,
         durationsMs: {
           nameResolution: 0,
@@ -514,6 +530,7 @@ export class StatsService {
 
   private async loadPlayerStats(
     request: ValidatedPlayerStatsRequest,
+    progress = { ready: new Map<string, PlayerStats>(), requests: [] as SourcePlayerRequest[], cacheHits: 0 },
   ): Promise<StatsServiceResult> {
     const requestStartedAt = performance.now();
     const nameResolutionStartedAt = performance.now();
@@ -553,7 +570,8 @@ export class StatsService {
       ).values(),
     ];
     const cacheStartedAt = performance.now();
-    const immediate = new Map<string, PlayerStats>();
+    progress.requests = [...directRequests, ...resolvedRequests];
+    const immediate = progress.ready;
     const fixtureRefreshEntries: FixtureRefreshEntry[] = [];
     let cacheHits = 0;
     const splitCache = supportsSplitPlayerStatsCache(this.cache)
@@ -726,6 +744,7 @@ export class StatsService {
       }
     }
     const cacheDurationMs = elapsedMs(cacheStartedAt);
+    progress.cacheHits = cacheHits;
     const baseAndHistoryStartedAt = performance.now();
 
     if (
@@ -748,6 +767,7 @@ export class StatsService {
       }
     }
 
+    const deferredCold = new Set<string>();
     const fresh = playerRequests.filter((playerRequest) => {
       const key = cacheKey(playerRequest, this.excludeLowCoverage);
       return (
@@ -759,8 +779,11 @@ export class StatsService {
     });
 
     if (fresh.length > 0) {
-      const batch = this.loadBatch(fresh, {
+      const batchDeferred = new Set<string>();
+      const batch = this.loadColdBatch(fresh, {
         allowPartialHistory: request.supportsPartialFormHistory,
+        onLoaded: (key, stats) => immediate.set(key, stats),
+        onDeferred: target => batchDeferred.add(cacheKey(target, this.excludeLowCoverage)),
       });
       for (const playerRequest of fresh) {
         const key = cacheKey(playerRequest, this.excludeLowCoverage);
@@ -768,7 +791,7 @@ export class StatsService {
           playerRequest,
           this.excludeLowCoverage,
         );
-        const pending = batch.then((loaded) => loaded.get(key));
+        const pending = batch.then((loaded) => ({stats: loaded.get(key), deferred: batchDeferred.has(key)}));
         this.inFlight.set(pendingKey, pending);
         void pending.then(
           () => this.inFlight.delete(pendingKey),
@@ -785,14 +808,17 @@ export class StatsService {
           const cached = immediate.get(key);
           if (cached) return cached;
           try {
-            return await this.inFlight.get(
+            const outcome = await this.inFlight.get(
               inFlightKey(playerRequest, this.excludeLowCoverage),
             );
+            if (outcome?.deferred) deferredCold.add(key);
+            if (outcome?.stats) immediate.set(key, outcome.stats);
+            return outcome?.stats;
           } catch (error) {
             // A failed cold player must not discard unrelated cache hits or
             // successfully loaded players from the same API response.
             firstColdLoadError ??= error;
-            return undefined;
+            return immediate.get(key);
           }
         }),
       )
@@ -811,6 +837,23 @@ export class StatsService {
       request.playerTeams,
       request.includeHistoricalAssists,
       request.supportsPartialFormHistory,
+      (oldStats, replacement) => {
+        const replace = (targets: SourcePlayerRequest[]) => {
+          for (let index = 0; index < targets.length; index++) {
+            const target = targets[index]!;
+            if (target.slug !== oldStats.slug || (target.position && target.position !== oldStats.position)) continue;
+            immediate.delete(cacheKey(target, this.excludeLowCoverage));
+            targets[index] = {...replacement, ...(target.resolvedFromName ? {resolvedFromName: target.resolvedFromName} : {})};
+          }
+        };
+        replace(playerRequests);
+        replace(progress.requests);
+        deferredCold.add(cacheKey(replacement, this.excludeLowCoverage));
+      },
+      (key, stats) => {
+        immediate.set(key, stats);
+        deferredCold.delete(key);
+      },
     );
     if (splitCache) {
       cachedOrLoaded = await this.hydrateCachedTeamFixtures(
@@ -825,6 +868,10 @@ export class StatsService {
       cachedOrLoaded,
       playerRequests,
     );
+    for (const target of progress.requests) {
+      const stats = cachedOrLoaded.find(player => player.slug === target.slug && (!target.position || player.position === target.position));
+      if (stats) immediate.set(cacheKey(target, this.excludeLowCoverage), stats);
+    }
     const oddsEligiblePlayers = cachedOrLoaded.filter(
       (stats) => playerMarketOddsSupported(this.marketOddsProvider, stats),
     );
@@ -1052,19 +1099,27 @@ export class StatsService {
     const partialHistories = data.filter((stats) =>
       stats.pendingRefreshes?.includes('formHistory'),
     ).length;
+    const deferredRequests = progress.requests.filter(target =>
+      deferredCold.has(cacheKey(target, this.excludeLowCoverage)));
+    const deferredPlayerNames = [...new Set([
+      ...nameResolution.deferred,
+      ...deferredRequests.flatMap(target => target.resolvedFromName ? [target.resolvedFromName] : []),
+    ])];
+    const deferredPlayerSlugs = request.slugs.filter(slug =>
+      deferredRequests.some(target => target.slug === slug));
     return {
       data,
       cacheHits,
       source: this.dataSource.source,
-      deferredPlayerNames: nameResolution.deferred,
-      deferredPlayerSlugs: [],
+      deferredPlayerNames,
+      deferredPlayerSlugs,
       diagnostics: {
         requestedPlayers:
           request.slugs.length + request.playerNames.length,
         resolvedPlayers: playerRequests.length,
         returnedPlayers: data.length,
         cacheHits,
-        deferredNames: nameResolution.deferred.length,
+        deferredNames: deferredPlayerNames.length,
         partialHistories,
         responseBudgetExceeded: false,
         durationsMs: {
@@ -1193,7 +1248,7 @@ export class StatsService {
       chunks(requests, BACKGROUND_PLAYER_LOAD_CHUNK_SIZE),
       BACKGROUND_PLAYER_LOAD_CONCURRENCY,
       (batch) =>
-        this.loadBatch(batch, {
+        this.loadColdBatch(batch, {
           completeHistory: true,
           overwriteForm: true,
           scheduleHistoryCompletion: false,
@@ -1208,6 +1263,8 @@ export class StatsService {
     teamSlugs: Readonly<Record<string, string>> | undefined,
     includeHistoricalAssists: boolean,
     allowPartialHistory: boolean,
+    onReplacement?: (previous: PlayerStats, request: SourcePlayerRequest) => void,
+    onLoaded?: (key: string, stats: PlayerStats) => void,
   ): Promise<PlayerStats[]> {
     const statsByExactPlayer = new Map(
       loadedStats.map((stats) => [
@@ -1240,6 +1297,7 @@ export class StatsService {
         : [];
     });
     if (emptyNameMatches.length === 0) return [...loadedStats];
+    const replacedStats = new Set<PlayerStats>();
 
     try {
       const names = [
@@ -1273,6 +1331,10 @@ export class StatsService {
         });
       }
       if (replacements.size === 0) return [...loadedStats];
+      for (const [previous, replacement] of replacements) {
+        replacedStats.add(previous);
+        onReplacement?.(previous, replacement);
+      }
 
       const correctedRequests = [
         ...new Map(
@@ -1282,21 +1344,20 @@ export class StatsService {
           ]),
         ).values(),
       ];
-      const corrected = await this.loadBatch(correctedRequests, {
+      const corrected = await this.loadColdBatch(correctedRequests, {
         allowPartialHistory,
+        ...(onLoaded ? {onLoaded} : {}),
       });
-      return loadedStats.map((stats) => {
+      return loadedStats.flatMap((stats) => {
         const correctedRequest = replacements.get(stats);
-        return correctedRequest
-          ? corrected.get(
-              cacheKey(correctedRequest, this.excludeLowCoverage),
-            ) ?? stats
-          : stats;
+        if (!correctedRequest) return [stats];
+        const replacement = corrected.get(cacheKey(correctedRequest, this.excludeLowCoverage));
+        return replacement ? [replacement] : [];
       });
     } catch {
       // Name correction is best effort. A failed search or replacement fetch
       // must never discard unrelated cache hits from the current response.
-      return [...loadedStats];
+      return loadedStats.filter(stats => !replacedStats.has(stats));
     }
   }
 
@@ -1515,6 +1576,47 @@ export class StatsService {
     ]);
   }
 
+  private async loadColdBatch(
+    requests: SourcePlayerRequest[],
+    options: LoadBatchOptions,
+  ): Promise<Map<string, PlayerStats>> {
+    if (!this.playerLoadLeases) return this.loadBatch(requests, options);
+    const leases = this.playerLoadLeases;
+    const owner = crypto.randomUUID();
+    const claimed: Array<{request: SourcePlayerRequest; leaseKey: string}> = [];
+    const result = new Map<string, PlayerStats>();
+    try {
+      const admissions = await Promise.allSettled(requests.map(async request => {
+        const key = cacheKey(request, this.excludeLowCoverage);
+        const leaseKey = inFlightKey(request, this.excludeLowCoverage);
+        const admitted = await leases.claim(leaseKey, owner);
+        if (admitted) claimed.push({request, leaseKey});
+        // Recheck after admission: another owner may just have filled the cache.
+        const cached = await this.cache.get(key);
+        if (cached && hasRequestedHistoricalWindows(cached, request.includeHistoricalAssists === true)) {
+          result.set(key, cached);
+          options.onLoaded?.(key, cached);
+        } else if (!admitted) options.onDeferred?.(request);
+      }));
+      const failed = admissions.find(entry => entry.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+      const toLoad = claimed.map(entry => entry.request).filter(request => !result.has(cacheKey(request, this.excludeLowCoverage)));
+      if (toLoad.length) {
+        for (const [key, stats] of await this.loadBatch(toLoad, options)) result.set(key, stats);
+      }
+      await Promise.all(claimed.filter(entry => {
+        const stats = result.get(cacheKey(entry.request, this.excludeLowCoverage));
+        return !stats || stats.pendingRefreshes?.includes('formHistory');
+      }).map(entry => leases.release(entry.leaseKey, owner)));
+      // Retain successful claims until expiry: Cloudflare cache writes may
+      // still be in waitUntil. Followers use cached results or defer briefly.
+      return result;
+    } catch (error) {
+      await Promise.allSettled(claimed.map(entry => leases.release(entry.leaseKey, owner)));
+      throw error;
+    }
+  }
+
   private async loadBatch(
     requests: SourcePlayerRequest[],
     options: LoadBatchOptions = {},
@@ -1596,6 +1698,7 @@ export class StatsService {
         await this.cache.set(key, stats);
       }
       result.set(key, storedStats);
+      options.onLoaded?.(key, storedStats);
     }
     if (
       partialRequests.length > 0 &&

@@ -19,6 +19,7 @@ import {
 } from '../cloudflare/cache.js';
 import { D1JsonKeyValueStore } from '../cloudflare/d1-cache.js';
 import { D1OddsBudget } from '../cloudflare/odds-budget.js';
+import { D1PlayerLoadLeases } from '../cloudflare/player-load-leases.js';
 import { SorareGraphqlClient } from '../graphql/client.js';
 import type { AppLogger } from '../logger.js';
 import {
@@ -51,6 +52,20 @@ afterEach(() => {
 });
 
 describe('Cloudflare Worker', () => {
+  it('admits one cold-load owner and protects a replacement from a late release', async () => {
+    let now = Date.parse('2032-01-01T12:00:00Z');
+    const stores = Array.from({length:20}, () => new D1PlayerLoadLeases(env.CACHE_DB, () => now));
+    const accepted = await Promise.all(stores.map((store,index) => store.claim('player:Defender:base',String(index))));
+    expect(accepted.filter(Boolean)).toHaveLength(1);
+    const owner = String(accepted.indexOf(true));
+    now += 61_000;
+    expect(await stores[0]!.claim('player:Defender:base','replacement')).toBe(true);
+    await stores[1]!.release('player:Defender:base',owner);
+    expect(await stores[2]!.claim('player:Defender:base','intruder')).toBe(false);
+    await stores[0]!.release('player:Defender:base','replacement');
+    expect(await stores[2]!.claim('player:Defender:base','next')).toBe(true);
+    expect(await stores[2]!.claim('player:Midfielder:base','position')).toBe(true);
+  });
   it('reserves both odds budgets atomically across independent Workers', async () => {
     const now = Date.parse('2030-01-01T12:00:00Z');
     const stores = Array.from({length: 20}, () => new D1OddsBudget(env.CACHE_DB));

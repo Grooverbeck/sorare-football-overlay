@@ -15,6 +15,7 @@ import {
 } from './cache.js';
 import { D1JsonKeyValueStore } from './d1-cache.js';
 import { D1OddsBudget } from './odds-budget.js';
+import { D1PlayerLoadLeases } from './player-load-leases.js';
 import { createWorkerLogger } from './logger.js';
 
 const configKeys = [
@@ -110,6 +111,7 @@ function createWorkerRuntime(
       context,
     ),
     matchOddsSnapshotStore: new CloudflareMatchOddsSnapshotStore(cacheStore),
+    playerLoadLeases: new D1PlayerLoadLeases(env.CACHE_DB),
     providerQuotaUsageStore: new CloudflareProviderQuotaUsageStore(
       cacheStore,
       new D1OddsBudget(env.CACHE_DB),
