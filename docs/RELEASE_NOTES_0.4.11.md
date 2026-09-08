@@ -5,7 +5,7 @@ Mit diesem Update werden Spielerwerte zuverlässiger angezeigt und fehlende Quot
 ## Verbesserungen
 
 - **Aktuellere Werte:** Wenn du später zu deinen Karten zurückkehrst, werden veraltete Spielerwerte zuverlässiger erneuert.
-- **Chancen auf ein Spiel ohne Gegentor:** Fehlende Clean-Sheet-Werte werden zuverlässiger nachgeladen, sobald sie verfügbar sind.
+- **Clean-Sheet-Anzeige:** Fehlende Werte werden zuverlässiger nachgeladen, sobald sie verfügbar sind.
 - **Weniger fehlende Anzeigen:** Lädt ein Spieler länger, können die Werte der anderen Spieler trotzdem angezeigt werden.
 
 ## Fehlerbehebungen
