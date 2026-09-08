@@ -34,6 +34,46 @@ const minimumOverlayCardWidth = 72;
 const minimumOverlayCardHeight = 110;
 const knownPlayerNamesByPictureId = new Map<string, string>();
 const discoveredPlayerNamesByPictureId = new Map<string, string>();
+// Verified from Sorare's visible gallery card links. New cards are learned
+// from their own link/placeholder; unknown pictures are never guessed by team.
+const verifiedSetPictures: Readonly<Record<string, string>> = {
+  '92b655c1-7b93-4dc6-8093-2a544042b0fc': 'dayotchanculle-upamecano',
+  'b5693b3b-876e-4e8e-8bfc-f19893af6693': 'gonzalo-garcia-torres',
+  'bb0a6f5d-b319-4bed-ade3-4baf71e8456e': 'harold-voyer',
+  'f244abfc-a2d0-4555-b3bd-e8c071f869af': 'nathan-de-cat',
+  'bd20bfa2-0203-4fac-aa2d-495a72206f2c': 'ethan-mbappe-lottin',
+};
+const knownPlayerSlugsByPictureId = new Map(Object.entries(verifiedSetPictures));
+const discoveredPlayerSlugsByPictureId = new Map<string, string>();
+
+export function hydrateCardPictureSlugs(entries: Readonly<Record<string, string>>): void {
+  knownPlayerSlugsByPictureId.clear();
+  discoveredPlayerSlugsByPictureId.clear();
+  for (const [id, slug] of Object.entries({...entries, ...verifiedSetPictures})) {
+    if (/^[a-z0-9-]+$/i.test(id) && /^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(slug)) knownPlayerSlugsByPictureId.set(id.toLowerCase(), slug.toLowerCase());
+  }
+}
+
+export function drainDiscoveredCardPictureSlugs(): Record<string, string> {
+  const values = Object.fromEntries(discoveredPlayerSlugsByPictureId);
+  discoveredPlayerSlugsByPictureId.clear();
+  return values;
+}
+
+export function readCardPlaceholder(svg: SVGSVGElement): {playerName: string; position?: FootballPosition} | null {
+  const rarity = svg.querySelector('text[y="95%"]')?.textContent?.trim() ?? '';
+  const playerName = svg.querySelector('text[x="50%"][y="80%"]')?.textContent?.trim();
+  if (!/^(common|limited|rare|super rare|unique)$/i.test(rarity) || !playerName || playerName.length > 120 || !/\p{L}/u.test(playerName)) return null;
+  const position = normalizePosition(svg.querySelector('text[y="85%"]')?.textContent);
+  return {playerName, ...(position ? {position} : {})};
+}
+
+function pictureIdFromUrl(value: string): string | null {
+  try {
+    const url = new URL(value, location.href);
+    return url.hostname === 'assets.sorare.com' ? url.pathname.match(cardPicturePath)?.[1]?.toLowerCase() ?? null : null;
+  } catch { return null; }
+}
 const positionAliases: Readonly<Record<string, FootballPosition>> = {
   gk: 'Goalkeeper',
   goalkeeper: 'Goalkeeper',
@@ -268,7 +308,8 @@ export function extractPlayerName(image: HTMLImageElement): string | null {
   return image.alt.match(cardImageAlt)?.[1]?.trim() ?? null;
 }
 
-export function extractCardPictureId(image: HTMLImageElement): string | null {
+export function extractCardPictureId(image: HTMLImageElement | HTMLVideoElement): string | null {
+  if (image instanceof HTMLVideoElement) return pictureIdFromUrl(image.poster);
   try {
     return new URL(image.currentSrc || image.src, location.href).pathname
       .match(cardPicturePath)?.[1]
@@ -457,6 +498,15 @@ export function findCardTargets(
     const slug = extractPlayerSlug(anchor);
     const container = slug ? findCardContainer(anchor) : null;
     if (!slug || !container) continue;
+    const pictures = Array.from(container.querySelectorAll<HTMLImageElement | HTMLVideoElement>('img, video[poster]'))
+      .map(extractCardPictureId).filter((id): id is string => Boolean(id));
+    if (new Set(pictures).size === 1) {
+      const id = pictures[0]!;
+      if (knownPlayerSlugsByPictureId.get(id) !== slug) {
+        knownPlayerSlugsByPictureId.set(id, slug);
+        discoveredPlayerSlugsByPictureId.set(id, slug);
+      }
+    }
     if (targetContainers.has(container)) continue;
     if (isScoreDetailsDialogTarget(container)) continue;
     if (
@@ -482,6 +532,45 @@ export function findCardTargets(
   for (const image of images) {
     const playerName = extractPlayerName(image);
     if (playerName) rememberCardPictureName(image, playerName);
+  }
+  const placeholders = Array.from(root.querySelectorAll<SVGTextElement>('svg text[x="50%"][y="80%"]'))
+    .map(text => text.closest('svg')!).filter(Boolean);
+  if (root instanceof SVGSVGElement) placeholders.unshift(root);
+  for (const svg of placeholders) {
+    const identity = readCardPlaceholder(svg);
+    const container = svg.closest<HTMLElement>('button, [role="button"], article, li');
+    if (!identity || !container || isScoreDetailsDialogTarget(container)) continue;
+    const ids = new Set(Array.from(container.querySelectorAll<HTMLElement>('[style*="--mask-shape"]'))
+      .map(node => node.style.getPropertyValue('--mask-shape').match(/url\(["']?([^"')]+)["']?\)/)?.[1])
+      .flatMap(url => {const id = url ? pictureIdFromUrl(url) : null; return id ? [id] : [];}));
+    if (ids.size !== 1) continue;
+    const id = [...ids][0]!;
+    if (knownPlayerNamesByPictureId.get(id) !== identity.playerName) {
+      knownPlayerNamesByPictureId.set(id, identity.playerName);
+      discoveredPlayerNamesByPictureId.set(id, identity.playerName);
+    }
+    if (targetContainers.has(container)) continue;
+    const rect = svg.getBoundingClientRect();
+    if (!options.skipMiniatureCardCheck && rect.width > 0 && (rect.width < minimumOverlayCardWidth || rect.height < minimumOverlayCardHeight)) continue;
+    const slug = knownPlayerSlugsByPictureId.get(id);
+    targets.push({...identity, ...(slug ? {slug} : {}), container});
+    targetContainers.add(container);
+  }
+  const videos = [...root.querySelectorAll<HTMLVideoElement>('video[poster]')];
+  if (root instanceof HTMLVideoElement) videos.unshift(root);
+  for (const video of videos) {
+    if (!isSorareCardVideo(video)) continue;
+    const id = extractCardPictureId(video);
+    const slug = id ? knownPlayerSlugsByPictureId.get(id) : undefined;
+    const playerName = id ? knownPlayerNamesByPictureId.get(id) : undefined;
+    const container = video.closest<HTMLElement>('button, [role="button"], article, li');
+    if ((!slug && !playerName) || !container || targetContainers.has(container) || isScoreDetailsDialogTarget(container)) continue;
+    if (!options.skipMiniatureCardCheck && isMiniatureCardTarget(container)) continue;
+    const slot = inferLineupSlotPosition(container);
+    const position = inferCardPosition(container) ?? (slot === null ? undefined : slot ?? (hasActiveLineupPosition ? options.activeLineupPosition ?? undefined : inferActivePositionSelection(container)));
+    const teamSlug = inferHighlightedPlayerTeamSlug(container, lineupContextBoundary(container));
+    targets.push({container, ...(slug ? {slug} : {playerName:playerName!}), ...(position ? {position} : {}), ...(teamSlug ? {teamSlug} : {})});
+    targetContainers.add(container);
   }
   for (const image of images) {
     const playerName = resolvePlayerName(image);

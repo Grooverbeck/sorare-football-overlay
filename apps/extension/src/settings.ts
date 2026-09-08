@@ -6,6 +6,19 @@ export const HISTORICAL_ASSIST_FALLBACK_ENABLED_KEY =
 export const HISTORICAL_ASSIST_WINDOW_KEY = 'historicalAssistWindow';
 export const MARKET_VALUE_FORMAT_KEY = 'marketValueFormat';
 export const CARD_PICTURE_NAMES_KEY = 'cardPictureNamesV1';
+export const CARD_PICTURE_SLUGS_KEY = 'cardPictureSlugsV1';
+
+export async function getCardPictureSlugs(): Promise<Record<string, string>> {
+  const stored = await chrome.storage.local.get({[CARD_PICTURE_SLUGS_KEY]: {}});
+  const value = stored[CARD_PICTURE_SLUGS_KEY];
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string,string] =>
+    /^[a-z0-9-]+$/i.test(entry[0]) && typeof entry[1] === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(entry[1])));
+}
+
+export async function setCardPictureSlugs(entries: Readonly<Record<string,string>>): Promise<void> {
+  await chrome.storage.local.set({[CARD_PICTURE_SLUGS_KEY]: Object.fromEntries(Object.entries(entries).slice(-maxRememberedCardPictures))});
+}
 export type MarketBracketSide = 'left' | 'right';
 export type HistoricalAssistWindow = 10 | 15 | 40;
 export type MarketValueFormat = 'percentage' | 'decimal';

@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  getCardPictureSlugs,
+  setCardPictureSlugs,
+  CARD_PICTURE_SLUGS_KEY,
   CARD_PICTURE_NAMES_KEY,
   getCardPictureNames,
   getHistoricalAssistFallbackSettings,
@@ -169,5 +172,15 @@ describe('overlay settings', () => {
         'picture-1': 'Mamadou Fofana',
       },
     });
+  });
+
+  it('validates and bounds persisted canonical picture slugs', async () => {
+    get.mockResolvedValue({[CARD_PICTURE_SLUGS_KEY]: {'picture-1':'player-one',invalid:42,other:'not a slug'}});
+    await expect(getCardPictureSlugs()).resolves.toEqual({'picture-1':'player-one'});
+    set.mockResolvedValue(undefined);
+    await setCardPictureSlugs(Object.fromEntries(Array.from({length:2005},(_,i) => [`picture-${i}`,'player-one'])));
+    const saved = set.mock.calls.at(-1)![0][CARD_PICTURE_SLUGS_KEY];
+    expect(Object.keys(saved)).toHaveLength(2000);
+    expect(saved['picture-0']).toBeUndefined();
   });
 });

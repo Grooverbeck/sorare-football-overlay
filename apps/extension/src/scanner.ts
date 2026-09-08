@@ -13,6 +13,7 @@ import { hasAnyDisplayData } from '@sorare-overlay/shared';
 import { fetchPlayerMarketSnapshots, fetchPlayerStats } from './api.js';
 import {
   drainDiscoveredCardPictureNames,
+  drainDiscoveredCardPictureSlugs,
   extractCardPictureId,
   extractPlayerName,
   findCardTargets,
@@ -1711,6 +1712,7 @@ export class SorareCardScanner {
       entries: Readonly<Record<string, string>>,
     ) => void,
     private readonly lineupSortHydrator = new LineupSortHydrator(),
+    private readonly onCardPictureSlugsDiscovered?: (entries: Readonly<Record<string,string>>) => void,
   ) {}
 
   configureHistoricalAssistFallback(
@@ -1938,6 +1940,12 @@ export class SorareCardScanner {
         })
       : findCardTargets(root);
     const discoveredPictureNames = drainDiscoveredCardPictureNames();
+    const discoveredPictureSlugs = drainDiscoveredCardPictureSlugs();
+    if (Object.keys(discoveredPictureSlugs).length) {
+      this.onCardPictureSlugsDiscovered?.(discoveredPictureSlugs);
+      for (const id of Object.keys(discoveredPictureSlugs)) this.pendingPictureNameRescanIds.add(id);
+      this.schedulePictureNameRescans();
+    }
     if (Object.keys(discoveredPictureNames).length > 0) {
       this.onCardPictureNamesDiscovered?.(discoveredPictureNames);
       for (const pictureId of Object.keys(discoveredPictureNames)) {
@@ -2447,14 +2455,14 @@ export class SorareCardScanner {
     if (!this.root || this.pendingPictureNameRescanIds.size === 0) return;
     const pictureIds = new Set(this.pendingPictureNameRescanIds);
     this.pendingPictureNameRescanIds.clear();
-    for (const image of document.querySelectorAll<HTMLImageElement>('img[alt]')) {
+    for (const image of document.querySelectorAll<HTMLImageElement | HTMLVideoElement>('img[alt], video[poster]')) {
       if (
         alreadyScannedRoot &&
         (alreadyScannedRoot === image || alreadyScannedRoot.contains(image))
       ) {
         continue;
       }
-      if (extractPlayerName(image)) continue;
+      if (image instanceof HTMLImageElement && extractPlayerName(image)) continue;
       const pictureId = extractCardPictureId(image);
       if (pictureId && pictureIds.has(pictureId)) this.queueScanRoot(image);
     }
@@ -2471,6 +2479,10 @@ export class SorareCardScanner {
     if (context?.matches('video, video source')) {
       const anchor = context.closest<HTMLAnchorElement>('a[href]');
       if (anchor) this.pendingScanRoots.add(anchor);
+      else {
+        const card = context.closest<HTMLElement>('button, [role="button"], article, li');
+        if (card) this.pendingScanRoots.add(card);
+      }
     }
     const hydrationGrid = context?.closest<HTMLElement>(
       `[${lineupSortHydrationGridAttribute}]`,

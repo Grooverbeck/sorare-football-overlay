@@ -12,6 +12,8 @@ import {
   extractPlayerSlug,
   findCardTargets,
   hydrateCardPictureNames,
+  hydrateCardPictureSlugs,
+  drainDiscoveredCardPictureSlugs,
 } from '../dom.js';
 import {
   applyHistoricalAssistFallbackSettings,
@@ -69,6 +71,7 @@ describe('Sorare card DOM discovery', () => {
     applyMarketValueFormat('percentage');
     applyHistoricalAssistFallbackSettings(false, 15);
     hydrateCardPictureNames({});
+    hydrateCardPictureSlugs({});
     window.history.replaceState({}, '', '/football');
   });
 
@@ -124,6 +127,35 @@ describe('Sorare card DOM discovery', () => {
     expect(view.host.style.left).toBe('110px');
     expect(view.host.style.width).toBe('200px');
     view.destroy();
+  });
+
+  it.each(['/football/series/example/compose-team','/football/squad'])('recognizes verified linkless Set video cards on %s', (path) => {
+    window.history.replaceState({},'',path);
+    document.body.innerHTML = `<button><video poster="https://assets.sorare.com/image-resize/cardsamplepicture/92b655c1-7b93-4dc6-8093-2a544042b0fc/picture/card.png"></video></button>`;
+    expect(findCardTargets(document)).toMatchObject([{slug:'dayotchanculle-upamecano'}]);
+  });
+
+  it('learns a gallery picture identity and restores it for a linkless card in a later page', () => {
+    const id = 'new-picture-id';
+    document.body.innerHTML = `<button><a href="/football/series?card=new-player-2026-common-ee1aab80-2072-42d4-bb38-5d66082ea6c5"><video poster="https://assets.sorare.com/cardsamplepicture/${id}/picture/card.png"></video></a></button>`;
+    findCardTargets(document);
+    const learned = drainDiscoveredCardPictureSlugs();
+    expect(learned[id]).toBe('new-player');
+    hydrateCardPictureSlugs(learned);
+    document.body.innerHTML = `<button><video poster="https://assets.sorare.com/cardsamplepicture/${id}/picture/card.png"></video></button>`;
+    expect(findCardTargets(document)).toMatchObject([{slug:'new-player'}]);
+  });
+
+  it('learns the player from the scoped Sorare loading placeholder before video playback', () => {
+    document.body.innerHTML = `<button><svg><text x="50%" y="80%">NEW PLAYER</text><text y="85%">Stürmer</text><text y="95%">Common</text></svg><div style="--mask-shape:url(https://assets.sorare.com/cardsamplepicture/placeholder-id/picture/card.png)"></div></button>`;
+    expect(findCardTargets(document)).toMatchObject([{playerName:'NEW PLAYER',position:'Forward'}]);
+    document.body.innerHTML = `<button><video poster="https://assets.sorare.com/cardsamplepicture/placeholder-id/picture/card.png"></video></button>`;
+    expect(findCardTargets(document)).toMatchObject([{playerName:'NEW PLAYER'}]);
+  });
+
+  it('does not guess a player from an unknown video or unrelated team', () => {
+    document.body.innerHTML = `<button><video poster="https://assets.sorare.com/cardsamplepicture/unknown-id/picture/card.png"></video></button><div><span aria-label="Team">BAY</span><span aria-label="Team">BOD</span></div>`;
+    expect(findCardTargets(document)).toEqual([]);
   });
 
   it('uses stable data attributes and identifies the concrete card position', () => {

@@ -1,5 +1,5 @@
 import { SorareCardScanner } from './scanner.js';
-import { hydrateCardPictureNames } from './dom.js';
+import { hydrateCardPictureNames, hydrateCardPictureSlugs } from './dom.js';
 import { supportsCompactViewPath } from './compact-view-route.js';
 import {
   applyHistoricalAssistFallbackSettings,
@@ -9,6 +9,8 @@ import {
 } from './overlay.js';
 import {
   getCardPictureNames,
+  getCardPictureSlugs,
+  setCardPictureSlugs,
   getHistoricalAssistFallbackSettings,
   getMarketBracketCompactView,
   getMarketBracketSide,
@@ -28,6 +30,8 @@ import {
 } from './settings.js';
 
 let rememberedCardPictureNames: Record<string, string> = {};
+let rememberedCardPictureSlugs: Record<string, string> = {};
+let pictureSlugSaveTimer: number | undefined;
 let pictureNameSaveTimer: number | undefined;
 const scanner = new SorareCardScanner(
   undefined,
@@ -42,6 +46,18 @@ const scanner = new SorareCardScanner(
     pictureNameSaveTimer = window.setTimeout(() => {
       pictureNameSaveTimer = undefined;
       void setCardPictureNames(rememberedCardPictureNames);
+    }, 500);
+  },
+  undefined,
+  (entries): void => {
+    for (const [id, slug] of Object.entries(entries)) {
+      delete rememberedCardPictureSlugs[id];
+      rememberedCardPictureSlugs[id] = slug;
+    }
+    if (pictureSlugSaveTimer !== undefined) window.clearTimeout(pictureSlugSaveTimer);
+    pictureSlugSaveTimer = window.setTimeout(() => {
+      pictureSlugSaveTimer = undefined;
+      void setCardPictureSlugs(rememberedCardPictureSlugs);
     }, 500);
   },
 );
@@ -90,6 +106,7 @@ void Promise.all([
   getHistoricalAssistFallbackSettings(),
   getMarketValueFormat(),
   getCardPictureNames(),
+  getCardPictureSlugs(),
 ]).then(
   ([
     nextEnabled,
@@ -98,9 +115,12 @@ void Promise.all([
     historicalAssistSettings,
     marketValueFormat,
     cardPictureNames,
+    cardPictureSlugs,
   ]) => {
     rememberedCardPictureNames = cardPictureNames;
     hydrateCardPictureNames(cardPictureNames);
+    rememberedCardPictureSlugs = cardPictureSlugs;
+    hydrateCardPictureSlugs(cardPictureSlugs);
     applyMarketBracketSide(bracketSide);
     compactViewEnabled = compactView;
     syncCompactViewForCurrentRoute();
