@@ -9,7 +9,7 @@ import type {
   PlayerStatsRequest,
   PlayerStatsSuccessResponse,
 } from '@sorare-overlay/shared';
-import { hasAnyDisplayData } from '@sorare-overlay/shared';
+import { fixtureRolloverAtMs, hasAnyDisplayData } from '@sorare-overlay/shared';
 import { fetchPlayerMarketSnapshots, fetchPlayerStats } from './api.js';
 import {
   drainDiscoveredCardPictureNames,
@@ -1368,12 +1368,8 @@ export class StatsBatchCoordinator {
       // Fixtures are checked more frequently; missing fixtures may appear soon.
       expires = Math.min(expires, now + (stats.nextGame ? 4 * 60 * 60_000 : 15 * 60_000));
       if (stats.nextGame) {
-        const kickoff = Date.parse(stats.nextGame.date);
-        const rollover = new Date(kickoff);
-        rollover.setUTCDate(rollover.getUTCDate() + 1);
-        rollover.setUTCHours(8, 0, 0, 0);
-        if (Number.isFinite(kickoff)) {
-          const boundary = Math.max(kickoff + 6 * 60 * 60_000, rollover.getTime());
+        const boundary = fixtureRolloverAtMs(stats.nextGame.date);
+        if (boundary !== null) {
           expires = Math.min(expires, boundary > now ? boundary : now + 15 * 60_000);
         }
       }

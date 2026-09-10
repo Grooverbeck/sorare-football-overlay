@@ -1,5 +1,6 @@
 import {
   FootballPositionSchema,
+  fixtureRolloverAtMs,
   MLS_AA_BENCHMARKS,
   MatchProbabilitiesSchema,
   PlayerStatsSchema,
@@ -216,8 +217,6 @@ abstract class CloudflareKvCache {
 
 const MONDAY_UTC = 1;
 const WEEKLY_FORM_REFRESH_HOUR_UTC = 10;
-const FIXTURE_ROLLOVER_HOUR_UTC = 8;
-const FIXTURE_MINIMUM_POST_KICKOFF_SECONDS = 6 * 60 * 60;
 const HOUR_MS = 60 * 60 * 1_000;
 const FORM_HISTORY_REFRESH_LEASE_SECONDS = 60;
 const FORM_HISTORY_REFRESH_LEASE_PREFIX =
@@ -292,20 +291,8 @@ export function fixtureOddsRefreshIntervalMs(
 }
 
 function fixtureRolloverExpiration(fixtureDate: string): number | null {
-  const kickoffMs = Date.parse(fixtureDate);
-  if (!Number.isFinite(kickoffMs)) return null;
-
-  const kickoff = new Date(kickoffMs);
-  const nextDayMorningMs = Date.UTC(
-    kickoff.getUTCFullYear(),
-    kickoff.getUTCMonth(),
-    kickoff.getUTCDate() + 1,
-    FIXTURE_ROLLOVER_HOUR_UTC,
-  );
-  const safelyAfterKickoffMs =
-    kickoffMs + FIXTURE_MINIMUM_POST_KICKOFF_SECONDS * 1_000;
-
-  return Math.floor(Math.max(nextDayMorningMs, safelyAfterKickoffMs) / 1_000);
+  const rolloverMs = fixtureRolloverAtMs(fixtureDate);
+  return rolloverMs === null ? null : Math.floor(rolloverMs / 1_000);
 }
 
 function hasFixtureTeamOdds(value: FixtureTeamOdds): boolean {

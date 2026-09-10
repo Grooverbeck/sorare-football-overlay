@@ -3,6 +3,36 @@ import type { PlayerStats } from '@sorare-overlay/shared';
 import { StatsBatchCoordinator } from '../scanner.js';
 import type { OverlayView } from '../overlay.js';
 
+it.each([
+  ['summer', '2026-09-10T19:00:00Z', '2026-09-11T07:00:00Z'],
+  ['winter', '2026-12-10T19:00:00Z', '2026-12-11T08:00:00Z'],
+])('expires fixture aliases at 09:00 Berlin in %s', (_season, kickoff, rollover) => {
+  const boundary = Date.parse(rollover);
+  const spy = vi.spyOn(Date, 'now').mockReturnValue(boundary - 30 * 60_000);
+  const stats: PlayerStats = {
+    slug: 'rollover-player', displayName: 'Rollover Player', position: 'Forward',
+    aaL10: { value: 10, sampleSize: 10 }, goalL10: { value: 0.2, sampleSize: 10 },
+    cleanSheetL10: { value: 0, sampleSize: 10 }, excludedLowCoverage: 0,
+    nextGame: { date: kickoff, cleanSheetProbability: null, matchProbabilities: null },
+  };
+  const coordinator = new StatsBatchCoordinator() as unknown as {
+    setCachedStats(key: string, stats: PlayerStats): void;
+    getCachedStats(key: string): PlayerStats | undefined;
+  };
+  try {
+    coordinator.setCachedStats('original', stats);
+    spy.mockReturnValue(boundary - 1);
+    coordinator.setCachedStats('alias', stats);
+    expect(coordinator.getCachedStats('original')).toBe(stats);
+    expect(coordinator.getCachedStats('alias')).toBe(stats);
+    spy.mockReturnValue(boundary);
+    expect(coordinator.getCachedStats('original')).toBeUndefined();
+    expect(coordinator.getCachedStats('alias')).toBeUndefined();
+  } finally {
+    spy.mockRestore();
+  }
+});
+
 it('replaces a paused market refresh with a full fetch when cached data expired', () => {
   const c = new StatsBatchCoordinator();
   const internals = c as unknown as {

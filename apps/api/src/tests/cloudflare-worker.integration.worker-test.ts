@@ -391,11 +391,11 @@ describe('Cloudflare Worker', () => {
     await expect(store.get(cacheKey, 'json')).resolves.toBeNull();
   });
 
-  it('keeps the current fixture and its team odds until the following morning', () => {
+  it('keeps the current fixture and its team odds until 09:00 Berlin the following morning', () => {
     const nowMs = Date.parse('2026-07-25T12:00:00.000Z');
     const fixtureDate = '2026-07-26T00:30:00.000Z';
     const expectedRollover =
-      Date.parse('2026-07-27T08:00:00.000Z') / 1_000;
+      Date.parse('2026-07-27T07:00:00.000Z') / 1_000;
 
     expect(playerFixtureExpiration(fixtureDate, 14_400, nowMs)).toBe(
       expectedRollover,
@@ -410,9 +410,9 @@ describe('Cloudflare Worker', () => {
       playerFixtureExpiration(
         '2026-07-25T18:00:00.000Z',
         14_400,
-        Date.parse('2026-07-26T07:30:00.000Z'),
+        Date.parse('2026-07-26T06:30:00.000Z'),
       ),
-    ).toBe(Date.parse('2026-07-26T08:00:00.000Z') / 1_000);
+    ).toBe(Date.parse('2026-07-26T07:00:00.000Z') / 1_000);
     expect(fixtureOddsRefreshIntervalMs(20 * 60 * 60 * 1_000)).toBe(
       2 * 60 * 60 * 1_000,
     );
@@ -422,6 +422,18 @@ describe('Cloudflare Worker', () => {
     expect(fixtureOddsRefreshIntervalMs(96 * 60 * 60 * 1_000)).toBe(
       12 * 60 * 60 * 1_000,
     );
+  });
+
+  it.each([
+    ['winter', '2026-12-10T19:00:00Z', '2026-12-11T08:00:00Z'],
+    ['DST start', '2026-03-28T19:00:00Z', '2026-03-29T07:00:00Z'],
+    ['DST end', '2026-10-24T19:00:00Z', '2026-10-25T08:00:00Z'],
+  ])('uses 09:00 Berlin for %s in the Worker runtime', (_season, kickoff, rollover) => {
+    const beforeRollover = Date.parse(rollover) - 30 * 60_000;
+    expect(playerFixtureExpiration(kickoff, 14_400, beforeRollover))
+      .toBe(Date.parse(rollover) / 1_000);
+    expect(fixtureTeamOddsExpiration(kickoff, 60, beforeRollover))
+      .toBe(Date.parse(rollover) / 1_000);
   });
 
   it('rechecks missing Sorare team odds only after a viewed fixture becomes due', async () => {
@@ -677,8 +689,8 @@ describe('Cloudflare Worker', () => {
     );
   });
 
-  it('does not revive a completed fixture after the morning rollover', async () => {
-    const afterRolloverMs = Date.parse('2026-07-29T09:00:00.000Z');
+  it('rejects an old 10:00 expiry at the new 09:00 Berlin rollover', async () => {
+    const afterRolloverMs = Date.parse('2026-07-29T07:00:00.000Z');
     const key = 'expired-rollover-player:Defender:no-low';
     const canonicalKey =
       'player-fixture:v1:expired-rollover-player:auto-v3:no-low';
@@ -705,8 +717,15 @@ describe('Cloudflare Worker', () => {
           matchProbabilities: { win: 0.26, draw: 0.22, loss: 0.52 },
         },
       }),
-      { expiration: Date.parse('2026-07-30T08:00:00.000Z') / 1_000 },
+      { expiration: Date.parse('2026-07-29T08:00:00.000Z') / 1_000 },
     );
+    const beforeContext = createExecutionContext();
+    const beforeCache = new CloudflarePlayerStatsCache(
+      store, 604_800, 14_400, beforeContext, () => afterRolloverMs - 1_000,
+    );
+    expect((await beforeCache.getParts(key)).fixture?.date)
+      .toBe('2026-07-28T18:45:00.000Z');
+    await waitOnExecutionContext(beforeContext);
     const context = createExecutionContext();
     const cache = new CloudflarePlayerStatsCache(
       store,
@@ -715,6 +734,8 @@ describe('Cloudflare Worker', () => {
       context,
       () => afterRolloverMs,
     );
+    expect((await cache.getPartsMany([key])).get(key)?.fixture).toBeUndefined();
+    await waitOnExecutionContext(context);
     const nextFixture = {
       date: '2026-08-01T15:00:00.000Z',
       homeTeamName: 'New Home',
@@ -729,6 +750,7 @@ describe('Cloudflare Worker', () => {
       date: nextFixture.date,
       cleanSheetProbability: 0.35,
     });
+    await waitOnExecutionContext(context);
   });
 
   it('keeps fixture-level team odds available across player positions and empty refreshes', async () => {
@@ -1039,7 +1061,7 @@ describe('Cloudflare Worker', () => {
   });
 
   it('does not revive a delayed old team fixture after the morning rollover', async () => {
-    const nowMs = Date.parse('2026-07-29T09:00:00.000Z');
+    const nowMs = Date.parse('2026-07-29T07:00:00.000Z');
     const store = new D1JsonKeyValueStore(
       env.CACHE_DB,
       env.STATS_CACHE,
