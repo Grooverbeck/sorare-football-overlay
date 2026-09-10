@@ -16,7 +16,25 @@
         </span>
         <span id="overlay-status">Overlay wird geladen</span>
       </label>
-      <p>Gilt auf allen geöffneten Sorare-Seiten.</p>
+      <p>Hauptschalter für alle geöffneten Sorare-Seiten.</p>
+      <fieldset class="side-setting page-visibility-setting">
+        <legend>Overlay anzeigen</legend>
+        <label class="toggle-row compact-toggle" for="squad-overlay-enabled">
+          <span class="switch">
+            <input id="squad-overlay-enabled" type="checkbox" checked aria-describedby="overlay-page-help">
+            <span class="slider" aria-hidden="true"></span>
+          </span>
+          <span>Im Squad anzeigen</span>
+        </label>
+        <label class="toggle-row compact-toggle" for="lineups-overlay-enabled">
+          <span class="switch">
+            <input id="lineups-overlay-enabled" type="checkbox" checked aria-describedby="overlay-page-help">
+            <span class="slider" aria-hidden="true"></span>
+          </span>
+          <span>In der Lineup-Übersicht anzeigen</span>
+        </label>
+        <p id="overlay-page-help" class="setting-help">Die Spielerauswahl bleibt davon unberührt. Änderungen gelten sofort, ohne Neuladen.</p>
+      </fieldset>
       <fieldset class="side-setting">
         <legend>Tor-/Assistklammer</legend>
         <div class="side-options">

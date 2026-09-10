@@ -1,6 +1,7 @@
 import { SorareCardScanner } from './scanner.js';
 import { hydrateCardPictureNames, hydrateCardPictureSlugs } from './dom.js';
 import { supportsCompactViewPath } from './compact-view-route.js';
+import { OverlayVisibilityController } from './overlay-visibility.js';
 import {
   applyHistoricalAssistFallbackSettings,
   applyMarketBracketCompactView,
@@ -17,6 +18,9 @@ import {
   getMarketBracketSide,
   getMarketValueFormat,
   getOverlayEnabled,
+  getOverlayPageSettings,
+  SQUAD_OVERLAY_ENABLED_KEY,
+  LINEUPS_OVERLAY_ENABLED_KEY,
   HISTORICAL_ASSIST_FALLBACK_ENABLED_KEY,
   HISTORICAL_ASSIST_WINDOW_KEY,
   MARKET_BRACKET_COMPACT_VIEW_KEY,
@@ -69,6 +73,7 @@ const scanner = new SorareCardScanner(
   },
 );
 let enabled = false;
+const overlayVisibility = new OverlayVisibilityController(() => window.location.pathname, applyEnabled);
 let compactViewEnabled = false;
 let lastCompactViewPathname: string | undefined;
 let lastCompactViewActive: boolean | undefined;
@@ -91,6 +96,7 @@ function syncCompactViewForCurrentRoute(): void {
 
 const compactViewRouteObserver = new MutationObserver(() => {
   syncCompactViewForCurrentRoute();
+  overlayVisibility.refresh();
 });
 compactViewRouteObserver.observe(document.documentElement, {
   childList: true,
@@ -98,6 +104,9 @@ compactViewRouteObserver.observe(document.documentElement, {
 });
 window.addEventListener('popstate', syncCompactViewForCurrentRoute);
 window.addEventListener('hashchange', syncCompactViewForCurrentRoute);
+window.addEventListener('popstate', () => overlayVisibility.refresh());
+window.addEventListener('hashchange', () => overlayVisibility.refresh());
+window.addEventListener('pageshow', () => overlayVisibility.refresh());
 
 function applyEnabled(nextEnabled: boolean): void {
   if (enabled === nextEnabled) return;
@@ -114,6 +123,7 @@ void Promise.all([
   getMarketValueFormat(),
   getCardPictureNames(),
   getCardPictureSlugs(),
+  getOverlayPageSettings(),
 ]).then(
   ([
     nextEnabled,
@@ -123,6 +133,7 @@ void Promise.all([
     marketValueFormat,
     cardPictureNames,
     cardPictureSlugs,
+    overlayPages,
   ]) => {
     // A newer cross-tab change can arrive while the initial settings load is
     // still pending. Do not replace it with the older startup snapshot.
@@ -146,7 +157,7 @@ void Promise.all([
       historicalAssistEnabled,
       historicalAssistWindow,
     );
-    applyEnabled(nextEnabled);
+    overlayVisibility.initialize({enabled:nextEnabled, ...overlayPages});
   },
 );
 
@@ -168,7 +179,15 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     }).catch(() => console.warn('[Sorare Overlay] Karten-Zuordnungen konnten nicht synchronisiert werden.'));
   }
   const enabledChange = changes[OVERLAY_ENABLED_KEY];
-  if (enabledChange) applyEnabled(enabledChange.newValue !== false);
+  const squadChange = changes[SQUAD_OVERLAY_ENABLED_KEY];
+  const lineupsChange = changes[LINEUPS_OVERLAY_ENABLED_KEY];
+  if (enabledChange || squadChange || lineupsChange) {
+    overlayVisibility.update({
+      ...(enabledChange ? {enabled:enabledChange.newValue !== false} : {}),
+      ...(squadChange ? {squad:squadChange.newValue !== false} : {}),
+      ...(lineupsChange ? {lineups:lineupsChange.newValue !== false} : {}),
+    });
+  }
   const sideChange = changes[MARKET_BRACKET_SIDE_KEY];
   if (sideChange) {
     applyMarketBracketSide(normalizeMarketBracketSide(sideChange.newValue));

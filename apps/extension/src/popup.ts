@@ -4,6 +4,8 @@ import {
   getMarketBracketSide,
   getMarketValueFormat,
   getOverlayEnabled,
+  getOverlayPageSettings,
+  setOverlayPageEnabled,
   setHistoricalAssistFallbackEnabled,
   setHistoricalAssistWindow,
   setMarketBracketCompactView,
@@ -23,6 +25,8 @@ function requireElement<T extends Element>(selector: string): T {
 
 const toggle = requireElement<HTMLInputElement>('#overlay-enabled');
 const status = requireElement<HTMLElement>('#overlay-status');
+const squadOverlayToggle = requireElement<HTMLInputElement>('#squad-overlay-enabled');
+const lineupsOverlayToggle = requireElement<HTMLInputElement>('#lineups-overlay-enabled');
 const localBackendStatus = requireElement<HTMLElement>('#local-backend-status');
 const bracketSideInputs = Array.from(
   document.querySelectorAll<HTMLInputElement>('input[name="market-bracket-side"]'),
@@ -57,6 +61,16 @@ function render(enabled: boolean): void {
 }
 
 void getOverlayEnabled().then(render);
+void getOverlayPageSettings().then(settings => {
+  squadOverlayToggle.checked = settings.squad;
+  lineupsOverlayToggle.checked = settings.lineups;
+});
+squadOverlayToggle.addEventListener('change', () => {
+  void setOverlayPageEnabled('squad', squadOverlayToggle.checked);
+});
+lineupsOverlayToggle.addEventListener('change', () => {
+  void setOverlayPageEnabled('lineups', lineupsOverlayToggle.checked);
+});
 void getMarketBracketSide().then((side) => {
   for (const input of bracketSideInputs) input.checked = input.value === side;
 });

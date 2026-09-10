@@ -1,4 +1,19 @@
 export const OVERLAY_ENABLED_KEY = 'overlayEnabled';
+export const SQUAD_OVERLAY_ENABLED_KEY = 'squadOverlayEnabled';
+export const LINEUPS_OVERLAY_ENABLED_KEY = 'lineupsOverlayEnabled';
+
+export async function getOverlayPageSettings(): Promise<{squad: boolean; lineups: boolean}> {
+  const stored = await chrome.storage.local.get({
+    [SQUAD_OVERLAY_ENABLED_KEY]: true,
+    [LINEUPS_OVERLAY_ENABLED_KEY]: true,
+  });
+  return {squad:stored[SQUAD_OVERLAY_ENABLED_KEY] !== false, lineups:stored[LINEUPS_OVERLAY_ENABLED_KEY] !== false};
+}
+
+export async function setOverlayPageEnabled(page: 'squad' | 'lineups', enabled: boolean): Promise<void> {
+  const key = page === 'squad' ? SQUAD_OVERLAY_ENABLED_KEY : LINEUPS_OVERLAY_ENABLED_KEY;
+  await chrome.storage.local.set({[key]:enabled});
+}
 export const MARKET_BRACKET_SIDE_KEY = 'marketBracketSide';
 export const MARKET_BRACKET_COMPACT_VIEW_KEY = 'marketBracketCompactView';
 export const HISTORICAL_ASSIST_FALLBACK_ENABLED_KEY =

@@ -62,6 +62,8 @@ Bekannte Mock-Slugs sind `kylian-mbappe-lottin`, `virgil-van-dijk`, `manuel-neue
 
 Über das Extension-Symbol in der Browserleiste öffnet sich ein kleines Popup mit dem Schalter „Overlay aktiviert/deaktiviert“ und der Wahl, ob die Tor-/Assistklammer links oder rechts an der Karte sitzt. Die Klammerwerte lassen sich als Prozent oder als faire Dezimalquote anzeigen. Dort können außerdem historische Ersatzwerte für fehlende Tor- und Assistquoten ein- und ausgeschaltet sowie auf `L10`, `L15` oder `L40` gestellt werden. Die Einstellungen werden über `chrome.storage.local` gespeichert und gelten für alle Sorare-Tabs. Änderungen wirken sofort: Ausschalten entfernt vorhandene Overlays und pausiert den Scanner; Einschalten scannt die aktuell geöffnete Seite erneut.
 
+Unter „Overlay anzeigen“ lassen sich Squad und normale Lineup-Übersicht getrennt ein- und ausschalten. Beide sind standardmäßig aktiviert. Bei `/squad/lineups/...` gilt der Squad-Schalter. Die Spielerauswahl (`/compose` und `/compose-team`) bleibt davon unberührt; der Hauptschalter hat überall Vorrang. Die Auswahl wird auch beim Vor-/Zurücknavigieren ohne Seiten-Reload berücksichtigt.
+
 `EXTENSION_API_BASE_URL` wird beim Build eingebettet und zugleich als eng begrenzte `host_permission` ins generierte Manifest geschrieben. Nach einer URL-Änderung muss neu gebaut und neu geladen werden. In diese Variable gehört nur die URL des eigenen Backends, niemals ein Token.
 
 ### Chrome-Web-Store-Paket

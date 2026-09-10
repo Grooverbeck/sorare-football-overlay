@@ -125,6 +125,10 @@ p {
   font-size: 11px;
 }
 
+.page-visibility-setting .toggle-row + .toggle-row {
+  margin-top: 10px;
+}
+
 .three-options {
   grid-template-columns: repeat(3, 1fr);
   margin-top: 9px;

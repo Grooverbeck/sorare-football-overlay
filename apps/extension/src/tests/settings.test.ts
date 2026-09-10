@@ -10,6 +10,10 @@ import {
   getMarketBracketSide,
   getMarketValueFormat,
   getOverlayEnabled,
+  getOverlayPageSettings,
+  setOverlayPageEnabled,
+  SQUAD_OVERLAY_ENABLED_KEY,
+  LINEUPS_OVERLAY_ENABLED_KEY,
   HISTORICAL_ASSIST_FALLBACK_ENABLED_KEY,
   HISTORICAL_ASSIST_WINDOW_KEY,
   MARKET_BRACKET_COMPACT_VIEW_KEY,
@@ -50,6 +54,23 @@ describe('overlay settings', () => {
 
     await setOverlayEnabled(false);
     expect(set).toHaveBeenCalledWith({ [OVERLAY_ENABLED_KEY]: false });
+  });
+
+  it('defaults both overview options to enabled for existing installations', async () => {
+    get.mockResolvedValue({});
+    await expect(getOverlayPageSettings()).resolves.toEqual({squad:true,lineups:true});
+    get.mockResolvedValue({[SQUAD_OVERLAY_ENABLED_KEY]:false,[LINEUPS_OVERLAY_ENABLED_KEY]:true});
+    await expect(getOverlayPageSettings()).resolves.toEqual({squad:false,lineups:true});
+  });
+
+  it('persists overview switches independently without changing the master switch', async () => {
+    set.mockResolvedValue(undefined);
+    await setOverlayPageEnabled('squad',false);
+    await setOverlayPageEnabled('lineups',true);
+    expect(set.mock.calls).toEqual([
+      [{[SQUAD_OVERLAY_ENABLED_KEY]:false}],
+      [{[LINEUPS_OVERLAY_ENABLED_KEY]:true}],
+    ]);
   });
 
   it('defaults the market bracket to the right side', async () => {
