@@ -1724,6 +1724,11 @@ export class SorareCardScanner {
     this.refreshAllOverlays(changed && enabled);
   }
 
+  refreshRememberedCardPictures(ids: readonly string[]): void {
+    for (const id of ids) this.pendingPictureNameRescanIds.add(id.toLowerCase());
+    this.schedulePictureNameRescans();
+  }
+
   refreshAllOverlays(forceRefresh = false): void {
     for (const mounted of this.overlays.values()) {
       mounted.statsRequested = false;

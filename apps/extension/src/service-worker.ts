@@ -12,6 +12,8 @@ import type {
   WorkerResponse,
 } from './messages.js';
 
+import { mergeCardPictureUpdates, validCardPictureUpdates } from './card-picture-store.js';
+
 const backendRequestTimeoutMs = 15_000;
 
 function errorResponse<T>(
@@ -59,6 +61,17 @@ export async function handleMessage(
       requestId,
       startedAt,
     );
+  }
+  if (message?.type === 'REMEMBER_CARD_PICTURES') {
+    if (!validCardPictureUpdates(message.payload)) {
+      return errorResponse('INVALID_REQUEST', 'Invalid card picture identities', requestId, startedAt);
+    }
+    try {
+      await mergeCardPictureUpdates(message.payload);
+      return {ok:true, value:{}, requestId, durationMs:Math.round(performance.now()-startedAt)};
+    } catch {
+      return errorResponse('STORAGE_ERROR', 'Card identities could not be saved', requestId, startedAt);
+    }
   }
   if (
     message?.type !== 'FETCH_PLAYER_STATS' &&

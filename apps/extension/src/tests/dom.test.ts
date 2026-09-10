@@ -158,6 +158,29 @@ describe('Sorare card DOM discovery', () => {
     expect(findCardTargets(document)).toEqual([]);
   });
 
+  it('rescans only newly learned video identities without reloading the Squad page', async () => {
+    window.history.replaceState({}, '', '/football/series/squad/lineups/test');
+    document.body.innerHTML = `<button><video poster="https://assets.sorare.com/cardsamplepicture/shared-tab-picture/picture/card.png"></video></button>`;
+    const card = document.querySelector('button')!;
+    const video = document.querySelector('video')!;
+    vi.spyOn(card,'getBoundingClientRect').mockReturnValue(new DOMRect(100,100,110,180));
+    vi.spyOn(video,'getBoundingClientRect').mockReturnValue(new DOMRect(100,100,110,180));
+    const fetcher = vi.fn(async (): Promise<PlayerStatsSuccessResponse> => ({
+      data:[{slug:'learned-player',displayName:'Learned Player',position:'Forward',
+        aaL10:{value:10,sampleSize:10},cleanSheetL10:{value:0,sampleSize:10},goalL10:{value:0.2,sampleSize:10},nextGame:null,excludedLowCoverage:0}],
+      meta:{requested:1,returned:1,cacheHits:1,source:'sorare'},
+    }));
+    const scanner = new SorareCardScanner(new StatsBatchCoordinator(fetcher,0));
+    try {
+      scanner.start(document);
+      expect(document.querySelector('[data-sorare-overlay-root]')).toBeNull();
+      hydrateCardPictureSlugs({'shared-tab-picture':'learned-player'});
+      scanner.refreshRememberedCardPictures(['shared-tab-picture']);
+      await vi.waitFor(() => expect(document.querySelector('[data-sorare-overlay-root][data-player-slug="learned-player"]')).not.toBeNull());
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    } finally { scanner.stop(); }
+  });
+
   it('recognizes Mbeumos verified video immediately without a previous gallery visit', () => {
     document.body.innerHTML = `<button><video poster="https://assets.sorare.com/image-resize/cardsamplepicture/59bcd30d-a708-401a-a5e2-0cd6aa11abb5/picture/tinified-card.png?width=160"></video></button>`;
     expect(findCardTargets(document)).toMatchObject([{slug:'bryan-mbeumo'}]);

@@ -10,7 +10,8 @@ import {
 import {
   getCardPictureNames,
   getCardPictureSlugs,
-  setCardPictureSlugs,
+  CARD_PICTURE_SLUGS_KEY,
+  CARD_PICTURE_NAMES_KEY,
   getHistoricalAssistFallbackSettings,
   getMarketBracketCompactView,
   getMarketBracketSide,
@@ -25,40 +26,46 @@ import {
   normalizeHistoricalAssistWindow,
   normalizeMarketBracketSide,
   OVERLAY_ENABLED_KEY,
-  setCardPictureNames,
   type HistoricalAssistWindow,
 } from './settings.js';
 
 let rememberedCardPictureNames: Record<string, string> = {};
 let rememberedCardPictureSlugs: Record<string, string> = {};
-let pictureSlugSaveTimer: number | undefined;
 let pictureNameSaveTimer: number | undefined;
+let pendingPictureNames: Record<string,string> = {};
+let pendingPictureSlugs: Record<string,string> = {};
+let pictureSyncGeneration = 0;
+
+function saveDiscoveredPictures(): void {
+  if (pictureNameSaveTimer !== undefined) window.clearTimeout(pictureNameSaveTimer);
+  pictureNameSaveTimer = window.setTimeout(() => {
+    pictureNameSaveTimer = undefined;
+    const payload = {names:{...pendingPictureNames}, slugs:{...pendingPictureSlugs}};
+    void chrome.runtime.sendMessage({type:'REMEMBER_CARD_PICTURES', requestId:crypto.randomUUID(), payload})
+      .then(reply => {
+        if (!reply?.ok) throw new Error('Card identity storage failed');
+        for (const [id, value] of Object.entries(payload.names)) {
+          if (pendingPictureNames[id] === value) delete pendingPictureNames[id];
+        }
+        for (const [id, value] of Object.entries(payload.slugs)) {
+          if (pendingPictureSlugs[id] === value) delete pendingPictureSlugs[id];
+        }
+      }).catch(() => {
+        // Keep unsaved deltas for the next discovery, without a retry loop.
+        console.warn('[Sorare Overlay] Karten-Zuordnungen konnten nicht gespeichert werden.');
+      });
+  }, 500);
+}
 const scanner = new SorareCardScanner(
   undefined,
   (entries): void => {
-    for (const [pictureId, playerName] of Object.entries(entries)) {
-      delete rememberedCardPictureNames[pictureId];
-      rememberedCardPictureNames[pictureId] = playerName;
-    }
-    if (pictureNameSaveTimer !== undefined) {
-      window.clearTimeout(pictureNameSaveTimer);
-    }
-    pictureNameSaveTimer = window.setTimeout(() => {
-      pictureNameSaveTimer = undefined;
-      void setCardPictureNames(rememberedCardPictureNames);
-    }, 500);
+    Object.assign(pendingPictureNames, entries);
+    saveDiscoveredPictures();
   },
   undefined,
   (entries): void => {
-    for (const [id, slug] of Object.entries(entries)) {
-      delete rememberedCardPictureSlugs[id];
-      rememberedCardPictureSlugs[id] = slug;
-    }
-    if (pictureSlugSaveTimer !== undefined) window.clearTimeout(pictureSlugSaveTimer);
-    pictureSlugSaveTimer = window.setTimeout(() => {
-      pictureSlugSaveTimer = undefined;
-      void setCardPictureSlugs(rememberedCardPictureSlugs);
-    }, 500);
+    Object.assign(pendingPictureSlugs, entries);
+    saveDiscoveredPictures();
   },
 );
 let enabled = false;
@@ -117,10 +124,14 @@ void Promise.all([
     cardPictureNames,
     cardPictureSlugs,
   ]) => {
-    rememberedCardPictureNames = cardPictureNames;
-    hydrateCardPictureNames(cardPictureNames);
-    rememberedCardPictureSlugs = cardPictureSlugs;
-    hydrateCardPictureSlugs(cardPictureSlugs);
+    // A newer cross-tab change can arrive while the initial settings load is
+    // still pending. Do not replace it with the older startup snapshot.
+    if (pictureSyncGeneration === 0) {
+      rememberedCardPictureNames = cardPictureNames;
+      hydrateCardPictureNames(cardPictureNames);
+      rememberedCardPictureSlugs = cardPictureSlugs;
+      hydrateCardPictureSlugs(cardPictureSlugs);
+    }
     applyMarketBracketSide(bracketSide);
     compactViewEnabled = compactView;
     syncCompactViewForCurrentRoute();
@@ -141,6 +152,21 @@ void Promise.all([
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'local') return;
+  if (changes[CARD_PICTURE_NAMES_KEY] || changes[CARD_PICTURE_SLUGS_KEY]) {
+    const generation = ++pictureSyncGeneration;
+    void Promise.all([getCardPictureNames(), getCardPictureSlugs()]).then(([names, slugs]) => {
+      if (generation !== pictureSyncGeneration) return;
+      const added = new Set([
+        ...Object.keys(names).filter(id => rememberedCardPictureNames[id] !== names[id]),
+        ...Object.keys(slugs).filter(id => rememberedCardPictureSlugs[id] !== slugs[id]),
+      ]);
+      rememberedCardPictureNames = {...names, ...pendingPictureNames};
+      rememberedCardPictureSlugs = {...slugs, ...pendingPictureSlugs};
+      hydrateCardPictureNames(rememberedCardPictureNames);
+      hydrateCardPictureSlugs(rememberedCardPictureSlugs);
+      scanner.refreshRememberedCardPictures([...added]);
+    }).catch(() => console.warn('[Sorare Overlay] Karten-Zuordnungen konnten nicht synchronisiert werden.'));
+  }
   const enabledChange = changes[OVERLAY_ENABLED_KEY];
   if (enabledChange) applyEnabled(enabledChange.newValue !== false);
   const sideChange = changes[MARKET_BRACKET_SIDE_KEY];

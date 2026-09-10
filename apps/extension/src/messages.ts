@@ -27,6 +27,7 @@ export interface FetchPlayerMarketSnapshotsMessage {
 }
 
 export type ExtensionMessage =
+  | {type: 'REMEMBER_CARD_PICTURES'; requestId: string; payload: import('./card-picture-store.js').CardPictureUpdates}
   | FetchPlayerStatsMessage
   | FetchLineupSortValuesMessage
   | FetchPlayerMarketSnapshotsMessage;
