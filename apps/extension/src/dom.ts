@@ -370,9 +370,8 @@ function resolvePlayerName(image: HTMLImageElement): string | null {
 }
 
 export function findImageCardContainer(image: HTMLImageElement): HTMLElement | null {
-  return image.closest<HTMLElement>(
-    '[data-player-slug], [data-card-slug], [data-testid*="card" i], button, [role="button"], article, li',
-  ) ?? image.parentElement;
+  // Image and CSS/video scans of one locked card must share the same mount.
+  return findCardMediaContainer(image);
 }
 
 function inferHighlightedPlayerTeamSlug(

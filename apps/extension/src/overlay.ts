@@ -3202,8 +3202,10 @@ export class OverlayView {
       if (!bracketIsVisible) {
         this.closePlayerMarketTooltip();
       }
-      const teamRow = lineupBuilderTeamRow(this.container);
-      this.bindLineupTeamRow(teamRow);
+      this.bindLineupTeamRow(lineupBuilderTeamRow(this.container));
+      // The candidate row may belong to another view during a DOM remount.
+      // Only the successfully claimed row may receive this view's odds bar.
+      const teamRow = this.lineupTeamRow;
       if (
         this.lineupOddsBar.dataset.ready !== 'true' ||
         !teamRow ||
@@ -4117,6 +4119,12 @@ export class OverlayView {
   };
 
   private bindLineupTeamRow(teamRow: HTMLElement | null): void {
+    const owner=teamRow ? lineupOddsOwners.get(teamRow) : undefined;
+    if(owner && owner!==this && (owner.destroyed || !owner.container.isConnected)) {
+      owner.bindLineupTeamRow(null);
+      owner.lineupOddsHost.hidden=true;
+      owner.lineupOddsHost.remove();
+    }
     if (
       teamRow &&
       lineupOddsOwners.has(teamRow) &&
