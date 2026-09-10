@@ -14,6 +14,8 @@ import {
   setLineupCleanSheetSortValue,
   setLineupGoalSortValue,
   setLineupSortPosition,
+  setLineupSortDataReady,
+  lineupSortIdentityMissingAttribute,
 } from '../lineup-sort.js';
 
 function renderGrid(count: number): HTMLElement {
@@ -132,6 +134,62 @@ describe('LineupSortHydrator', () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(fetcher.mock.calls[0]?.[0].slugs).toHaveLength(50);
     expect(fetcher.mock.calls[1]?.[0].slugs).toHaveLength(1);
+    hydrator.stop();
+  });
+
+  it('hydrates AA and CS despite an existing market goal, and keeps them settled offscreen', async () => {
+    const grid = renderGrid(1);
+    const target = findCardTargets(grid)[0]!;
+    setLineupGoalSortValue(target.container, 0.63, 'market');
+    const fetcher = vi.fn(async (request: LineupSortValuesRequest) => responseFor(request));
+    const hydrator = new LineupSortHydrator(fetcher);
+    await hydrator.hydrate(grid);
+    expect(target.container.getAttribute('data-sorare-overlay-aa-sort-value')).toBe('10');
+    expect(target.container.getAttribute(lineupCleanSheetSortProbabilityAttribute)).toBe('0.2');
+    expect(target.container.getAttribute('data-sorare-overlay-goal-sort-probability')).toBe('0.63');
+    expect(target.container.hasAttribute(lineupSortLightweightReadyAttribute)).toBe(true);
+    // Full-overlay retry followed by demotion must not strand the pool.
+    target.container.removeAttribute(lineupSortLightweightReadyAttribute);
+    setLineupAaSortValue(target.container, null);
+    setLineupSortDataReady(target.container, false);
+    setLineupGoalSortValue(target.container, 0.7, 'market');
+    hydrator.restoreSettled(target);
+    expect(target.container.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    expect(target.container.getAttribute('data-sorare-overlay-aa-sort-value')).toBe('10');
+    expect(target.container.getAttribute('data-sorare-overlay-goal-sort-probability')).toBe('0.7');
+    await hydrator.hydrate(grid);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    hydrator.stop();
+  });
+
+  it('restores a ready state during a later scan without extra fetches', async () => {
+    const grid = renderGrid(1);
+    const fetcher = vi.fn(async (request: LineupSortValuesRequest) => responseFor(request));
+    const hydrator = new LineupSortHydrator(fetcher);
+    await hydrator.hydrate(grid);
+    const target = findCardTargets(grid)[0]!;
+    setLineupSortDataReady(target.container, false);
+    await hydrator.hydrate(grid);
+    expect(target.container.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    hydrator.stop();
+  });
+
+  it('settles an unidentified CSS card without a request, then hydrates its learned identity', async () => {
+    const grid = renderGrid(0);
+    grid.innerHTML = '<div><button data-position="Midfielder"><div style="--mask-shape:url(https://assets.sorare.com/cardsamplepicture/unlearned/picture/a.png)"></div></button></div>';
+    const fetcher = vi.fn(async (request: LineupSortValuesRequest) => responseFor(request));
+    const hydrator = new LineupSortHydrator(fetcher);
+    await hydrator.hydrate(grid, []);
+    hydrator.settleUnidentifiedCards(grid, []);
+    const container = grid.querySelector('button')!;
+    expect(container.getAttribute(lineupSortIdentityMissingAttribute)).toBe('true');
+    expect(container.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    expect(fetcher).not.toHaveBeenCalled();
+    await hydrator.hydrate(grid, [{container, slug:'sort-player-1', position:'Midfielder'}]);
+    expect(container.hasAttribute(lineupSortIdentityMissingAttribute)).toBe(false);
+    expect(container.getAttribute('data-sorare-overlay-aa-sort-value')).toBe('10');
+    expect(fetcher).toHaveBeenCalledTimes(1);
     hydrator.stop();
   });
 
@@ -600,6 +658,32 @@ describe('LineupSortHydrator', () => {
     expect(
       card.hasAttribute('data-sorare-overlay-sort-lightweight-ready'),
     ).toBe(false);
+    hydrator.stop();
+  });
+
+  it('finishes compact hydration if a full overlay is demoted during goal reconciliation', async () => {
+    const grid = renderGrid(1);
+    let finish: ((response: LineupSortValuesSuccessResponse) => void) | undefined;
+    let calls = 0;
+    const fetcher = vi.fn((request: LineupSortValuesRequest) => {
+      if (++calls === 1) {
+        const response = responseFor(request);
+        return Promise.resolve({...response, data:response.data.map(value => ({...value, goal:null}))});
+      }
+      return new Promise<LineupSortValuesSuccessResponse>(resolve => {finish = resolve;});
+    });
+    const hydrator = new LineupSortHydrator(fetcher);
+    await hydrator.hydrate(grid);
+    const target = findCardTargets(grid)[0]!;
+    target.container.removeAttribute(lineupSortLightweightReadyAttribute);
+    markLineupSortFullDataUpdated(target.container);
+    const reconciliation = hydrator.reconcileMissingGoals();
+    setLineupSortDataReady(target.container, false);
+    finish?.(responseFor({slugs:['sort-player-1'], playerNames:[], historicalGoalWindow:null}));
+    await reconciliation;
+    expect(target.container.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    expect(target.container.hasAttribute(lineupSortLightweightReadyAttribute)).toBe(true);
+    expect(target.container.getAttribute('data-sorare-overlay-aa-sort-value')).toBe('10');
     hydrator.stop();
   });
 });

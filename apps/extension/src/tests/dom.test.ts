@@ -146,6 +146,56 @@ describe('Sorare card DOM discovery', () => {
     expect(findCardTargets(document)).toMatchObject([{slug:'new-player'}]);
   });
 
+  it.each([
+    ['92b655c1-7b93-4dc6-8093-2a544042b0fc', 'dayotchanculle-upamecano'],
+    ['30cf34c8-c146-4bda-9a66-839f9203e3b4', 'finn-jeltsch'],
+    ['bb0a6f5d-b319-4bed-ade3-4baf71e8456e', 'harold-voyer'],
+  ])('recognizes CSS-only Set card %s with scoped position/team', (id, slug) => {
+    document.body.innerHTML = `<section data-sorare-overlay-lineup-sort-hydration="true"><div>
+      <button><div style="--mask-shape:url(https://assets.sorare.com/image-resize/cardsamplepicture/${id}/picture/card.png?width=320)"></div></button>
+      <span aria-label="Team" class="highlighted"><img alt="player-team"></span>
+      <span aria-label="Team"><img alt="opponent-team"></span>
+    </div></section>`;
+    const grid = document.querySelector('section')!;
+    expect(findCardTargets(grid, {activeLineupPosition:'Defender', skipMiniatureCardCheck:true}))
+      .toMatchObject([{slug, position:'Defender', teamSlug:'player-team'}]);
+    expect(findCardTargets(grid, {activeLineupPosition:null, skipMiniatureCardCheck:true})[0]?.position).toBeUndefined();
+  });
+
+  it('learns CSS-only card links and deduplicates image, video and mask of the same card', () => {
+    const url = 'https://assets.sorare.com/cardsamplepicture/css-learned/picture/a.png';
+    document.body.innerHTML = `<button><a href="/football/series/cards/new-css-player-2026-common-1"><div style="--mask-shape:url('${url}')"></div></a></button>`;
+    expect(findCardTargets(document)).toMatchObject([{slug:'new-css-player'}]);
+    expect(drainDiscoveredCardPictureSlugs()).toMatchObject({'css-learned':'new-css-player'});
+    document.body.innerHTML = `<button><div style="--mask-shape:url('${url}')"></div><video poster="${url}"></video><img src="${url}" alt="New CSS Player - common"></button>`;
+    expect(findCardTargets(document)).toHaveLength(1);
+    expect(findCardTargets(document)[0]?.slug).toBe('new-css-player');
+  });
+
+  it('rejects unknown, foreign and ambiguous CSS identities and miniature cards', () => {
+    const id = '92b655c1-7b93-4dc6-8093-2a544042b0fc';
+    document.body.innerHTML = `<button><div style="--mask-shape:url(https://evil.example/cardsamplepicture/${id}/picture/a.png)"></div></button>
+      <button><div style="--mask-shape:url(https://assets.sorare.com/cardsamplepicture/css-unknown/picture/a.png)"></div></button>
+      <button><div style="--mask-shape:url(https://assets.sorare.com/cardsamplepicture/${id}/picture/a.png)"></div><div style="--mask-shape:url(https://assets.sorare.com/cardsamplepicture/bb0a6f5d-b319-4bed-ade3-4baf71e8456e/picture/a.png)"></div></button>`;
+    expect(findCardTargets(document)).toEqual([]);
+    document.body.innerHTML = `<button><div style="--mask-shape:url(https://assets.sorare.com/cardsamplepicture/${id}/picture/a.png)"></div></button>`;
+    vi.spyOn(document.querySelector('button')!, 'getBoundingClientRect').mockReturnValue(new DOMRect(0,0,36,58));
+    expect(findCardTargets(document)).toEqual([]);
+  });
+
+  it('anchors CSS-only brackets to the rendered card layer', () => {
+    document.body.innerHTML = '<button><div style="--mask-shape:url(https://assets.sorare.com/cardsamplepicture/92b655c1-7b93-4dc6-8093-2a544042b0fc/picture/a.png)"></div></button>';
+    const container = document.querySelector('button')!;
+    const layer = container.querySelector('div')!;
+    vi.spyOn(container,'getBoundingClientRect').mockReturnValue(new DOMRect(100,100,220,380));
+    vi.spyOn(layer,'getBoundingClientRect').mockReturnValue(new DOMRect(110,105,200,324));
+    const view = new OverlayView(container,{slug:'dayotchanculle-upamecano'},'Defender');
+    expect(view.host.dataset.horizontalAnchor).toBe('card-image');
+    expect(view.host.style.left).toBe('110px');
+    expect(view.host.style.width).toBe('200px');
+    view.destroy();
+  });
+
   it('learns the player from the scoped Sorare loading placeholder before video playback', () => {
     document.body.innerHTML = `<button><svg><text x="50%" y="80%">NEW PLAYER</text><text y="85%">Stürmer</text><text y="95%">Common</text></svg><div style="--mask-shape:url(https://assets.sorare.com/cardsamplepicture/placeholder-id/picture/card.png)"></div></button>`;
     expect(findCardTargets(document)).toMatchObject([{playerName:'NEW PLAYER',position:'Forward'}]);
@@ -185,6 +235,22 @@ describe('Sorare card DOM discovery', () => {
     document.body.innerHTML = `<button><video poster="https://assets.sorare.com/image-resize/cardsamplepicture/59bcd30d-a708-401a-a5e2-0cd6aa11abb5/picture/tinified-card.png?width=160"></video></button>`;
     expect(findCardTargets(document)).toMatchObject([{slug:'bryan-mbeumo'}]);
     expect(findCardTargets(document)).toHaveLength(1);
+  });
+
+  it('rescans newly learned CSS cards inside a still-hydrating pool', async () => {
+    window.history.replaceState({}, '', '/football/series/test/compose-team');
+    document.body.innerHTML = `<section ${lineupSortHydrationGridAttribute}="true"><div><button data-position="Midfielder"><div style="--mask-shape:url(https://assets.sorare.com/cardsamplepicture/live-css-learn/picture/a.png)"></div></button></div></section>`;
+    const fetcher = vi.fn(async (): Promise<PlayerStatsSuccessResponse> => ({data:[], meta:{requested:0, returned:0, cacheHits:0, source:'mock'}}));
+    const compact = vi.fn(async (request: LineupSortValuesRequest) => compactSortResponse(request, 25));
+    const scanner = new SorareCardScanner(new StatsBatchCoordinator(fetcher,60_000), vi.fn(), new LineupSortHydrator(compact));
+    try {
+      scanner.start();
+      hydrateCardPictureSlugs({'live-css-learn':'learned-css-player'});
+      scanner.refreshRememberedCardPictures(['live-css-learn']);
+      await vi.waitFor(() => expect(compact).toHaveBeenCalled());
+      expect(document.querySelector('button')?.getAttribute('data-sorare-overlay-aa-sort-value')).toBe('25');
+      expect(document.querySelector('button')?.hasAttribute('data-sorare-overlay-sort-identity-missing')).toBe(false);
+    } finally { scanner.stop(); }
   });
 
   it('learns canonical identity from an empty-alt details thumbnail without mounting in the dialog', () => {

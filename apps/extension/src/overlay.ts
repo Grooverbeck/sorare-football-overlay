@@ -10,7 +10,8 @@ import {
   type PlayerStats,
 } from '@sorare-overlay/shared';
 import { supportsCompactViewPath } from './compact-view-route.js';
-import { isScoreDetailsDialogTarget, isSorareCardVideo } from './dom.js';
+import { isScoreDetailsDialogTarget } from './dom.js';
+import { findSorareCardMedia, sorareCardNamePattern as sorareCardImageAlt } from './card-media.js';
 import {
   isLineupPoolProbeScrollEvent,
   lineupGoalSortProbabilityAttribute,
@@ -1527,19 +1528,13 @@ function lineupBuilderTeamRow(container: HTMLElement): HTMLElement | null {
   return null;
 }
 
-const sorareCardImageAlt =
-  /\s+-\s+(?:common|limited|rare|super rare|unique)$/i;
-
 interface VisibleCardImage {
-  image: HTMLImageElement | HTMLVideoElement;
+  image: HTMLElement;
   rect: DOMRect;
 }
 
 function visibleCardImage(container: HTMLElement): VisibleCardImage | null {
-  const candidates = Array.from(
-    container.querySelectorAll<HTMLImageElement | HTMLVideoElement>('img[alt], video[poster]'),
-  )
-    .filter((image) => image instanceof HTMLVideoElement ? isSorareCardVideo(image) : sorareCardImageAlt.test(image.alt))
+  const candidates = findSorareCardMedia(container)
     .map((image) => ({ image, rect: image.getBoundingClientRect() }))
     .filter(({ rect }) => rect.width >= 40 && rect.height >= 60)
     .sort(

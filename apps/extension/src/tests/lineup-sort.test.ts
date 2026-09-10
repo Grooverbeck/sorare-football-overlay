@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { LineupSortHydrator } from '../lineup-sort-hydrator.js';
+import { findCardTargets } from '../dom.js';
 import {
   LineupCardSorter,
   lineupAaSortOptionAttribute,
@@ -10,6 +12,7 @@ import {
   lineupGoalSortSourceAttribute,
   lineupPoolReadyEvent,
   lineupSortDataReadyAttribute,
+  lineupSortIdentityMissingAttribute,
   loadCompleteLineupPool,
   setLineupAaSortValue,
   setLineupCleanSheetSortValue,
@@ -289,6 +292,46 @@ describe('lineup card sorting', () => {
     expect(gridUpdates).toHaveBeenCalledTimes(3);
     expect(gridUpdates).toHaveBeenLastCalledWith(grid);
     expect(progress.at(-1)).toBe(5);
+  });
+
+  it.each([81, 256])('fully counts, hydrates and AA-sorts %i cards including the three CSS Set cards', async (count) => {
+    const grid = document.querySelector<HTMLElement>('[data-player-grid]')!;
+    const ids = ['92b655c1-7b93-4dc6-8093-2a544042b0fc', '30cf34c8-c146-4bda-9a66-839f9203e3b4', 'bb0a6f5d-b319-4bed-ade3-4baf71e8456e'];
+    grid.innerHTML = ids.map((id, i) => `<div data-set="${i}"><button data-position="Defender"><div style="--mask-shape:url(https://assets.sorare.com/cardsamplepicture/${id}/picture/a.png)"></div></button></div>`).join('') +
+      Array.from({length:count - 3}, (_, i) => `<div><article data-testid="card-${i}" data-position="Defender"><a href="/football/players/pool-player-${i}"><img alt="Pool Player ${i} - common"></a></article></div>`).join('');
+    const fetcher = vi.fn(async (request: import('@sorare-overlay/shared').LineupSortValuesRequest): Promise<import('@sorare-overlay/shared').LineupSortValuesSuccessResponse> => ({
+      data: (request.slugs ?? []).map((slug, i) => ({slug, displayName:slug, position:'Defender', aa:slug === 'dayotchanculle-upamecano' ? 45 : i / 10, goal:null, cleanSheet:0.3})),
+      meta:{requested:request.slugs?.length ?? 0, returned:request.slugs?.length ?? 0, cacheHits:request.slugs?.length ?? 0, source:'sorare', durationMs:1},
+    }));
+    const hydrator = new LineupSortHydrator(fetcher);
+    const targets = findCardTargets(grid, {activeLineupPosition:'Defender', skipMiniatureCardCheck:true});
+    expect(targets).toHaveLength(count);
+    await hydrator.hydrate(grid, targets);
+    const upa = grid.querySelector<HTMLElement>('[data-set="0"]')!;
+    expect(upa.querySelector(`[${lineupAaSortValueAttribute}]`)?.getAttribute(lineupAaSortValueAttribute)).toBe('45');
+    sorter.scan();
+    document.querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)!.click();
+    await vi.waitFor(() => expect(upa.style.order).toBe(String(-count)));
+    await vi.waitFor(() => expect(document.querySelector('[data-native-trigger-label]')?.textContent).toBe('AA'));
+    expect(document.querySelector('[data-native-sort]')?.textContent).toContain(`${count} Spieler sortiert`);
+    expect(grid.querySelectorAll('[data-sorare-overlay-sort-data-ready="true"]')).toHaveLength(count);
+    expect(fetcher.mock.calls.map(([request]) => request.slugs?.length).reduce((sum, n) => sum + (n ?? 0), 0)).toBe(count);
+    hydrator.stop();
+  });
+
+  it('shows unknown CSS cards as unrecognized instead of spinning forever or excluding them', async () => {
+    const grid = document.querySelector<HTMLElement>('[data-player-grid]')!;
+    grid.innerHTML = '<div><button><div style="--mask-shape:url(https://assets.sorare.com/cardsamplepicture/unidentified-sort-card/picture/a.png)"></div></button></div>';
+    const hydrator = new LineupSortHydrator();
+    await hydrator.hydrate(grid, []);
+    hydrator.settleUnidentifiedCards(grid, []);
+    sorter.scan();
+    document.querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)!.click();
+    await vi.waitFor(() => expect(document.querySelector('[data-native-trigger-label]')?.textContent).toBe('AA'));
+    expect(document.querySelector('[data-native-sort]')?.textContent).toContain('1 Spieler · 1 nicht erkannt');
+    expect(grid.querySelector(`[${lineupSortIdentityMissingAttribute}]`)).not.toBeNull();
+    hydrator.stop();
+    expect(grid.querySelector(`[${lineupSortIdentityMissingAttribute}]`)).toBeNull();
   });
 
   it('accepts a 256-card pool that finishes on the final loading probe', async () => {

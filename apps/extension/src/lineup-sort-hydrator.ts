@@ -7,6 +7,7 @@ import type {
 } from '@sorare-overlay/shared';
 import { fetchLineupSortValues } from './api.js';
 import { findCardTargets, type CardTarget } from './dom.js';
+import { findSorareCardMedia } from './card-media.js';
 import {
   setLineupAaSortValue,
   setLineupCleanSheetSortValue,
@@ -19,6 +20,7 @@ import {
   lineupSortFullDataRevisionAttribute,
   lineupSortLightweightReadyAttribute,
   lineupSortPositionAttribute,
+  lineupSortIdentityMissingAttribute,
   setLineupSortDataReady,
   setLineupSortPosition,
   type LineupGoalSortSource,
@@ -217,6 +219,31 @@ export class LineupSortHydrator {
     this.rememberSnapshot(target, key);
   }
 
+  restoreSettled(target: CardTarget): void {
+    const key = playerTargetKey(target);
+    const state = this.states.get(target.container);
+    if (state?.key !== key || state.status !== 'ready' ||
+        target.container.getAttribute(lineupSortDataReadyAttribute) === 'true') return;
+    const snapshot = this.snapshotForTarget(target, key);
+    if (snapshot) this.applySnapshot(target, key, snapshot);
+  }
+
+  settleUnidentifiedCards(root: ParentNode, targets: readonly CardTarget[]): void {
+    const knownContainers = new Set(targets.map(target => target.container));
+    for (const media of findSorareCardMedia(root)) {
+      let ancestor: HTMLElement | null = media;
+      while (ancestor && !knownContainers.has(ancestor)) ancestor = ancestor.parentElement;
+      if (ancestor) continue;
+      const container = media.closest<HTMLElement>('button, [role="button"], article, li, a');
+      if (!container || container.hasAttribute(lineupSortIdentityMissingAttribute)) continue;
+      // Count the physical card, but do not invent a player or send an empty
+      // request. A later learned identity removes this terminal marker.
+      this.clearTargetValues(container);
+      container.setAttribute(lineupSortIdentityMissingAttribute, 'true');
+      setLineupSortDataReady(container, true);
+    }
+  }
+
   private rememberSnapshot(target: CardTarget, key: string): void {
     const snapshot = snapshotForTarget(target);
     if (!snapshot) return;
@@ -267,9 +294,16 @@ export class LineupSortHydrator {
     if (targets.length > 0) this.removeDisconnectedStates();
     let discovered = 0;
     for (const target of targets) {
+      if (target.container.hasAttribute(lineupSortIdentityMissingAttribute)) {
+        target.container.removeAttribute(lineupSortIdentityMissingAttribute);
+        setLineupSortDataReady(target.container, false);
+      }
       const key = playerTargetKey(target);
       const existing = this.states.get(target.container);
       if (existing?.key === key) {
+        // Full-overlay loading/demotion can reset the DOM after this state's
+        // request finished. Restore its settled values without another fetch.
+        this.restoreSettled(target);
         this.preserve(target);
         continue;
       }
@@ -393,6 +427,7 @@ export class LineupSortHydrator {
   }
 
   stop(): void {
+    this.clearUnidentifiedCards();
     this.generation += 1;
     for (const timer of this.retryTimers.values()) window.clearTimeout(timer);
     this.retryTimers.clear();
@@ -408,6 +443,7 @@ export class LineupSortHydrator {
   }
 
   private reset(grid: HTMLElement, clearLightweightValues = false): void {
+    if (grid !== this.grid) this.clearUnidentifiedCards();
     this.generation += 1;
     for (const timer of this.retryTimers.values()) window.clearTimeout(timer);
     this.retryTimers.clear();
@@ -609,23 +645,14 @@ export class LineupSortHydrator {
     const currentGoalIsMarket =
       container.hasAttribute(lineupGoalSortProbabilityAttribute) &&
       container.getAttribute(lineupGoalSortSourceAttribute) === 'market';
-    if (
+    const preserveGoal =
       currentGoalIsMarket ||
       (state.preserveExistingGoalUnlessMarket &&
-        value?.goal?.source !== 'market')
-    ) {
-      setLineupSortDataReady(container, true);
-      state.status = 'ready';
-      this.preserve(state.target);
-      delete state.reconcileFullOverlay;
-      delete state.preserveExistingGoalUnlessMarket;
-      delete state.fullDataRevisionAtRequest;
-      return;
-    }
-    if (state.reconcileFullOverlay) {
+        value?.goal?.source !== 'market');
+    if (state.reconcileFullOverlay && fullOverlayOwnsValues) {
       // The compact endpoint is only being consulted for a newer cached goal
       // price. Keep AA, position and readiness owned by the full response.
-      setLineupGoalSortValue(
+      if (!preserveGoal) setLineupGoalSortValue(
         container,
         value?.goal?.probability ?? null,
         value?.goal?.source,
@@ -641,7 +668,7 @@ export class LineupSortHydrator {
       container,
       value?.position ?? state.target.position ?? null,
     );
-    setLineupGoalSortValue(
+    if (!preserveGoal) setLineupGoalSortValue(
       container,
       value?.goal?.probability ?? null,
       value?.goal?.source,
@@ -671,7 +698,7 @@ export class LineupSortHydrator {
   ): void {
     const container = target.container;
     setLineupSortPosition(container, snapshot.position);
-    setLineupGoalSortValue(
+    if (container.getAttribute(lineupGoalSortSourceAttribute) !== 'market') setLineupGoalSortValue(
       container,
       snapshot.goal?.probability ?? null,
       snapshot.goal?.source,
@@ -689,6 +716,13 @@ export class LineupSortHydrator {
     setLineupSortPosition(container, null);
     setLineupSortDataReady(container, null);
     container.removeAttribute(lineupSortLightweightReadyAttribute);
+  }
+
+  private clearUnidentifiedCards(): void {
+    for (const container of this.grid?.querySelectorAll<HTMLElement>(`[${lineupSortIdentityMissingAttribute}]`) ?? []) {
+      container.removeAttribute(lineupSortIdentityMissingAttribute);
+      this.clearTargetValues(container);
+    }
   }
 
   private removeDisconnectedStates(): void {

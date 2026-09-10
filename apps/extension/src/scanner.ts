@@ -21,6 +21,7 @@ import {
 } from './dom.js';
 import { OverlayView } from './overlay.js';
 import { LineupSortHydrator } from './lineup-sort-hydrator.js';
+import { findSorareCardMedia } from './card-media.js';
 import {
   normalizePlayerName as normalizeName,
   playerNamesLikelyMatch as namesLikelyMatch,
@@ -38,6 +39,7 @@ import {
   lineupSortDataReadyAttribute,
   lineupSortHydrationGridAttribute,
   lineupSortLightweightReadyAttribute,
+  lineupSortIdentityMissingAttribute,
   setLineupSortDataReady,
   setLineupSortPosition,
 } from './lineup-sort.js';
@@ -1955,12 +1957,17 @@ export class SorareCardScanner {
       this.schedulePictureNameRescans();
     }
     for (const target of targets) {
+      if (target.container.hasAttribute(lineupSortIdentityMissingAttribute)) {
+        target.container.removeAttribute(lineupSortIdentityMissingAttribute);
+        setLineupSortDataReady(target.container, false);
+      }
       this.mountTarget(
         target,
         rootHydrationGrid ? knownHydrationPriority : undefined,
         rootHydrationGrid ?? undefined,
       );
     }
+    if (rootHydrationGrid) this.lineupSortHydrator.settleUnidentifiedCards(root, targets);
     return targets;
   }
 
@@ -2360,6 +2367,7 @@ export class SorareCardScanner {
     this.visibilityObserver.unobserve(container);
     this.coordinator.releaseView(mounted.view);
     mounted.view.destroy({ preserveLineupSortData: true });
+    this.lineupSortHydrator.restoreSettled(mounted.target);
     delete container.dataset.sorareOverlayKey;
     this.overlays.delete(container);
     if (container.getAttribute(lineupSortDataReadyAttribute) === 'true') {
@@ -2438,9 +2446,10 @@ export class SorareCardScanner {
     this.pictureNameRescanTimer = window.setTimeout(() => {
       this.pictureNameRescanTimer = undefined;
       if (!this.root || this.pendingPictureNameRescanIds.size === 0) return;
-      if (
-        document.querySelector(`[${lineupSortHydrationGridAttribute}]`)
-      ) {
+      // Resolve newly learned cards inside the active pool immediately: one
+      // may be blocking completion. Defer unrelated page copies as before.
+      if (document.querySelector(`[${lineupSortHydrationGridAttribute}]`)) {
+        this.flushPictureNameRescans(undefined, true);
         this.schedulePictureNameRescans(750);
         return;
       }
@@ -2448,7 +2457,7 @@ export class SorareCardScanner {
     }, delayMs);
   }
 
-  private flushPictureNameRescans(alreadyScannedRoot?: Node): void {
+  private flushPictureNameRescans(alreadyScannedRoot?: Node, hydrationOnly = false): void {
     if (this.pictureNameRescanTimer !== undefined) {
       window.clearTimeout(this.pictureNameRescanTimer);
       this.pictureNameRescanTimer = undefined;
@@ -2456,7 +2465,7 @@ export class SorareCardScanner {
     if (!this.root || this.pendingPictureNameRescanIds.size === 0) return;
     const pictureIds = new Set(this.pendingPictureNameRescanIds);
     this.pendingPictureNameRescanIds.clear();
-    for (const image of document.querySelectorAll<HTMLImageElement | HTMLVideoElement>('img[alt], video[poster]')) {
+    for (const image of findSorareCardMedia(document)) {
       if (
         alreadyScannedRoot &&
         (alreadyScannedRoot === image || alreadyScannedRoot.contains(image))
@@ -2465,7 +2474,13 @@ export class SorareCardScanner {
       }
       if (image instanceof HTMLImageElement && extractPlayerName(image)) continue;
       const pictureId = extractCardPictureId(image);
-      if (pictureId && pictureIds.has(pictureId)) this.queueScanRoot(image);
+      if (pictureId && pictureIds.has(pictureId)) {
+        if (hydrationOnly && !image.closest(`[${lineupSortHydrationGridAttribute}]`)) {
+          this.pendingPictureNameRescanIds.add(pictureId);
+        } else {
+          this.queueScanRoot(image);
+        }
+      }
     }
     this.scheduleMutationFlush();
   }

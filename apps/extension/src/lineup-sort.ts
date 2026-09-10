@@ -1,4 +1,5 @@
 import type { FootballPosition } from '@sorare-overlay/shared';
+import { extractCardPictureId, findSorareCardMedia } from './card-media.js';
 import { logStatsDiagnostic } from './stats-diagnostics.js';
 
 export const lineupGoalSortOptionAttribute =
@@ -25,6 +26,8 @@ export const lineupSortFullDataRevisionAttribute =
   'data-sorare-overlay-sort-full-data-revision';
 export const lineupSortHydrationGridAttribute =
   'data-sorare-overlay-lineup-sort-hydration';
+export const lineupSortIdentityMissingAttribute =
+  'data-sorare-overlay-sort-identity-missing';
 export const lineupSortValueChangedEvent =
   'sorare-overlay:lineup-sort-value-changed';
 export const lineupPoolReadyEvent =
@@ -106,8 +109,6 @@ function availableLineupSortConfigs(
   );
 }
 
-const cardImageSelector =
-  'img[src*="/cardsamplepicture/"], img[alt$=" - common" i], img[alt$=" - limited" i], img[alt$=" - rare" i], img[alt$=" - super rare" i], img[alt$=" - unique" i]';
 const nativeTriggerLabelAttribute =
   'data-sorare-overlay-lineup-sort-trigger-label';
 const nativeTriggerLoadingAttribute =
@@ -509,13 +510,16 @@ function valueForCell(cell: HTMLElement, valueAttribute: string): number | null 
 function gridCardCells(grid: HTMLElement): HTMLElement[] {
   return Array.from(grid.children).filter(
     (child): child is HTMLElement =>
-      child instanceof HTMLElement && Boolean(child.querySelector(cardImageSelector)),
+      child instanceof HTMLElement && findSorareCardMedia(child).length > 0,
   );
 }
 
 function cardCellIdentity(cell: HTMLElement): string | null {
-  const image = cell.querySelector<HTMLImageElement>(cardImageSelector);
+  const image = findSorareCardMedia(cell)[0];
   if (!image) return null;
+  // Stable across an image/video/CSS replacement of the same edition.
+  const pictureId = extractCardPictureId(image);
+  if (pictureId) return `picture:${pictureId}`;
   const playerLink =
     image.closest<HTMLAnchorElement>('a[href*="/football/players/"]') ??
     cell.querySelector<HTMLAnchorElement>('a[href*="/football/players/"]');
@@ -589,7 +593,7 @@ function gridLoadingCell(grid: HTMLElement): HTMLElement | null {
     Array.from(grid.children).find(
       (child): child is HTMLElement =>
         child instanceof HTMLElement &&
-        !child.querySelector(cardImageSelector) &&
+        findSorareCardMedia(child).length === 0 &&
         Boolean(
           child.querySelector(
             '[role="progressbar"][aria-busy="true"]',
@@ -601,9 +605,7 @@ function gridLoadingCell(grid: HTMLElement): HTMLElement | null {
 
 function lineupPlayerGrid(): HTMLElement | null {
   const trackedByGrid = new Map<HTMLElement, Set<HTMLElement>>();
-  for (const image of document.querySelectorAll<HTMLImageElement>(
-    cardImageSelector,
-  )) {
+  for (const image of findSorareCardMedia(document)) {
     const cell = directGridCell(image);
     const grid = cell?.parentElement;
     if (!cell || !grid) continue;
@@ -618,8 +620,8 @@ function lineupPlayerGrid(): HTMLElement | null {
       .sort(
         ([leftGrid, leftCells], [rightGrid, rightCells]) =>
           rightCells.size - leftCells.size ||
-          rightGrid.querySelectorAll(cardImageSelector).length -
-            leftGrid.querySelectorAll(cardImageSelector).length,
+          findSorareCardMedia(rightGrid).length -
+            findSorareCardMedia(leftGrid).length,
       )[0]?.[0] ?? null
   );
 }
@@ -1217,6 +1219,9 @@ export class LineupCardSorter {
       const config = lineupSortConfigs[this.activeMode];
       const baseLabel = config.label;
       const loading = this.poolLoading || this.poolHydrationUiPending;
+      const unidentifiedCount = this.completedGrid?.querySelectorAll(
+        `[${lineupSortIdentityMissingAttribute}]`,
+      ).length ?? 0;
       const displayedPlayerCount = this.displayedPoolCardCount;
       const loadingPlayerDescription =
         displayedPlayerCount > 0
@@ -1234,7 +1239,9 @@ export class LineupCardSorter {
             ? `${displayedPlayerCount} Spieler · unvollständig`
             : 'Spielerliste unvollständig'
           : displayedPlayerCount > 0
-            ? `${displayedPlayerCount} Spieler ${loading ? 'geladen' : 'sortiert'}`
+            ? !loading && unidentifiedCount > 0
+              ? `${displayedPlayerCount} Spieler · ${unidentifiedCount} nicht erkannt`
+              : `${displayedPlayerCount} Spieler ${loading ? 'geladen' : 'sortiert'}`
             : null,
       );
       const nextLabel = loading
@@ -1248,7 +1255,9 @@ export class LineupCardSorter {
           ? `${totalPlayerDescription}${config.loadingDescription} Die Sortierung aktualisiert sich automatisch.`
           : this.poolLoadFailed
             ? `${loadingPlayerDescription}Die Spielerliste konnte nicht vollständig geladen werden. Öffne das Sortiermenü und wähle „${baseLabel}“ erneut.`
-            : this.poolCardCount > 0 &&
+            : unidentifiedCount > 0
+              ? `${totalPlayerDescription}${unidentifiedCount} Karten konnten noch keinem Spieler zugeordnet werden und stehen am Ende. Öffne ihre Kartendetails, damit die Zuordnung gelernt werden kann.`
+              : this.poolCardCount > 0 &&
                 this.poolValueCount < this.poolCardCount
               ? `${totalPlayerDescription}Nach ${baseLabel} sortiert. ${config.missingValueDescription}`
               : `${totalPlayerDescription}Nach ${baseLabel} sortiert.`;

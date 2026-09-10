@@ -1,4 +1,10 @@
 import type { FootballPosition } from '@sorare-overlay/shared';
+import {
+  cardPictureIdFromUrl as pictureIdFromUrl,
+  extractCardPictureId,
+  findSorareCardMedia,
+} from './card-media.js';
+export { extractCardPictureId } from './card-media.js';
 
 export interface CardTarget {
   slug?: string;
@@ -46,6 +52,8 @@ const verifiedSetPictures: Readonly<Record<string, string>> = {
   'bd20bfa2-0203-4fac-aa2d-495a72206f2c': 'ethan-mbappe-lottin',
   // Confirmed together in Sorare's visible card-details dialog.
   '59bcd30d-a708-401a-a5e2-0cd6aa11abb5': 'bryan-mbeumo',
+  // Confirmed via the visible picker stats details (11 September 2026).
+  '30cf34c8-c146-4bda-9a66-839f9203e3b4': 'finn-jeltsch',
 };
 const knownPlayerSlugsByPictureId = new Map(Object.entries(verifiedSetPictures));
 const discoveredPlayerSlugsByPictureId = new Map<string, string>();
@@ -72,12 +80,6 @@ export function readCardPlaceholder(svg: SVGSVGElement): {playerName: string; po
   return {playerName, ...(position ? {position} : {})};
 }
 
-function pictureIdFromUrl(value: string): string | null {
-  try {
-    const url = new URL(value, location.href);
-    return url.hostname === 'assets.sorare.com' ? url.pathname.match(cardPicturePath)?.[1]?.toLowerCase() ?? null : null;
-  } catch { return null; }
-}
 const positionAliases: Readonly<Record<string, FootballPosition>> = {
   gk: 'Goalkeeper',
   goalkeeper: 'Goalkeeper',
@@ -260,9 +262,9 @@ export function findCardContainer(anchor: HTMLAnchorElement): HTMLElement | null
   // Set editions use a card query parameter and may render only a video.
   // Use the same semantic container as image discovery to avoid duplicates.
   if (linkedPlayerSlug(new URL(anchor.href, location.href))) {
-    const media = Array.from(anchor.querySelectorAll<HTMLImageElement | HTMLVideoElement>('img[alt], video[poster]'))
-      .filter(node => node instanceof HTMLVideoElement ? isSorareCardVideo(node) : extractPlayerName(node) !== null);
-    if (media.length === 1) {
+    const media = findSorareCardMedia(anchor);
+    const ids = new Set(media.map(extractCardPictureId).filter(Boolean));
+    if (media.length === 1 || (media.length > 0 && ids.size === 1 && media.every(node => extractCardPictureId(node)))) {
       return media[0]!.closest<HTMLElement>('[data-player-slug], [data-card-slug], [data-testid*="card" i], button, [role="button"], article, li') ?? anchor;
     }
     return null;
@@ -272,10 +274,7 @@ export function findCardContainer(anchor: HTMLAnchorElement): HTMLElement | null
   );
   if (explicitCard) return explicitCard;
 
-  const hasCardImage = (container: ParentNode): boolean =>
-    [...container.querySelectorAll<HTMLImageElement>('img[alt]')]
-      .some((image) => extractPlayerName(image) !== null) ||
-    [...container.querySelectorAll<HTMLVideoElement>('video[poster]')].some(isSorareCardVideo);
+  const hasCardImage = (container: ParentNode): boolean => findSorareCardMedia(container).length > 0;
 
   if (hasCardImage(anchor)) return anchor;
 
@@ -312,10 +311,6 @@ export function extractPlayerName(image: HTMLImageElement): string | null {
   return image.alt.match(cardImageAlt)?.[1]?.trim() ?? null;
 }
 
-export function extractCardPictureId(image: HTMLImageElement | HTMLVideoElement): string | null {
-  if (image instanceof HTMLVideoElement) return pictureIdFromUrl(image.poster);
-  return pictureIdFromUrl(image.currentSrc || image.src);
-}
 
 export function hydrateCardPictureNames(
   entries: Readonly<Record<string, string>>,
@@ -429,12 +424,14 @@ function inferHighlightedPlayerTeamSlug(
 }
 
 export function isMiniatureCardTarget(container: HTMLElement): boolean {
-  const renderedCardRects = Array.from(
-    container.querySelectorAll<HTMLImageElement | HTMLVideoElement>('img[alt], video[poster]'),
-  )
-    .filter((image) => image instanceof HTMLVideoElement ? isSorareCardVideo(image) : extractPlayerName(image) !== null)
+  const media = findSorareCardMedia(container);
+  const renderedCardRects = media
     .map((image) => image.getBoundingClientRect())
     .filter((rect) => rect.width > 0 && rect.height > 0);
+  if (media.length > 0 && renderedCardRects.length === 0) {
+    const rect = container.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) renderedCardRects.push(rect);
+  }
 
   return (
     renderedCardRects.length > 0 &&
@@ -497,7 +494,7 @@ export function findCardTargets(
     // Details dialogs intentionally have no overlay. Their card thumbnail
     // still proves the picture-to-player identity, even with an empty alt.
     if (slug) {
-      const ids = new Set(Array.from(anchor.querySelectorAll<HTMLImageElement | HTMLVideoElement>('img, video[poster]'))
+      const ids = new Set(findSorareCardMedia(anchor)
         .map(extractCardPictureId).filter((id): id is string => Boolean(id)));
       if (ids.size === 1) {
         const id = [...ids][0]!;
@@ -509,7 +506,7 @@ export function findCardTargets(
     }
     const container = slug ? findCardContainer(anchor) : null;
     if (!slug || !container) continue;
-    const pictures = Array.from(container.querySelectorAll<HTMLImageElement | HTMLVideoElement>('img, video[poster]'))
+    const pictures = findSorareCardMedia(container)
       .map(extractCardPictureId).filter((id): id is string => Boolean(id));
     if (new Set(pictures).size === 1) {
       const id = pictures[0]!;
@@ -567,15 +564,16 @@ export function findCardTargets(
     targets.push({...identity, ...(slug ? {slug} : {}), container});
     targetContainers.add(container);
   }
-  const videos = [...root.querySelectorAll<HTMLVideoElement>('video[poster]')];
-  if (root instanceof HTMLVideoElement) videos.unshift(root);
-  for (const video of videos) {
-    if (!isSorareCardVideo(video)) continue;
-    const id = extractCardPictureId(video);
+  const specialMedia = findSorareCardMedia(root).filter(media => !(media instanceof HTMLImageElement));
+  for (const media of specialMedia) {
+    const id = extractCardPictureId(media);
     const slug = id ? knownPlayerSlugsByPictureId.get(id) : undefined;
     const playerName = id ? knownPlayerNamesByPictureId.get(id) : undefined;
-    const container = video.closest<HTMLElement>('button, [role="button"], article, li');
+    const container = media.closest<HTMLElement>('button, [role="button"], article, li');
     if ((!slug && !playerName) || !container || targetContainers.has(container) || isScoreDetailsDialogTarget(container)) continue;
+    // A shared wrapper with several players must never inherit one picture's identity.
+    const ids = new Set(findSorareCardMedia(container).map(extractCardPictureId).filter(Boolean));
+    if (ids.size !== 1) continue;
     if (!options.skipMiniatureCardCheck && isMiniatureCardTarget(container)) continue;
     const slot = inferLineupSlotPosition(container);
     const position = inferCardPosition(container) ?? (slot === null ? undefined : slot ?? (hasActiveLineupPosition ? options.activeLineupPosition ?? undefined : inferActivePositionSelection(container)));
