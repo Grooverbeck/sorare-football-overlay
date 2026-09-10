@@ -969,6 +969,11 @@ export async function loadCompleteLineupPool(
 }
 
 export class LineupCardSorter {
+  private scrollQuietAt=0;
+  private scrollSortTimer:number|undefined;
+  private readonly onUserScroll=(event:Event):void=>{
+    if(!isLineupPoolProbeScrollEvent(event))this.scrollQuietAt=Date.now()+300;
+  };
   private root: HTMLElement | null = null;
   private supportedPathActive = false;
   private nativeTrigger: HTMLButtonElement | null = null;
@@ -1088,6 +1093,7 @@ export class LineupCardSorter {
   start(root = document.body ?? document.documentElement): void {
     if (this.root) return;
     this.root = root;
+    window.addEventListener('scroll',this.onUserScroll,true);
     root.addEventListener(
       lineupSortValueChangedEvent,
       this.handleSortValueChange,
@@ -1099,6 +1105,7 @@ export class LineupCardSorter {
   }
 
   stop(): void {
+    window.removeEventListener('scroll',this.onUserScroll,true);
     if (this.root) {
       this.root.removeEventListener(
         lineupSortValueChangedEvent,
@@ -1888,8 +1895,14 @@ export class LineupCardSorter {
     ) {
       return;
     }
+    if(Date.now()<this.scrollQuietAt) {
+      if(this.scrollSortTimer!==undefined)window.clearTimeout(this.scrollSortTimer);
+      this.scrollSortTimer=window.setTimeout(()=>{this.scrollSortTimer=undefined;this.scheduleSort();},this.scrollQuietAt-Date.now());
+      return;
+    }
     const callback = (): void => {
       this.sortFrame = undefined;
+      if(Date.now()<this.scrollQuietAt) {this.scheduleSort();return;}
       if (this.sortRefreshPending) {
         this.sortRefreshPending = false;
         if (!this.activeMode || this.poolLoading || this.filterSuspended) return;
@@ -1905,6 +1918,8 @@ export class LineupCardSorter {
   }
 
   private cancelSortFrame(): void {
+    if(this.scrollSortTimer!==undefined)window.clearTimeout(this.scrollSortTimer);
+    this.scrollSortTimer=undefined;
     this.sortRefreshPending = false;
     if (this.sortFrame === undefined) return;
     if (typeof window.cancelAnimationFrame === 'function') {

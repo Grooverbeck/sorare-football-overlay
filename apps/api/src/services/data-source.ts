@@ -46,6 +46,7 @@ export interface PlayerNameResolutionCache {
 }
 
 export interface SourceNextGame {
+  gameId?: string;
   date: string;
   competitionSlug?: string | null;
   homeTeamName: string | null;

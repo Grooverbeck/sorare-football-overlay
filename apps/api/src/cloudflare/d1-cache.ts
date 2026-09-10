@@ -14,6 +14,15 @@ interface D1CacheManyRow extends D1CacheRow {
 const getManyChunkSize = 99;
 const maximumCleanupBatchSize = 5_000;
 
+function completedFixtureSql(value: string): string {
+  // Matches shared fixtureStatusKey; all SQL fragments are internal constants.
+  return `EXISTS (SELECT 1 FROM cache_entries AS lifecycle WHERE lifecycle.cache_key =
+    CASE WHEN json_valid(${value}) THEN 'fixture-status:v1:' || strftime('%s', json_extract(${value}, '$.nextGame.date')) || ':' ||
+      lower(json_extract(${value}, '$.nextGame.homeTeamSlug')) || ':' || lower(json_extract(${value}, '$.nextGame.awayTeamSlug')) END
+    AND json_extract(lifecycle.value, '$.status') = 'played'
+    AND (lifecycle.expires_at IS NULL OR lifecycle.expires_at > ?4))`;
+}
+
 interface CacheWriteOptions {
   expiration?: number;
   expirationTtl?: number;
@@ -179,7 +188,7 @@ export class D1JsonKeyValueStore implements JsonKeyValueStore {
     await this.database
       .prepare(
         `INSERT INTO cache_entries (cache_key, value, expires_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4)
+         SELECT ?1, ?2, ?3, ?4 WHERE ${key.startsWith('player-fixture:') ? `NOT ${completedFixtureSql('?2')}` : 'true'}
          ON CONFLICT(cache_key) DO UPDATE SET
            value = excluded.value,
            expires_at = excluded.expires_at,
@@ -240,16 +249,19 @@ export class D1JsonKeyValueStore implements JsonKeyValueStore {
     await this.database
       .prepare(
         `INSERT INTO cache_entries (cache_key, value, expires_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4)
+         SELECT ?1, ?2, ?3, ?4 WHERE NOT ${completedFixtureSql('?2')}
          ON CONFLICT(cache_key) DO UPDATE SET
            value = excluded.value,
            expires_at = excluded.expires_at,
            updated_at = excluded.updated_at
          WHERE cache_entries.expires_at IS NOT NULL
                AND cache_entries.expires_at <= ?4
+            OR ${completedFixtureSql('cache_entries.value')}
             OR json_extract(cache_entries.value, '$.nextGame.date') IS NULL
             OR json_extract(excluded.value, '$.nextGame.date')
-               < json_extract(cache_entries.value, '$.nextGame.date')`,
+               < json_extract(cache_entries.value, '$.nextGame.date')
+            OR (json_extract(excluded.value, '$.nextGame.date') = json_extract(cache_entries.value, '$.nextGame.date')
+                AND excluded.expires_at > cache_entries.expires_at)`,
       )
       .bind(key, value, expiresAt, now)
       .run();

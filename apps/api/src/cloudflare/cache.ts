@@ -10,6 +10,7 @@ import {
   type PlayerStats,
 } from '@sorare-overlay/shared';
 import * as z from 'zod';
+import type { FixtureLifecycle } from '../services/fixture-lifecycle.js';
 import {
   SplitPlayerStatsCache,
   type Cache,
@@ -86,6 +87,7 @@ const ProviderRequestBlockSchema = z.object({
 });
 
 const PlayerFormStatsSchema = PlayerStatsSchema.omit({
+  fixtureRefresh: true,
   nextGame: true,
   pendingRefreshes: true,
   mlsAaContext: true,
@@ -1197,6 +1199,14 @@ class CloudflarePlayerFixtureCache
   extends CloudflareKvCache
   implements Cache<PlayerFixtureStats>
 {
+  private readonly retainedTeams=new Set<string>();
+  private async storageExpiration(fixture:PlayerFixtureStats):Promise<number> {
+    const expiration=playerFixtureExpiration(fixture?.date??null,this.ttlSeconds,this.now());
+    // Physical retention may outlive the morning boundary only for a known
+    // live/interrupted match. Logical reads still obey the shared status.
+    return fixture && await this.lifecycle?.isActive(fixture)
+      ? Math.max(expiration,Math.floor(this.now()/1000)+7*86400) : expiration;
+  }
   private readonly teamFixtureResolutions = new Map<
     string,
     Promise<NonNullable<PlayerFixtureStats>>
@@ -1219,6 +1229,7 @@ class CloudflarePlayerFixtureCache
     private readonly ttlSeconds: number,
     context: ExecutionContext,
     private readonly now: () => number = Date.now,
+    private readonly lifecycle?: FixtureLifecycle,
   ) {
     super(namespace, context);
   }
@@ -1236,10 +1247,14 @@ class CloudflarePlayerFixtureCache
       [...new Set(keys)].map((key) => [key, `player-fixture:v1:${key}`]),
     );
     const raw = await this.readMany<unknown>([...cacheKeyByPlayer.values()]);
+    await this.lifecycle?.prime([...raw.values()].flatMap(value=>{
+      const parsed=PlayerFixtureEnvelopeSchema.safeParse(value);
+      return parsed.success ? [parsed.data.nextGame] : [];
+    }));
     const loaded = await Promise.all(
       [...cacheKeyByPlayer].map(async ([key, cacheKey]) => {
         if (!raw.has(cacheKey)) return [key, undefined] as const;
-        const fixture = this.parsePlayerFixture(cacheKey, raw.get(cacheKey));
+        const fixture = await this.parsePlayerFixture(cacheKey, raw.get(cacheKey));
         if (fixture === undefined || fixture === null) {
           return [key, fixture] as const;
         }
@@ -1269,6 +1284,7 @@ class CloudflarePlayerFixtureCache
   }
 
   async set(key: string, value: PlayerFixtureStats): Promise<void> {
+    if(value && await this.lifecycle?.isFinished(value)) return;
     const resolved =
       value === null ? null : await this.resolvePlayerTeamFixture(key, value);
     this.persistUntil(
@@ -1277,11 +1293,7 @@ class CloudflarePlayerFixtureCache
         nextGame: resolved,
         cachePolicyVersion: PLAYER_FIXTURE_CACHE_POLICY_VERSION,
       }),
-      playerFixtureExpiration(
-        resolved?.date ?? null,
-        this.ttlSeconds,
-        this.now(),
-      ),
+      await this.storageExpiration(resolved),
     );
     if (resolved) await this.rememberFixtureRefreshAttempt(resolved);
   }
@@ -1292,6 +1304,7 @@ class CloudflarePlayerFixtureCache
   ): Promise<PlayerFixtureStats> {
     const existing = await this.get(key);
     if (existing !== undefined) return existing;
+    if(value && await this.lifecycle?.isFinished(value)) return null;
     const resolved =
       value === null ? null : await this.resolvePlayerTeamFixture(key, value);
     this.persistUntil(
@@ -1300,11 +1313,7 @@ class CloudflarePlayerFixtureCache
         nextGame: resolved,
         cachePolicyVersion: PLAYER_FIXTURE_CACHE_POLICY_VERSION,
       }),
-      playerFixtureExpiration(
-        resolved?.date ?? null,
-        this.ttlSeconds,
-        this.now(),
-      ),
+      await this.storageExpiration(resolved),
     );
     if (resolved) await this.rememberFixtureRefreshAttempt(resolved);
     return resolved;
@@ -1344,6 +1353,7 @@ class CloudflarePlayerFixtureCache
     value: PlayerFixtureStats,
   ): Promise<PlayerFixtureStats> {
     const existing = await this.get(key);
+    if(value && await this.lifecycle?.isFinished(value)) return existing ?? null;
     if (existing === undefined) {
       await this.set(key, value);
       return value;
@@ -1429,12 +1439,17 @@ class CloudflarePlayerFixtureCache
         nextGame: refreshed,
         cachePolicyVersion: PLAYER_FIXTURE_CACHE_POLICY_VERSION,
       }),
-      playerFixtureExpiration(
-        refreshed.date,
-        this.ttlSeconds,
-        this.now(),
-      ),
+      await this.storageExpiration(refreshed),
     );
+    const retainedTeam=playerTeamFixtureKey(refreshed);
+    if(retainedTeam && !this.retainedTeams.has(retainedTeam) && await this.lifecycle?.isActive(refreshed)) {
+      this.retainedTeams.add(retainedTeam);
+      const value=JSON.stringify(teamFixtureEnvelope(refreshed));
+      const options={expiration:await this.storageExpiration(refreshed)};
+      if(this.namespace.putEarlierFixture)await this.namespace.putEarlierFixture(retainedTeam,value,options);
+      else await this.namespace.put(retainedTeam,value,options);
+      this.clearTeamFixtureReads(retainedTeam);
+    }
     if (!identityWasHydrated || hasFixtureTeamOdds(mergedOdds)) {
       await this.rememberFixtureRefreshAttempt(refreshed);
     }
@@ -1450,23 +1465,25 @@ class CloudflarePlayerFixtureCache
     return this.parsePlayerFixture(cacheKey, raw);
   }
 
-  private parsePlayerFixture(
+  private async parsePlayerFixture(
     cacheKey: string,
     raw: unknown,
-  ): PlayerFixtureStats | undefined {
+  ): Promise<PlayerFixtureStats | undefined> {
     const parsed = PlayerFixtureEnvelopeSchema.safeParse(raw);
     if (!parsed.success) {
       this.removeInvalid(cacheKey);
       return undefined;
     }
     const fixture = parsed.data.nextGame;
+    if(fixture && await this.lifecycle?.isFinished(fixture)) return undefined;
     const rolloverExpiration = fixture
       ? fixtureRolloverExpiration(fixture.date)
       : null;
     if (
       fixture &&
       rolloverExpiration !== null &&
-      rolloverExpiration <= Math.floor(this.now() / 1_000)
+      rolloverExpiration <= Math.floor(this.now() / 1_000) &&
+      !await this.lifecycle?.isActive(fixture)
     ) {
       // Old rows written with a previous minimum-TTL policy must not revive
       // the completed match after the configured morning rollover.
@@ -1553,8 +1570,8 @@ class CloudflarePlayerFixtureCache
     const expectedTeamSlug = candidate.playerTeamSlug?.trim().toLowerCase();
     const rolloverExpiration = fixtureRolloverExpiration(candidate.date);
     if (
-      rolloverExpiration !== null &&
-      rolloverExpiration <= Math.floor(this.now() / 1_000)
+      (rolloverExpiration !== null && rolloverExpiration <= Math.floor(this.now() / 1_000) && !await this.lifecycle?.isActive(candidate)) ||
+      await this.lifecycle?.isFinished(candidate)
     ) {
       // A delayed old Sorare response must never replace the already known
       // next fixture after the configured morning rollover.
@@ -1572,11 +1589,7 @@ class CloudflarePlayerFixtureCache
     const incomingEnvelope = teamFixtureEnvelope(candidate);
     const incomingFixture = incomingEnvelope.nextGame;
     if (!incomingFixture) return candidate;
-    const expiration = playerFixtureExpiration(
-      incomingFixture.date,
-      this.ttlSeconds,
-      this.now(),
-    );
+    const expiration = await this.storageExpiration(incomingFixture);
     const existing = await this.readPlayerTeamFixture(
       teamKey,
       expectedTeamSlug,
@@ -1625,12 +1638,17 @@ class CloudflarePlayerFixtureCache
   ): Promise<NonNullable<PlayerFixtureStats> | undefined> {
     const memoKey = `${teamKey}|${expectedTeamSlug ?? ''}`;
     const existing = this.teamFixtureReads.get(memoKey);
-    if (existing) return existing;
+    if (existing) {
+      const cached=await existing;
+      if(!cached || !await this.lifecycle?.isFinished(cached)) return cached;
+      this.teamFixtureReads.delete(memoKey);
+    }
     const pending = (async () => {
       const raw = await this.namespace.get<unknown>(teamKey, 'json');
       if (raw === null) return undefined;
       const parsed = PlayerFixtureEnvelopeSchema.safeParse(raw);
       const fixture = parsed.success ? parsed.data.nextGame : undefined;
+      if(fixture && await this.lifecycle?.isFinished(fixture)) return undefined;
       if (!fixture) {
         this.removeInvalid(teamKey);
         return undefined;
@@ -1645,7 +1663,8 @@ class CloudflarePlayerFixtureCache
       const rolloverExpiration = fixtureRolloverExpiration(fixture.date);
       if (
         rolloverExpiration !== null &&
-        rolloverExpiration <= Math.floor(this.now() / 1_000)
+        rolloverExpiration <= Math.floor(this.now() / 1_000) &&
+        !await this.lifecycle?.isActive(fixture)
       ) {
         this.removeInvalid(teamKey);
         return undefined;
@@ -1793,6 +1812,7 @@ export class CloudflarePlayerStatsCache
     fixtureTtlSeconds: number,
     context: ExecutionContext,
     now: () => number = Date.now,
+    lifecycle?: FixtureLifecycle,
   ) {
     this.splitCache = new SplitPlayerStatsCache(
       new CloudflarePlayerFormCache(namespace, formTtlSeconds, context, now),
@@ -1801,6 +1821,7 @@ export class CloudflarePlayerStatsCache
         fixtureTtlSeconds,
         context,
         now,
+        lifecycle,
       ),
     );
   }

@@ -17,6 +17,8 @@ import { D1JsonKeyValueStore } from './d1-cache.js';
 import { D1OddsBudget } from './odds-budget.js';
 import { D1PlayerLoadLeases } from './player-load-leases.js';
 import { createWorkerLogger } from './logger.js';
+import { FixtureLifecycle } from '../services/fixture-lifecycle.js';
+import { SorareFixtureStatusSource } from '../graphql/fixture-status-source.js';
 
 const configKeys = [
   'PORT',
@@ -90,14 +92,23 @@ function createWorkerRuntime(
   const fixtureTtlSeconds = Math.floor(config.fixtureCacheTtlMs / 1_000);
   const nameTtlSeconds = Math.floor(config.nameCacheTtlMs / 1_000);
   const nameMissTtlSeconds = Math.floor(config.nameMissCacheTtlMs / 1_000);
+  const fixtureLifecycle = config.mockMode ? undefined : new FixtureLifecycle(cacheStore,new SorareFixtureStatusSource(new SorareGraphqlClient({
+    url:config.graphqlUrl,requestTimeoutMs:3_000,maxRetries:0,logger,
+    ...(config.apiKey?{apiKey:config.apiKey}:{}),
+    ...(config.authToken?{authToken:config.authToken}:{}),
+    ...(config.jwtAud?{jwtAud:config.jwtAud}:{}),
+  })),undefined,logger);
   return createStatsRuntime({
     config,
     logger,
+    ...(fixtureLifecycle?{fixtureLifecycle}:{}),
     statsCache: new CloudflarePlayerStatsCache(
       cacheStore,
       formTtlSeconds,
       fixtureTtlSeconds,
       context,
+      undefined,
+      fixtureLifecycle,
     ),
     nameResolutionCache: new CloudflareNameResolutionCache(
       cacheStore,

@@ -65,6 +65,7 @@ export const PlayerStatsRequestSchema = z
     // Extension follow-ups for a known bookmaker warmup only observe the
     // shared snapshot cache. They must never start another provider request.
     oddsCacheOnly: z.boolean().default(false),
+    checkFixtureStatus: z.boolean().optional(),
   })
   .superRefine((request, context) => {
     validatePlayerMappings(request, context);
@@ -82,6 +83,7 @@ export type ValidatedPlayerStatsRequest = z.output<typeof PlayerStatsRequestSche
 
 export const LineupSortValuesRequestSchema = z
   .object({
+    checkFixtureStatus: z.boolean().optional(),
     slugs: z
       .array(z.string().trim().min(1).max(160).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i))
       .max(50)
@@ -192,6 +194,7 @@ export const PlayerMarketOddsSchema = z.object({
 });
 
 export const PlayerStatsSchema = z.object({
+  fixtureRefresh: z.object({key:z.string(), nextCheckAt:z.string().datetime()}).optional(),
   slug: z.string(),
   displayName: z.string(),
   position: FootballPositionSchema,
@@ -213,6 +216,7 @@ export const PlayerStatsSchema = z.object({
   historicalDecisives: HistoricalAssistMetricsSchema.optional(),
   nextGame: z
     .object({
+      gameId: z.string().min(1).max(200).optional(),
       date: z.string().datetime(),
       // Optional while existing fixture cache entries migrate lazily.
       // New responses use the stable Sorare competition slug to decide
@@ -380,6 +384,8 @@ export type PlayerMarketSnapshotsSuccessResponse = z.infer<
 >;
 
 export const LineupSortValueSchema = z.object({
+  fixtureRefresh: z.object({key:z.string(), nextCheckAt:z.string().datetime()}).optional(),
+  fixtureIdentity: z.string().nullable().optional(),
   slug: z.string(),
   displayName: z.string(),
   position: FootballPositionSchema,

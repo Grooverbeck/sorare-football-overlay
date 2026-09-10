@@ -8,6 +8,7 @@ import type {
 import { fetchLineupSortValues } from './api.js';
 import { findCardTargets, type CardTarget } from './dom.js';
 import { findCardMediaContainer, findSorareCardMedia } from './card-media.js';
+import { FixtureRefreshScheduler, fixtureIdentityAttribute, fixtureRefreshAttribute, readFixtureRefresh, olderFixture, fixtureChangedEvent, retiredFixture, retiredFixtureAttribute } from './fixture-refresh.js';
 import {
   setLineupAaSortValue,
   setLineupCleanSheetSortValue,
@@ -41,6 +42,7 @@ type SortValuesFetcher = (
 type HydrationStatus = 'queued' | 'in-flight' | 'retry' | 'ready';
 
 interface HydrationState {
+  fixtureRefreshRequest?: boolean;
   key: string;
   target: CardTarget;
   status: HydrationStatus;
@@ -51,6 +53,9 @@ interface HydrationState {
 }
 
 interface SortValueSnapshot {
+  retiredFixture?: string;
+  fixtureIdentity?: string;
+  fixtureRefresh?: {key:string;nextCheckAt:string};
   position: FootballPosition | null;
   goal: {
     probability: number;
@@ -114,6 +119,9 @@ function snapshotForTarget(target: CardTarget): SortValueSnapshot | null {
       : null;
   return {
     position: sortPositionFromContainer(container, target.position),
+    ...(container.hasAttribute(retiredFixtureAttribute) ? {retiredFixture:container.getAttribute(retiredFixtureAttribute)!} : {}),
+    ...(container.hasAttribute(fixtureIdentityAttribute) ? {fixtureIdentity:container.getAttribute(fixtureIdentityAttribute)!} : {}),
+    ...(readFixtureRefresh(container) ? {fixtureRefresh:readFixtureRefresh(container)!} : {}),
     goal:
       goalProbability !== null && goalSource
         ? { probability: goalProbability, source: goalSource }
@@ -178,6 +186,20 @@ function roundedDuration(startedAt: number): number {
 }
 
 export class LineupSortHydrator {
+  private readonly fixtureScheduler=new FixtureRefreshScheduler(
+    ()=>!this.grid?.isConnected || !document.querySelector('[data-sorare-overlay-lineup-sort-trigger-label]') ? [] :
+      [...this.states.values()].flatMap(s=>{const hint=readFixtureRefresh(s.target.container);return s.target.container.isConnected && hint ? [hint] : [];}),
+    async keys=>{
+      for(const state of this.states.values()) {
+        const hint=readFixtureRefresh(state.target.container);
+        if(!hint || !keys.has(hint.key) || state.status!=='ready' || !state.target.container.isConnected)continue;
+        state.fixtureRefreshRequest=true;
+        state.status='queued';state.attempts=0;
+        this.queue.push(state);
+      }
+      await this.ensurePump();
+    },
+  );
   private grid: HTMLElement | null = null;
   private readonly states = new Map<HTMLElement, HydrationState>();
   private readonly snapshots = new Map<string, SortValueSnapshot>();
@@ -373,6 +395,7 @@ export class LineupSortHydrator {
         });
       }
     }
+    this.fixtureScheduler.schedule();
     return this.ensurePump();
   }
 
@@ -427,6 +450,7 @@ export class LineupSortHydrator {
   }
 
   stop(): void {
+    this.fixtureScheduler.stop();
     this.clearUnidentifiedCards();
     this.generation += 1;
     for (const timer of this.retryTimers.values()) window.clearTimeout(timer);
@@ -443,6 +467,7 @@ export class LineupSortHydrator {
   }
 
   private reset(grid: HTMLElement, clearLightweightValues = false): void {
+    this.fixtureScheduler.stop();
     if (grid !== this.grid) this.clearUnidentifiedCards();
     this.generation += 1;
     for (const timer of this.retryTimers.values()) window.clearTimeout(timer);
@@ -557,6 +582,7 @@ export class LineupSortHydrator {
     batch: readonly HydrationState[],
     response: LineupSortValuesSuccessResponse,
   ): void {
+    const changedPlayers=new Set<string>();
     const deferredNames = new Set(
       (response.meta.deferredPlayerNames ?? []).map(normalizePlayerName),
     );
@@ -566,7 +592,9 @@ export class LineupSortHydrator {
         targetMatchesValue(state.target, candidate),
       );
       if (value) {
+        const before=state.target.container.getAttribute(fixtureIdentityAttribute);
         this.completeState(state, value);
+        if(before!==null && before!==state.target.container.getAttribute(fixtureIdentityAttribute))changedPlayers.add(value.slug);
         continue;
       }
       const deferred = Boolean(
@@ -577,6 +605,8 @@ export class LineupSortHydrator {
       if (deferred) this.retryOrComplete(state);
       else this.completeState(state, null);
     }
+    this.fixtureScheduler.schedule();
+    if(changedPlayers.size)document.dispatchEvent(new CustomEvent(fixtureChangedEvent,{detail:[...changedPlayers]}));
   }
 
   private retryOrComplete(state: HydrationState): void {
@@ -621,6 +651,22 @@ export class LineupSortHydrator {
       return;
     }
     const container = state.target.container;
+    const refreshingFixture=state.fixtureRefreshRequest;
+    delete state.fixtureRefreshRequest;
+    let fixtureChanged=false;
+    if(value?.fixtureIdentity!==undefined) {
+      const previous=container.getAttribute(fixtureIdentityAttribute);
+      if(olderFixture(value.fixtureIdentity,previous) || retiredFixture(value.fixtureIdentity,container.getAttribute(retiredFixtureAttribute))) {state.status='ready';return;}
+      if(value.fixtureIdentity===null && value.fixtureRefresh)container.setAttribute(retiredFixtureAttribute,value.fixtureRefresh.key);
+      fixtureChanged=previous!==null && previous!==(value.fixtureIdentity??'');
+      if(fixtureChanged) {
+        setLineupGoalSortValue(container,null);
+        setLineupCleanSheetSortValue(container,null);
+      }
+      container.setAttribute(fixtureIdentityAttribute,value.fixtureIdentity??'');
+      if(value.fixtureRefresh)container.setAttribute(fixtureRefreshAttribute,JSON.stringify(value.fixtureRefresh));
+      else container.removeAttribute(fixtureRefreshAttribute);
+    }
     // A visible card can finish its full stats request while this compact
     // cache-only request is still in flight. The full response is newer and
     // may contain freshly fetched market odds, so never overwrite it with the
@@ -633,7 +679,8 @@ export class LineupSortHydrator {
       state.fullDataRevisionAtRequest;
     if (
       fullOverlayOwnsValues &&
-      (!state.reconcileFullOverlay || fullOverlayChangedDuringRequest)
+      !fixtureChanged &&
+      (fullOverlayChangedDuringRequest || (!refreshingFixture && !state.reconcileFullOverlay))
     ) {
       state.status = 'ready';
       this.preserve(state.target);
@@ -649,7 +696,7 @@ export class LineupSortHydrator {
       currentGoalIsMarket ||
       (state.preserveExistingGoalUnlessMarket &&
         value?.goal?.source !== 'market');
-    if (state.reconcileFullOverlay && fullOverlayOwnsValues) {
+    if (state.reconcileFullOverlay && fullOverlayOwnsValues && !fixtureChanged && !refreshingFixture) {
       // The compact endpoint is only being consulted for a newer cached goal
       // price. Keep AA, position and readiness owned by the full response.
       if (!preserveGoal) setLineupGoalSortValue(
@@ -697,6 +744,9 @@ export class LineupSortHydrator {
     snapshot: SortValueSnapshot,
   ): void {
     const container = target.container;
+    if(snapshot.fixtureIdentity!==undefined)container.setAttribute(fixtureIdentityAttribute,snapshot.fixtureIdentity);
+    if(snapshot.retiredFixture)container.setAttribute(retiredFixtureAttribute,snapshot.retiredFixture);
+    if(snapshot.fixtureRefresh)container.setAttribute(fixtureRefreshAttribute,JSON.stringify(snapshot.fixtureRefresh));
     setLineupSortPosition(container, snapshot.position);
     if (container.getAttribute(lineupGoalSortSourceAttribute) !== 'market') setLineupGoalSortValue(
       container,
@@ -710,6 +760,9 @@ export class LineupSortHydrator {
   }
 
   private clearTargetValues(container: HTMLElement): void {
+    container.removeAttribute(fixtureRefreshAttribute);
+    container.removeAttribute(fixtureIdentityAttribute);
+    container.removeAttribute(retiredFixtureAttribute);
     setLineupGoalSortValue(container, null);
     setLineupAaSortValue(container, null);
     setLineupCleanSheetSortValue(container, null);

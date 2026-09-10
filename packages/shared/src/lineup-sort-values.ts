@@ -3,6 +3,7 @@ import type {
   LineupSortValue,
   PlayerStats,
 } from './contracts.js';
+import { fixtureStatusKey } from './fixture-rollover.js';
 
 export function lineupGoalSortValue(
   stats: PlayerStats,
@@ -36,6 +37,8 @@ export function lineupSortValueForPlayer(
     position: stats.position,
     goal: lineupGoalSortValue(stats, historicalGoalWindow),
     aa: stats.aaL10.value,
+    ...(stats.fixtureRefresh ? {fixtureRefresh:stats.fixtureRefresh} : {}),
+    fixtureIdentity: stats.nextGame ? fixtureStatusKey(stats.nextGame) : null,
     cleanSheet:
       stats.position === 'Goalkeeper' || stats.position === 'Defender'
         ? (stats.nextGame?.cleanSheetProbability ?? null)

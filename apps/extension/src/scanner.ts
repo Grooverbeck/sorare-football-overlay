@@ -22,6 +22,8 @@ import {
 import { OverlayView } from './overlay.js';
 import { LineupSortHydrator } from './lineup-sort-hydrator.js';
 import { findSorareCardMedia } from './card-media.js';
+import { FixtureRefreshScheduler, fixtureChangedEvent, olderFixture, retiredFixture } from './fixture-refresh.js';
+import { fixtureStatusKey } from '@sorare-overlay/shared';
 import {
   normalizePlayerName as normalizeName,
   playerNamesLikelyMatch as namesLikelyMatch,
@@ -369,6 +371,32 @@ function viewportPriorityForRect(rect: DOMRectReadOnly): number {
 }
 
 export class StatsBatchCoordinator {
+  private readonly fixtureScheduler = new FixtureRefreshScheduler(
+    ()=>[...this.trackedViews].flatMap(([view])=>{
+      const hint=view.fixtureRefreshHint?.();
+      return view.host.isConnected && view.isViewportPriorityActive() && hint ? [hint] : [];
+    }),
+    async keys=>{
+      for(const [view,target] of this.trackedViews) {
+        const hint=view.fixtureRefreshHint?.();
+        if(!hint || !keys.has(hint.key) || !view.host.isConnected || !view.isViewportPriorityActive()) continue;
+        this.fixtureRefreshTargets.add(targetKey(target));
+        this.marketSnapshotRequestKeys.delete(targetKey(target));
+        this.queueTarget(target,[view],1);
+      }
+      await this.flush();
+    },
+  );
+
+  refreshFixturePlayers(slugs:readonly string[]):void {
+    const wanted=new Set(slugs);
+    for(const [view,target] of this.trackedViews) {
+      const cached=this.cachedStatsForTarget(target);
+      if(!view.host.isConnected || !view.isViewportPriorityActive() || !wanted.has(cached?.slug ?? target.slug ?? ''))continue;
+      this.fixtureRefreshTargets.add(targetKey(target));
+      this.queueTarget(target,[view],1);
+    }
+  }
   private readonly pending = new Map<string, PendingTarget>();
   private readonly inFlightTargets = new Map<string, PendingTarget>();
   private readonly inFlightFixtureRefreshKeys = new Set<string>();
@@ -468,6 +496,7 @@ export class StatsBatchCoordinator {
         rendered: summarizeStats(cached),
       });
       view.render(cached, this.cachedStatsValues());
+      this.fixtureScheduler.schedule();
       if (shouldForceRefresh) {
         this.clearPendingRefresh(key);
       } else if (cached.pendingRefreshes?.length) {
@@ -501,6 +530,8 @@ export class StatsBatchCoordinator {
 
   releaseView(view: OverlayView): void {
     this.trackedViews.delete(view);
+    if(!this.trackedViews.size)this.fixtureScheduler.stop();
+    else this.fixtureScheduler.schedule();
 
     const detachFromTargets = (
       targets: Iterable<PendingTarget | ScheduledTargetWork>,
@@ -624,6 +655,7 @@ export class StatsBatchCoordinator {
     views: Iterable<OverlayView>,
     priority = 0,
   ): void {
+    this.fixtureScheduler.schedule();
     const connectedViews = this.connectedViews(views);
     if (connectedViews.length === 0) return;
     const key = targetKey(target);
@@ -911,6 +943,7 @@ export class StatsBatchCoordinator {
         }
       }
       this.refreshTrackedFixturePresentations(responseData);
+      this.fixtureScheduler.schedule();
     } catch (error) {
       const message =
         error instanceof Error && error.message
@@ -1474,6 +1507,9 @@ export class StatsBatchCoordinator {
       incoming.pendingRefreshes?.includes('formHistory') === true;
     const cachedIsPartialForm =
       cached?.pendingRefreshes?.includes('formHistory') === true;
+    if(cached && incoming.nextGame && (cached.nextGame ? olderFixture(fixtureStatusKey(incoming.nextGame),fixtureStatusKey(cached.nextGame)) : retiredFixture(fixtureStatusKey(incoming.nextGame),cached.fixtureRefresh?.key??null))) {
+      incoming={...incoming,nextGame:cached.nextGame,fixtureRefresh:cached.fixtureRefresh};
+    }
     let merged = incoming;
     if (cached && isPartialFormRefresh && !cachedIsPartialForm) {
       merged = {
@@ -1635,6 +1671,10 @@ export class StatsBatchCoordinator {
 }
 
 export class SorareCardScanner {
+  private readonly handleFixtureChanged=(event:Event):void=>{
+    if(!(event instanceof CustomEvent) || !Array.isArray(event.detail))return;
+    this.coordinator.refreshFixturePlayers(event.detail.filter((v:unknown):v is string=>typeof v==='string'));
+  };
   private observer: MutationObserver | undefined;
   private layoutObserver: MutationObserver | undefined;
   private visibilityObserver: IntersectionObserver | undefined;
@@ -1738,6 +1778,7 @@ export class SorareCardScanner {
 
   start(): void {
     if (this.observer) return;
+    document.addEventListener(fixtureChangedEvent,this.handleFixtureChanged);
     const root = document.body ?? document.documentElement;
     this.root = root;
     this.coordinator.setMarketCacheUpdateListener(
@@ -1843,6 +1884,7 @@ export class SorareCardScanner {
   }
 
   stop(): void {
+    document.removeEventListener(fixtureChangedEvent,this.handleFixtureChanged);
     this.root?.removeEventListener(
       lineupPoolProgressEvent,
       this.handleLineupPoolProgress,

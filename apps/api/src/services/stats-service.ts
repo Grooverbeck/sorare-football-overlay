@@ -3,6 +3,7 @@ import {
   calculateHistoricalDecisiveMetrics,
   calculateHistoricalGoalMetrics,
   calculatePlayerMetrics,
+  fixtureStatusKey,
   type FootballPosition,
   type PlayerMarketSnapshot,
   type PlayerStats,
@@ -24,6 +25,7 @@ import {
   type PlayerMarketOddsProvider,
 } from '../providers/market-odds-provider.js';
 import type { GoalscorerProbabilityProvider } from '../providers/goalscorer-provider.js';
+import type { FixtureLifecycle } from './fixture-lifecycle.js';
 import {
   UnavailableFixtureMatchOddsProvider,
   type FixtureMatchOddsProvider,
@@ -377,9 +379,17 @@ export class StatsService {
     private readonly cacheOnlyOddsBudgetMs = 350,
     private readonly responseBudgetMs = 9_000,
     private readonly playerLoadLeases?: PlayerLoadLeases,
+    private readonly fixtureLifecycle?: FixtureLifecycle,
   ) {}
 
   async getPlayerStats(
+    request: ValidatedPlayerStatsRequest,
+  ): Promise<StatsServiceResult> {
+    const result=await this.getPlayerStatsWithinBudget(request);
+    return this.fixtureLifecycle ? {...result,data:await this.fixtureLifecycle.decorate(result.data)} : result;
+  }
+
+  private async getPlayerStatsWithinBudget(
     request: ValidatedPlayerStatsRequest,
   ): Promise<StatsServiceResult> {
     if (!this.scheduleBackground) return this.loadPlayerStats(request);
@@ -586,6 +596,16 @@ export class StatsService {
       const partsByKey = await splitCache.getPartsMany(
         keyedRequests.map(({ key }) => key),
       );
+      if(request.checkFixtureStatus && this.fixtureLifecycle) {
+        const checked=await this.fixtureLifecycle.check([...partsByKey.values()].flatMap(parts=>parts.fixture?[parts.fixture]:[]));
+        for(const [key,parts] of partsByKey) {
+          if(parts.fixture && await this.fixtureLifecycle.isFinished(parts.fixture)) {
+            partsByKey.set(key,parts.form ? {form:parts.form} : {});
+          } else if(parts.fixture && checked.has(fixtureStatusKey(parts.fixture)??'') && await this.fixtureLifecycle.isActive(parts.fixture)) {
+            await splitCache.refreshFixture(key,parts.fixture);
+          }
+        }
+      }
       const cachedParts = keyedRequests.map(({ key, playerRequest }) => ({
         key,
         playerRequest,
@@ -748,7 +768,7 @@ export class StatsService {
     const baseAndHistoryStartedAt = performance.now();
 
     if (
-      request.refreshFixtures &&
+      (request.refreshFixtures || request.checkFixtureStatus) &&
       splitCache &&
       fixtureRefreshEntries.length > 0
     ) {

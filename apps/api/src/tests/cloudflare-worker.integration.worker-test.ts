@@ -19,6 +19,12 @@ import {
 import { D1JsonKeyValueStore } from '../cloudflare/d1-cache.js';
 import { D1OddsBudget } from '../cloudflare/odds-budget.js';
 import { D1PlayerLoadLeases } from '../cloudflare/player-load-leases.js';
+import { FixtureLifecycle, type Fixture } from '../services/fixture-lifecycle.js';
+import { fixtureStatusKey, PlayerStatsRequestSchema } from '@sorare-overlay/shared';
+import { StatsService } from '../services/stats-service.js';
+import { HistoricalGoalscorerProvider } from '../providers/goalscorer-provider.js';
+import { UnavailablePlayerMarketOddsProvider } from '../providers/market-odds-provider.js';
+import { MockDataSource } from '../mock/mock-data-source.js';
 import { SorareGraphqlClient } from '../graphql/client.js';
 import type { AppLogger } from '../logger.js';
 import {
@@ -55,6 +61,64 @@ beforeEach(async () => {
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe('Cloudflare Worker', () => {
+  it('switches a finished fixture before morning, keeps AA and fences delayed cache writes',async()=>{
+    const now=Date.parse('2032-01-02T22:00:00Z');
+    const store=new D1JsonKeyValueStore(env.CACHE_DB,undefined,()=>now/1000);
+    const old:Fixture={gameId:'Game:old',date:'2032-01-02T19:00:00Z',homeTeamSlug:'held-club',awayTeamSlug:'old-away',playerTeamSlug:'held-club',homeTeamName:'Held Club',awayTeamName:'Old Away',playerTeamName:'Held Club',opponentTeamName:'Old Away',cleanSheetProbability:0.4,matchProbabilities:null};
+    const next:Fixture={...old,gameId:'Game:new',date:'2032-01-05T19:00:00Z',awayTeamSlug:'new-away',awayTeamName:'New Away',opponentTeamName:'New Away',cleanSheetProbability:0.6};
+    const statusLoad=vi.fn(async()=>new Map([[fixtureStatusKey(old)!,{status:'played' as const,gameId:'Game:old'}]]));
+    const lifecycle=new FixtureLifecycle(store,{load:statusLoad},()=>now);
+    const context=createExecutionContext();
+    const cache=new CloudflarePlayerStatsCache(store,604800,14400,context,()=>now,lifecycle);
+    const key='lifecycle-player:Defender:no-low';
+    await cache.fillMissing(key,{slug:'lifecycle-player',displayName:'Lifecycle Player',position:'Defender',aaL10:{value:22,sampleSize:10},aaL10TeamWinRate:{value:0.5,sampleSize:10},goalL10:{value:0.1,sampleSize:10},cleanSheetL10:{value:0.3,sampleSize:10},nextGame:old,excludedLowCoverage:0});
+    await waitOnExecutionContext(context);
+    const source=new MockDataSource();
+    const nextGames=vi.spyOn(source,'fetchNextGames').mockResolvedValue([{slug:'lifecycle-player',nextGame:next}]);
+    const history=vi.spyOn(source,'fetchPlayers');
+    const service=new StatsService(source,new HistoricalGoalscorerProvider(),cache,true,new UnavailablePlayerMarketOddsProvider(),undefined,undefined,undefined,undefined,undefined,undefined,lifecycle);
+    const result=await service.getPlayerStats(PlayerStatsRequestSchema.parse({slugs:['lifecycle-player'],positions:{'lifecycle-player':'Defender'},checkFixtureStatus:true,oddsCacheOnly:true}));
+    await waitOnExecutionContext(context);
+    expect(statusLoad).toHaveBeenCalledTimes(1);expect(nextGames).toHaveBeenCalledTimes(1);expect(history).not.toHaveBeenCalled();
+    expect(result.data[0]).toMatchObject({aaL10:{value:22},nextGame:{date:next.date,cleanSheetProbability:0.6}});
+    expect(result.data[0]?.fixtureRefresh?.key).toBe(fixtureStatusKey(next));
+    const oldEnvelope=JSON.stringify({cachePolicyVersion:3,nextGame:old});
+    await store.put('player-fixture:v1:lifecycle-player:auto-v3:no-low',oldEnvelope,{expirationTtl:86400});
+    await store.putEarlierFixture('player-team-fixture:v2:held-club',oldEnvelope,{expirationTtl:86400});
+    const freshLife=new FixtureLifecycle(store,{load:statusLoad},()=>now);
+    const freshContext=createExecutionContext();
+    const fresh=new CloudflarePlayerStatsCache(store,604800,14400,freshContext,()=>now,freshLife);
+    expect((await fresh.getParts(key)).fixture?.date).toBe(next.date);
+    expect((await fresh.getTeamFixture('teammate:Defender:no-low','held-club'))?.date).toBe(next.date);
+    expect((await fresh.refreshFixture(key,old))?.date).toBe(next.date);
+    await waitOnExecutionContext(freshContext);
+  });
+
+  it('shares status checks across D1-backed request instances',async()=>{
+    const now=Date.parse('2032-01-02T22:00:00Z');
+    const fixture:Fixture={date:'2032-01-02T19:00:00Z',homeTeamSlug:'home',awayTeamSlug:'away',cleanSheetProbability:null,matchProbabilities:null};
+    const load=vi.fn(async()=>new Map([[fixtureStatusKey(fixture)!,{status:'playing' as const,gameId:'Game:one'}]]));
+    await Promise.all(Array.from({length:12},()=>new FixtureLifecycle(new D1JsonKeyValueStore(env.CACHE_DB,undefined,()=>now/1000),{load},()=>now).check([fixture,fixture])));
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not roll a confirmed interrupted match over at 09:00',async()=>{
+    let now=Date.parse('2032-01-02T22:00:00Z');
+    const fixture:Fixture={date:'2032-01-02T19:00:00Z',homeTeamSlug:'interrupted-home',awayTeamSlug:'interrupted-away',playerTeamSlug:'interrupted-home',homeTeamName:'Home',awayTeamName:'Away',playerTeamName:'Home',opponentTeamName:'Away',cleanSheetProbability:0.4,matchProbabilities:null};
+    const store=new D1JsonKeyValueStore(env.CACHE_DB,undefined,()=>now/1000);
+    const load=vi.fn(async()=>new Map([[fixtureStatusKey(fixture)!,{status:'suspended' as const,gameId:'Game:interrupted'}]]));
+    const life=new FixtureLifecycle(store,{load},()=>now);
+    const ctx=createExecutionContext();const cache=new CloudflarePlayerStatsCache(store,604800,14400,ctx,()=>now,life);
+    await cache.setFixture('interrupted:Defender:no-low',fixture);await waitOnExecutionContext(ctx);
+    await life.check([fixture]);await cache.refreshFixture('interrupted:Defender:no-low',fixture);await waitOnExecutionContext(ctx);
+    now=Date.parse('2032-01-03T09:00:00Z');
+    const freshCtx=createExecutionContext();const freshLife=new FixtureLifecycle(store,{load},()=>now);
+    const fresh=new CloudflarePlayerStatsCache(store,604800,14400,freshCtx,()=>now,freshLife);
+    expect((await fresh.getParts('interrupted:Defender:no-low')).fixture?.date).toBe(fixture.date);
+    expect((await fresh.getTeamFixture('teammate:Defender:no-low','interrupted-home'))?.date).toBe(fixture.date);
+    expect(load).toHaveBeenCalledTimes(1);
+    await waitOnExecutionContext(freshCtx);
+  });
   it('rejects oversized bodies on all public POST routes in the Worker runtime', async () => {
     for (const path of ['player-stats','player-market-snapshots','lineup-sort-values']) {
       const response = await SELF.fetch(`https://test/api/${path}`,{method:'POST',body:'x'.repeat(256*1024+1)});

@@ -159,11 +159,21 @@ Zugriff in die neuen Schlüssel migriert und laufen danach automatisch aus. Die
 frühere Variable `CACHE_TTL_SECONDS` wird aus Kompatibilitätsgründen noch als
 Fallback für die Form-TTL akzeptiert.
 
-Der morgendliche Wechsel vom gehaltenen Spiel zur nächsten Begegnung erfolgt
-ab 09:00 Uhr deutscher Zeit (`Europe/Berlin`, einschließlich Sommer-/Winterzeit)
-beim nächsten Datenabruf. Backend und Browser-Cache verwenden dieselbe Grenze.
-Die bisherige Zuordnung zum UTC-Spieltag und mindestens sechs Stunden Abstand
-zum Anpfiff bleiben bestehen; ältere Cache-Einträge verlängern die Grenze nicht.
+Der Wechsel zur nächsten Begegnung kann bei aktiver Nutzung bereits ab zwei
+Stunden nach Anpfiff erfolgen: Der Worker prüft den Sorare-Spielstatus und gibt
+das bisherige Spiel erst bei `played` frei. Pro Begegnung schützt eine gemeinsame
+D1-Sperre vor mehrfachen Prüfungen innerhalb von 15 Minuten. Neue Fixtures tragen
+die Sorare-Spiel-ID; alte Einträge werden über eine begrenzte Club-Abfrage mit
+exakter Anpfiffzeit und beiden kanonischen Team-Slugs zugeordnet. Ohne zuverlässigen
+Status bleibt 09:00 Uhr deutscher Zeit (`Europe/Berlin`) die Rückfallgrenze.
+Bestätigt laufende/unterbrochene Spiele werden auch über diese Grenze hinaus gehalten.
+
+Die aktualisierte Extension erhält den nächsten Prüfzeitpunkt. In sichtbaren Tabs
+werden entweder sichtbare Karten oder alle bereits geladenen Karten des aktiven
+Sortierpools bedarfsgesteuert nachgeladen. AA-Formwerte werden dabei wiederverwendet;
+alte Quoten dürfen nicht auf ein anderes Spiel übertragen werden. Versteckte Tabs
+pausieren diese Prüfungen. Kein neuer Cron-Job und keine Spielstatus-Abfrage bei
+Quotenanbietern. Ältere Extensions bleiben kompatibel, haben aber keinen neuen Timer.
 
 SportsGameOdds wird primär für direkte Tor-, Assist- und
 Tor-oder-Assist-Märkte sowie als erster externer H/D/A-Fallback verwendet. Ein

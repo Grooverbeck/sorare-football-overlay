@@ -5,6 +5,7 @@ import type {
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LineupSortHydrator } from '../lineup-sort-hydrator.js';
 import { findCardTargets } from '../dom.js';
+import {fixtureIdentityAttribute,fixtureRefreshAttribute} from '../fixture-refresh.js';
 import {
   markLineupSortFullDataUpdated,
   setLineupAaSortValue,
@@ -699,5 +700,35 @@ describe('LineupSortHydrator', () => {
     expect(target.container.hasAttribute(lineupSortLightweightReadyAttribute)).toBe(true);
     expect(target.container.getAttribute('data-sorare-overlay-aa-sort-value')).toBe('10');
     hydrator.stop();
+  });
+
+  it('automatically refreshes due offscreen teammates in one batch without revisiting unrelated cards',async()=>{
+    vi.useFakeTimers();vi.setSystemTime(new Date('2032-01-01T22:00:00Z'));
+    const grid=renderGrid(3);
+    const trigger=document.createElement('span');trigger.setAttribute('data-sorare-overlay-lineup-sort-trigger-label','true');document.body.append(trigger);
+    const oldKey='fixture-status:v1:1956596400:home:away';
+    const newKey='fixture-status:v1:1956855600:home:next';
+    let calls=0;
+    const fetcher=vi.fn(async(request:LineupSortValuesRequest):Promise<LineupSortValuesSuccessResponse>=>{
+      const response=responseFor(request);calls++;
+      return {...response,data:response.data.map(value=>({...value,aa:20,
+        goal:{source:'market',probability:calls===1?0.7:0.2},cleanSheet:calls===1?0.4:0.6,
+        fixtureIdentity:value.slug==='sort-player-3'?'fixture-status:v1:1956596400:other:opponent':calls===1?oldKey:newKey,
+        fixtureRefresh:{key:value.slug==='sort-player-3'?'fixture-status:v1:1956596400:other:opponent':calls===1?oldKey:newKey,nextCheckAt:new Date(Date.now()+((calls===1&&value.slug!=='sort-player-3')?1000:3_600_000)).toISOString()},
+      }))};
+    });
+    const hydrator=new LineupSortHydrator(fetcher);
+    try {
+      await hydrator.hydrate(grid);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(fetcher.mock.calls[1]?.[0].slugs).toEqual(['sort-player-1','sort-player-2']);
+      const card=grid.querySelector<HTMLElement>('[data-testid="card-1"]')!;
+      expect(card.getAttribute('data-sorare-overlay-aa-sort-value')).toBe('20');
+      expect(card.getAttribute('data-sorare-overlay-goal-sort-probability')).toBe('0.2');
+      expect(card.getAttribute(lineupCleanSheetSortProbabilityAttribute)).toBe('0.6');
+      expect(card.getAttribute(fixtureIdentityAttribute)).toBe(newKey);
+      expect(grid.querySelector('[data-testid="card-3"]')?.getAttribute(fixtureIdentityAttribute)).toBe('fixture-status:v1:1956596400:other:opponent');
+    } finally {hydrator.stop();vi.useRealTimers();}
   });
 });

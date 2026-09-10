@@ -4,12 +4,14 @@ import {
   getMlsHistoricalMarketProbabilityBand,
   getMlsMarketProbabilityBand,
   hasAnyDisplayData,
+  fixtureStatusKey,
   lineupGoalSortValue as sharedLineupGoalSortValue,
   type MarketProbability,
   type Metric,
   type PlayerStats,
 } from '@sorare-overlay/shared';
 import { supportsCompactViewPath } from './compact-view-route.js';
+import { fixtureIdentityAttribute, fixtureRefreshAttribute, olderFixture, retiredFixture, retiredFixtureAttribute } from './fixture-refresh.js';
 import { isScoreDetailsDialogTarget } from './dom.js';
 import { findSorareCardMedia, sorareCardNamePattern as sorareCardImageAlt } from './card-media.js';
 import {
@@ -3528,6 +3530,9 @@ export class OverlayView {
     if (this.destroyed) return;
     this.destroyed = true;
     if (!options.preserveLineupSortData) {
+      this.container.removeAttribute(fixtureIdentityAttribute);
+      this.container.removeAttribute(fixtureRefreshAttribute);
+      this.container.removeAttribute(retiredFixtureAttribute);
       setLineupGoalSortValue(this.container, null);
       setLineupAaSortValue(this.container, null);
       setLineupCleanSheetSortValue(this.container, null);
@@ -3547,6 +3552,10 @@ export class OverlayView {
     this.lineupOddsHost.remove();
     this.lineupTooltipHost.remove();
     this.host.remove();
+  }
+
+  fixtureRefreshHint(): PlayerStats['fixtureRefresh'] {
+    return this.lastRawStats?.fixtureRefresh;
   }
 
   loading(): void {
@@ -3617,6 +3626,18 @@ export class OverlayView {
     fixtureCandidates: readonly PlayerStats[] = [],
   ): void {
     if (this.destroyed) return;
+    const incomingIdentity=stats.nextGame?fixtureStatusKey(stats.nextGame):null;
+    if(olderFixture(incomingIdentity,this.container.getAttribute(fixtureIdentityAttribute)) || retiredFixture(incomingIdentity,this.container.getAttribute(retiredFixtureAttribute))) return;
+    if(!stats.nextGame && stats.fixtureRefresh)this.container.setAttribute(retiredFixtureAttribute,stats.fixtureRefresh.key);
+    if(stats.fixtureRefresh) this.container.setAttribute(fixtureRefreshAttribute,JSON.stringify(stats.fixtureRefresh));
+    else this.container.removeAttribute(fixtureRefreshAttribute);
+    const previousIdentity=this.container.getAttribute(fixtureIdentityAttribute);
+    if(previousIdentity!==null && previousIdentity!==(incomingIdentity??'')) {
+      setLineupGoalSortValue(this.container,null);
+      setLineupCleanSheetSortValue(this.container,null);
+      this.container.removeAttribute(lineupSortLightweightReadyAttribute);
+    }
+    this.container.setAttribute(fixtureIdentityAttribute,incomingIdentity??'');
     this.lastRawStats = stats;
     const teamRow = lineupBuilderTeamRow(this.container);
     const displayStats = statsForVisibleLineupFixture(

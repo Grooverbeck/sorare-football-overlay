@@ -294,6 +294,7 @@ export function createApp<TBindings extends object = Record<string, never>>(
       // Sorting may observe provider snapshots that already exist, but it must
       // never consume quota or schedule provider work for an offscreen pool.
       oddsCacheOnly: true,
+      checkFixtureStatus: parsed.data.checkFixtureStatus,
     });
     const result = await services.statsService.getPlayerStats(statsRequest);
     const durationMs = Math.round((performance.now() - startedAt) * 10) / 10;
