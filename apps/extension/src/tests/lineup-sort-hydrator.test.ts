@@ -193,6 +193,20 @@ describe('LineupSortHydrator', () => {
     hydrator.stop();
   });
 
+  it('settles an unknown locked card without marking its unrelated stats button', async () => {
+    const grid = renderGrid(0);
+    grid.innerHTML = '<div><div data-locked-frame style="--mask-image-src:none"><div style="--mask-shape:url(https://assets.sorare.com/cardsamplepicture/locked-unknown/picture/a.png)"></div><svg aria-label="Gesperrt"></svg></div><button>Letzte 5 Statistiken</button></div>';
+    const fetcher = vi.fn(async (request: LineupSortValuesRequest) => responseFor(request));
+    const hydrator = new LineupSortHydrator(fetcher);
+    await hydrator.hydrate(grid, []);
+    hydrator.settleUnidentifiedCards(grid, []);
+    expect(grid.querySelector('[data-locked-frame]')?.getAttribute(lineupSortIdentityMissingAttribute)).toBe('true');
+    expect(grid.querySelector('[data-locked-frame]')?.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    expect(grid.querySelector('button')?.hasAttribute(lineupSortDataReadyAttribute)).toBe(false);
+    expect(fetcher).not.toHaveBeenCalled();
+    hydrator.stop();
+  });
+
   it('hydrates only explicitly discovered targets during incremental growth', async () => {
     const grid = renderGrid(3);
     const targets = findCardTargets(grid);

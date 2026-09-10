@@ -3,6 +3,7 @@ import {
   cardPictureIdFromUrl as pictureIdFromUrl,
   extractCardPictureId,
   findSorareCardMedia,
+  findCardMediaContainer,
 } from './card-media.js';
 export { extractCardPictureId } from './card-media.js';
 
@@ -54,6 +55,7 @@ const verifiedSetPictures: Readonly<Record<string, string>> = {
   '59bcd30d-a708-401a-a5e2-0cd6aa11abb5': 'bryan-mbeumo',
   // Confirmed via the visible picker stats details (11 September 2026).
   '30cf34c8-c146-4bda-9a66-839f9203e3b4': 'finn-jeltsch',
+  'dd39cfe2-d734-44e7-b11a-0410e273f5a4': 'ibrahim-maza',
 };
 const knownPlayerSlugsByPictureId = new Map(Object.entries(verifiedSetPictures));
 const discoveredPlayerSlugsByPictureId = new Map<string, string>();
@@ -265,7 +267,7 @@ export function findCardContainer(anchor: HTMLAnchorElement): HTMLElement | null
     const media = findSorareCardMedia(anchor);
     const ids = new Set(media.map(extractCardPictureId).filter(Boolean));
     if (media.length === 1 || (media.length > 0 && ids.size === 1 && media.every(node => extractCardPictureId(node)))) {
-      return media[0]!.closest<HTMLElement>('[data-player-slug], [data-card-slug], [data-testid*="card" i], button, [role="button"], article, li') ?? anchor;
+      return findCardMediaContainer(media[0]!) ?? anchor;
     }
     return null;
   }
@@ -546,7 +548,7 @@ export function findCardTargets(
   if (root instanceof SVGSVGElement) placeholders.unshift(root);
   for (const svg of placeholders) {
     const identity = readCardPlaceholder(svg);
-    const container = svg.closest<HTMLElement>('button, [role="button"], article, li');
+    const container = findCardMediaContainer(svg);
     if (!identity || !container || isScoreDetailsDialogTarget(container)) continue;
     const ids = new Set(Array.from(container.querySelectorAll<HTMLElement>('[style*="--mask-shape"]'))
       .map(node => node.style.getPropertyValue('--mask-shape').match(/url\(["']?([^"')]+)["']?\)/)?.[1])
@@ -569,7 +571,7 @@ export function findCardTargets(
     const id = extractCardPictureId(media);
     const slug = id ? knownPlayerSlugsByPictureId.get(id) : undefined;
     const playerName = id ? knownPlayerNamesByPictureId.get(id) : undefined;
-    const container = media.closest<HTMLElement>('button, [role="button"], article, li');
+    const container = findCardMediaContainer(media);
     if ((!slug && !playerName) || !container || targetContainers.has(container) || isScoreDetailsDialogTarget(container)) continue;
     // A shared wrapper with several players must never inherit one picture's identity.
     const ids = new Set(findSorareCardMedia(container).map(extractCardPictureId).filter(Boolean));

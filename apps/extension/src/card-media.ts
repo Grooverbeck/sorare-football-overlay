@@ -33,3 +33,17 @@ export function findSorareCardMedia(root: ParentNode): HTMLElement[] {
     extractCardPictureId(media) !== null,
   );
 }
+
+/** Find the visual card, including Sorare's non-interactive locked editions. */
+export function findCardMediaContainer(media: Element): HTMLElement | null {
+  const interactiveCard = media.closest<HTMLElement>(
+    '[data-player-slug], [data-card-slug], [data-testid*="card" i], button, [role="button"], article, li',
+  );
+  if (interactiveCard) return interactiveCard;
+  // A locked card has the same visual frame but no surrounding button. The
+  // frame owns the card dimensions; an inner CSS foil layer may be height 0.
+  const frame = media.closest<HTMLElement>('[style*="--mask-image-src"]');
+  if (frame) return frame;
+  const fallback = media.closest<HTMLAnchorElement>('a[href]') ?? media.parentElement;
+  return fallback && !fallback.matches('body, html') ? fallback : null;
+}

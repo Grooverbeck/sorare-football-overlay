@@ -334,6 +334,38 @@ describe('lineup card sorting', () => {
     expect(grid.querySelector(`[${lineupSortIdentityMissingAttribute}]`)).toBeNull();
   });
 
+  it('finishes a 48-player MF pool including a locked Maza Set card without making it selectable', async () => {
+    const grid = document.querySelector<HTMLElement>('[data-player-grid]')!;
+    document.querySelector('[data-lineup-positions] .highlighted')?.classList.remove('highlighted');
+    [...document.querySelectorAll('[data-lineup-positions] button')].find(e => e.textContent === 'MF')!.classList.add('highlighted');
+    grid.innerHTML = `<div data-locked-cell>
+      <div data-locked-frame style="--mask-image-src:none"><div><div>
+        <div style="--mask-shape:url(https://assets.sorare.com/cardsamplepicture/dd39cfe2-d734-44e7-b11a-0410e273f5a4/picture/a.png)"></div>
+      </div><span><svg aria-label="Gesperrt"></svg></span></div></div>
+      <button data-stats-button>Letzte 5 Statistiken</button><span>In Pro-Schritt 4</span>
+    </div>` + Array.from({length:47}, (_, i) => `<div><article data-testid="card-${i}"><a href="/football/players/mf-player-${i}"><img alt="MF Player ${i} - common"></a></article></div>`).join('');
+    const fetcher = vi.fn(async (request: import('@sorare-overlay/shared').LineupSortValuesRequest): Promise<import('@sorare-overlay/shared').LineupSortValuesSuccessResponse> => ({
+      data:(request.slugs ?? []).map((slug,i)=>({slug,displayName:slug,position:'Midfielder',aa:slug==='ibrahim-maza'?21.5:i/10,goal:null})),
+      meta:{requested:request.slugs?.length ?? 0,returned:request.slugs?.length ?? 0,cacheHits:48,source:'sorare',durationMs:1},
+    }));
+    const hydrator = new LineupSortHydrator(fetcher);
+    const targets = findCardTargets(grid, {activeLineupPosition:'Midfielder',skipMiniatureCardCheck:true});
+    expect(targets).toHaveLength(48);
+    expect(targets.some(target=>target.slug==='ibrahim-maza')).toBe(true);
+    await hydrator.hydrate(grid,targets);
+    sorter.scan();
+    document.querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)!.click();
+    await vi.waitFor(()=>expect(document.querySelector('[data-native-trigger-label]')?.textContent).toBe('AA'));
+    expect(document.querySelector('[data-native-sort]')?.textContent).toContain('48 Spieler sortiert');
+    expect(grid.querySelectorAll(`[${lineupSortDataReadyAttribute}="true"]`)).toHaveLength(48);
+    expect(grid.querySelector<HTMLElement>('[data-locked-cell]')?.style.order).toBe('-48');
+    expect(grid.querySelector('[data-locked-frame]')?.getAttribute(lineupAaSortValueAttribute)).toBe('21.5');
+    expect(grid.querySelector('[data-locked-frame] button, [data-locked-frame][role="button"]')).toBeNull();
+    expect(grid.querySelector('[aria-label="Gesperrt"]')).not.toBeNull();
+    expect(grid.querySelector('[data-stats-button]')?.hasAttribute(lineupSortDataReadyAttribute)).toBe(false);
+    hydrator.stop();
+  });
+
   it('accepts a 256-card pool that finishes on the final loading probe', async () => {
     const grid = document.querySelector<HTMLElement>('[data-player-grid]');
     if (!grid) throw new Error('Expected player grid');

@@ -7,7 +7,7 @@ import type {
 } from '@sorare-overlay/shared';
 import { fetchLineupSortValues } from './api.js';
 import { findCardTargets, type CardTarget } from './dom.js';
-import { findSorareCardMedia } from './card-media.js';
+import { findCardMediaContainer, findSorareCardMedia } from './card-media.js';
 import {
   setLineupAaSortValue,
   setLineupCleanSheetSortValue,
@@ -234,7 +234,7 @@ export class LineupSortHydrator {
       let ancestor: HTMLElement | null = media;
       while (ancestor && !knownContainers.has(ancestor)) ancestor = ancestor.parentElement;
       if (ancestor) continue;
-      const container = media.closest<HTMLElement>('button, [role="button"], article, li, a');
+      const container = findCardMediaContainer(media);
       if (!container || container.hasAttribute(lineupSortIdentityMissingAttribute)) continue;
       // Count the physical card, but do not invent a player or send an empty
       // request. A later learned identity removes this terminal marker.

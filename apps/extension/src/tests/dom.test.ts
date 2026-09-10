@@ -196,6 +196,22 @@ describe('Sorare card DOM discovery', () => {
     view.destroy();
   });
 
+  it.each(['92b655c1-7b93-4dc6-8093-2a544042b0fc', 'locked-learned-picture'])('recognizes a locked CSS card without a button (%s)', (id) => {
+    hydrateCardPictureSlugs({'locked-learned-picture':'locked-test-player'});
+    document.body.innerHTML = `<section data-sorare-overlay-lineup-sort-hydration="true"><div>
+      <div data-locked-frame style="--mask-image-src:none"><div><div>
+        <div style="--mask-shape:url(https://assets.sorare.com/cardsamplepicture/${id}/picture/a.png)"></div>
+      </div><span><svg aria-label="Gesperrt"></svg></span></div></div>
+      <div><button><span aria-label="Team"><img alt="opponent-team"></span><span aria-label="Team" class="highlighted"><img alt="player-team"></span></button><span>In Pro-Schritt 4</span></div>
+    </div></section>`;
+    const frame = document.querySelector<HTMLElement>('[data-locked-frame]')!;
+    const targets = findCardTargets(document.querySelector('section')!, {activeLineupPosition:'Midfielder', skipMiniatureCardCheck:true});
+    expect(targets).toHaveLength(1);
+    expect(targets[0]).toMatchObject({container:frame, position:'Midfielder', teamSlug:'player-team'});
+    expect(frame.querySelector('button')).toBeNull();
+    expect(frame.querySelector('[aria-label="Gesperrt"]')).not.toBeNull();
+  });
+
   it('learns the player from the scoped Sorare loading placeholder before video playback', () => {
     document.body.innerHTML = `<button><svg><text x="50%" y="80%">NEW PLAYER</text><text y="85%">Stürmer</text><text y="95%">Common</text></svg><div style="--mask-shape:url(https://assets.sorare.com/cardsamplepicture/placeholder-id/picture/card.png)"></div></button>`;
     expect(findCardTargets(document)).toMatchObject([{playerName:'NEW PLAYER',position:'Forward'}]);
