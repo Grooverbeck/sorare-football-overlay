@@ -27,6 +27,8 @@ export function isSorareCardVideo(video: HTMLVideoElement): boolean {
 
 function linkedPlayerSlug(url: URL): string | null {
   if (!url.pathname.includes('/football/')) return null;
+  const detailCard = url.pathname.match(/\/football\/series\/cards\/([^/]+)\/?$/)?.[1];
+  if (detailCard) return detailCard.match(linkedCardSlug)?.[1]?.toLowerCase() ?? null;
   const cards = url.searchParams.getAll('card');
   return cards.length === 1 ? cards[0]!.match(linkedCardSlug)?.[1]?.toLowerCase() ?? null : null;
 }
@@ -42,6 +44,8 @@ const verifiedSetPictures: Readonly<Record<string, string>> = {
   'bb0a6f5d-b319-4bed-ade3-4baf71e8456e': 'harold-voyer',
   'f244abfc-a2d0-4555-b3bd-e8c071f869af': 'nathan-de-cat',
   'bd20bfa2-0203-4fac-aa2d-495a72206f2c': 'ethan-mbappe-lottin',
+  // Confirmed together in Sorare's visible card-details dialog.
+  '59bcd30d-a708-401a-a5e2-0cd6aa11abb5': 'bryan-mbeumo',
 };
 const knownPlayerSlugsByPictureId = new Map(Object.entries(verifiedSetPictures));
 const discoveredPlayerSlugsByPictureId = new Map<string, string>();
@@ -310,13 +314,7 @@ export function extractPlayerName(image: HTMLImageElement): string | null {
 
 export function extractCardPictureId(image: HTMLImageElement | HTMLVideoElement): string | null {
   if (image instanceof HTMLVideoElement) return pictureIdFromUrl(image.poster);
-  try {
-    return new URL(image.currentSrc || image.src, location.href).pathname
-      .match(cardPicturePath)?.[1]
-      ?.toLowerCase() ?? null;
-  } catch {
-    return null;
-  }
+  return pictureIdFromUrl(image.currentSrc || image.src);
 }
 
 export function hydrateCardPictureNames(
@@ -496,6 +494,19 @@ export function findCardTargets(
 
   for (const anchor of anchors) {
     const slug = extractPlayerSlug(anchor);
+    // Details dialogs intentionally have no overlay. Their card thumbnail
+    // still proves the picture-to-player identity, even with an empty alt.
+    if (slug) {
+      const ids = new Set(Array.from(anchor.querySelectorAll<HTMLImageElement | HTMLVideoElement>('img, video[poster]'))
+        .map(extractCardPictureId).filter((id): id is string => Boolean(id)));
+      if (ids.size === 1) {
+        const id = [...ids][0]!;
+        if (knownPlayerSlugsByPictureId.get(id) !== slug) {
+          knownPlayerSlugsByPictureId.set(id, slug);
+          discoveredPlayerSlugsByPictureId.set(id, slug);
+        }
+      }
+    }
     const container = slug ? findCardContainer(anchor) : null;
     if (!slug || !container) continue;
     const pictures = Array.from(container.querySelectorAll<HTMLImageElement | HTMLVideoElement>('img, video[poster]'))

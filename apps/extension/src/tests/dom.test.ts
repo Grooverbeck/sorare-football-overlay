@@ -158,6 +158,36 @@ describe('Sorare card DOM discovery', () => {
     expect(findCardTargets(document)).toEqual([]);
   });
 
+  it('recognizes Mbeumos verified video immediately without a previous gallery visit', () => {
+    document.body.innerHTML = `<button><video poster="https://assets.sorare.com/image-resize/cardsamplepicture/59bcd30d-a708-401a-a5e2-0cd6aa11abb5/picture/tinified-card.png?width=160"></video></button>`;
+    expect(findCardTargets(document)).toMatchObject([{slug:'bryan-mbeumo'}]);
+    expect(findCardTargets(document)).toHaveLength(1);
+  });
+
+  it('learns canonical identity from an empty-alt details thumbnail without mounting in the dialog', () => {
+    document.body.innerHTML = `<div role="dialog">
+      <a href="/de/football/series/cards/other-player-2026-common-b33d3fbf-ec42-44c0-bf9f-c96190f0f3d8"><img alt="" src="https://assets.sorare.com/image-resize/cardsamplepicture/details-picture/picture/card.png?width=80"></a>
+      <a href="/de/football/players/other-player">Other Player</a>
+    </div>`;
+    expect(findCardTargets(document)).toEqual([]);
+    const learned = drainDiscoveredCardPictureSlugs();
+    expect(learned).toEqual({'details-picture':'other-player'});
+    hydrateCardPictureSlugs(learned);
+    document.body.innerHTML = `<button><video poster="https://assets.sorare.com/cardsamplepicture/details-picture/picture/card.png?width=160"></video></button>`;
+    expect(findCardTargets(document)).toMatchObject([{slug:'other-player'}]);
+  });
+
+  it('does not learn details identities from foreign hosts or ambiguous multiple thumbnails', () => {
+    const card = 'other-player-2026-common-b33d3fbf-ec42-44c0-bf9f-c96190f0f3d8';
+    document.body.innerHTML = `<div role="dialog">
+      <a href="https://example.com/football/series/cards/${card}"><img alt="" src="https://assets.sorare.com/cardsamplepicture/foreign-link/picture/a.png"></a>
+      <a href="/football/series/cards/${card}"><img alt="" src="https://example.com/cardsamplepicture/foreign-image/picture/a.png"></a>
+      <a href="/football/series/cards/${card}"><img alt="" src="https://assets.sorare.com/cardsamplepicture/picture-a/picture/a.png"><img alt="" src="https://assets.sorare.com/cardsamplepicture/picture-b/picture/a.png"></a>
+    </div>`;
+    findCardTargets(document);
+    expect(drainDiscoveredCardPictureSlugs()).toEqual({});
+  });
+
   it('uses stable data attributes and identifies the concrete card position', () => {
     document.body.innerHTML = `
       <article data-testid="football-card" data-position="Defender">
