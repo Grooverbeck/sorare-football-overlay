@@ -2714,6 +2714,9 @@ let scrollPositionSettleTimer: number | undefined;
 let uiInteractionSettleTimer: number | undefined;
 let remainingScrollPositionFollowUpFrames = 0;
 let positionListenersAttached = false;
+const visibilityRecoveryDelaysMs = [50, 150, 350, 750, 1500] as const;
+const visibilityRecovery = new Map<PositionedOverlay, {attempt: number; nextAt: number}>();
+let visibilityRecoveryTimer: number | undefined;
 let marketBracketSide: MarketBracketSide = 'right';
 let historicalAssistFallbackEnabled = false;
 let historicalAssistWindow: HistoricalAssistWindow = 15;
@@ -2858,12 +2861,67 @@ function schedulePositionsAfterUiInteraction(event: Event): void {
   }, uiInteractionSettleDelayMs);
 }
 
+// During SPA history navigation the cards can already have their final size,
+// while the outgoing page/transition still covers them. No resize or image
+// animation follows for static cards. Retry only hidden, active mounts, with
+// a finite budget and one shared timer; the normal occlusion checks still apply.
+function ensureVisibilityRecoveryTimer(): void {
+  if (visibilityRecoveryTimer !== undefined || visibilityRecovery.size === 0) return;
+  let nextAt = Infinity;
+  for (const work of visibilityRecovery.values()) nextAt = Math.min(nextAt, work.nextAt);
+  visibilityRecoveryTimer = window.setTimeout(() => {
+    visibilityRecoveryTimer = undefined;
+    const now = Date.now();
+    for (const [view, work] of visibilityRecovery) {
+      if (!positionedOverlays.has(view) || !view.host.isConnected ||
+          !view.layoutContainer.isConnected || !view.isViewportPriorityActive() ||
+          view.host.style.display !== 'none') {
+        visibilityRecovery.delete(view);
+        continue;
+      }
+      if (work.nextAt > now) continue;
+      pendingPositionedOverlays.add(view);
+      const delay = visibilityRecoveryDelaysMs[++work.attempt];
+      if (delay === undefined) visibilityRecovery.delete(view);
+      else work.nextAt = now + delay;
+    }
+    ensurePositionFrame();
+    ensureVisibilityRecoveryTimer();
+  }, Math.max(0, nextAt - Date.now()));
+}
+
+function scheduleVisibilityRecovery(view: PositionedOverlay): void {
+  if (!positionedOverlays.has(view) || !view.isViewportPriorityActive() ||
+      view.host.style.display !== 'none' || visibilityRecovery.has(view)) return;
+  visibilityRecovery.set(view, {attempt:0, nextAt:Date.now()+visibilityRecoveryDelaysMs[0]});
+  ensureVisibilityRecoveryTimer();
+}
+
+function schedulePositionsAfterNavigation(): void {
+  scheduleAllOverlayPositions();
+  for (const view of positionedOverlays) scheduleVisibilityRecovery(view);
+}
+
+function schedulePositionsAfterMediaLoad(event: Event): void {
+  if (!(event.target instanceof HTMLImageElement || event.target instanceof HTMLVideoElement)) return;
+  const container = event.target.closest<HTMLElement>('[data-sorare-overlay-key]');
+  const view = container ? positionedOverlayByContainer.get(container) : undefined;
+  if (view) {
+    scheduleOverlayPosition(view);
+    scheduleVisibilityRecovery(view);
+  }
+}
+
 function detachPositionListeners(): void {
   if (!positionListenersAttached) return;
   window.removeEventListener('resize', scheduleAllOverlayPositions);
   window.removeEventListener('scroll', scheduleAllOverlayPositions, true);
   window.removeEventListener('click', schedulePositionsAfterUiInteraction, true);
   window.removeEventListener('keyup', schedulePositionsAfterUiInteraction, true);
+  window.removeEventListener('popstate', schedulePositionsAfterNavigation);
+  window.removeEventListener('pageshow', schedulePositionsAfterNavigation);
+  document.removeEventListener('load', schedulePositionsAfterMediaLoad, true);
+  document.removeEventListener('loadeddata', schedulePositionsAfterMediaLoad, true);
   for (const eventName of layoutMotionEvents) {
     window.removeEventListener(
       eventName,
@@ -2880,11 +2938,15 @@ function detachPositionListeners(): void {
     uiInteractionSettleTimer = undefined;
   }
   remainingScrollPositionFollowUpFrames = 0;
+  if (visibilityRecoveryTimer !== undefined) window.clearTimeout(visibilityRecoveryTimer);
+  visibilityRecoveryTimer = undefined;
+  visibilityRecovery.clear();
   positionListenersAttached = false;
 }
 
 function unregisterPositionedOverlay(view: PositionedOverlay): void {
   positionedOverlays.delete(view);
+  visibilityRecovery.delete(view);
   if (positionedOverlayByContainer.get(view.layoutContainer) === view) {
     positionedOverlayByContainer.delete(view.layoutContainer);
   }
@@ -2972,6 +3034,7 @@ function registerPositionedOverlay(view: PositionedOverlay): void {
   }
   positionedOverlays.add(view);
   positionedOverlayByContainer.set(view.layoutContainer, view);
+  scheduleVisibilityRecovery(view);
   if (scrollPositionSettleTimer !== undefined) {
     pendingPositionedOverlays.add(view);
     ensurePositionFrame();
@@ -2981,6 +3044,10 @@ function registerPositionedOverlay(view: PositionedOverlay): void {
   window.addEventListener('scroll', scheduleAllOverlayPositions, true);
   window.addEventListener('click', schedulePositionsAfterUiInteraction, true);
   window.addEventListener('keyup', schedulePositionsAfterUiInteraction, true);
+  window.addEventListener('popstate', schedulePositionsAfterNavigation);
+  window.addEventListener('pageshow', schedulePositionsAfterNavigation);
+  document.addEventListener('load', schedulePositionsAfterMediaLoad, true);
+  document.addEventListener('loadeddata', schedulePositionsAfterMediaLoad, true);
   for (const eventName of layoutMotionEvents) {
     window.addEventListener(
       eventName,
@@ -3402,6 +3469,7 @@ export class OverlayView {
     this.viewportPriorityActive = active;
     if (active) {
       scheduleOverlayPosition(this);
+      scheduleVisibilityRecovery(this);
       return;
     }
     pendingPositionedOverlays.delete(this);
