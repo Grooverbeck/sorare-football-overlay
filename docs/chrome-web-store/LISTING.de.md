@@ -1,75 +1,55 @@
-# Chrome Web Store – Listing (Deutsch)
+# Chrome Web Store – Listing 0.4.13 (Deutsch)
 
-## Produktdaten
-
-- **Name:** Sorare Football Stats Overlay – Unofficial
-- **Kurzbeschreibung:** Inoffizielles Overlay mit positionsbezogenen Fußballstatistiken auf Sorare-Karten.
-- **Kategorie:** Sport
-- **Sprache:** Deutsch
-- **Sichtbarkeit für die Beta:** Nicht gelistet (Unlisted)
-- **Homepage:** https://sorare-football-overlay-api.grooverbeck.workers.dev/
-- **Datenschutzerklärung:** https://sorare-football-overlay-api.grooverbeck.workers.dev/privacy
-- **Support:** https://sorare-football-overlay-api.grooverbeck.workers.dev/support
+Name: Sorare Football Stats Overlay – Unofficial
+Kategorie: Tools (bestehender Store-Eintrag)
+Sprache: Deutsch
+Sichtbarkeit: Nicht gelistet
 
 ## Detaillierte Beschreibung
 
-Mehr Statistik-Kontext, ohne Sorare zu verlassen.
+Mehr Überblick bei deiner Sorare-Aufstellung – direkt auf den Karten.
 
-Das inoffizielle Sorare Football Stats Overlay ergänzt Fußballkarten auf
-sorare.com um kompakte, positionsbezogene Werte:
+Das inoffizielle Sorare Football Stats Overlay ergänzt Sorare Football um Leistungswerte und Wahrscheinlichkeiten. So kannst du Spieler vergleichen, ohne ständig zwischen verschiedenen Seiten zu wechseln.
 
-- AA L10 mit positionsbezogener MLS-Einordnung
-- CS% als Seitenklammer für Goalkeeper und Next CS% im Header für Defender
-- kompakte Tor- und Assistquoten direkt an der Karte
-- optionale, klar als historisch markierte Tor-/Assist-Ersatzwerte aus L10, L15 oder L40
-- Heim-/Remis-/Auswärtsquoten als Balken im Lineup Builder
-- verständliche Hinweise bei fehlenden oder unvollständigen Daten
-- besondere Kennzeichnung der Top 3 einer positionsbezogenen MLS-AA-Rangliste
+Features
+• AA-L10: All-Around-Auswertung mit Angaben zur Datenbasis. Berücksichtigt werden Spiele mit mindestens 60 Einsatzminuten beim aktuellen Verein.
+• Clean-Sheet-Wahrscheinlichkeit für Torhüter und Verteidiger.
+• Tor- und Assistwahrscheinlichkeiten, soweit passende Buchmachermärkte verfügbar sind.
+• Optionale historische Ersatzwerte aus L10, L15 oder L40 – klar von Marktquoten unterschieden.
+• Matchbalken für Heim-, Remis- und Auswärtssieg sowie zusätzliche Erklärungen beim Darüberfahren.
+• Im Lineup Builder nach AA oder Torquote sortieren; für Torhüter und Verteidiger auch nach Clean Sheet.
+• Anzeige als Prozent oder Dezimalquote, wählbare Klammerseite und Compact View in unterstützten Ansichten.
+• Overlay im Squad und in der Lineup-Übersicht separat ein- und ausschalten.
+• Automatisches Nachladen verfügbarer Daten und früherer Wechsel zur nächsten Begegnung nach bestätigtem Spielende bei aktiver Nutzung.
 
-Die Erweiterung erkennt auch dynamisch geladene Karten, Pack-Ansichten und
-Kartenwechsel. Das Overlay lässt sich jederzeit über das Symbol in der
-Browserleiste ausschalten.
+Verbesserungen in 0.4.13
+• Neue Sorare-Set-Karten und gesperrte Sonderkarten werden zuverlässiger erkannt.
+• Korrekturen für fehlende oder doppelte Anzeigen und hängenbleibende Sortierung.
+• Verbesserte Wiederherstellung der Anzeigen nach dem Zurücknavigieren.
 
-Die Werte sind Statistik-Kontext und keine Garantie für zukünftige Ergebnisse.
-Historische L10-Werte werden als historische Werte gekennzeichnet.
+Nicht für jeden Spieler, jedes Spiel oder jeden Wettbewerb sind Marktquoten verfügbar. Die angezeigten Werte sind Statistik-Kontext und keine Garantie für zukünftige Ergebnisse.
 
-Datenschutz:
+Daten und Berechtigungen
+Die Erweiterung verarbeitet auf Sorare dargestellte öffentliche Spieler- und Karteninformationen. Öffentliche Spielerkennungen, Kartenpositionen, Team- und Begegnungskontext sowie erforderliche Abrufoptionen werden verschlüsselt an den eigenen Statistikdienst gesendet. Für eine vollständige Sortierung werden auch bereits geladene Karten außerhalb des sichtbaren Ausschnitts berücksichtigt.
 
-- keine Sorare-E-Mail oder Passwörter
-- keine JWTs, Cookies oder Wallet-Daten
-- keine Zahlungs-, Kauf- oder Verkaufsdaten
-- kein allgemeiner Browserverlauf
-- lokal werden ausschließlich Overlay-Einstellungen und eine begrenzte Zuordnung bereits sichtbarer Kartenbilder zu öffentlichen Spielernamen gespeichert
+Anzeigeoptionen und begrenzte Zuordnungen von Kartenbildern zu öffentlichen Spielern bleiben lokal gespeichert. Klick-, Hover-, Scroll- und Sichtbarkeitszustände werden lokal für Darstellung, Sortierung und Aktualisierung berücksichtigt; es werden keine Maus- oder Scrollverlaufsprotokolle an den Statistikdienst gesendet. Cloudflare verarbeitet technisch erforderliche Verbindungsdaten, etwa die IP-Adresse. Es werden keine Sorare-Passwörter, Authentifizierungs-Cookies, Wallet- oder Zahlungsdaten ausgelesen und kein allgemeiner Browserverlauf gesammelt.
 
-Die Erweiterung sendet lediglich den auf einer sichtbaren Sorare-Karte
-erkannten öffentlichen Spielernamen beziehungsweise Spieler-Slug und die
-Kartenposition verschlüsselt an ihren eigenen Statistikdienst.
+Datenschutz: https://sorare-football-overlay-api.grooverbeck.workers.dev/privacy
 
-Dieses Projekt ist unabhängig und inoffiziell. Es ist nicht mit Sorare
-verbunden, wird nicht von Sorare unterstützt und wird nicht von Sorare
-herausgegeben.
+Dieses Projekt ist unabhängig und inoffiziell. Es ist nicht mit Sorare verbunden, wird nicht von Sorare unterstützt und nicht von Sorare herausgegeben.
 
-## Single-Purpose-Erklärung
+## Alleiniger Zweck
 
-Die Erweiterung verfolgt einen einzigen Zweck: Auf sorare.com sichtbaren
-Fußballkarten direkt an der Karte öffentliche, positionsbezogene
-Leistungsstatistiken und Wahrscheinlichkeitskontext hinzuzufügen.
+Die Erweiterung hilft beim Vergleichen von Sorare-Fußballspielern: Sie ergänzt dargestellte Karten um öffentliche Leistungsstatistiken und Wahrscheinlichkeiten und sortiert Karten im Lineup Builder nach diesen Werten. Karten-, Team- und Begegnungskennungen dienen der richtigen Zuordnung; lokale Anzeigeoptionen und Bedienzustände steuern Darstellung und bedarfsgerechte Aktualisierung.
 
 ## Prüfungshinweise
 
-1. Die Erweiterung auf einer beliebigen Fußballseite unter `https://sorare.com/`
-   öffnen, auf der Spielerkarten sichtbar sind.
-2. `AA L10` erscheint bei Feldspielern als farbcodierte Seitenklammer.
-   Goalkeeper zeigen stattdessen `CS%`; Defender zeigen `NEXT CS%` zusätzlich
-   im Kartenheader.
-3. Soweit Marktquoten verfügbar sind, erscheinen Tor und Assist kompakt an der
-   gewählten Kartenseite.
-4. Über das Extension-Symbol lässt sich das Overlay aus- und einschalten.
-5. Für die Funktion ist kein Sorare-Login der Erweiterung und kein gesondertes
-   Extension-Konto erforderlich.
+1. Mit dem eigenen Sorare-Testkonto eine Fußballansicht mit Spielerkarten öffnen. Keine Zugangsdaten der Erweiterung mitteilen.
+2. Über das Extension-Symbol das Overlay aktivieren und die Anzeigeoptionen prüfen.
+3. Im Lineup Builder einen Slot öffnen und im Sortiermenü AA oder Torquote wählen. Bei Torhütern/Verteidigern ist auch Clean Sheet verfügbar.
+4. Klammern und Matchbalken enthalten je nach Datenlage aktuelle oder ausdrücklich historische Werte. Fehlende Daten werden nicht erfunden.
+5. Squad-/Lineup-Anzeige separat schalten. Compact View gilt nur in den unterstützten passiven Ansichten.
 
 ## Grafiken
 
-- Store-Icon: `apps/extension/store-assets/store-icon-128.png`
-- Screenshot: `apps/extension/store-assets/screenshot-1-1280x800.png`
-- Kleine Promo-Kachel: `apps/extension/store-assets/small-promo-tile-440x280.png`
+Bestehende Store-Grafiken bleiben unverändert. Aktuelle Quelldateien liegen unter apps/extension/store-assets/.

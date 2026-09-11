@@ -87,8 +87,8 @@ export const homePage = page(
     <h1>Football Stats Overlay</h1>
     <p class="lead">
       Ein kompaktes, positionsbezogenes Statistik-Overlay für Fußballkarten auf sorare.com.
-      AA, Next-Win- beziehungsweise Next-Clean-Sheet-Werte und Quoten-Kontext bleiben direkt
-      an der Karte sichtbar.
+      All-Around-Werte, Clean-Sheet-, Tor- und Assistwahrscheinlichkeiten helfen beim
+      Vergleichen der Spieler. Im Lineup Builder können Karten nach den verfügbaren Werten sortiert werden.
     </p>
     <div class="notice">
       <strong>Inoffizielle Erweiterung:</strong> Dieses Projekt ist nicht mit Sorare verbunden,
@@ -101,7 +101,7 @@ export const homePage = page(
       </section>
       <section class="card">
         <h2>Sparsame Berechtigungen</h2>
-        <p>Aktiv nur auf sorare.com; lokal werden ausschließlich der An/Aus-Status und die gewählte Klammerseite gespeichert.</p>
+        <p>Aktiv nur auf sorare.com; lokal bleiben Anzeigeoptionen und begrenzte Zuordnungen von Kartenbildern zu öffentlichen Spielern gespeichert.</p>
       </section>
       <section class="card">
         <h2>Keine Zugangsdaten</h2>
@@ -123,7 +123,7 @@ export const privacyPage = page(
   'Datenschutzerklärung – Football Stats Overlay',
   'Datenschutzerklärung für das inoffizielle Football Stats Overlay.',
   `
-    <span class="eyebrow">Stand: 24. Juli 2026 · Version 1.1</span>
+    <span class="eyebrow">Stand: 11. September 2026 · Version 1.2</span>
     <h1>Datenschutzerklärung</h1>
     <p class="lead">
       Diese Erklärung beschreibt, welche Daten das inoffizielle Football Stats Overlay
@@ -140,32 +140,52 @@ export const privacyPage = page(
     <h2>2. Zweck der Erweiterung</h2>
     <p>
       Die Erweiterung ergänzt auf sorare.com sichtbare Fußballkarten um öffentliche,
-      positionsbezogene Leistungsstatistiken und Wahrscheinlichkeiten. Sie verfolgt einen
-      einzigen Zweck: den unmittelbar sichtbaren Karten Statistik-Kontext hinzuzufügen.
+      positionsbezogene Leistungsstatistiken und Wahrscheinlichkeiten und ermöglicht das Sortieren
+      von Karten im Lineup Builder. Zweck ist der Vergleich von Fußballspielern direkt auf Sorare.
     </p>
 
     <h2>3. Verarbeitete Daten</h2>
     <h3>Auf sorare.com erkannte Karteninformationen</h3>
     <ul>
       <li>öffentlicher Spielername und/oder öffentlicher Spieler-Slug,</li>
-      <li>Position der angezeigten Karte, soweit auf der Seite erkennbar.</li>
+      <li>Position der angezeigten Karte, soweit auf der Seite erkennbar,</li>
+      <li>öffentliche Teamkennungen und Angaben zur Begegnung, soweit für die Zuordnung erforderlich,</li>
+      <li>öffentliche Bild- und Kartenkennungen zur Wiedererkennung des Spielers.</li>
     </ul>
     <p>
-      Diese Angaben werden über eine verschlüsselte HTTPS-Verbindung an den eigenen
-      Statistikdienst übertragen, damit die passenden Werte zurückgegeben werden können.
+      Öffentliche Spielerkennungen, Kartenpositionen, Team- und Begegnungskontext sowie erforderliche
+      Abrufoptionen (zum Beispiel der gewünschte historische Zeitraum) werden über HTTPS an den eigenen
+      Statistikdienst übertragen. Die Zuordnungsliste der Kartenbilder wird nicht als Liste übertragen.
+      Bei einer aktiven Sortierung werden auch bereits geladene Karten außerhalb des sichtbaren
+      Ausschnitts berücksichtigt, damit die Reihenfolge den vollständigen Kartenpool umfasst.
     </p>
 
-    <h3>Lokale Einstellung</h3>
+    <h3>Lokale Einstellungen und Wiedererkennung</h3>
     <p>
-      Im lokalen Chrome-Speicher wird ausschließlich gespeichert, ob das Overlay ein- oder
-      ausgeschaltet ist und ob die Tor-/Assistklammer links oder rechts angezeigt werden soll.
-      Diese Einstellungen verlassen das Gerät nicht.
+      Im lokalen Chrome-Speicher werden der An/Aus-Status, die Aktivierung für Squad und Lineups,
+      Klammerseite, Compact View, Werteformat und Optionen für historische Ersatzwerte gespeichert.
+      Zusätzlich werden begrenzte Zuordnungen öffentlicher Kartenbild-Kennungen zu Spielernamen
+      beziehungsweise Spieler-Slugs gespeichert (jeweils höchstens 2.000 Einträge).
+      Daraus aufgelöste Spielerkennungen werden für die oben beschriebenen Statistikabfragen verwendet.
+      Diese lokalen Speicherwerte können durch Entfernen der Erweiterung gelöscht werden.
+      Geladene Statistiken und Sortierzustände werden außerdem vorübergehend im Arbeitsspeicher gehalten.
+    </p>
+    <h3>Lokale Bedien- und Seitenzustände</h3>
+    <p>
+      Die Erweiterung berücksichtigt auf Sorare den Seitentyp, sichtbare Karten, den gewählten Slot,
+      Sortier- und Filterzustände sowie Klick-, Hover-, Scroll- und Sichtbarkeitsereignisse. Dies dient
+      ausschließlich der Darstellung, Bedienung, Sortierung und bedarfsgerechten Aktualisierung.
+      Es werden keine Maus- oder Scrollverlaufsprotokolle an den Statistikdienst gesendet und keine
+      nutzerübergreifenden Verhaltensprofile erstellt. Versteckte Tabs pausieren die neuen
+      zeitgesteuerten Spielstatus-Prüfungen.
     </p>
 
     <h3>Technische Betriebsdaten</h3>
     <p>
       Der Statistikdienst protokolliert zur Fehleranalyse und Betriebssicherheit eine zufällige
-      Request-ID, HTTP-Methode, API-Pfad, Statuscode und Bearbeitungsdauer. Cloudflare verarbeitet
+      Request-ID, HTTP-Methode, API-Pfad, Statuscode und Bearbeitungsdauer. Zur Fehlersuche können
+      auch öffentliche Spieler- oder Begegnungskennungen und Fehlerdetails protokolliert werden.
+      Diagnosen in der Browserkonsole bleiben lokal, sofern sie nicht vom Nutzer für Support geteilt werden. Cloudflare verarbeitet
       als Infrastrukturbetreiber technisch notwendige Verbindungsdaten, insbesondere die
       IP-Adresse, um die Anfrage auszuliefern und gegen Missbrauch zu schützen.
     </p>
@@ -175,8 +195,9 @@ export const privacyPage = page(
     <ul>
       <li>Sorare-E-Mail-Adresse, Passwort, JWT, Cookies oder andere Zugangsdaten,</li>
       <li>Wallet-, Zahlungs-, Kauf- oder Verkaufsdaten,</li>
-      <li>Kartenbesitz, Aufstellungen oder private Kontoinformationen,</li>
-      <li>Formulareingaben, Nachrichten oder Inhalte außerhalb von sorare.com,</li>
+      <li>private Kontodaten oder eine eigenständige, kontobezogene Besitz- oder Aufstellungsdatenbank;
+          angezeigte Spieler auf Squad- und Aufstellungsseiten werden wie andere Karten verarbeitet,</li>
+      <li>private Nachrichten, Zugangsdaten aus Formularen oder Inhalte außerhalb von sorare.com,</li>
       <li>einen allgemeinen Browserverlauf.</li>
     </ul>
 
@@ -185,8 +206,12 @@ export const privacyPage = page(
       Karteninformationen werden ausschließlich verwendet, um die angeforderten Statistikwerte
       zu bestimmen. Öffentliche Fußballstatistiken und Spielerzuordnungen werden unabhängig von
       einem einzelnen Nutzer zwischengespeichert, um Sorare-Abfragen und Ladezeiten zu reduzieren.
-      Typische Cache-Zeiten sind bis zu 4 Stunden für das nächste Spiel, 24 Stunden für Formwerte,
-      30 Tage für erfolgreiche Namenszuordnungen und 2 Stunden für erfolglose Zuordnungen.
+      Formwerte werden regulär bis zum Wochenwechsel (höchstens sieben Tage) gehalten,
+      erfolgreiche Namenszuordnungen bis zu 30 Tage und erfolglose Zuordnungen bis zu zwei Stunden.
+      Begegnungsdaten werden abhängig von Anpfiff, Spielstatus und Spielwechsel zwischengespeichert;
+      Status-Prüfergebnisse und Daten bestätigter laufender oder unterbrochener Spiele können bis
+      zu sieben Tage gespeichert bleiben. Das sind gemeinsam genutzte öffentliche Sportdaten,
+      keine einer Person zugeordneten Nutzungsprofile.
       Öffentliche, vor dem Spiel erfasste Tor-, Assist- und Tor-oder-Assist-Marktsnapshots werden unabhängig von
       Nutzern ohne automatisches Ablaufdatum gespeichert, damit dieselben Buchmacherquoten nicht
       wiederholt kostenpflichtig abgerufen werden.
@@ -198,7 +223,7 @@ export const privacyPage = page(
     <ul>
       <li>
         <strong>Cloudflare, Inc.</strong> stellt Worker-, Netzwerk-, Sicherheits-, Log- und
-        Key-Value-Infrastruktur bereit.
+        D1-Datenbank- und Key-Value-Infrastruktur bereit.
       </li>
       <li>
         Die offizielle Sorare GraphQL API wird vom Backend ausschließlich mit öffentlichen
@@ -215,7 +240,7 @@ export const privacyPage = page(
       </li>
       <li>
         <strong>Odds-API.io</strong> wird als zusätzliche Quelle für öffentliche
-        Tor- und, in unterstützten Wettbewerben, H/D/A-Buchmachermärkte abgefragt.
+        Tor-, Assist-, Tor-oder-Assist- und, in unterstützten Wettbewerben, Team-Buchmachermärkte abgefragt.
       </li>
     </ul>
     <p>
@@ -229,7 +254,7 @@ export const privacyPage = page(
     <div class="notice">
       Die Nutzung der durch die Erweiterung verarbeiteten Informationen entspricht der
       Chrome Web Store User Data Policy einschließlich der Limited-Use-Anforderungen.
-      Die Verarbeitung ist auf die sichtbare Overlay-Funktion sowie deren Betrieb,
+      Die Verarbeitung ist auf die beschriebenen Overlay- und Sortierfunktionen sowie deren Betrieb,
       Sicherheit und Zuverlässigkeit beschränkt.
     </div>
 
@@ -252,14 +277,16 @@ export const privacyPage = page(
 
     <h2>English summary</h2>
     <p>
-      The extension reads only the public player name or slug and the visible card position on
-      sorare.com and sends them via HTTPS to its own statistics service. It stores only the
-      enabled/disabled setting and the selected bracket side locally. It does not access Sorare credentials, cookies, wallet,
-      payment, ownership, lineup, private account or general browsing-history data. Cloudflare
-      provides the backend infrastructure. The backend queries Sorare for public football data
-      and the configured odds providers for public goal, assist, goals-or-assists and H/D/A betting markets without forwarding extension-user
-      identifiers. Data is used only for the disclosed overlay feature, security and reliability,
-      and is never sold or used for personalized advertising.
+      The extension processes public player, card-position, team and fixture information on Sorare
+      and sends the identifiers and required query options via HTTPS to its statistics service.
+      Display settings and bounded mappings from public card-picture IDs to player names or slugs
+      are stored locally. Sorting includes already loaded offscreen cards. Page and interaction
+      states are used locally for display, sorting and refresh scheduling, not behavioral profiling.
+      No Sorare credentials, cookies, wallet or payment data are accessed. No separate account-linked
+      ownership or lineup database is built. There is no general browsing-history collection.
+      Cloudflare processes technical connection data including IP addresses. The backend queries
+      Sorare and odds providers for public sports data without forwarding extension-user identifiers.
+      Data is used only for the disclosed features, operation, security and reliability, not sold or used for advertising.
     </p>
   `,
 );

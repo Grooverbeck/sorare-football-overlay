@@ -30,7 +30,7 @@
 - [ ] Limited-Use-Angaben bestätigen
 - [ ] Datenschutzerklärung verlinken
 - [ ] Sichtbarkeit auf **Unlisted / Nicht gelistet** setzen
-- [ ] automatische Veröffentlichung nach erfolgreichem Review deaktivieren
+- [ ] automatische Veröffentlichung nach erfolgreichem Review gemäß Veröffentlichungsauftrag einstellen
 - [ ] Einreichung zur Prüfung absenden
 
 ## Vor jedem Update

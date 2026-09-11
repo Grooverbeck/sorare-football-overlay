@@ -1,85 +1,37 @@
-# Chrome Web Store – Datenschutzangaben
+# Chrome Web Store – Datenschutzangaben (0.4.13)
 
-Diese Angaben müssen mit der veröffentlichten Datenschutzerklärung und dem
-tatsächlichen Verhalten der Erweiterung übereinstimmen.
+Abgeglichen mit der öffentlichen Datenschutzerklärung vom 11. September 2026 und dem aktuellen Code. Keine neue Datenerhebung durch diese Textaktualisierung.
 
 ## Datentypen im Dashboard
 
-### Website content / Website-Inhalte: Ja
+- Websitecontent: Ja. Öffentliche Spieler-/Kartenkennungen, Kartenpositionen, Team-/Begegnungskontext. Anzeige, Zuordnung und Sortierung; erforderliche Kennungen und Abrufoptionen gehen per HTTPS an das eigene Backend. Sortierungen berücksichtigen auch bereits geladene, nicht sichtbare Karten.
+- Ort: Ja. Technische IP-Verarbeitung durch Cloudflare für Auslieferung und Missbrauchsschutz; kein GPS oder Standortprofil.
+- Nutzeraktivität: Ja, lokale Bedien- und Sichtbarkeitszustände für Darstellung, Sortierung und Aktualisierung. Keine Maus-/Scrollverlaufsprotokolle an das Backend, keine Verhaltensprofile.
+- Webprotokoll: Nein. Der aktuelle Sorare-Seitentyp wird lokal ausgewertet; es wird keine Liste besuchter Seiten oder allgemeiner Browserverlauf gespeichert oder übertragen.
+- Personenidentifizierbare Kontoinformationen, Authentifizierungsdaten, Finanz-/Zahlungsdaten, Gesundheitsdaten, persönliche Kommunikation: Nein. Öffentliche Fußballspielernamen sind Website-Inhalte, keine Kontodaten des Nutzers.
 
-Die Erweiterung verarbeitet ausschließlich folgende, auf sichtbaren
-Sorare-Fußballkarten öffentliche Inhalte:
+## Alleiniger Zweck
 
-- Spielername und/oder Spieler-Slug
-- Position der konkreten Karte
+Die Erweiterung hilft beim Vergleichen von Sorare-Fußballspielern: Sie ergänzt dargestellte Karten um öffentliche Leistungsstatistiken und Wahrscheinlichkeiten und sortiert Karten im Lineup Builder nach diesen Werten. Karten-, Team- und Begegnungskennungen dienen der richtigen Zuordnung; lokale Anzeigeoptionen und Bedienzustände steuern Darstellung und bedarfsgerechte Aktualisierung.
 
-Diese Angaben werden an den eigenen HTTPS-Statistikdienst übertragen, um die
-vom Nutzer sichtbar angeforderten Overlay-Werte zurückzugeben.
+## Begründung für storage
 
-### Web history / Browserverlauf: Nein
+Die storage-Berechtigung speichert lokal Anzeigeoptionen: Aktivierung insgesamt sowie für Squad/Lineups, Klammerseite, Compact View, Werteformat und historische Ersatzwerte. Zusätzlich werden begrenzte Zuordnungen öffentlicher Kartenbild-Kennungen zu Spielernamen und Spieler-Slugs gespeichert (jeweils maximal 2.000). Das verbessert die Wiedererkennung dynamischer Karten. Es werden keine Zugangsdaten, Wallet-, Zahlungs- oder privaten Kontodaten gespeichert.
 
-Die Erweiterung läuft ausschließlich auf `sorare.com`. Sie speichert oder
-überträgt weder die besuchte Sorare-Seitenadresse noch einen Verlauf besuchter
-Seiten. Das Backend protokolliert nur seinen eigenen API-Pfad, nicht den
-Sorare-Seitenpfad.
+## Begründung für Hostberechtigung
 
-### Personally identifiable information: Nein
-
-Es werden keine personenbezogenen Kontodaten des Extension-Nutzers erhoben.
-Öffentliche Namen professioneller Fußballspieler dienen ausschließlich als
-Schlüssel für öffentliche Sportstatistiken.
-
-### Authentication information: Nein
-
-Keine Sorare-E-Mail-Adresse, Passwörter, JWTs, Cookies oder andere
-Authentifizierungsinformationen.
-
-### Location / Ort: Ja – ausschließlich technische IP-Adresse
-
-Cloudflare verarbeitet als Infrastrukturbetreiber bei HTTPS-Anfragen die
-IP-Adresse, um die Anfrage auszuliefern und gegen Missbrauch zu schützen. Die
-Erweiterung fragt keine GPS-Position, Region oder Sehenswürdigkeiten ab. Die
-Anwendungslogs speichern die IP-Adresse nicht als eigenes Feld und es werden
-keine Standortprofile erstellt.
-
-### Financial, payment, health, communications, form data: Nein
-
-Diese Daten werden nicht ausgelesen oder übertragen.
-
-## Limited-Use-Bestätigungen
-
-Alle Bestätigungen können wahrheitsgemäß aktiviert werden:
-
-- Daten werden nur für die beschriebene, nutzerseitige Overlay-Funktion sowie
-  deren Betrieb, Sicherheit und Zuverlässigkeit verwendet.
-- Daten werden nicht an Werbeplattformen oder Datenhändler verkauft oder
-  übertragen.
-- Daten werden nicht für personalisierte oder interessenbezogene Werbung
-  verwendet.
-- Menschen lesen keine nutzerspezifischen Website-Inhalte; eine Ausnahme gilt
-  nur für ausdrücklich angeforderten Support, Sicherheit oder gesetzliche
-  Pflichten.
-- Die Verarbeitung entspricht der Chrome Web Store User Data Policy
-  einschließlich der Limited-Use-Anforderungen.
-
-## Berechtigungsbegründungen
-
-### `storage`
-
-Speichert ausschließlich lokal, ob das Overlay ein- oder ausgeschaltet ist.
-
-### Content Script auf `https://sorare.com/*`
-
-Erforderlich, um sichtbare Fußballkarten zu erkennen und das vom Nutzer
-installierte Overlay unmittelbar an diesen Karten anzuzeigen.
-
-### Host-Berechtigung für den eigenen Cloudflare Worker
-
-Erforderlich, damit der Extension Service Worker öffentliche Spielerkennungen
-an den Statistikdienst senden und berechnete Statistiken empfangen kann.
+Das Content Script arbeitet nur auf sorare.com und www.sorare.com, um dargestellte Fußballkarten zu erkennen, mit Statistiken zu ergänzen und im Lineup Builder zu sortieren. Der Zugriff auf sorare-football-overlay-api.grooverbeck.workers.dev dient HTTPS-Anfragen mit öffentlichen Spielerkennungen, Kartenpositionen, Team-/Begegnungskontext und erforderlichen Abrufoptionen. Das Backend liefert JSON-Daten. Für vollständige Sortierungen werden auch bereits geladene, nicht sichtbare Karten berücksichtigt.
 
 ## Remote Code
 
-Die Erweiterung lädt keinen entfernten ausführbaren Code. Alle ausgeführten
-JavaScript-Dateien befinden sich im geprüften Extension-Paket. Das Backend
-liefert ausschließlich validierte JSON-Statistikdaten.
+Nein. Alle ausgeführten JavaScript-Dateien befinden sich im Erweiterungspaket. Das Backend liefert JSON-Sportdaten, keinen ausführbaren Erweiterungscode.
+
+## Limited Use
+
+Daten werden nur für die beschriebenen nutzerseitigen Funktionen, Betrieb, Sicherheit und Zuverlässigkeit verwendet; nicht für Werbung, Datenhandel oder Kreditwürdigkeitsprüfung. Bestehende entsprechende Bestätigungen bleiben erhalten.
+
+Datenschutzerklärung: https://sorare-football-overlay-api.grooverbeck.workers.dev/privacy
+
+## Referenz
+
+Google verlangt auch die Offenlegung lokaler Datenverarbeitung: https://developer.chrome.com/docs/webstore/program-policies/user-data-faq

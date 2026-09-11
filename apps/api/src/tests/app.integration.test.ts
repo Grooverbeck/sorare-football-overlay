@@ -556,5 +556,10 @@ describe('public extension pages', () => {
     expect(html).toContain('Sorare-E-Mail-Adresse, Passwort, JWT, Cookies');
     expect(html).toContain('The Odds API');
     expect(html).toContain('keine Zugangsdaten');
+    expect(html).toContain('11. September 2026');
+    expect(html).toContain('Compact View');
+    expect(html).toContain('2.000 Einträge');
+    expect(html).toContain('außerhalb des sichtbaren');
+    expect(html).not.toContain('24 Stunden für Formwerte');
   });
 });
