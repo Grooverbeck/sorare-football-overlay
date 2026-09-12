@@ -1,6 +1,7 @@
 import type { FootballPosition } from '@sorare-overlay/shared';
 import { extractCardPictureId, findSorareCardMedia } from './card-media.js';
 import { logStatsDiagnostic } from './stats-diagnostics.js';
+import { lineupPositionFromButton, readLineupPositionSelection } from './lineup-position.js';
 
 export const lineupGoalSortOptionAttribute =
   'data-sorare-overlay-goal-sort-option';
@@ -161,23 +162,6 @@ interface LineupPoolLoadOptions {
   stableMissesRequired?: number;
 }
 
-const lineupPositionAliases: Readonly<
-  Record<string, FootballPosition | null>
-> = {
-  gk: 'Goalkeeper',
-  tw: 'Goalkeeper',
-  def: 'Defender',
-  df: 'Defender',
-  ver: 'Defender',
-  mid: 'Midfielder',
-  mf: 'Midfielder',
-  fwd: 'Forward',
-  fw: 'Forward',
-  st: 'Forward',
-  ex: null,
-  extra: null,
-};
-
 export function supportsLineupSortPath(pathname: string): boolean {
   return (
     /\/compose-team(?:\/|$)/i.test(pathname) ||
@@ -254,29 +238,11 @@ export function setLineupSortDataReady(
   );
 }
 
-function lineupPositionFromButton(
-  button: HTMLButtonElement | null,
-): FootballPosition | null | undefined {
-  if (!button || button.closest('[role="dialog"]')) return undefined;
-  const marker = button.textContent?.trim().toLocaleLowerCase() ?? '';
-  if (!(marker in lineupPositionAliases)) return undefined;
-  return lineupPositionAliases[marker];
-}
-
 export function activeLineupPosition(): FootballPosition | null | undefined {
-  const positions = new Set<FootballPosition | null>();
-  for (const button of document.querySelectorAll<HTMLButtonElement>('button')) {
-    const position = lineupPositionFromButton(button);
-    if (position === undefined) continue;
-    const active =
-      button.getAttribute('aria-pressed') === 'true' ||
-      button.dataset.state === 'active' ||
-      button.classList.contains('active') ||
-      button.classList.contains('highlighted');
-    if (active) positions.add(position);
-  }
-  if (positions.size === 1) return [...positions][0];
-  if (positions.size > 1) return undefined;
+  const selection = readLineupPositionSelection(document);
+  // Our own grid attributes are only a fallback for builders without slot
+  // controls, never evidence against a real (possibly transitioning) slot.
+  if (selection.hasNavigation) return selection.position;
   return dominantLineupGridPosition();
 }
 
@@ -1133,9 +1099,10 @@ export class LineupCardSorter {
       return;
     }
     this.supportedPathActive = true;
+    const selectedPosition = activeLineupPosition();
     if (
       this.menuPositionHint !== undefined &&
-      activeLineupPosition() === this.menuPositionHint
+      selectedPosition === this.menuPositionHint
     ) {
       this.menuPositionHint = undefined;
     }
@@ -1154,6 +1121,21 @@ export class LineupCardSorter {
     if (this.filterSuspended) {
       this.filterSuspended = false;
       this.restartCompleteSort(120);
+      return;
+    }
+    // Back navigation and keyboard selection need not pass through our click
+    // handler. A completed pool must still belong to the selected slot.
+    if (
+      this.menuPositionHint === undefined &&
+      selectedPosition !== undefined &&
+      selectedPosition !== this.requestedPosition
+    ) {
+      if (!lineupSortConfigSupportsPosition(lineupSortConfigs[this.activeMode], selectedPosition)) {
+        this.setActiveMode(null);
+      } else {
+        this.requestedPosition = selectedPosition;
+        this.restartCompleteSort(120);
+      }
       return;
     }
     if (this.poolLoading) return;

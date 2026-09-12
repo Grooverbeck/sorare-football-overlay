@@ -2038,6 +2038,12 @@ export class SorareCardScanner {
       ) {
         return;
       }
+      if (activeLineupPosition() !== knownLineupPosition) {
+        // A slot switch between frames invalidates every captured target,
+        // including the already processed prefix of a large/reused pool.
+        this.scheduleLineupPoolReadyScan(grid);
+        return;
+      }
       const startedAt = performance.now();
       let processedRoots = 0;
       while (nextRootIndex < roots.length) {
@@ -2641,9 +2647,15 @@ export class SorareCardScanner {
 
   private flushMutations(): void {
     const continuesBacklog = this.mutationScanBacklog.length > 0;
-    const knownLineupPosition = continuesBacklog
-      ? this.mutationBacklogLineupPosition
-      : activeLineupPosition();
+    const knownLineupPosition = activeLineupPosition();
+    if (continuesBacklog && knownLineupPosition !== this.mutationBacklogLineupPosition) {
+      // Do not finish a new slot's batch with targets captured for the old
+      // position. Reconcile only the processed prefix, within the same budget.
+      for (const target of this.mutationHydrationTargets) {
+        if (target.container.isConnected) this.pendingScanRoots.add(target.container);
+      }
+      this.mutationHydrationTargets.length = 0;
+    }
     const roots = this.takeMutationScanRoots();
     const positionScopes = outermostElements(this.pendingPositionScopes);
     const refreshAllPositions = this.shouldRefreshAllPositions;

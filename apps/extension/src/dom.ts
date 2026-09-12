@@ -1,4 +1,5 @@
 import type { FootballPosition } from '@sorare-overlay/shared';
+import { inferLineupSlotPosition, readLineupPositionSelection } from './lineup-position.js';
 import {
   cardPictureIdFromUrl as pictureIdFromUrl,
   extractCardPictureId,
@@ -210,54 +211,13 @@ function inferActivePositionSelection(
     scope && scope !== body && depth < maxPositionScopeDepth;
     depth += 1
   ) {
-    const availablePositions = new Set<FootballPosition>();
-    const activePositions = new Set<FootballPosition>();
-    for (const button of scope.querySelectorAll<HTMLButtonElement>('button')) {
-      const marker = normalizePositionText(button.textContent);
-      if (!compactPositionAliases.has(marker)) continue;
-      const position = normalizePosition(marker);
-      if (!position) continue;
-      availablePositions.add(position);
-      const isActive =
-        button.getAttribute('aria-pressed') === 'true' ||
-        button.dataset.state === 'active' ||
-        button.classList.contains('highlighted');
-      if (!isActive) continue;
-      activePositions.add(position);
-    }
     // A lone highlighted "MF" elsewhere in the app is not enough. Sorare's
     // lineup picker exposes the complete GK/DEF/MID/FWD navigation together.
-    if (availablePositions.size < 3) {
-      scope = scope.parentElement;
-      continue;
-    }
-    if (activePositions.size === 1) return [...activePositions][0];
-    if (activePositions.size > 1) return undefined;
+    const selection = readLineupPositionSelection(scope, 3);
+    if (selection.hasNavigation) return selection.position ?? undefined;
     scope = scope.parentElement;
   }
   return undefined;
-}
-
-function inferLineupSlotPosition(
-  container: HTMLElement,
-): FootballPosition | null | undefined {
-  const positions: ReadonlyArray<FootballPosition | undefined> = [
-    'Goalkeeper',
-    'Defender',
-    'Midfielder',
-    'Forward',
-    undefined,
-  ];
-  const lineup = container.closest<HTMLElement>('[class~="slots5"]');
-  if (!lineup) return undefined;
-
-  const slots = Array.from(lineup.children).filter((candidate) =>
-    candidate.querySelector('button'),
-  );
-  if (slots.length !== positions.length) return undefined;
-  const slotIndex = slots.findIndex((slot) => slot.contains(container));
-  if (slotIndex < 0) return undefined;
-  return positions[slotIndex] ?? null;
 }
 
 export function findCardContainer(anchor: HTMLAnchorElement): HTMLElement | null {

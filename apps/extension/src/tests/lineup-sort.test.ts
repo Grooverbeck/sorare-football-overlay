@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LineupSortHydrator } from '../lineup-sort-hydrator.js';
 import { findCardTargets } from '../dom.js';
+import { filledSlotsMarkup } from './fixtures/filled-slots.js';
 import {
   LineupCardSorter,
+  activeLineupPosition,
   lineupAaSortOptionAttribute,
   lineupAaSortValueAttribute,
   lineupCleanSheetSortOptionAttribute,
@@ -1465,6 +1467,54 @@ describe('lineup card sorting', () => {
       ).toBe('AA · Wiederholen');
     });
     expect(marketCell.style.order).toBe('');
+  });
+
+  it.each(['click', 'navigation'] as const)('updates clean-sheet availability on filled-slot %s changes', async (transition) => {
+    document.querySelector('[data-lineup-positions]')!.outerHTML = filledSlotsMarkup(1);
+    sorter.start();
+    document.querySelector<HTMLButtonElement>(`[${lineupCleanSheetSortOptionAttribute}]`)!.click();
+    await vi.waitFor(() => expect(document.querySelector('[data-native-trigger-label]')?.textContent).toBe('Clean Sheet'));
+    const defender = document.querySelector<HTMLButtonElement>('[data-slot="1"]')!;
+    const midfielder = document.querySelector<HTMLButtonElement>('[data-slot="2"]')!;
+    const applySelection = (): void => {
+      defender.classList.remove('highlighted');
+      midfielder.classList.add('highlighted');
+    };
+    if (transition === 'click') {
+      midfielder.addEventListener('click', applySelection);
+      midfielder.click();
+    } else applySelection();
+    expect(activeLineupPosition()).toBe('Midfielder');
+    sorter.scan(document);
+    expect(document.querySelector(`[${lineupCleanSheetSortOptionAttribute}]`)).toBeNull();
+    expect(document.querySelector('[data-native-trigger-label]')?.textContent).toBe('Durchschnittsbewertung');
+    // Let the captured slot-click's deferred UI reconciliation finish before
+    // replacing the document with the next test's independent sorter.
+    await new Promise(resolve => window.setTimeout(resolve, 0));
+  });
+
+  it('restarts AA loading on filled DF, MF, FW and EX slot clicks, but not footer actions', async () => {
+    document.querySelector('[data-lineup-positions]')!.outerHTML = filledSlotsMarkup(1);
+    const loader = vi.fn(immediatePoolLoader);
+    sorter = new LineupCardSorter(loader);
+    sorter.start();
+    document.querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)!.click();
+    await vi.waitFor(() => expect(loader).toHaveBeenCalledTimes(1));
+    for (const selector of ['[data-captain="1"]', '[data-remove="1"]', '[data-footer="1"]']) {
+      document.querySelector<HTMLButtonElement>(selector)!.click();
+    }
+    expect(loader).toHaveBeenCalledTimes(1);
+    let loads = 1;
+    for (const slot of [2, 3, 4, 1]) {
+      const button = document.querySelector<HTMLButtonElement>(`[data-slot="${slot}"]`)!;
+      button.addEventListener('click', () => {
+        document.querySelector('[data-slot].highlighted')!.classList.remove('highlighted');
+        button.classList.add('highlighted');
+      }, { once: true });
+      button.click();
+      loads += 1;
+      await vi.waitFor(() => expect(loader).toHaveBeenCalledTimes(loads));
+    }
   });
 
   it('accepts isolated current-player position changes in a valid card pool', async () => {
