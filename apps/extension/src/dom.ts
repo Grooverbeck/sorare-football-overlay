@@ -58,6 +58,8 @@ const verifiedSetPictures: Readonly<Record<string, string>> = {
   'dd39cfe2-d734-44e7-b11a-0410e273f5a4': 'ibrahim-maza',
   // Full Art video and canonical player link verified via its own stats panel (12 September 2026).
   '99289f6f-fc00-4354-a91a-5829d8e8db62': 'unai-simon-mendibil',
+  // Animated foil card visually verified on the club overview; Sorare player confirmed (12 September 2026).
+  '58392eac-1a4f-4be5-b520-db23e352060b': 'lassine-sinayoko',
 };
 const knownPlayerSlugsByPictureId = new Map(Object.entries(verifiedSetPictures));
 const discoveredPlayerSlugsByPictureId = new Map<string, string>();
