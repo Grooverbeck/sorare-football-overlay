@@ -1,7 +1,15 @@
+import { readFileSync } from 'node:fs';
+import { parse } from 'jsonc-parser';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../config.js';
 
 describe('loadConfig cache TTLs', () => {
+  it('uses the temporary Bet365-only deployment override without appending Unibet', () => {
+    const deployment = parse(readFileSync(new URL('../../wrangler.jsonc', import.meta.url), 'utf8'));
+    expect(deployment.vars.ODDS_API_IO_BOOKMAKERS).toBe('Bet365');
+    expect(loadConfig(deployment.vars).oddsApiIoBookmakers).toEqual(['Bet365']);
+  });
+
   it('uses purpose-specific defaults', () => {
     const config = loadConfig({});
 

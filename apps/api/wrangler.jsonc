@@ -39,7 +39,9 @@
     "SPORTS_GAME_ODDS_LEAGUE_ID": "MLS",
     "ODDS_API_IO_BASE_URL": "https://api.odds-api.io/v3",
     "ODDS_API_IO_LEAGUE": "austria-bundesliga",
-    "ODDS_API_IO_BOOKMAKERS": "Bet365,Unibet",
+    // Temporary: the account currently selects Bet365 + Betano.
+    // Unselected Unibet rejects the entire request; Betano has no tested player props.
+    "ODDS_API_IO_BOOKMAKERS": "Bet365",
     "ODDS_API_IO_DAILY_REQUEST_LIMIT": "500",
     "ODDS_API_IO_HOURLY_REQUEST_LIMIT": "100",
     "CORS_ORIGINS": "http://localhost:5173"
