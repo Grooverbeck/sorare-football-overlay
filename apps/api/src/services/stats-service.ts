@@ -223,7 +223,7 @@ function preservePlayerMarketOdds(
   const { marketOdds: _teamMarketOdds, ...shared } = teamFixture;
   return {
     ...shared,
-    ...(playerFixture.marketOdds !== undefined
+    ...(sameFixtureIdentity(teamFixture, playerFixture) && playerFixture.marketOdds !== undefined
       ? { marketOdds: playerFixture.marketOdds }
       : {}),
   };
@@ -583,6 +583,7 @@ export class StatsService {
     progress.requests = [...directRequests, ...resolvedRequests];
     const immediate = progress.ready;
     const fixtureRefreshEntries: FixtureRefreshEntry[] = [];
+    const unresolvedFixtureIdentities = new Set<string>();
     let cacheHits = 0;
     const splitCache = supportsSplitPlayerStatsCache(this.cache)
       ? this.cache
@@ -611,6 +612,36 @@ export class StatsService {
         playerRequest,
         parts: partsByKey.get(key) ?? {},
       }));
+      const conflictingParts = cachedParts.filter(({ playerRequest, parts }) =>
+        parts.form && parts.fixture?.playerTeamSlug && playerRequest.resolvedFromName && playerRequest.teamSlug &&
+        !teamSlugsLikelyMatch(parts.fixture.playerTeamSlug, playerRequest.teamSlug),
+      );
+      const conflictingKeys = new Set(conflictingParts.map(({ key }) => key));
+      let confirmedFixtures = new Map<string, SourcePlayerFixture>();
+      if (conflictingParts.length > 0) {
+        // A formerly confirmed name-cache alias can still be stale.
+        // Revalidate only conflicts, in one position-independent batch,
+        // without passing either hint back to the source as trusted identity.
+        // Seed safe partial results before I/O so the normal response deadline
+        // never returns the disputed club's fixture while confirmation waits.
+        for (const { key, parts } of cachedParts) {
+          if (!parts.form || !hasRequestedHistoricalWindows(parts.form, request.includeHistoricalAssists)) continue;
+          immediate.set(key, {
+            ...parts.form,
+            nextGame: conflictingKeys.has(key) ? null : parts.fixture ?? null,
+            ...(conflictingKeys.has(key) ? { pendingRefreshes: ['fixture'] as PendingRefresh[] } : {}),
+          });
+        }
+        try {
+          const fixtures = await this.dataSource.fetchNextGames(
+            [...new Set(conflictingParts.map(({ playerRequest }) => playerRequest.slug))].map(slug => ({ slug })),
+          );
+          confirmedFixtures = new Map(fixtures.map(fixture => [fixture.slug, fixture]));
+        } catch {
+          // Preserve form data, but do not show or request odds for an
+          // unresolved club. The pending fixture is retried by the client.
+        }
+      }
       const hydratedCachedParts = await Promise.all(
         cachedParts.map(async (cached) => {
           if (
@@ -618,6 +649,38 @@ export class StatsService {
             !cached.playerRequest.teamSlug
           ) {
             return cached;
+          }
+          if (conflictingKeys.has(cached.key) && cached.parts.fixture) {
+            const original = cached.parts.fixture;
+            const confirmed = confirmedFixtures.get(cached.playerRequest.slug);
+            const confirmedTeam = confirmed?.playerTeamSlug;
+            const unresolved = () => {
+              unresolvedFixtureIdentities.add(cached.key);
+              return { ...cached, parts: { ...cached.parts, fixture: null } };
+            };
+            if (!confirmedTeam) return unresolved();
+            if (teamSlugsLikelyMatch(original.playerTeamSlug, confirmedTeam)) return cached;
+            try {
+              // A different request may already have repaired/advanced this
+              // player while the source was loading. Keep that newer result.
+              const latest = await splitCache.getParts(cached.key);
+              if (latest.fixture && (
+                !sameFixtureIdentity(original, latest.fixture) ||
+                original.playerTeamSlug !== latest.fixture.playerTeamSlug
+              )) return { ...cached, parts: { ...cached.parts, fixture: latest.fixture } };
+
+              const candidate: PlayerStats['nextGame'] | undefined = confirmed.nextGame ??
+                await splitCache.getTeamFixture(cached.key, confirmedTeam);
+              if (!candidate || !teamSlugsLikelyMatch(candidate.playerTeamSlug, confirmedTeam)) return unresolved();
+              // Never carry the old match's player props (or a teammate's
+              // props) into the new club fixture. Providers read the new key.
+              const { marketOdds: _marketOdds, ...nextGame } = candidate;
+              const fixture = await splitCache.refreshFixture(cached.key, nextGame);
+              if (!fixture || !teamSlugsLikelyMatch(fixture.playerTeamSlug, confirmedTeam)) return unresolved();
+              return { ...cached, parts: { ...cached.parts, fixture } };
+            } catch {
+              return unresolved();
+            }
           }
           if (
             cached.parts.fixture !== undefined &&
@@ -716,7 +779,7 @@ export class StatsService {
           immediate.set(key, {
             ...parts.form,
             nextGame: parts.fixture,
-            ...(fixtureRefreshDue
+            ...(fixtureRefreshDue || unresolvedFixtureIdentities.has(key)
               ? { pendingRefreshes: ['fixture'] as PendingRefresh[] }
               : {}),
           });
@@ -875,10 +938,13 @@ export class StatsService {
         deferredCold.delete(key);
       },
     );
+    const fixtureIdentityRequests = playerRequests.filter(playerRequest =>
+      !unresolvedFixtureIdentities.has(cacheKey(playerRequest, this.excludeLowCoverage)),
+    );
     if (splitCache) {
       cachedOrLoaded = await this.hydrateCachedTeamFixtures(
         cachedOrLoaded,
-        playerRequests,
+        fixtureIdentityRequests,
         splitCache,
       );
     }
@@ -886,7 +952,7 @@ export class StatsService {
     const resultStartedAt = performance.now();
     cachedOrLoaded = harmonizePlayerTeamFixtures(
       cachedOrLoaded,
-      playerRequests,
+      fixtureIdentityRequests,
     );
     for (const target of progress.requests) {
       const stats = cachedOrLoaded.find(player => player.slug === target.slug && (!target.position || player.position === target.position));

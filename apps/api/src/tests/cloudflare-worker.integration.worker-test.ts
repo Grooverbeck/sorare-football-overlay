@@ -61,6 +61,49 @@ beforeEach(async () => {
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe('Cloudflare Worker', () => {
+  it('repairs a later new-club fixture through the service and persists it across D1 cache instances', async () => {
+    const now = Date.parse('2032-09-12T10:00:00Z');
+    const store = new D1JsonKeyValueStore(env.CACHE_DB, undefined, () => now / 1000);
+    const old: Fixture = {
+      date: '2032-09-12T13:30:00Z', homeTeamName: 'Mainz', awayTeamName: 'Frankfurt',
+      homeTeamSlug: 'mainz', awayTeamSlug: 'frankfurt', playerTeamSlug: 'frankfurt',
+      playerTeamName: 'Frankfurt', opponentTeamName: 'Mainz', cleanSheetProbability: 0.2,
+      matchProbabilities: { win: 0.3, draw: 0.26, loss: 0.44 },
+    };
+    const nice: Fixture = {
+      date: '2032-09-12T18:45:00Z', homeTeamName: 'Auxerre', awayTeamName: 'Nice',
+      homeTeamSlug: 'auxerre', awayTeamSlug: 'nice-nice', playerTeamSlug: 'nice-nice',
+      playerTeamName: 'Nice', opponentTeamName: 'Auxerre', cleanSheetProbability: 0.28,
+      matchProbabilities: { win: 0.35, draw: 0.28, loss: 0.37 },
+    };
+    const key = 'transfer-player:Forward:no-low';
+    const seedContext = createExecutionContext();
+    const seed = new CloudflarePlayerStatsCache(store, 604800, 14400, seedContext, () => now);
+    await seed.set(key, {
+      slug: 'transfer-player', displayName: 'Transfer Player', position: 'Forward',
+      aaL10: { value: 0.38, sampleSize: 10 }, aaL10TeamWinRate: { value: 0.1, sampleSize: 10 },
+      goalL10: { value: 0.3, sampleSize: 10 }, cleanSheetL10: { value: 0.2, sampleSize: 5 },
+      nextGame: old, excludedLowCoverage: 0,
+    });
+    await seed.setFixture('teammate:Forward:no-low', nice);
+    await waitOnExecutionContext(seedContext);
+    const context = createExecutionContext();
+    const cache = new CloudflarePlayerStatsCache(new D1JsonKeyValueStore(env.CACHE_DB, undefined, () => now / 1000), 604800, 14400, context, () => now);
+    const source = new MockDataSource();
+    vi.spyOn(source, 'resolvePlayerNames').mockResolvedValue([{ slug: 'transfer-player', position: 'Forward', resolvedFromName: 'Transfer Player', teamSlug: 'nice-nice', nameResolution: 'search' }]);
+    const fetchNext = vi.spyOn(source, 'fetchNextGames').mockResolvedValue([{ slug: 'transfer-player', playerTeamSlug: 'nice-nice', nextGame: nice }]);
+    const service = new StatsService(source, new HistoricalGoalscorerProvider(), cache, true, new UnavailablePlayerMarketOddsProvider());
+    const result = await service.getPlayerStats(PlayerStatsRequestSchema.parse({ playerNames: ['Transfer Player'], positions: { 'Transfer Player': 'Forward' }, oddsCacheOnly: true }));
+    expect(result.data[0]?.nextGame).toMatchObject(nice);
+    expect(fetchNext).toHaveBeenCalledOnce();
+    await waitOnExecutionContext(context);
+    const readContext = createExecutionContext();
+    const fresh = new CloudflarePlayerStatsCache(new D1JsonKeyValueStore(env.CACHE_DB, undefined, () => now / 1000), 604800, 14400, readContext, () => now);
+    expect((await fresh.getParts(key)).fixture).toMatchObject(nice);
+    expect((await fresh.getTeamFixture(key, 'frankfurt'))?.date).toBe(old.date);
+    await waitOnExecutionContext(readContext);
+  });
+
   it('switches a finished fixture before morning, keeps AA and fences delayed cache writes',async()=>{
     const now=Date.parse('2032-01-02T22:00:00Z');
     const store=new D1JsonKeyValueStore(env.CACHE_DB,undefined,()=>now/1000);
