@@ -1,7 +1,6 @@
 import type { FootballPosition } from '@sorare-overlay/shared';
 import { inferLineupSlotPosition, readLineupPositionSelection } from './lineup-position.js';
 import {
-  cardPictureIdFromUrl as pictureIdFromUrl,
   extractCardPictureId,
   findSorareCardMedia,
   findCardMediaContainer,
@@ -57,6 +56,8 @@ const verifiedSetPictures: Readonly<Record<string, string>> = {
   // Confirmed via the visible picker stats details (11 September 2026).
   '30cf34c8-c146-4bda-9a66-839f9203e3b4': 'finn-jeltsch',
   'dd39cfe2-d734-44e7-b11a-0410e273f5a4': 'ibrahim-maza',
+  // Full Art video and canonical player link verified via its own stats panel (12 September 2026).
+  '99289f6f-fc00-4354-a91a-5829d8e8db62': 'unai-simon-mendibil',
 };
 const knownPlayerSlugsByPictureId = new Map(Object.entries(verifiedSetPictures));
 const discoveredPlayerSlugsByPictureId = new Map<string, string>();
@@ -509,9 +510,10 @@ export function findCardTargets(
     const identity = readCardPlaceholder(svg);
     const container = findCardMediaContainer(svg);
     if (!identity || !container || isScoreDetailsDialogTarget(container)) continue;
-    const ids = new Set(Array.from(container.querySelectorAll<HTMLElement>('[style*="--mask-shape"]'))
-      .map(node => node.style.getPropertyValue('--mask-shape').match(/url\(["']?([^"')]+)["']?\)/)?.[1])
-      .flatMap(url => {const id = url ? pictureIdFromUrl(url) : null; return id ? [id] : [];}));
+    // Full Art can load a video poster or image directly, without a CSS foil
+    // layer. Bind the placeholder only to one unique picture in this card.
+    const ids = new Set(findSorareCardMedia(container)
+      .map(extractCardPictureId).filter((id): id is string => Boolean(id)));
     if (ids.size !== 1) continue;
     const id = [...ids][0]!;
     if (knownPlayerNamesByPictureId.get(id) !== identity.playerName) {

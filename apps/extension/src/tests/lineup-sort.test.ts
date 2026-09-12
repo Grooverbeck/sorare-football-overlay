@@ -360,7 +360,9 @@ describe('lineup card sorting', () => {
     await vi.waitFor(()=>expect(document.querySelector('[data-native-trigger-label]')?.textContent).toBe('AA'));
     expect(document.querySelector('[data-native-sort]')?.textContent).toContain('48 Spieler sortiert');
     expect(grid.querySelectorAll(`[${lineupSortDataReadyAttribute}="true"]`)).toHaveLength(48);
-    expect(grid.querySelector<HTMLElement>('[data-locked-cell]')?.style.order).toBe('-48');
+    // Applying CSS order is scheduled for the next animation frame, after
+    // the data-ready label has already been updated.
+    await vi.waitFor(() => expect(grid.querySelector<HTMLElement>('[data-locked-cell]')?.style.order).toBe('-48'));
     expect(grid.querySelector('[data-locked-frame]')?.getAttribute(lineupAaSortValueAttribute)).toBe('21.5');
     expect(grid.querySelector('[data-locked-frame] button, [data-locked-frame][role="button"]')).toBeNull();
     expect(grid.querySelector('[aria-label="Gesperrt"]')).not.toBeNull();
