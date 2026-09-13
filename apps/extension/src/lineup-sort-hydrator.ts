@@ -161,7 +161,9 @@ function requestForBatch(
   const playerNames = [
     ...new Set(
       states.flatMap(({ target }) =>
-        target.playerName ? [target.playerName] : [],
+        // A learned card may carry BOTH identities. Send exactly one so a
+        // 50-card batch cannot exceed the API's combined identity limit.
+        !target.slug && target.playerName ? [target.playerName] : [],
       ),
     ),
   ];

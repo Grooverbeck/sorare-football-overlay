@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LineupSortValue, LineupSortValuesRequest, LineupSortValuesSuccessResponse } from '@sorare-overlay/shared';
+import { LineupSortValuesRequestSchema } from '@sorare-overlay/shared';
 import { LineupSortHydrator } from '../lineup-sort-hydrator.js';
 import { readSortReadiness, setSortReadiness, sortFinalCheckAttribute } from '../lineup-sort-readiness.js';
 
@@ -9,8 +10,10 @@ function grid(count: number) {
   document.body.innerHTML = `<main><section id="pool">${Array.from({length:count},(_,i)=>`<div><article data-position="Forward"><a href="/football/players/test-player-${i}"><img alt="Test Player ${i} - common"></a></article></div>`).join('')}</section></main>`;
   return document.querySelector<HTMLElement>('#pool')!;
 }
-const targets = (pool: HTMLElement) => [...pool.querySelectorAll<HTMLElement>('article')].map((container,i) => ({container,slug:`test-player-${i}`,position:'Forward' as const}));
+const targets = (pool: HTMLElement) => [...pool.querySelectorAll<HTMLElement>('article')].map((container,i) => ({container,slug:`test-player-${i}`,playerName:`Test Player ${i}`,position:'Forward' as const}));
 function response(request: LineupSortValuesRequest, build: (slug: string) => Partial<LineupSortValue>): LineupSortValuesSuccessResponse {
+  // Exercise the real wire contract, not just the number of internal states.
+  LineupSortValuesRequestSchema.parse(request);
   return {data:(request.slugs ?? []).map(slug=>({slug,displayName:slug,position:'Forward',goal:{probability:.4,source:'historical'},aa:10,cleanSheet:null,
     readiness:{goal:'ready',aa:'ready',cleanSheet:'unavailable'},...build(slug)})),meta:{requested:request.slugs?.length??0,returned:request.slugs?.length??0,cacheHits:0,source:'sorare',durationMs:1}};
 }
@@ -44,6 +47,8 @@ describe('honest sort completion', () => {
     expect(seen.size).toBe(638);
     expect([...seen.values()].every(n=>n===3)).toBe(true);
     expect(fetcher.mock.calls.every(([request])=>(request.slugs?.length??0)<=50)).toBe(true);
+    expect(fetcher.mock.calls.every(([request])=>(request.slugs?.length??0)+(request.playerNames?.length??0)<=50)).toBe(true);
+    expect(fetcher.mock.calls.every(([request])=>request.playerNames?.length===0)).toBe(true);
   }, 15_000);
 
   it('does not wait for AA history when the selected goal market is already complete', async () => {
@@ -89,5 +94,20 @@ describe('honest sort completion', () => {
     const card=pool.querySelector('article')!;
     expect(card.getAttribute('data-sorare-overlay-goal-sort-probability')).toBe('0');
     expect(readSortReadiness(card)?.goal).toBe('ready');
+  });
+
+  it('sends one wire identity for learned cards in a mixed slug/name-only batch', async () => {
+    const pool=grid(50);
+    const mixed=targets(pool).map((t,i)=>i<25?t:{container:t.container,playerName:t.playerName,position:t.position});
+    const fetcher=vi.fn(async(request:LineupSortValuesRequest)=>{
+      LineupSortValuesRequestSchema.parse(request);
+      expect(request.slugs).toHaveLength(25);expect(request.playerNames).toHaveLength(25);
+      const all=[...(request.slugs??[]),...(request.playerNames??[]).map(name=>name.toLowerCase().replaceAll(' ','-'))];
+      return response({slugs:all},slug=>({displayName:slug.replaceAll('-',' ')}));
+    });
+    hydrator=new LineupSortHydrator(fetcher);
+    await hydrator.hydrate(pool,mixed);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect([...pool.querySelectorAll('article')].every(card=>readSortReadiness(card)?.goal==='ready')).toBe(true);
   });
 });

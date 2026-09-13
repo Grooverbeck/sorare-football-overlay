@@ -1782,10 +1782,16 @@ export class LineupCardSorter {
       ) {
         return;
       }
+      if (Date.now() < this.scrollQuietAt) {
+        this.refreshHydrationUiState();
+        return;
+      }
       this.poolHydrationUiPending = false;
       this.poolHydrationUiComplete = true;
+      // Lock the settled order before publishing the completion label. A
+      // next-frame lock leaves a race where an immediate hover can re-sort.
+      this.applySort();
       this.syncNativeSortUi();
-      this.scheduleSort();
     }, hydrationUiSettleDelayMs);
   }
 

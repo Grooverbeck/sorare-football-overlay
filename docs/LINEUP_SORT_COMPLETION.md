@@ -30,6 +30,12 @@ den gewählten Sortiermodus nicht.
 
 ## Nachladen
 
+Jede Karte belegt im Request genau einen Identitätseintrag: vorhandene
+Spielerkennung hat Vorrang vor dem zusätzlich bekannten Namen. Auch gemischte
+Batches aus gelernten Karten und reinen Namens-Karten bleiben damit innerhalb
+des gemeinsamen Limits von 50 Einträgen. Der große Regressionstest prüft
+zusätzlich die echte Request-Schema-Validierung.
+
 Der Sortier-Lader arbeitet über den gesamten erkannten Pool, unabhängig vom
 Viewport. Automatische Wiederholungen sind begrenzt (nach 1, 5, 15 und 30
 Sekunden); bei Erschöpfung bleibt ein sichtbarer Fehlerstatus. „Erneut prüfen“
