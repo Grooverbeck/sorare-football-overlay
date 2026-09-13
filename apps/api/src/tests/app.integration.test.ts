@@ -246,6 +246,19 @@ describe('POST /api/player-stats', () => {
 });
 
 describe('POST /api/lineup-sort-values', () => {
+  it('preserves metric readiness for partial history through the HTTP response', async () => {
+    const service = new StatsService(new MockDataSource(), new HistoricalGoalscorerProvider(), new TtlCache<PlayerStats>(60_000), true, new MockPlayerMarketOddsProvider());
+    const original = service.getPlayerStats.bind(service);
+    vi.spyOn(service, 'getPlayerStats').mockImplementation(async request => {
+      const result = await original(request);
+      return {...result, data:result.data.map(stats=>({...stats, nextGame:null, historicalGoals:undefined, pendingRefreshes:['formHistory'] as const}))};
+    });
+    const app=createApp({statsService:service,logger,corsOrigins:[]});
+    const response=await app.request('/api/lineup-sort-values',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({slugs:['jude-bellingham'],historicalGoalWindow:15})});
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0]).toMatchObject({goal:null,readiness:{goal:'pending',aa:'pending',cleanSheet:'unavailable'}});
+  });
+
   it('forces provider cache-only mode regardless of the client payload', async () => {
     const service = new StatsService(
       new MockDataSource(),
@@ -268,7 +281,7 @@ describe('POST /api/lineup-sort-values', () => {
       expect.objectContaining({
         oddsCacheOnly: true,
         supportsPartialFormHistory: true,
-        refreshFixtures: false,
+        refreshFixtures: true,
       }),
     );
   });

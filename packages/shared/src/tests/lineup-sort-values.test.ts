@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   lineupGoalSortValue,
   lineupSortValueForPlayer,
+  lineupSortReadinessForPlayer,
 } from '../lineup-sort-values.js';
 
 function stats(overrides: Partial<PlayerStats> = {}): PlayerStats {
@@ -47,17 +48,33 @@ describe('lineup sort values', () => {
     ).toEqual({ probability: 0.55, source: 'market' });
   });
 
-  it('uses the selected historical window and falls back to L10', () => {
+  it('waits for the selected history instead of silently using a different window', () => {
     expect(lineupGoalSortValue(stats(), 15)).toEqual({
       probability: 0.3,
       source: 'historical',
     });
     const statsWithoutHistoricalWindows = stats();
     delete statsWithoutHistoricalWindows.historicalGoals;
-    expect(lineupGoalSortValue(statsWithoutHistoricalWindows, 40)).toEqual({
+    expect(lineupGoalSortValue(statsWithoutHistoricalWindows, 40)).toBeNull();
+    expect(lineupSortReadinessForPlayer(statsWithoutHistoricalWindows, 40).goal).toBe('pending');
+    expect(lineupGoalSortValue(statsWithoutHistoricalWindows)).toEqual({
       probability: 0.2,
       source: 'historical',
     });
+  });
+
+  it('keeps partial histories open but allows a real goal market to be ready', () => {
+    const partial = stats({ pendingRefreshes: ['formHistory'] });
+    expect(lineupSortValueForPlayer(partial, 15).readiness).toEqual({ goal: 'pending', aa: 'pending', cleanSheet: 'unavailable' });
+    partial.nextGame = {date:'2032-09-13T18:00:00Z', cleanSheetProbability:null, marketOdds:{source:'odds-api-io',capturedAt:'2032-09-13T12:00:00Z',goal:{probability:.5,bookmakerCount:1},assist:null}};
+    expect(lineupSortReadinessForPlayer(partial, 15)).toEqual({ goal: 'ready', aa: 'pending', cleanSheet: 'unavailable' });
+  });
+
+  it('distinguishes true zero, no history and a pending fixture', () => {
+    const noHistory = stats({ goalL10:{value:null,sampleSize:0} });
+    expect(lineupSortReadinessForPlayer(noHistory).goal).toBe('unavailable');
+    expect(lineupSortReadinessForPlayer(stats({goalL10:{value:0,sampleSize:10}})).goal).toBe('ready');
+    expect(lineupSortReadinessForPlayer(stats({pendingRefreshes:['fixture']})).goal).toBe('pending');
   });
 
   it('returns the compact AA value and excludes goalkeeper goal values', () => {

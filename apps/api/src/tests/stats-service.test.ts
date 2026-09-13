@@ -37,6 +37,20 @@ import {
 } from '../services/stats-service.js';
 
 describe('StatsService market snapshot reads', () => {
+  it('keeps a timed-out sort cache lookup pending instead of declaring the market absent', async () => {
+    const provider: PlayerMarketOddsProvider = {
+      supports: () => true,
+      load: vi.fn(async (_players, options) => {
+        expect(options?.cacheOnly).toBe(true);
+        return new Promise<Map<string, PlayerMarketOdds>>(() => {});
+      }),
+    };
+    const service = new StatsService(new MockDataSource(), new HistoricalGoalscorerProvider(), new TtlCache<PlayerStats>(60_000), true, provider, undefined, undefined, undefined, 1);
+    const result = await service.getPlayerStats(PlayerStatsRequestSchema.parse({slugs:['jude-bellingham'],oddsCacheOnly:true}));
+    expect(result.data[0]?.pendingRefreshes).toContain('marketOdds');
+    expect(provider.load).toHaveBeenCalledTimes(1);
+  });
+
   it('returns batched cache state without scheduling provider work', async () => {
     const load = vi.fn<PlayerMarketOddsProvider['load']>(
       async (players, options) => {

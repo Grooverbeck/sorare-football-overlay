@@ -968,11 +968,15 @@ export class StatsService {
       oddsEligiblePlayers.length,
     );
     const cacheOnlyOddsDeadlineMs = Date.now() + marketCacheOnlyBudgetMs;
+    const fixtureCacheReadState = { complete: false };
+    const marketCacheReadState = { complete: false };
     const [fixtureMatchOdds, marketOdds] = await Promise.all([
       this.loadCacheOnlyWithinBudget(
         this.fixtureMatchOddsProvider.load(cachedOrLoaded, {
           cacheOnly: true,
         }),
+        this.cacheOnlyOddsBudgetMs,
+        fixtureCacheReadState,
       ),
       this.loadCacheOnlyWithinBudget(
         this.marketOddsProvider.load(oddsEligiblePlayers, {
@@ -982,6 +986,7 @@ export class StatsService {
           refreshDueState: marketRefreshDueState,
         }),
         marketCacheOnlyBudgetMs,
+        marketCacheReadState,
       ),
     ]);
     const playersWithFixtureRefresh = new Set(
@@ -1098,6 +1103,12 @@ export class StatsService {
           }
         : null;
       const statsWithFallback = { ...stats, nextGame };
+      // Cache timeouts are not proof of a missing market. The compact sort
+      // client must retry the read, without starting any bookmaker request.
+      if (request.oddsCacheOnly && supportsMarketOdds && !marketCacheReadState.complete && !odds?.goal) pending.add('marketOdds');
+      if (request.oddsCacheOnly && !fixtureCacheReadState.complete &&
+          (stats.position === 'Goalkeeper' || stats.position === 'Defender') &&
+          nextGame && nextGame.cleanSheetProbability === null) pending.add('fixture');
       if (
         canScheduleOddsRefresh &&
         supportsMarketOdds &&
@@ -1222,9 +1233,13 @@ export class StatsService {
   private async loadCacheOnlyWithinBudget<T>(
     pending: Promise<Map<string, T>>,
     budgetMs = this.cacheOnlyOddsBudgetMs,
+    readState?: { complete: boolean },
   ): Promise<Map<string, T>> {
     const result = await settleWithin(pending, budgetMs);
-    if (result.status === 'fulfilled') return result.value;
+    if (result.status === 'fulfilled') {
+      if (readState) readState.complete = true;
+      return result.value;
+    }
     return new Map();
   }
 

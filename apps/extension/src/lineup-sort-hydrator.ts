@@ -4,7 +4,9 @@ import type {
   LineupSortValue,
   LineupSortValuesRequest,
   LineupSortValuesSuccessResponse,
+  LineupSortReadiness,
 } from '@sorare-overlay/shared';
+import { readSortReadiness, setSortReadiness, readinessIsSettled, uniformReadiness, setSortFinalCheck } from './lineup-sort-readiness.js';
 import { fetchLineupSortValues } from './api.js';
 import { findCardTargets, type CardTarget } from './dom.js';
 import { findCardMediaContainer, findSorareCardMedia } from './card-media.js';
@@ -27,7 +29,6 @@ import {
   type LineupGoalSortSource,
 } from './lineup-sort.js';
 import {
-  normalizePlayerName,
   playerNamesLikelyMatch,
   playerRequestIdentity,
   playerTargetKey,
@@ -39,7 +40,7 @@ type SortValuesFetcher = (
   request: LineupSortValuesRequest,
 ) => Promise<LineupSortValuesSuccessResponse>;
 
-type HydrationStatus = 'queued' | 'in-flight' | 'retry' | 'ready';
+type HydrationStatus = 'queued' | 'in-flight' | 'retry' | 'ready' | 'error';
 
 interface HydrationState {
   fixtureRefreshRequest?: boolean;
@@ -53,6 +54,7 @@ interface HydrationState {
 }
 
 interface SortValueSnapshot {
+  readiness?: LineupSortReadiness;
   retiredFixture?: string;
   fixtureIdentity?: string;
   fixtureRefresh?: {key:string;nextCheckAt:string};
@@ -108,6 +110,8 @@ function snapshotForTarget(target: CardTarget): SortValueSnapshot | null {
   if (container.getAttribute(lineupSortDataReadyAttribute) !== 'true') {
     return null;
   }
+  const readiness = readSortReadiness(container);
+  if (readiness && !Object.values(readiness).every(readinessIsSettled)) return null;
   const goalProbability = finiteAttribute(
     container,
     lineupGoalSortProbabilityAttribute,
@@ -118,6 +122,7 @@ function snapshotForTarget(target: CardTarget): SortValueSnapshot | null {
       ? rawGoalSource
       : null;
   return {
+    ...(readiness ? { readiness } : {}),
     position: sortPositionFromContainer(container, target.position),
     ...(container.hasAttribute(retiredFixtureAttribute) ? {retiredFixture:container.getAttribute(retiredFixtureAttribute)!} : {}),
     ...(container.hasAttribute(fixtureIdentityAttribute) ? {fixtureIdentity:container.getAttribute(fixtureIdentityAttribute)!} : {}),
@@ -186,6 +191,29 @@ function roundedDuration(startedAt: number): number {
 }
 
 export class LineupSortHydrator {
+  private readonly handleValueChange = (event: Event): void => {
+    if (!(event.target instanceof HTMLElement)) return;
+    const state = this.states.get(event.target);
+    const readiness = readSortReadiness(event.target);
+    if (!state || !readiness) return;
+    const current = readiness[this.metricKey()];
+    if (current === 'pending' && (state.status === 'ready' || state.status === 'error')) {
+      // A full overlay can become partial after compact hydration ended.
+      // Continue the missing read even if that card leaves the viewport.
+      state.status = 'queued'; state.attempts = 0;
+      state.reconcileFullOverlay = !event.target.hasAttribute(lineupSortLightweightReadyAttribute);
+      this.phaseCompleted = false;
+      this.queue.push(state);
+      void this.ensurePump();
+    } else if (readinessIsSettled(current) && (state.status === 'retry' || state.status === 'error')) {
+      const timer = this.retryTimers.get(event.target);
+      if (timer !== undefined) window.clearTimeout(timer);
+      this.retryTimers.delete(event.target);
+      state.status = 'ready';
+      this.preserve(state.target);
+      if (!this.pumpPromise) this.maybeLogCompletion();
+    }
+  };
   private readonly fixtureScheduler=new FixtureRefreshScheduler(
     ()=>!this.grid?.isConnected || !document.querySelector('[data-sorare-overlay-lineup-sort-trigger-label]') ? [] :
       [...this.states.values()].flatMap(s=>{const hint=readFixtureRefresh(s.target.container);return s.target.container.isConnected && hint ? [hint] : [];}),
@@ -215,12 +243,58 @@ export class LineupSortHydrator {
   private historicalGoalWindow: HistoricalMarketWindow | null = null;
   private phaseStartedAt = 0;
   private phaseCompleted = true;
+  private finalCheckRequested = false;
+  private finalCheckStarted = false;
+  private mode: 'goal' | 'aa' | 'clean-sheet' = 'goal';
+
+  configureMode(mode: 'goal' | 'aa' | 'clean-sheet'): void {
+    if (this.mode === mode) return;
+    this.mode = mode;
+    if (this.grid) {
+      this.finalCheckRequested = true; this.finalCheckStarted = false; this.phaseCompleted = false;
+      setSortFinalCheck(this.grid, 'pending');
+    }
+    for (const state of this.states.values()) {
+      const readiness = readSortReadiness(state.target.container);
+      if (!readiness || readinessIsSettled(readiness[this.metricKey()]) || !['ready', 'error'].includes(state.status)) continue;
+      state.status = 'queued'; state.attempts = 0; this.queue.push(state);
+    }
+    if (this.grid) { this.phaseCompleted = false; void this.ensurePump(); }
+  }
+
+  private metricKey(): keyof LineupSortReadiness {
+    return this.mode === 'clean-sheet' ? 'cleanSheet' : this.mode;
+  }
 
   constructor(
     private readonly fetcher: SortValuesFetcher = fetchLineupSortValues,
     private readonly batchSize = 50,
-    private readonly retryDelaysMs: readonly number[] = [1_000, 5_000],
+    private readonly retryDelaysMs: readonly number[] = [1_000, 5_000, 15_000, 30_000],
   ) {}
+
+  finalizePool(grid: HTMLElement): void {
+    if (this.grid !== grid) return;
+    this.finalCheckRequested = true;
+    this.finalCheckStarted = false;
+    this.phaseCompleted = false;
+    setSortFinalCheck(grid, 'pending');
+    if (!this.pumpPromise) this.maybeLogCompletion();
+  }
+
+  retryOpenValues(): void {
+    if (!this.grid?.isConnected) return;
+    this.finalCheckRequested = true;
+    this.finalCheckStarted = false;
+    this.phaseCompleted = false;
+    setSortFinalCheck(this.grid, 'pending');
+    for (const state of this.states.values()) {
+      if (state.status !== 'error') continue;
+      state.status = 'queued'; state.attempts = 0;
+      setSortReadiness(state.target.container, uniformReadiness('pending'));
+      this.queue.push(state);
+    }
+    void this.ensurePump();
+  }
 
   configureHistoricalGoalFallback(
     enabled: boolean,
@@ -259,10 +333,11 @@ export class LineupSortHydrator {
       const container = findCardMediaContainer(media);
       if (!container || container.hasAttribute(lineupSortIdentityMissingAttribute)) continue;
       // Count the physical card, but do not invent a player or send an empty
-      // request. A later learned identity removes this terminal marker.
+      // request. Missing identity is an open error, not a completed data miss.
       this.clearTargetValues(container);
       container.setAttribute(lineupSortIdentityMissingAttribute, 'true');
-      setLineupSortDataReady(container, true);
+      setSortReadiness(container, uniformReadiness('error'));
+      setLineupSortDataReady(container, false);
     }
   }
 
@@ -341,8 +416,10 @@ export class LineupSortHydrator {
         this.clearTargetValues(target.container);
       }
 
+      const existingReadiness = readSortReadiness(target.container);
       if (
-        target.container.getAttribute(lineupSortDataReadyAttribute) === 'true'
+        target.container.getAttribute(lineupSortDataReadyAttribute) === 'true' &&
+        (!existingReadiness || Object.values(existingReadiness).every(readinessIsSettled))
       ) {
         this.rememberSnapshot(target, key);
         this.states.set(target.container, {
@@ -377,6 +454,7 @@ export class LineupSortHydrator {
       this.states.set(target.container, state);
       this.queue.push(state);
       setLineupSortDataReady(target.container, false);
+      if (!existingReadiness) setSortReadiness(target.container, uniformReadiness('pending'));
       discovered += 1;
     }
 
@@ -450,6 +528,7 @@ export class LineupSortHydrator {
   }
 
   stop(): void {
+    this.grid?.removeEventListener('sorare-overlay:lineup-sort-value-changed', this.handleValueChange);
     this.fixtureScheduler.stop();
     this.clearUnidentifiedCards();
     this.generation += 1;
@@ -464,9 +543,12 @@ export class LineupSortHydrator {
     this.queue.length = 0;
     this.grid = null;
     this.phaseCompleted = true;
+    this.finalCheckRequested = false;
+    this.finalCheckStarted = false;
   }
 
   private reset(grid: HTMLElement, clearLightweightValues = false): void {
+    this.grid?.removeEventListener('sorare-overlay:lineup-sort-value-changed', this.handleValueChange);
     this.fixtureScheduler.stop();
     if (grid !== this.grid) this.clearUnidentifiedCards();
     this.generation += 1;
@@ -487,7 +569,10 @@ export class LineupSortHydrator {
     this.positionlessSnapshots.clear();
     this.queue.length = 0;
     this.grid = grid;
+    grid.addEventListener('sorare-overlay:lineup-sort-value-changed', this.handleValueChange);
     this.phaseCompleted = true;
+    this.finalCheckRequested = false;
+    this.finalCheckStarted = false;
   }
 
   private effectiveBatchSize(): number {
@@ -583,10 +668,6 @@ export class LineupSortHydrator {
     response: LineupSortValuesSuccessResponse,
   ): void {
     const changedPlayers=new Set<string>();
-    const deferredNames = new Set(
-      (response.meta.deferredPlayerNames ?? []).map(normalizePlayerName),
-    );
-    const deferredSlugs = new Set(response.meta.deferredPlayerSlugs ?? []);
     for (const state of batch) {
       const value = response.data.find((candidate) =>
         targetMatchesValue(state.target, candidate),
@@ -594,16 +675,15 @@ export class LineupSortHydrator {
       if (value) {
         const before=state.target.container.getAttribute(fixtureIdentityAttribute);
         this.completeState(state, value);
+        const readiness = readSortReadiness(state.target.container);
+        if (readiness?.[this.metricKey()] === 'pending') this.retryOrComplete(state);
+        else if (readiness?.[this.metricKey()] === 'error') state.status = 'error';
         if(before!==null && before!==state.target.container.getAttribute(fixtureIdentityAttribute))changedPlayers.add(value.slug);
         continue;
       }
-      const deferred = Boolean(
-        (state.target.slug && deferredSlugs.has(state.target.slug)) ||
-          (state.target.playerName &&
-            deferredNames.has(normalizePlayerName(state.target.playerName))),
-      );
-      if (deferred) this.retryOrComplete(state);
-      else this.completeState(state, null);
+      // An absent record is not proof that a player has no data. Deferred and
+      // unclassified misses both get a bounded retry, then an explicit error.
+      this.retryOrComplete(state);
     }
     this.fixtureScheduler.schedule();
     if(changedPlayers.size)document.dispatchEvent(new CustomEvent(fixtureChangedEvent,{detail:[...changedPlayers]}));
@@ -619,7 +699,9 @@ export class LineupSortHydrator {
     }
     const delay = this.retryDelaysMs[state.attempts - 1];
     if (delay === undefined) {
-      this.completeState(state, null);
+      state.status = 'error';
+      setSortReadiness(state.target.container, uniformReadiness('error'));
+      setLineupSortDataReady(state.target.container, false);
       return;
     }
     state.status = 'retry';
@@ -651,6 +733,11 @@ export class LineupSortHydrator {
       return;
     }
     const container = state.target.container;
+    const incomingReadiness = value?.readiness ?? {
+      goal: value?.goal ? 'ready' : 'unavailable',
+      aa: value?.aa != null ? 'ready' : 'unavailable',
+      cleanSheet: value?.cleanSheet != null ? 'ready' : 'unavailable',
+    };
     const refreshingFixture=state.fixtureRefreshRequest;
     delete state.fixtureRefreshRequest;
     let fixtureChanged=false;
@@ -694,6 +781,7 @@ export class LineupSortHydrator {
       container.getAttribute(lineupGoalSortSourceAttribute) === 'market';
     const preserveGoal =
       currentGoalIsMarket ||
+      (incomingReadiness.goal === 'pending' && container.hasAttribute(lineupGoalSortProbabilityAttribute)) ||
       (state.preserveExistingGoalUnlessMarket &&
         value?.goal?.source !== 'market');
     if (state.reconcileFullOverlay && fullOverlayOwnsValues && !fixtureChanged && !refreshingFixture) {
@@ -704,6 +792,8 @@ export class LineupSortHydrator {
         value?.goal?.probability ?? null,
         value?.goal?.source,
       );
+      const currentReadiness = readSortReadiness(container) ?? incomingReadiness;
+      setSortReadiness(container, { ...currentReadiness, goal: currentGoalIsMarket ? 'ready' : incomingReadiness.goal });
       state.status = 'ready';
       this.preserve(state.target);
       delete state.reconcileFullOverlay;
@@ -720,10 +810,11 @@ export class LineupSortHydrator {
       value?.goal?.probability ?? null,
       value?.goal?.source,
     );
-    setLineupAaSortValue(container, value?.aa ?? null);
-    setLineupCleanSheetSortValue(container, value?.cleanSheet ?? null);
+    if (incomingReadiness.aa !== 'pending') setLineupAaSortValue(container, value?.aa ?? null);
+    if (incomingReadiness.cleanSheet !== 'pending') setLineupCleanSheetSortValue(container, value?.cleanSheet ?? null);
+    setSortReadiness(container, { ...incomingReadiness, goal: currentGoalIsMarket && !fixtureChanged ? 'ready' : incomingReadiness.goal });
     container.setAttribute(lineupSortLightweightReadyAttribute, state.key);
-    setLineupSortDataReady(container, true);
+    setLineupSortDataReady(container, readinessIsSettled(incomingReadiness[this.metricKey()]));
     state.status = 'ready';
     this.preserve(state.target);
     delete state.reconcileFullOverlay;
@@ -755,11 +846,13 @@ export class LineupSortHydrator {
     );
     setLineupAaSortValue(container, snapshot.aa);
     setLineupCleanSheetSortValue(container, snapshot.cleanSheet);
+    setSortReadiness(container, snapshot.readiness ?? null);
     container.setAttribute(lineupSortLightweightReadyAttribute, key);
     setLineupSortDataReady(container, true);
   }
 
   private clearTargetValues(container: HTMLElement): void {
+    setSortReadiness(container, null);
     container.removeAttribute(fixtureRefreshAttribute);
     container.removeAttribute(fixtureIdentityAttribute);
     container.removeAttribute(retiredFixtureAttribute);
@@ -792,7 +885,20 @@ export class LineupSortHydrator {
       ({ target }) =>
         target.container.isConnected && Boolean(this.grid?.contains(target.container)),
     );
-    if (connected.some(({ status }) => status !== 'ready')) return;
+    if (connected.some(({ status }) => status !== 'ready' && status !== 'error')) return;
+    if (this.finalCheckRequested && !this.finalCheckStarted) {
+      this.finalCheckStarted = true;
+      // One bounded, pool-wide last cache read. Never start bookmaker work.
+      for (const state of connected) {
+        if (state.status !== 'ready' || this.mode === 'aa' ||
+          (this.mode === 'goal' ? state.target.container.getAttribute(lineupGoalSortSourceAttribute) === 'market' : state.target.container.hasAttribute(lineupCleanSheetSortProbabilityAttribute))) continue;
+        state.status = 'queued'; state.attempts = 0;
+        state.reconcileFullOverlay = !state.target.container.hasAttribute(lineupSortLightweightReadyAttribute);
+        this.queue.push(state);
+      }
+      if (this.queue.length) { void this.ensurePump(); return; }
+    }
+    if (this.finalCheckRequested && this.grid) setSortFinalCheck(this.grid, 'complete');
     this.phaseCompleted = true;
     logStatsDiagnostic('lineup-sort-hydration-complete', {
       players: connected.length,

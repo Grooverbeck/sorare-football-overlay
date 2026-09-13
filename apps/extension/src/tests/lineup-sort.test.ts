@@ -329,8 +329,8 @@ describe('lineup card sorting', () => {
     hydrator.settleUnidentifiedCards(grid, []);
     sorter.scan();
     document.querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)!.click();
-    await vi.waitFor(() => expect(document.querySelector('[data-native-trigger-label]')?.textContent).toBe('AA'));
-    expect(document.querySelector('[data-native-sort]')?.textContent).toContain('1 Spieler · 1 nicht erkannt');
+    await vi.waitFor(() => expect(document.querySelector('[data-native-trigger-label]')?.textContent).toBe('AA · Wiederholen'));
+    expect(document.querySelector('[data-native-sort]')?.textContent).toContain('0 von 1 geprüft · 1 offen');
     expect(grid.querySelector(`[${lineupSortIdentityMissingAttribute}]`)).not.toBeNull();
     hydrator.stop();
     expect(grid.querySelector(`[${lineupSortIdentityMissingAttribute}]`)).toBeNull();
@@ -493,13 +493,13 @@ describe('lineup card sorting', () => {
     await vi.waitFor(() => {
       expect(label.textContent).toBe('AA lädt …');
       expect(label.title).toBe(
-        '3 Spieler insgesamt. AA-Werte werden abgeglichen. Die Sortierung aktualisiert sich automatisch.',
+        '3 Spieler insgesamt. AA-Werte werden abgeglichen. Noch offene Daten werden unabhängig vom Scrollbereich geprüft.',
       );
       expect(
         document.querySelector(
           '[data-sorare-overlay-lineup-sort-player-status-label]',
         )?.textContent,
-      ).toBe('3 Spieler geladen');
+      ).toBe('1 von 3 geprüft');
     });
 
     setLineupSortDataReady(historical, true);
@@ -512,7 +512,7 @@ describe('lineup card sorting', () => {
       document.querySelector(
         '[data-sorare-overlay-lineup-sort-player-status-label]',
       )?.textContent,
-    ).toBe('3 Spieler geladen');
+    ).toBe('1 von 3 geprüft');
 
     setLineupSortDataReady(historical, true);
     setLineupSortDataReady(missing, true);
@@ -555,7 +555,7 @@ describe('lineup card sorting', () => {
       document.querySelector(
         '[data-sorare-overlay-lineup-sort-player-status-label]',
       )?.textContent,
-    ).toBe('3 Spieler sortiert');
+    ).toBe('2 von 3 geprüft');
     setLineupSortDataReady(missing, true);
     expect(market.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
   });
@@ -1276,13 +1276,16 @@ describe('lineup card sorting', () => {
     const untouchedMarketQueries = vi.spyOn(marketCell, 'querySelectorAll');
     const untouchedMissingQueries = vi.spyOn(missingCell, 'querySelectorAll');
     setLineupAaSortValue(historical, 12.5);
-    await vi.waitFor(() => expect(historicalCell.style.order).toBe('-3'));
-    expect(historical.getAttribute(lineupAaSortValueAttribute)).toBe('12.5');
+    await vi.waitFor(() => expect(document.querySelector('[data-sorare-overlay-sort-action]')).not.toBeNull());
+    expect(historicalCell.style.order).toBe('-2');
     expect(untouchedMarketQueries).not.toHaveBeenCalled();
     expect(untouchedMissingQueries).not.toHaveBeenCalled();
+    document.querySelector<HTMLButtonElement>('[data-sorare-overlay-sort-action]')!.click();
+    await vi.waitFor(() => expect(historicalCell.style.order).toBe('-3'));
+    expect(historical.getAttribute(lineupAaSortValueAttribute)).toBe('12.5');
   });
 
-  it('re-sorts when a late historical value arrives and restores Sorare order', async () => {
+  it('keeps late historical values in place until explicitly re-sorted and restores Sorare order', async () => {
     const market = document.querySelector<HTMLElement>('[data-player="market"]');
     const historical = document.querySelector<HTMLElement>(
       '[data-player="historical"]',
@@ -1307,6 +1310,11 @@ describe('lineup card sorting', () => {
     await vi.waitFor(() => expect(marketCell.style.order).toBe('-3'));
 
     setLineupGoalSortValue(historical, 0.45, 'historical');
+    await vi.waitFor(() => expect(document.querySelector('[data-sorare-overlay-sort-action]')?.textContent).toBe('Neu sortieren'));
+    window.dispatchEvent(new Event('scroll'));
+    await new Promise(resolve => window.setTimeout(resolve, 350));
+    expect(historicalCell.style.order).toBe('-2');
+    document.querySelector<HTMLButtonElement>('[data-sorare-overlay-sort-action]')!.click();
     await vi.waitFor(() => expect(historicalCell.style.order).toBe('-3'));
     expect(historical.getAttribute(lineupGoalSortProbabilityAttribute)).toBe(
       '0.45',

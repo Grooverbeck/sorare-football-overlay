@@ -145,6 +145,21 @@
   position: relative !important;
 }
 
+[data-sorare-overlay-sort-action] {
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.2;
+  max-width: 150px;
+  min-width: 0;
+  padding: 6px 8px;
+  cursor: pointer;
+  flex: 0 1 auto;
+}
+
 [data-sorare-overlay-lineup-sort-player-status-label] {
   position: absolute !important;
   inset-inline-start: 50% !important;

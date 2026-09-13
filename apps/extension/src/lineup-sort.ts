@@ -1,4 +1,5 @@
-import type { FootballPosition } from '@sorare-overlay/shared';
+import type { FootballPosition, SortMetricReadiness } from '@sorare-overlay/shared';
+import { readSortReadiness, readinessIsSettled, sortReadinessAttribute, sortFinalCheckAttribute, sortRetryEvent, sortModeEvent } from './lineup-sort-readiness.js';
 import { extractCardPictureId, findSorareCardMedia } from './card-media.js';
 import { logStatsDiagnostic } from './stats-diagnostics.js';
 import { lineupPositionFromButton, readLineupPositionSelection } from './lineup-position.js';
@@ -136,6 +137,7 @@ interface SortableCellRecord {
   cell: HTMLElement;
   originalIndex: number;
   ready: boolean;
+  readiness: Record<LineupSortMode, SortMetricReadiness>;
   values: Record<LineupSortMode, number | null>;
 }
 
@@ -540,6 +542,11 @@ function sortableCellRecord(
     cell,
     originalIndex,
     ready: cellSortDataIsReady(cell),
+    readiness: {
+      goal: cellMetricReadiness(cell, 'goal'),
+      aa: cellMetricReadiness(cell, 'aa'),
+      'clean-sheet': cellMetricReadiness(cell, 'clean-sheet'),
+    },
     values: {
       goal: valueForCell(
         cell,
@@ -552,6 +559,21 @@ function sortableCellRecord(
       ),
     },
   };
+}
+
+function cellMetricReadiness(cell: HTMLElement, mode: LineupSortMode): SortMetricReadiness {
+  const containers = [
+    ...(cell.hasAttribute(sortReadinessAttribute) ? [cell] : []),
+    ...cell.querySelectorAll<HTMLElement>(`[${sortReadinessAttribute}]`),
+  ];
+  const states = containers.flatMap(container => {
+    const value = readSortReadiness(container);
+    return value ? [value[mode === 'clean-sheet' ? 'cleanSheet' : mode]] : [];
+  });
+  if (!states.length) return cellSortDataIsReady(cell) ? 'ready' : 'pending';
+  if (states.includes('error')) return 'error';
+  if (states.includes('pending')) return 'pending';
+  return states.includes('ready') ? 'ready' : 'unavailable';
 }
 
 function gridLoadingCell(grid: HTMLElement): HTMLElement | null {
@@ -967,6 +989,11 @@ export class LineupCardSorter {
   private poolHydrationUiTimer: number | undefined;
   private poolReadyCount = 0;
   private poolValueCount = 0;
+  private poolErrorCount = 0;
+  private lockedOrder: HTMLElement[] | null = null;
+  private readonly lockedValues = new Map<HTMLElement, number | null>();
+  private updatedValueCount = 0;
+  private actionButton: HTMLButtonElement | null = null;
   private loadingGrid: HTMLElement | null = null;
   private completedGrid: HTMLElement | null = null;
   private completedCells = new Set<HTMLElement>();
@@ -1207,7 +1234,7 @@ export class LineupCardSorter {
       label.setAttribute(nativeTriggerLabelAttribute, 'true');
       const config = lineupSortConfigs[this.activeMode];
       const baseLabel = config.label;
-      const loading = this.poolLoading || this.poolHydrationUiPending;
+      const loading = this.poolLoading || (!this.lockedOrder && this.poolHydrationUiPending);
       const unidentifiedCount = this.completedGrid?.querySelectorAll(
         `[${lineupSortIdentityMissingAttribute}]`,
       ).length ?? 0;
@@ -1227,6 +1254,12 @@ export class LineupCardSorter {
           ? displayedPlayerCount > 0
             ? `${displayedPlayerCount} Spieler · unvollständig`
             : 'Spielerliste unvollständig'
+          : this.poolErrorCount > 0 && !this.poolLoading
+            ? `${this.poolReadyCount} von ${displayedPlayerCount} geprüft · ${this.poolErrorCount} offen`
+          : this.updatedValueCount > 0
+            ? `${this.updatedValueCount} neue Werte verfügbar`
+          : this.poolHydrating && !this.poolLoading
+            ? `${this.poolReadyCount} von ${displayedPlayerCount} geprüft`
           : displayedPlayerCount > 0
             ? !loading && unidentifiedCount > 0
               ? `${displayedPlayerCount} Spieler · ${unidentifiedCount} nicht erkannt`
@@ -1235,13 +1268,13 @@ export class LineupCardSorter {
       );
       const nextLabel = loading
         ? `${baseLabel} lädt …`
-        : this.poolLoadFailed
+        : this.poolLoadFailed || this.poolErrorCount > 0
           ? `${baseLabel} · Wiederholen`
           : baseLabel;
       const nextTitle = this.poolLoading
         ? `${loadingPlayerDescription}Die vollständige Spielerliste wird geladen. Danach wird automatisch sortiert.`
         : this.poolHydrationUiPending
-          ? `${totalPlayerDescription}${config.loadingDescription} Die Sortierung aktualisiert sich automatisch.`
+          ? `${totalPlayerDescription}${config.loadingDescription} Noch offene Daten werden unabhängig vom Scrollbereich geprüft.`
           : this.poolLoadFailed
             ? `${loadingPlayerDescription}Die Spielerliste konnte nicht vollständig geladen werden. Öffne das Sortiermenü und wähle „${baseLabel}“ erneut.`
             : unidentifiedCount > 0
@@ -1252,6 +1285,7 @@ export class LineupCardSorter {
               : `${totalPlayerDescription}Nach ${baseLabel} sortiert.`;
       if (label.textContent !== nextLabel) label.textContent = nextLabel;
       if (label.title !== nextTitle) label.title = nextTitle;
+      this.syncActionButton(trigger);
     } else if (label.hasAttribute(nativeTriggerLabelAttribute)) {
       label.textContent = this.originalTriggerLabel;
       if (this.originalTriggerTitle === null) {
@@ -1291,6 +1325,8 @@ export class LineupCardSorter {
   }
 
   private restoreNativeTrigger(): void {
+    this.actionButton?.remove();
+    this.actionButton = null;
     if (this.nativeTrigger) {
       this.syncNativeTriggerPlayerStatus(this.nativeTrigger, null);
     }
@@ -1475,11 +1511,16 @@ export class LineupCardSorter {
   }
 
   private setActiveMode(mode: LineupSortMode | null): void {
+    if (mode) this.root?.dispatchEvent(new CustomEvent(sortModeEvent, { detail: mode, bubbles: true }));
+    this.lockedOrder = null;
+    this.lockedValues.clear();
+    this.updatedValueCount = 0;
     const reusableGrid = mode ? this.reusableCompletedGrid() : null;
     if (this.activeMode === mode) {
       if (reusableGrid) this.refreshHydrationProgress();
       this.syncNativeSortUi();
       if (mode) {
+        if (this.poolErrorCount > 0) reusableGrid?.dispatchEvent(new CustomEvent(sortRetryEvent, { bubbles: true }));
         if (reusableGrid) this.scheduleSort();
         else this.restartCompleteSort();
       }
@@ -1528,6 +1569,10 @@ export class LineupCardSorter {
   }
 
   private cancelPoolLoad(): void {
+    this.lockedOrder = null;
+    this.lockedValues.clear();
+    this.updatedValueCount = 0;
+    this.poolErrorCount = 0;
     this.poolGeneration += 1;
     if (this.poolStartTimer !== undefined) {
       window.clearTimeout(this.poolStartTimer);
@@ -1696,19 +1741,23 @@ export class LineupCardSorter {
       this.displayedPoolCardCount,
       this.poolCardCount,
     );
-    this.poolReadyCount = records.filter(({ ready }) => ready).length;
     const activeMode = this.activeMode;
+    this.poolReadyCount = activeMode ? records.filter(record => readinessIsSettled(record.readiness[activeMode])).length : 0;
+    this.poolErrorCount = activeMode ? records.filter(record => record.readiness[activeMode] === 'error').length : 0;
     this.poolValueCount = activeMode
       ? records.filter(({ values }) => values[activeMode] !== null).length
       : 0;
     this.poolHydrating =
-      this.poolCardCount > 0 && this.poolReadyCount < this.poolCardCount;
+      this.poolCardCount > 0 && (this.poolReadyCount + this.poolErrorCount < this.poolCardCount || grid.getAttribute(sortFinalCheckAttribute) === 'pending');
     this.refreshHydrationUiState();
     this.setHydrationGrid(this.poolHydrating ? grid : null);
   }
 
   private refreshHydrationUiState(): void {
-    if (this.poolHydrationUiComplete) return;
+    if (this.poolHydrationUiComplete) {
+      if (!this.poolHydrating || this.lockedOrder) return;
+      this.poolHydrationUiComplete = false;
+    }
     if (!this.poolHydrationUiPending && !this.poolHydrating) {
       this.poolHydrationUiComplete = true;
       return;
@@ -1736,6 +1785,7 @@ export class LineupCardSorter {
       this.poolHydrationUiPending = false;
       this.poolHydrationUiComplete = true;
       this.syncNativeSortUi();
+      this.scheduleSort();
     }, hydrationUiSettleDelayMs);
   }
 
@@ -1808,6 +1858,11 @@ export class LineupCardSorter {
       return true;
     }
     for (const { previous, current } of replacements) {
+      if (this.lockedOrder) {
+        this.lockedOrder = this.lockedOrder.map(cell => cell === previous ? current : cell);
+        if (this.lockedValues.has(previous)) this.lockedValues.set(current, this.lockedValues.get(previous)!);
+        this.lockedValues.delete(previous);
+      }
       const order = previous.style.getPropertyValue('order');
       const priority = previous.style.getPropertyPriority('order');
       if (order) current.style.setProperty('order', order, priority);
@@ -1924,6 +1979,18 @@ export class LineupCardSorter {
 
     this.refreshDirtyCompletedCellRecords();
 
+    if (this.lockedOrder) {
+      this.updatedValueCount = this.completedCellRecords.filter(record =>
+        this.lockedValues.has(record.cell) && this.lockedValues.get(record.cell) !== record.values[this.activeMode!],
+      ).length;
+      this.lockedOrder.forEach((cell, index) => {
+        const order = String(-this.lockedOrder!.length + index);
+        if (cell.isConnected && cell.style.order !== order) cell.style.order = order;
+      });
+      this.syncNativeSortUi();
+      return;
+    }
+
     let waitsForReplacementData = false;
     for (const cell of this.pendingReplacementCells) {
       if (!grid.contains(cell) || !this.completedCells.has(cell)) {
@@ -1964,6 +2031,35 @@ export class LineupCardSorter {
     for (const cell of [...this.originalOrders.keys()]) {
       if (!cell.isConnected) this.originalOrders.delete(cell);
     }
+    if (!this.poolHydrating && this.poolHydrationUiComplete && grid.getAttribute(sortFinalCheckAttribute) !== 'pending') {
+      this.lockedOrder = records.map(record => record.cell);
+      this.lockedValues.clear();
+      for (const record of records) this.lockedValues.set(record.cell, record.values[this.activeMode]);
+      this.updatedValueCount = 0;
+    }
+  }
+
+  private syncActionButton(trigger: HTMLButtonElement): void {
+    const retry = this.poolErrorCount > 0;
+    if (!this.activeMode || this.poolLoading || (!retry && this.updatedValueCount === 0)) {
+      this.actionButton?.remove(); this.actionButton = null; return;
+    }
+    if (!this.actionButton?.isConnected) {
+      this.actionButton = document.createElement('button');
+      this.actionButton.type = 'button';
+      this.actionButton.setAttribute('data-sorare-overlay-sort-action', 'true');
+      this.actionButton.setAttribute('data-sorare-overlay-companion', 'sort-action');
+      this.actionButton.addEventListener('click', event => {
+        event.preventDefault(); event.stopPropagation();
+        this.setActiveMode(this.activeMode);
+      });
+      trigger.after(this.actionButton);
+    }
+    this.actionButton.textContent = retry ? 'Erneut prüfen' : 'Neu sortieren';
+    this.actionButton.title = retry
+      ? `${this.poolErrorCount} Karten konnten noch nicht abschließend geprüft werden. Nur offene Werte erneut laden.`
+      : `${this.updatedValueCount} neue Werte verfügbar. Die Reihenfolge erst jetzt aktualisieren.`;
+    this.actionButton.setAttribute('aria-label', this.actionButton.title);
   }
 
   private restoreOriginalOrders(): void {

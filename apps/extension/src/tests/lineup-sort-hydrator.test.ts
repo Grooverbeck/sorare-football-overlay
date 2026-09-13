@@ -185,7 +185,7 @@ describe('LineupSortHydrator', () => {
     hydrator.settleUnidentifiedCards(grid, []);
     const container = grid.querySelector('button')!;
     expect(container.getAttribute(lineupSortIdentityMissingAttribute)).toBe('true');
-    expect(container.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    expect(container.getAttribute(lineupSortDataReadyAttribute)).toBe('false');
     expect(fetcher).not.toHaveBeenCalled();
     await hydrator.hydrate(grid, [{container, slug:'sort-player-1', position:'Midfielder'}]);
     expect(container.hasAttribute(lineupSortIdentityMissingAttribute)).toBe(false);
@@ -202,7 +202,7 @@ describe('LineupSortHydrator', () => {
     await hydrator.hydrate(grid, []);
     hydrator.settleUnidentifiedCards(grid, []);
     expect(grid.querySelector('[data-locked-frame]')?.getAttribute(lineupSortIdentityMissingAttribute)).toBe('true');
-    expect(grid.querySelector('[data-locked-frame]')?.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    expect(grid.querySelector('[data-locked-frame]')?.getAttribute(lineupSortDataReadyAttribute)).toBe('false');
     expect(grid.querySelector('button')?.hasAttribute(lineupSortDataReadyAttribute)).toBe(false);
     expect(fetcher).not.toHaveBeenCalled();
     hydrator.stop();

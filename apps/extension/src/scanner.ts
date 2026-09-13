@@ -21,6 +21,7 @@ import {
 } from './dom.js';
 import { OverlayView } from './overlay.js';
 import { LineupSortHydrator } from './lineup-sort-hydrator.js';
+import { setSortFinalCheck, sortRetryEvent, sortModeEvent } from './lineup-sort-readiness.js';
 import { findSorareCardMedia } from './card-media.js';
 import { FixtureRefreshScheduler, fixtureChangedEvent, olderFixture, retiredFixture } from './fixture-refresh.js';
 import { fixtureStatusKey } from '@sorare-overlay/shared';
@@ -1722,9 +1723,14 @@ export class SorareCardScanner {
   private readonly handleLineupPoolReady = (event: Event): void => {
     const grid = event.target;
     if (!(grid instanceof HTMLElement)) return;
+    setSortFinalCheck(grid, 'pending');
     this.lineupPoolGrids.add(grid);
     this.queueInactivePoolOverlaysForDemotion(grid);
     this.scheduleLineupPoolReadyScan(grid);
+  };
+  private readonly handleSortRetry = (): void => { this.lineupSortHydrator.retryOpenValues(); };
+  private readonly handleSortMode = (event: Event): void => {
+    if (event instanceof CustomEvent && ['goal', 'aa', 'clean-sheet'].includes(event.detail)) this.lineupSortHydrator.configureMode(event.detail);
   };
   private readonly handleMarketCacheUpdate = (
     teamSlugs: readonly string[],
@@ -1789,6 +1795,8 @@ export class SorareCardScanner {
       this.handleLineupPoolProgress,
     );
     root.addEventListener(lineupPoolReadyEvent, this.handleLineupPoolReady);
+    root.addEventListener(sortRetryEvent, this.handleSortRetry);
+    root.addEventListener(sortModeEvent, this.handleSortMode);
     this.lineupSorter.start(root);
     this.startVisibilityObserver();
     this.startLayoutObserver();
@@ -1885,6 +1893,8 @@ export class SorareCardScanner {
 
   stop(): void {
     document.removeEventListener(fixtureChangedEvent,this.handleFixtureChanged);
+    this.root?.removeEventListener(sortRetryEvent, this.handleSortRetry);
+    this.root?.removeEventListener(sortModeEvent, this.handleSortMode);
     this.root?.removeEventListener(
       lineupPoolProgressEvent,
       this.handleLineupPoolProgress,
@@ -2082,9 +2092,8 @@ export class SorareCardScanner {
       this.flushPictureNameRescans(grid);
       // The ready event is authoritative. Keep this explicit because the
       // hydration attribute can disappear immediately after the final card.
-      void this.lineupSortHydrator
-        .hydrate(grid, [...targets.values()])
-        .then(() => this.lineupSortHydrator.reconcileMissingGoals());
+      void this.lineupSortHydrator.hydrate(grid, [...targets.values()]);
+      this.lineupSortHydrator.finalizePool(grid);
     };
 
     scheduleNextFrame();

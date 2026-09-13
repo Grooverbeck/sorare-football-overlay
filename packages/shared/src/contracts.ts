@@ -383,7 +383,18 @@ export type PlayerMarketSnapshotsSuccessResponse = z.infer<
   typeof PlayerMarketSnapshotsSuccessResponseSchema
 >;
 
+export const SortMetricReadinessSchema = z.enum(['pending', 'ready', 'unavailable', 'error']);
+export const LineupSortReadinessSchema = z.object({
+  goal: SortMetricReadinessSchema,
+  aa: SortMetricReadinessSchema,
+  cleanSheet: SortMetricReadinessSchema,
+});
+export type SortMetricReadiness = z.infer<typeof SortMetricReadinessSchema>;
+export type LineupSortReadiness = z.infer<typeof LineupSortReadinessSchema>;
+
 export const LineupSortValueSchema = z.object({
+  // Additive: old clients ignore this; new clients still accept old workers.
+  readiness: LineupSortReadinessSchema.optional(),
   fixtureRefresh: z.object({key:z.string(), nextCheckAt:z.string().datetime()}).optional(),
   fixtureIdentity: z.string().nullable().optional(),
   slug: z.string(),

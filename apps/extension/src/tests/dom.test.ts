@@ -453,7 +453,7 @@ describe('Sorare card DOM discovery', () => {
     view.retrying();
     expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('false');
     view.error();
-    expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
+    expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('false');
     view.loading();
     expect(card.getAttribute(lineupSortDataReadyAttribute)).toBe('false');
     view.noData();
@@ -3668,7 +3668,7 @@ describe('Sorare card DOM discovery', () => {
     );
     await coordinator.flush();
 
-    await vi.waitFor(() => expect(sortFetcher).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(sortFetcher).toHaveBeenCalledTimes(2));
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(sortFetcher.mock.calls[0]?.[0].slugs).toEqual([
       'offscreen-lineup-player',
@@ -3692,7 +3692,7 @@ describe('Sorare card DOM discovery', () => {
     if (!pool) throw new Error('Expected progress pool');
     const coordinator = new StatsBatchCoordinator(vi.fn(), 60_000);
     const hydrator = new LineupSortHydrator(vi.fn());
-    const reconcile = vi.spyOn(hydrator, 'reconcileMissingGoals');
+    const reconcile = vi.spyOn(hydrator, 'finalizePool');
     const hydrate = vi.spyOn(hydrator, 'hydrate');
     const scanner = new SorareCardScanner(coordinator, undefined, hydrator);
     const scan = vi.spyOn(scanner, 'scan');
@@ -4245,7 +4245,7 @@ describe('Sorare card DOM discovery', () => {
       await coordinator.flush();
 
       expect(fetcher).toHaveBeenCalledTimes(1);
-      expect(sortFetcher).toHaveBeenCalledTimes(2);
+      expect(sortFetcher).toHaveBeenCalledTimes(3);
       expect(
         offscreenCard.getAttribute('data-sorare-overlay-aa-sort-value'),
       ).toBe('10');

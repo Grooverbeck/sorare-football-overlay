@@ -7,10 +7,12 @@ import {
   hasAnyDisplayData,
   fixtureStatusKey,
   lineupGoalSortValue as sharedLineupGoalSortValue,
+  lineupSortReadinessForPlayer,
   type MarketProbability,
   type Metric,
   type PlayerStats,
 } from '@sorare-overlay/shared';
+import { readSortReadiness, setSortReadiness, readinessIsSettled, uniformReadiness } from './lineup-sort-readiness.js';
 import { supportsCompactViewPath } from './compact-view-route.js';
 import { fixtureIdentityAttribute, fixtureRefreshAttribute, olderFixture, retiredFixture, retiredFixtureAttribute } from './fixture-refresh.js';
 import { isScoreDetailsDialogTarget } from './dom.js';
@@ -3535,6 +3537,7 @@ export class OverlayView {
     if (this.destroyed) return;
     this.destroyed = true;
     if (!options.preserveLineupSortData) {
+      setSortReadiness(this.container, null);
       this.container.removeAttribute(fixtureIdentityAttribute);
       this.container.removeAttribute(fixtureRefreshAttribute);
       this.container.removeAttribute(retiredFixtureAttribute);
@@ -3569,6 +3572,9 @@ export class OverlayView {
     );
     if (!preserveLineupSortValues) {
       setLineupSortDataReady(this.container, false);
+      if (!Object.values(readSortReadiness(this.container) ?? {}).every(readinessIsSettled) || !readSortReadiness(this.container)) {
+        setSortReadiness(this.container, uniformReadiness('pending'));
+      }
     }
     this.clearLineupOdds();
     this.clearPlayerMarketTooltip();
@@ -3604,7 +3610,8 @@ export class OverlayView {
       'Die zuletzt angefragten Daten konnten nicht geladen werden. Die Extension versucht es automatisch erneut.',
       preserveLineupSortValues,
     );
-    setLineupSortDataReady(this.container, true);
+    if (!preserveLineupSortValues) setSortReadiness(this.container, uniformReadiness('error'));
+    setLineupSortDataReady(this.container, preserveLineupSortValues);
   }
 
   noData(
@@ -3624,6 +3631,7 @@ export class OverlayView {
       preservedMarketGoal !== null,
     );
     setLineupSortDataReady(this.container, true);
+    setSortReadiness(this.container, { goal: preservedMarketGoal ? 'ready' : 'unavailable', aa: 'unavailable', cleanSheet: 'unavailable' });
   }
 
   render(
@@ -3650,6 +3658,7 @@ export class OverlayView {
       teamRow,
       fixtureCandidates,
     );
+    const sortReadiness = lineupSortReadinessForPlayer(displayStats, historicalAssistFallbackEnabled ? historicalAssistWindow : null);
     const nextLineupSortFixtureKey = lineupSortFixtureKey(displayStats);
     const existingMarketGoal = currentMarketGoalSortValue(this.container);
     const preservedMarketGoal =
@@ -3669,22 +3678,25 @@ export class OverlayView {
     delete this.host.dataset.packDataPending;
     this.host.dataset.position = displayStats.position;
     if (!hasAnyDisplayData(displayStats)) {
-      this.noData(preservedMarketGoal);
+      if (Object.values(sortReadiness).some(value => value === 'pending')) this.loading();
+      else this.noData(preservedMarketGoal);
+      setSortReadiness(this.container, sortReadiness);
       return;
     }
     markLineupSortFullDataUpdated(this.container);
     this.container.removeAttribute(lineupSortLightweightReadyAttribute);
     setLineupSortPosition(this.container, displayStats.position);
     const sortValue = goalSortValue(displayStats);
-    if (!preservedMarketGoal || sortValue?.source === 'market') {
+    if ((!preservedMarketGoal || sortValue?.source === 'market') &&
+        (sortReadiness.goal !== 'pending' || !this.container.hasAttribute(lineupGoalSortProbabilityAttribute))) {
       setLineupGoalSortValue(
         this.container,
         sortValue?.probability ?? null,
         sortValue?.source,
       );
     }
-    setLineupAaSortValue(this.container, displayStats.aaL10.value);
-    setLineupCleanSheetSortValue(
+    if (sortReadiness.aa !== 'pending') setLineupAaSortValue(this.container, displayStats.aaL10.value);
+    if (sortReadiness.cleanSheet !== 'pending') setLineupCleanSheetSortValue(
       this.container,
       displayStats.position === 'Goalkeeper' ||
         displayStats.position === 'Defender'
@@ -3692,6 +3704,7 @@ export class OverlayView {
         : null,
     );
     setLineupSortDataReady(this.container, true);
+    setSortReadiness(this.container, { ...sortReadiness, goal: preservedMarketGoal ? 'ready' : sortReadiness.goal });
     this.renderLineupOdds(displayStats, teamRow);
     this.renderPlayerMarketTooltip(displayStats);
     this.panel.replaceChildren();

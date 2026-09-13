@@ -1,6 +1,7 @@
 import type {
   HistoricalMarketWindow,
   LineupSortValue,
+  LineupSortReadiness,
   PlayerStats,
 } from './contracts.js';
 import { fixtureStatusKey } from './fixture-rollover.js';
@@ -18,13 +19,30 @@ export function lineupGoalSortValue(
   const selectedHistory = historicalGoalWindow
     ? stats.historicalGoals?.[`l${historicalGoalWindow}`]
     : undefined;
-  const historicalMetric =
-    selectedHistory?.value !== null && selectedHistory?.value !== undefined
-      ? selectedHistory
-      : stats.goalL10;
-  return historicalMetric.value !== null && historicalMetric.sampleSize > 0
+  // A requested L15/L40 is not interchangeable with a provisional L10.
+  const historicalMetric = historicalGoalWindow ? selectedHistory : stats.goalL10;
+  return historicalMetric?.value !== null && historicalMetric?.value !== undefined && historicalMetric.sampleSize > 0
     ? { probability: historicalMetric.value, source: 'historical' }
     : null;
+}
+
+export function lineupSortReadinessForPlayer(
+  stats: PlayerStats,
+  historicalGoalWindow: HistoricalMarketWindow | null = null,
+): LineupSortReadiness {
+  const pending = new Set(stats.pendingRefreshes ?? []);
+  const goal = lineupGoalSortValue(stats, historicalGoalWindow);
+  const historyMissing = historicalGoalWindow !== null && stats.historicalGoals?.[`l${historicalGoalWindow}`] === undefined;
+  const outfield = stats.position !== 'Goalkeeper';
+  const usesCs = !outfield || stats.position === 'Defender';
+  return {
+    goal: !outfield ? 'unavailable' : goal?.source === 'market' ? 'ready' :
+      pending.has('formHistory') || historyMissing || pending.has('fixture') || pending.has('marketOdds') ? 'pending' :
+        goal ? 'ready' : 'unavailable',
+    aa: pending.has('formHistory') ? 'pending' : stats.aaL10.value === null ? 'unavailable' : 'ready',
+    cleanSheet: !usesCs ? 'unavailable' : stats.nextGame?.cleanSheetProbability != null ? 'ready' :
+      pending.has('fixture') ? 'pending' : 'unavailable',
+  };
 }
 
 export function lineupSortValueForPlayer(
@@ -32,6 +50,7 @@ export function lineupSortValueForPlayer(
   historicalGoalWindow: HistoricalMarketWindow | null = null,
 ): LineupSortValue {
   return {
+    readiness: lineupSortReadinessForPlayer(stats, historicalGoalWindow),
     slug: stats.slug,
     displayName: stats.displayName,
     position: stats.position,
