@@ -1,5 +1,5 @@
 import type { FootballPosition, SortMetricReadiness } from '@sorare-overlay/shared';
-import { readSortReadiness, readinessIsSettled, sortReadinessAttribute, sortFinalCheckAttribute, sortRetryEvent, sortModeEvent } from './lineup-sort-readiness.js';
+import { readSortReadiness, readinessIsSettled, sortReadinessAttribute, sortFinalCheckAttribute, sortRetryEvent, sortModeEvent, sortSessionEvent } from './lineup-sort-readiness.js';
 import { extractCardPictureId, findSorareCardMedia } from './card-media.js';
 import { logStatsDiagnostic } from './stats-diagnostics.js';
 import { lineupPositionFromButton, readLineupPositionSelection } from './lineup-position.js';
@@ -39,6 +39,13 @@ export const lineupPoolProgressEvent =
 
 export type LineupGoalSortSource = 'market' | 'historical';
 export type LineupSortMode = 'goal' | 'aa' | 'clean-sheet';
+const sortModes: readonly LineupSortMode[] = ['goal', 'aa', 'clean-sheet'];
+type SortCounts = { ready: number; errors: number; values: number };
+const emptySortCounts = (): Record<LineupSortMode, SortCounts> => ({
+  goal: { ready: 0, errors: 0, values: 0 },
+  aa: { ready: 0, errors: 0, values: 0 },
+  'clean-sheet': { ready: 0, errors: 0, values: 0 },
+});
 
 interface LineupSortConfig {
   mode: LineupSortMode;
@@ -395,6 +402,20 @@ function nativeSortOptions(dialog: HTMLElement): HTMLButtonElement[] {
       !button.hasAttribute(lineupCleanSheetSortOptionAttribute) &&
       Boolean(button.querySelector('input[type="radio"]')),
   );
+}
+
+function filterDialogElement(): HTMLElement | null {
+  const id = nativeFilterButton()?.getAttribute('aria-controls');
+  return id ? document.getElementById(id) : null;
+}
+
+function filterControlSignature(dialog: HTMLElement | null): string {
+  return JSON.stringify(Array.from(dialog?.querySelectorAll<HTMLElement>(
+    'input, select, [role="slider"], [role="checkbox"], [role="radio"], [aria-pressed]',
+  ) ?? []).map(element => [element.tagName, element.getAttribute('type'),
+    element instanceof HTMLInputElement ? [element.value, element.checked, element.disabled] :
+    element instanceof HTMLSelectElement ? element.value : null,
+    element.getAttribute('aria-valuenow'), element.getAttribute('aria-checked'), element.getAttribute('aria-pressed')]));
 }
 
 function nativeSortTriggerLabel(
@@ -1007,6 +1028,9 @@ export class LineupCardSorter {
     SortableCellRecord[]
   >();
   private readonly dirtyCompletedCells = new Set<HTMLElement>();
+  private modeCounts = emptySortCounts();
+  private readonly changedLockedCells = new Set<HTMLElement>();
+  private readonly lockedOrdersByCell = new Map<HTMLElement, string>();
   private gridNeedsReconciliation = false;
   private failedGrid: HTMLElement | null = null;
   private failedCells = new Set<HTMLElement>();
@@ -1017,6 +1041,9 @@ export class LineupCardSorter {
   private requestedPosition: FootballPosition | null | undefined;
   private menuPositionHint: FootballPosition | null | undefined;
   private filterSuspended = false;
+  private filterResumeContext: { dialog: HTMLElement; controls: string; route: string;
+    position: FootballPosition | null | undefined; search: string; cells: string[] } | null = null;
+  private lockedOrderNeedsRestore = false;
   private readonly originalOrders = new Map<HTMLElement, OriginalOrder>();
 
   constructor(
@@ -1139,14 +1166,43 @@ export class LineupCardSorter {
       if (!this.filterSuspended) {
         this.filterSuspended = true;
         this.cancelSortFrame();
-        this.cancelPoolLoad();
-        this.restoreOriginalOrders();
+        const dialog = filterDialogElement();
+        this.filterResumeContext = this.completedGrid && !this.poolLoading && !this.poolHydrating && !this.poolHydrationUiPending && dialog ? {
+          dialog, controls: filterControlSignature(dialog), route: window.location.href,
+          position: selectedPosition, search: nativeFilterButton()?.parentElement?.querySelector<HTMLInputElement>('input[type="search"]')?.value ?? '',
+          cells: gridCardCells(this.completedGrid).map(cell => cardCellIdentity(cell) ?? ''),
+        } : null;
+        if (this.filterResumeContext) {
+          this.root?.dispatchEvent(new CustomEvent(sortSessionEvent, { detail: 'pause', bubbles: true }));
+          this.restoreOriginalOrders(false);
+          this.lockedOrderNeedsRestore = true;
+        } else {
+          this.cancelPoolLoad();
+          this.restoreOriginalOrders();
+        }
         this.syncNativeSortUi();
       }
       return;
     }
     if (this.filterSuspended) {
       this.filterSuspended = false;
+      const context = this.filterResumeContext;
+      this.filterResumeContext = null;
+      const grid = this.reusableCompletedGrid();
+      const currentCells = grid ? gridCardCells(grid) : [];
+      if (context && grid && context.route === window.location.href &&
+        context.position === selectedPosition && context.controls === filterControlSignature(context.dialog) &&
+        context.search === (nativeFilterButton()?.parentElement?.querySelector<HTMLInputElement>('input[type="search"]')?.value ?? '') &&
+        context.cells.length === currentCells.length &&
+        context.cells.every((identity, index) => identity === (cardCellIdentity(currentCells[index]!) ?? ''))) {
+        // Values may have changed while Sorare alone owned the ordering.
+        for (const cell of this.completedCells) this.dirtyCompletedCells.add(cell);
+        this.root?.dispatchEvent(new CustomEvent(sortSessionEvent, { detail: 'resume', bubbles: true }));
+        this.refreshHydrationProgress();
+        this.syncNativeSortUi();
+        this.scheduleSort();
+        return;
+      }
       this.restartCompleteSort(120);
       return;
     }
@@ -1435,6 +1491,18 @@ export class LineupCardSorter {
     this.completedCellRecordByCell.clear();
     this.sortedCellRecords.clear();
     this.dirtyCompletedCells.clear();
+    this.modeCounts = emptySortCounts();
+    this.changedLockedCells.clear();
+    this.lockedOrdersByCell.clear();
+  }
+
+  private adjustCounts(record: SortableCellRecord, direction: 1 | -1): void {
+    for (const mode of sortModes) {
+      const counts = this.modeCounts[mode];
+      counts.ready += direction * Number(readinessIsSettled(record.readiness[mode]));
+      counts.errors += direction * Number(record.readiness[mode] === 'error');
+      counts.values += direction * Number(record.values[mode] !== null);
+    }
   }
 
   private rebuildCompletedCellRecords(cells: readonly HTMLElement[]): void {
@@ -1444,27 +1512,36 @@ export class LineupCardSorter {
     );
     for (const record of this.completedCellRecords) {
       this.completedCellRecordByCell.set(record.cell, record);
+      this.adjustCounts(record, 1);
     }
   }
 
   private refreshDirtyCompletedCellRecords(): void {
     if (this.dirtyCompletedCells.size === 0) return;
-    let changed = false;
     for (const cell of this.dirtyCompletedCells) {
       const previous = this.completedCellRecordByCell.get(cell);
       if (!previous || !cell.isConnected || !this.completedCells.has(cell)) {
         continue;
       }
       const current = sortableCellRecord(cell, previous.originalIndex);
-      this.completedCellRecords[previous.originalIndex] = current;
-      this.completedCellRecordByCell.set(cell, current);
+      this.adjustCounts(previous, -1);
+      this.adjustCounts(current, 1);
+      for (const mode of sortModes) {
+        if (previous.values[mode] !== current.values[mode]) this.sortedCellRecords.delete(mode);
+      }
+      // Keep references held by unaffected per-mode sort arrays valid.
+      Object.assign(previous, current);
+      if (this.lockedOrder && this.activeMode && this.lockedValues.has(cell)) {
+        if (this.lockedValues.get(cell) !== current.values[this.activeMode]) this.changedLockedCells.add(cell);
+        else this.changedLockedCells.delete(cell);
+        const order = this.lockedOrdersByCell.get(cell);
+        if (order !== undefined && cell.style.order !== order) cell.style.order = order;
+      }
       if (this.pendingReplacementCells.has(cell) && current.ready) {
         this.pendingReplacementCells.delete(cell);
       }
-      changed = true;
     }
     this.dirtyCompletedCells.clear();
-    if (changed) this.sortedCellRecords.clear();
   }
 
   private sortedRecordsForMode(mode: LineupSortMode): SortableCellRecord[] {
@@ -1511,12 +1588,14 @@ export class LineupCardSorter {
   }
 
   private setActiveMode(mode: LineupSortMode | null): void {
-    if (mode) this.root?.dispatchEvent(new CustomEvent(sortModeEvent, { detail: mode, bubbles: true }));
     this.lockedOrder = null;
     this.lockedValues.clear();
+    this.changedLockedCells.clear();
+    this.lockedOrdersByCell.clear();
     this.updatedValueCount = 0;
     const reusableGrid = mode ? this.reusableCompletedGrid() : null;
     if (this.activeMode === mode) {
+      if (mode) this.root?.dispatchEvent(new CustomEvent(sortModeEvent, { detail: mode, bubbles: true }));
       if (reusableGrid) this.refreshHydrationProgress();
       this.syncNativeSortUi();
       if (mode) {
@@ -1532,6 +1611,7 @@ export class LineupCardSorter {
       // the next one without restoring and laying out the native order first.
       this.cancelSortFrame();
       this.activeMode = mode;
+      this.root?.dispatchEvent(new CustomEvent(sortModeEvent, { detail: mode, bubbles: true }));
       this.filterSuspended = false;
       this.refreshDirtyCompletedCellRecords();
       this.refreshHydrationProgress();
@@ -1543,6 +1623,7 @@ export class LineupCardSorter {
     if (this.activeMode) this.restoreOriginalOrders();
     this.cancelPoolLoad();
     this.activeMode = mode;
+    if (mode) this.root?.dispatchEvent(new CustomEvent(sortModeEvent, { detail: mode, bubbles: true }));
     this.filterSuspended = false;
     this.requestedPosition = mode
       ? this.menuPositionHint === undefined
@@ -1569,10 +1650,15 @@ export class LineupCardSorter {
   }
 
   private cancelPoolLoad(): void {
+    this.root?.dispatchEvent(new CustomEvent(sortSessionEvent, { detail: 'cancel', bubbles: true }));
+    this.filterResumeContext = null;
+    this.lockedOrderNeedsRestore = false;
     this.completedGrid?.removeAttribute(sortFinalCheckAttribute);
     this.loadingGrid?.removeAttribute(sortFinalCheckAttribute);
     this.lockedOrder = null;
     this.lockedValues.clear();
+    this.changedLockedCells.clear();
+    this.lockedOrdersByCell.clear();
     this.updatedValueCount = 0;
     this.poolErrorCount = 0;
     this.poolGeneration += 1;
@@ -1744,11 +1830,9 @@ export class LineupCardSorter {
       this.poolCardCount,
     );
     const activeMode = this.activeMode;
-    this.poolReadyCount = activeMode ? records.filter(record => readinessIsSettled(record.readiness[activeMode])).length : 0;
-    this.poolErrorCount = activeMode ? records.filter(record => record.readiness[activeMode] === 'error').length : 0;
-    this.poolValueCount = activeMode
-      ? records.filter(({ values }) => values[activeMode] !== null).length
-      : 0;
+    this.poolReadyCount = activeMode ? this.modeCounts[activeMode].ready : 0;
+    this.poolErrorCount = activeMode ? this.modeCounts[activeMode].errors : 0;
+    this.poolValueCount = activeMode ? this.modeCounts[activeMode].values : 0;
     this.poolHydrating =
       this.poolCardCount > 0 && (this.poolReadyCount + this.poolErrorCount < this.poolCardCount || grid.getAttribute(sortFinalCheckAttribute) === 'pending');
     this.refreshHydrationUiState();
@@ -1870,6 +1954,10 @@ export class LineupCardSorter {
         this.lockedOrder = this.lockedOrder.map(cell => cell === previous ? current : cell);
         if (this.lockedValues.has(previous)) this.lockedValues.set(current, this.lockedValues.get(previous)!);
         this.lockedValues.delete(previous);
+        const lockedOrder = this.lockedOrdersByCell.get(previous);
+        if (lockedOrder !== undefined) this.lockedOrdersByCell.set(current, lockedOrder);
+        this.lockedOrdersByCell.delete(previous);
+        this.changedLockedCells.delete(previous);
       }
       const order = previous.style.getPropertyValue('order');
       const priority = previous.style.getPropertyPriority('order');
@@ -1891,6 +1979,11 @@ export class LineupCardSorter {
         );
         this.completedCellRecords[previousRecord.originalIndex] = currentRecord;
         this.completedCellRecordByCell.set(current, currentRecord);
+        this.adjustCounts(previousRecord, -1);
+        this.adjustCounts(currentRecord, 1);
+        if (this.lockedOrder && this.activeMode && this.lockedValues.get(current) !== currentRecord.values[this.activeMode]) {
+          this.changedLockedCells.add(current);
+        }
       }
       if (!this.completedCellRecordByCell.get(current)?.ready) {
         this.pendingReplacementCells.add(current);
@@ -1976,7 +2069,7 @@ export class LineupCardSorter {
   }
 
   private applySort(): void {
-    if (!this.activeMode) return;
+    if (!this.activeMode || this.filterSuspended) return;
     const grid = this.completedGrid;
     if (!grid?.isConnected) {
       this.restoreOriginalOrders();
@@ -1988,13 +2081,13 @@ export class LineupCardSorter {
     this.refreshDirtyCompletedCellRecords();
 
     if (this.lockedOrder) {
-      this.updatedValueCount = this.completedCellRecords.filter(record =>
-        this.lockedValues.has(record.cell) && this.lockedValues.get(record.cell) !== record.values[this.activeMode!],
-      ).length;
-      this.lockedOrder.forEach((cell, index) => {
-        const order = String(-this.lockedOrder!.length + index);
-        if (cell.isConnected && cell.style.order !== order) cell.style.order = order;
-      });
+      this.updatedValueCount = this.changedLockedCells.size;
+      if (this.lockedOrderNeedsRestore) {
+        for (const [cell, order] of this.lockedOrdersByCell) {
+          if (cell.isConnected && cell.style.order !== order) cell.style.order = order;
+        }
+      }
+      this.lockedOrderNeedsRestore = false;
       this.syncNativeSortUi();
       return;
     }
@@ -2042,7 +2135,12 @@ export class LineupCardSorter {
     if (!this.poolHydrating && this.poolHydrationUiComplete && grid.getAttribute(sortFinalCheckAttribute) !== 'pending') {
       this.lockedOrder = records.map(record => record.cell);
       this.lockedValues.clear();
-      for (const record of records) this.lockedValues.set(record.cell, record.values[this.activeMode]);
+      this.changedLockedCells.clear();
+      this.lockedOrdersByCell.clear();
+      for (const [index, record] of records.entries()) {
+        this.lockedValues.set(record.cell, record.values[this.activeMode]);
+        this.lockedOrdersByCell.set(record.cell, String(-records.length + index));
+      }
       this.updatedValueCount = 0;
     }
   }
@@ -2063,14 +2161,16 @@ export class LineupCardSorter {
       });
       trigger.after(this.actionButton);
     }
-    this.actionButton.textContent = retry ? 'Erneut prüfen' : 'Neu sortieren';
-    this.actionButton.title = retry
+    const text = retry ? 'Erneut prüfen' : 'Neu sortieren';
+    const title = retry
       ? `${this.poolErrorCount} Karten konnten noch nicht abschließend geprüft werden. Nur offene Werte erneut laden.`
       : `${this.updatedValueCount} neue Werte verfügbar. Die Reihenfolge erst jetzt aktualisieren.`;
-    this.actionButton.setAttribute('aria-label', this.actionButton.title);
+    if (this.actionButton.textContent !== text) this.actionButton.textContent = text;
+    if (this.actionButton.title !== title) this.actionButton.title = title;
+    if (this.actionButton.getAttribute('aria-label') !== title) this.actionButton.setAttribute('aria-label', title);
   }
 
-  private restoreOriginalOrders(): void {
+  private restoreOriginalOrders(clear = true): void {
     for (const [cell, order] of this.originalOrders) {
       if (!cell.isConnected) continue;
       if (order.value) {
@@ -2079,6 +2179,6 @@ export class LineupCardSorter {
         cell.style.removeProperty('order');
       }
     }
-    this.originalOrders.clear();
+    if (clear) this.originalOrders.clear();
   }
 }

@@ -23,6 +23,12 @@ werden nicht mehr als endgültige Datenlücke ausgegeben. Vorhandene Zahlen
 bleiben bei vorläufigen leeren Antworten erhalten, solange die Begegnung
 nicht gewechselt hat.
 
+Fertige Kennzahlen werden einzeln erhalten: Eine offene oder fehlgeschlagene
+AA-Prüfung macht eine fertige Torquote nicht ungültig. Auch beim Neuaufbau
+derselben Karte können fertige Kennzahlen wiederverwendet werden, während
+andere noch ausstehen. Der Abgleich mit ausführlichen Kartendaten ergänzt
+offene Tor-, AA- und CS-Werte; neuere fertige Nachbarwerte bleiben erhalten.
+
 Ein gewünschtes L15-/L40-Fenster wird nicht stillschweigend durch L10 ersetzt.
 Unvollständige Historie hält AA und historische Torwerte offen, aber keine
 bereits vorhandene echte Markt-Torquote. Nicht benötigte Metriken blockieren
@@ -46,6 +52,19 @@ bei Torquoten für Karten ohne Marktwert, bei CS für Karten ohne CS-Wert.
 Der Abschluss berücksichtigt diese letzte Prüfung. Auch ein Wechsel vom
 kompakten Ergebnis zurück zu vorläufigen ausführlichen Kartendaten wird
 weiter abgearbeitet, ohne erneutes Scrollen zu verlangen.
+
+Eine tatsächlich erfolgreiche Abschlussprüfung kann im selben Pool für
+höchstens 30 Sekunden wiederverwendet werden. Der Nachweis ist an Identität,
+Begegnung, historisches Fenster, Kennzahl, Wert und Prüfstatus gebunden.
+Änderungen oder ein bekannter Marktcache-Abgleich entwerten ihn. Die erste
+Abschlussprüfung bleibt erhalten; ein Zeitablauf oder ein neuer Pool erfordern
+wieder einen Abgleich. Das ist kein dauerhaft gespeicherter Sortiercache.
+
+Sortierer und Datenlader teilen ihren Sitzungszustand. Abbruch löscht geplante
+Wiederholungen und die Warteschlange; bereits abgeschickte Anfragen können
+serverseitig noch fertig werden, ihre Antworten werden aber ignoriert.
+Ein Kennzahlwechsel beendet Wiederholungen für die zuvor ausgewählte Kennzahl.
+Eine kurze Filterpause kann denselben fertigen Pool anschließend fortsetzen.
 
 `/api/lineup-sort-values` erzwingt weiterhin `oddsCacheOnly: true`.
 Sorare-Begegnungen dürfen vervollständigt werden (`refreshFixtures: true`),
@@ -74,6 +93,14 @@ Response-Budgets und serverseitigen In-flight-Sperren bleiben erhalten.
   Platz; neue Pools erhalten einen eigenen Prüf- und Sortierdurchlauf.
 - Nachträglich neu erkannte oder wieder ausgeblendete Karten bleiben beim
   Sortier-Lader registriert, auch wenn der erste Abgleich bereits beendet ist.
+- Während das Sorare-Filtermenü geöffnet ist, werden die nativen Reihenfolgen
+  wiederhergestellt und eigene Sortierarbeiten pausiert. Wenn Steuerelemente,
+  Suche, Route, Slot und Kartenbestand unverändert sind, wird derselbe fertige
+  Pool fortgesetzt. Bei Änderungen, unvollständigen Pools oder Unsicherheit
+  bleibt der vollständige Neuabgleich erhalten.
+- Fortschrittszähler werden pro Kennzahl anhand geänderter Karten aktualisiert.
+  Nur Sortierstände mit tatsächlich geänderten Werten werden verworfen;
+  unveränderte Beschriftungen des Aktualisierungsbuttons werden nicht neu geschrieben.
 
 ## Rollout und Tests
 

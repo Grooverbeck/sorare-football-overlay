@@ -4,6 +4,7 @@ import { LineupSortValuesRequestSchema } from '@sorare-overlay/shared';
 import { LineupSortHydrator } from '../lineup-sort-hydrator.js';
 import { SorareCardScanner, StatsBatchCoordinator } from '../scanner.js';
 import { readSortReadiness, setSortReadiness, sortFinalCheckAttribute } from '../lineup-sort-readiness.js';
+import { setLineupAaSortValue, setLineupCleanSheetSortValue, setLineupGoalSortValue } from '../lineup-sort.js';
 
 let hydrator: LineupSortHydrator | undefined;
 afterEach(() => { hydrator?.stop(); hydrator = undefined; document.body.replaceChildren(); vi.useRealTimers(); });
@@ -90,14 +91,130 @@ describe('honest sort completion', () => {
     expect(readSortReadiness(pool.querySelector('article')!)?.goal).toBe('error');
   });
 
-  it('rechecks a reused pool after a new sort session instead of leaving the completion barrier pending', async () => {
+  it('reuses only a fresh successful final check and repeats it after expiry', async () => {
     const pool=grid(1),fetcher=vi.fn(async(req:LineupSortValuesRequest)=>response(req,()=>({})));
     hydrator=new LineupSortHydrator(fetcher);
     await hydrator.hydrate(pool, targets(pool));hydrator.finalizePool(pool);
     await vi.waitFor(()=>expect(pool.getAttribute(sortFinalCheckAttribute)).toBe('complete'));
     hydrator.finalizePool(pool);
     await vi.waitFor(()=>expect(pool.getAttribute(sortFinalCheckAttribute)).toBe('complete'));
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const now=Date.now();
+    const clock=vi.spyOn(Date,'now').mockReturnValue(now+30_001);
+    hydrator.finalizePool(pool);
+    await vi.waitFor(()=>expect(pool.getAttribute(sortFinalCheckAttribute)).toBe('complete'));
     expect(fetcher).toHaveBeenCalledTimes(3);
+    clock.mockRestore();
+  });
+
+  it('invalidates the final check when the value changes', async () => {
+    const pool=grid(1),fetcher=vi.fn(async(req:LineupSortValuesRequest)=>response(req,()=>({})));
+    hydrator=new LineupSortHydrator(fetcher);
+    await hydrator.hydrate(pool,targets(pool));hydrator.finalizePool(pool);
+    await vi.waitFor(()=>expect(pool.getAttribute(sortFinalCheckAttribute)).toBe('complete'));
+    setLineupGoalSortValue(pool.querySelector('article')!,.6,'historical');
+    hydrator.finalizePool(pool);
+    await vi.waitFor(()=>expect(fetcher).toHaveBeenCalledTimes(3));
+  });
+
+  it('does not certify an in-flight final read across a market-cache update', async () => {
+    const pool=grid(1);let finish!:(value:LineupSortValuesSuccessResponse)=>void;let calls=0;
+    const fetcher=vi.fn(async(req:LineupSortValuesRequest)=>++calls===2?new Promise<LineupSortValuesSuccessResponse>(resolve=>{finish=resolve}):response(req,()=>({})));
+    hydrator=new LineupSortHydrator(fetcher);
+    await hydrator.hydrate(pool,targets(pool).map(t=>({...t,teamSlug:'test-team-city'})));hydrator.finalizePool(pool);
+    await vi.waitFor(()=>expect(fetcher).toHaveBeenCalledTimes(2));
+    const update=hydrator.reconcileMissingGoals(['test-team-city']);
+    finish(response({slugs:['test-player-0']},()=>({})));await update;
+    await vi.waitFor(()=>expect(pool.getAttribute(sortFinalCheckAttribute)).toBe('complete'));
+    hydrator.finalizePool(pool);
+    await vi.waitFor(()=>expect(fetcher).toHaveBeenCalledTimes(3));
+  });
+
+  it('preserves a completed market goal across a remount while AA remains pending', async () => {
+    const pool=grid(1),fetcher=vi.fn(async(req:LineupSortValuesRequest)=>response(req,()=>({goal:{probability:.5,source:'market'},aa:null,readiness:{goal:'ready',aa:'pending',cleanSheet:'unavailable'}})));
+    hydrator=new LineupSortHydrator(fetcher,50,[]);
+    await hydrator.hydrate(pool,targets(pool));
+    const replacement=document.createElement('article');pool.querySelector('article')!.replaceWith(replacement);
+    await hydrator.hydrate(pool,targets(pool));
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(replacement.getAttribute('data-sorare-overlay-goal-sort-probability')).toBe('0.5');
+    expect(readSortReadiness(replacement)?.aa).toBe('pending');
+    hydrator.configureMode('aa');
+    await vi.waitFor(()=>expect(readSortReadiness(replacement)?.aa).toBe('error'));
+    expect(readSortReadiness(replacement)?.goal).toBe('ready');
+    expect(readSortReadiness(replacement)?.cleanSheet).toBe('unavailable');
+    expect(replacement.getAttribute('data-sorare-overlay-goal-sort-probability')).toBe('0.5');
+  });
+
+  it.each(['aa','clean-sheet'] as const)('fills a pending full-overlay %s value without replacing settled neighbors', async mode => {
+    const pool=grid(1);
+    const fetcher=vi.fn(async(req:LineupSortValuesRequest)=>response(req,()=>({aa:27,cleanSheet:.4,readiness:{goal:'ready',aa:'ready',cleanSheet:'ready'}})));
+    hydrator=new LineupSortHydrator(fetcher,50,[]);hydrator.configureMode(mode);
+    await hydrator.hydrate(pool,targets(pool));
+    const card=pool.querySelector('article')!;
+    card.removeAttribute('data-sorare-overlay-sort-lightweight-ready');
+    setLineupGoalSortValue(card,.8,'historical');
+    setLineupAaSortValue(card,33);setLineupCleanSheetSortValue(card,.6);
+    if(mode==='aa')setLineupAaSortValue(card,null);else setLineupCleanSheetSortValue(card,null);
+    const metric=mode==='aa'?'aa':'cleanSheet';
+    setSortReadiness(card,{goal:'ready',aa:'ready',cleanSheet:'ready',[metric]:'pending'});
+    await vi.waitFor(()=>expect(readSortReadiness(card)?.[metric]).toBe('ready'));
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(card.getAttribute('data-sorare-overlay-aa-sort-value')).toBe(mode==='aa'?'27':'33');
+    expect(card.getAttribute('data-sorare-overlay-clean-sheet-sort-probability')).toBe(mode==='aa'?'0.6':'0.4');
+    expect(card.getAttribute('data-sorare-overlay-goal-sort-probability')).toBe('0.8');
+  });
+
+  it('cancels pending retries without resurrecting a finished sort session', async () => {
+    vi.useFakeTimers();
+    const pool=grid(1),fetcher=vi.fn(async(req:LineupSortValuesRequest)=>response(req,()=>({goal:null,readiness:{goal:'pending',aa:'ready',cleanSheet:'unavailable'}})));
+    hydrator=new LineupSortHydrator(fetcher,50,[10]);
+    await hydrator.hydrate(pool,targets(pool));hydrator.finalizePool(pool);hydrator.cancel();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(pool.hasAttribute(sortFinalCheckAttribute)).toBe(false);
+  });
+
+  it('ignores an old in-flight response after cancellation', async () => {
+    const pool=grid(1);let finish!:(value:LineupSortValuesSuccessResponse)=>void;
+    hydrator=new LineupSortHydrator(()=>new Promise(resolve=>{finish=resolve}));
+    const pending=hydrator.hydrate(pool,targets(pool));hydrator.cancel();
+    finish(response({slugs:['test-player-0']},()=>({})));await pending;
+    expect(pool.querySelector('article')!.hasAttribute('data-sorare-overlay-goal-sort-probability')).toBe(false);
+    expect(pool.hasAttribute(sortFinalCheckAttribute)).toBe(false);
+  });
+
+  it('pauses retry work and resumes the same pool without discarding completed metrics', async () => {
+    vi.useFakeTimers();const pool=grid(1);let complete=false;
+    const fetcher=vi.fn(async(req:LineupSortValuesRequest)=>response(req,()=>complete?{}:{goal:null,readiness:{goal:'pending',aa:'ready',cleanSheet:'unavailable'}}));
+    hydrator=new LineupSortHydrator(fetcher,50,[10]);await hydrator.hydrate(pool,targets(pool));hydrator.suspend();
+    await vi.advanceTimersByTimeAsync(100);expect(fetcher).toHaveBeenCalledTimes(1);
+    complete=true;hydrator.resume();await vi.advanceTimersByTimeAsync(1);
+    expect(fetcher).toHaveBeenCalledTimes(2);expect(readSortReadiness(pool.querySelector('article')!)?.goal).toBe('ready');
+  });
+
+  it('does not lose a team market-cache update received while the filter is paused', async () => {
+    const pool=grid(1);let market=false;
+    const fetcher=vi.fn(async(req:LineupSortValuesRequest)=>response(req,()=>market?{goal:{probability:.7,source:'market'}}:{}));
+    hydrator=new LineupSortHydrator(fetcher);
+    await hydrator.hydrate(pool,targets(pool).map(t=>({...t,teamSlug:'test-team-city'})));hydrator.finalizePool(pool);
+    await vi.waitFor(()=>expect(pool.getAttribute(sortFinalCheckAttribute)).toBe('complete'));
+    hydrator.suspend();market=true;await hydrator.reconcileMissingGoals(['test-team-city']);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    hydrator.resume();
+    await vi.waitFor(()=>expect(pool.querySelector('article')!.getAttribute('data-sorare-overlay-goal-sort-probability')).toBe('0.7'));
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it('drops obsolete AA retries when switching back to an already complete goal market', async () => {
+    vi.useFakeTimers();const pool=grid(1);
+    const fetcher=vi.fn(async(req:LineupSortValuesRequest)=>response(req,()=>({goal:{probability:.5,source:'market'},aa:null,readiness:{goal:'ready',aa:'pending',cleanSheet:'unavailable'}})));
+    hydrator=new LineupSortHydrator(fetcher,50,[10]);hydrator.configureMode('aa');
+    await hydrator.hydrate(pool,targets(pool));hydrator.configureMode('goal');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(readSortReadiness(pool.querySelector('article')!)?.goal).toBe('ready');
+    expect(pool.getAttribute(sortFinalCheckAttribute)).toBe('complete');
   });
 
   it('keeps a real zero distinct from pending or missing data', async () => {

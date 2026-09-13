@@ -21,7 +21,7 @@ import {
 } from './dom.js';
 import { OverlayView } from './overlay.js';
 import { LineupSortHydrator } from './lineup-sort-hydrator.js';
-import { setSortFinalCheck, sortFinalCheckAttribute, sortRetryEvent, sortModeEvent } from './lineup-sort-readiness.js';
+import { setSortFinalCheck, sortFinalCheckAttribute, sortRetryEvent, sortModeEvent, sortSessionEvent } from './lineup-sort-readiness.js';
 import { findSorareCardMedia } from './card-media.js';
 import { FixtureRefreshScheduler, fixtureChangedEvent, olderFixture, retiredFixture } from './fixture-refresh.js';
 import { fixtureStatusKey } from '@sorare-overlay/shared';
@@ -1732,6 +1732,15 @@ export class SorareCardScanner {
   private readonly handleSortMode = (event: Event): void => {
     if (event instanceof CustomEvent && ['goal', 'aa', 'clean-sheet'].includes(event.detail)) this.lineupSortHydrator.configureMode(event.detail);
   };
+  private readonly handleSortSession = (event: Event): void => {
+    if (!(event instanceof CustomEvent)) return;
+    if (event.detail === 'pause') this.lineupSortHydrator.suspend();
+    else if (event.detail === 'resume') this.lineupSortHydrator.resume();
+    else if (event.detail === 'cancel') {
+      this.cancelLineupPoolReadyScan();
+      this.lineupSortHydrator.cancel();
+    }
+  };
   private readonly handleMarketCacheUpdate = (
     teamSlugs: readonly string[],
   ): void => {
@@ -1797,6 +1806,7 @@ export class SorareCardScanner {
     root.addEventListener(lineupPoolReadyEvent, this.handleLineupPoolReady);
     root.addEventListener(sortRetryEvent, this.handleSortRetry);
     root.addEventListener(sortModeEvent, this.handleSortMode);
+    root.addEventListener(sortSessionEvent, this.handleSortSession);
     this.lineupSorter.start(root);
     this.startVisibilityObserver();
     this.startLayoutObserver();
@@ -1895,6 +1905,7 @@ export class SorareCardScanner {
     document.removeEventListener(fixtureChangedEvent,this.handleFixtureChanged);
     this.root?.removeEventListener(sortRetryEvent, this.handleSortRetry);
     this.root?.removeEventListener(sortModeEvent, this.handleSortMode);
+    this.root?.removeEventListener(sortSessionEvent, this.handleSortSession);
     this.root?.removeEventListener(
       lineupPoolProgressEvent,
       this.handleLineupPoolProgress,

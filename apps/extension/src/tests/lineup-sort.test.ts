@@ -999,6 +999,54 @@ describe('lineup card sorting', () => {
     expect(missingCell.style.order).toBe('-1');
   });
 
+  it.each([false, true])('resumes an unchanged filter dialog, but reloads when a control changes (%s)', async changed => {
+    sorter.stop();const loader=vi.fn(immediatePoolLoader);sorter=new LineupCardSorter(loader);
+    const market=document.querySelector<HTMLElement>('[data-player="market"]')!;
+    const cell=document.querySelector<HTMLElement>('[data-cell="market"]')!;
+    const trigger=document.querySelector<HTMLElement>('[data-native-filter]')!;
+    const dialog=document.querySelector<HTMLElement>('#filter-dialog')!;
+    dialog.insertAdjacentHTML('beforeend','<input type="checkbox" aria-label="Filter">');
+    setLineupAaSortValue(market,30);sorter.start();
+    document.querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)!.click();
+    await vi.waitFor(()=>expect(cell.style.order).toBe('-3'));
+    trigger.setAttribute('aria-expanded','true');dialog.setAttribute('data-state','open');dialog.removeAttribute('aria-hidden');sorter.scan(document);
+    expect(cell.style.order).toBe('');
+    if(changed)dialog.querySelector('input')!.checked=true;
+    trigger.setAttribute('aria-expanded','false');dialog.setAttribute('data-state','closed');dialog.setAttribute('aria-hidden','true');sorter.scan(document);
+    await vi.waitFor(()=>expect(cell.style.order).toBe('-3'));
+    expect(loader).toHaveBeenCalledTimes(changed?2:1);
+  });
+
+  it('invalidates only the sort cache whose values actually changed', async () => {
+    const market=document.querySelector<HTMLElement>('[data-player="market"]')!;
+    setLineupGoalSortValue(market,.5,'market');setLineupAaSortValue(market,10);
+    sorter.start();document.querySelector<HTMLButtonElement>(`[${lineupGoalSortOptionAttribute}]`)!.click();
+    await vi.waitFor(()=>expect(document.querySelector<HTMLElement>('[data-cell="market"]')!.style.order).toBe('-3'));
+    const internal=sorter as unknown as { sortedRecordsForMode(mode:string):unknown; refreshDirtyCompletedCellRecords():void };
+    const goal=internal.sortedRecordsForMode('goal'),aa=internal.sortedRecordsForMode('aa');
+    setLineupAaSortValue(market,20);internal.refreshDirtyCompletedCellRecords();
+    expect(internal.sortedRecordsForMode('goal')).toBe(goal);
+    expect(internal.sortedRecordsForMode('aa')).not.toBe(aa);
+  });
+
+  it('does not rewrite an unchanged update button during repeated scans', async () => {
+    const market=document.querySelector<HTMLElement>('[data-player="market"]')!;
+    const historical=document.querySelector<HTMLElement>('[data-player="historical"]')!;
+    setLineupGoalSortValue(market,.5,'market');setLineupGoalSortValue(historical,.2,'historical');
+    sorter.start();document.querySelector<HTMLButtonElement>(`[${lineupGoalSortOptionAttribute}]`)!.click();
+    await vi.waitFor(()=>expect(document.querySelector<HTMLElement>('[data-cell="market"]')!.style.order).toBe('-3'));
+    setLineupGoalSortValue(historical,.7,'historical');
+    await vi.waitFor(()=>expect(document.querySelector('[data-sorare-overlay-sort-action]')).not.toBeNull());
+    const button=document.querySelector('[data-sorare-overlay-sort-action]')!;
+    const mutations:MutationRecord[]=[];const observer=new MutationObserver(records=>mutations.push(...records));
+    observer.observe(button,{childList:true,subtree:true,attributes:true});
+    try {
+      for(let i=0;i<5;i++)sorter.scan(document);
+      await new Promise(resolve=>setTimeout(resolve,50));
+      expect(mutations).toHaveLength(0);
+    } finally {observer.disconnect();}
+  });
+
   it('sorts the goalkeeper slot by clean-sheet probability', async () => {
     const positionButtons = Array.from(
       document.querySelectorAll<HTMLButtonElement>(

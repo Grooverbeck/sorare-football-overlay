@@ -4,6 +4,7 @@ export const sortReadinessAttribute = 'data-sorare-overlay-sort-readiness';
 export const sortFinalCheckAttribute = 'data-sorare-overlay-sort-final-check';
 export const sortRetryEvent = 'sorare-overlay:lineup-sort-retry';
 export const sortModeEvent = 'sorare-overlay:lineup-sort-mode';
+export const sortSessionEvent = 'sorare-overlay:lineup-sort-session';
 const changedEvent = 'sorare-overlay:lineup-sort-value-changed';
 export const readinessIsSettled = (state: SortMetricReadiness): boolean => state === 'ready' || state === 'unavailable';
 export function uniformReadiness(state: SortMetricReadiness): LineupSortReadiness {
@@ -27,6 +28,7 @@ export function setSortReadiness(container: HTMLElement, readiness: LineupSortRe
   container.dispatchEvent(new CustomEvent(changedEvent, { bubbles: true }));
 }
 export function setSortFinalCheck(grid: HTMLElement, state: 'pending' | 'complete'): void {
+  if (grid.getAttribute(sortFinalCheckAttribute) === state) return;
   grid.setAttribute(sortFinalCheckAttribute, state);
   grid.dispatchEvent(new CustomEvent(changedEvent, { bubbles: true }));
 }
