@@ -75,3 +75,39 @@ it('reclaims a row from a disconnected card before its old view is disposed',()=
   first.destroy();second.reposition();
   expect(document.querySelectorAll('[data-sorare-overlay-companion="lineup-odds"]')).toHaveLength(1);
 });
+
+it('reserves the ready match bar while occluded and collapses only when data is cleared',()=>{
+  const frame=document.querySelector<HTMLElement>('[data-frame]')!;
+  const row=document.querySelector<HTMLElement>('[data-team-row]')!;
+  const blocker=document.createElement('div');document.body.append(blocker);
+  let occluded=false;
+  const previousHitTest=Object.getOwnPropertyDescriptor(document,'elementFromPoint');
+  Object.defineProperty(document,'elementFromPoint',{configurable:true,value:(_x:number,y:number)=>occluded?blocker:y>=235?row:frame});
+  try {
+    const view=new OverlayView(frame,{slug:stats.slug},'Goalkeeper');views.push(view);view.render(stats);
+    const host=document.querySelector<HTMLElement>('[data-sorare-overlay-companion="lineup-odds"]')!;
+    expect(host.hidden).toBe(false);
+    expect(host.dataset.lineupOddsReady).toBe('true');
+    // JSDOM cannot lay out shadow CSS. Assert the production rule here;
+    // actual fixed-height behavior is additionally checked in Chrome.
+    expect(host.shadowRoot!.querySelector('style')!.textContent).toContain(':host([hidden][data-lineup-odds-ready="true"])');
+    for(let i=0;i<4;i++) {
+      occluded=true;view.reposition();
+      expect(host.hidden).toBe(true);
+      expect(host.dataset.lineupOddsReady).toBe('true');
+      expect(row.nextElementSibling).toBe(host);
+      row.querySelector('[aria-label="Team"]')!.dispatchEvent(new MouseEvent('mouseenter'));
+      expect(document.querySelector('[data-sorare-overlay-companion="lineup-tooltip"]')?.hasAttribute('data-tooltip-open')).toBe(false);
+      occluded=false;view.reposition();expect(host.hidden).toBe(false);
+    }
+    view.setViewportPriorityActive(false);
+    expect(host.hidden).toBe(true);expect(host.dataset.lineupOddsReady).toBe('true');
+    view.setViewportPriorityActive(true);view.reposition();
+    expect(host.hidden).toBe(false);
+    view.render({...stats,nextGame:null});
+    expect(host.hidden).toBe(true);expect(host.hasAttribute('data-lineup-odds-ready')).toBe(false);
+  } finally {
+    if(previousHitTest)Object.defineProperty(document,'elementFromPoint',previousHitTest);
+    else Reflect.deleteProperty(document,'elementFromPoint');
+  }
+});

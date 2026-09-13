@@ -793,6 +793,12 @@ const lineupOddsStyles = `
     overflow: visible;
   }
   :host([hidden]) { display: none; }
+  /* Occlusion must not resize the card footer: collapsing a ready bar can
+     move the browser's scroll anchor and make the visibility check oscillate. */
+  :host([hidden][data-lineup-odds-ready="true"]) {
+    display: block;
+    visibility: hidden;
+  }
   .lineup-odds-bar {
     display: flex;
     box-sizing: border-box;
@@ -3935,6 +3941,7 @@ export class OverlayView {
     );
     this.lineupOddsTooltip.hidden = false;
     this.lineupOddsBar.dataset.ready = 'true';
+    this.lineupOddsHost.dataset.lineupOddsReady = 'true';
   }
 
   private lineupWinComparison(stats: PlayerStats): HTMLDivElement | null {
@@ -4053,12 +4060,14 @@ export class OverlayView {
     this.lineupOddsTooltip.hidden = true;
     this.closeLineupTooltip();
     delete this.lineupOddsBar.dataset.ready;
+    delete this.lineupOddsHost.dataset.lineupOddsReady;
     this.lineupOddsHost.hidden = true;
   }
 
   private readonly openLineupTooltip = (): void => {
     if (
       this.lineupOddsBar.dataset.ready === 'true' &&
+      !this.lineupOddsHost.hidden &&
       !this.lineupOddsTooltip.hidden &&
       this.lineupTeamRow
     ) {
