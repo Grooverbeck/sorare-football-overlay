@@ -4,10 +4,14 @@ import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../config.js';
 
 describe('loadConfig cache TTLs', () => {
-  it('uses the temporary Bet365-only deployment override without appending Unibet', () => {
+  it('requests exactly the re-enabled Bet365 and Unibet deployment selection', () => {
     const deployment = parse(readFileSync(new URL('../../wrangler.jsonc', import.meta.url), 'utf8'));
-    expect(deployment.vars.ODDS_API_IO_BOOKMAKERS).toBe('Bet365');
-    expect(loadConfig(deployment.vars).oddsApiIoBookmakers).toEqual(['Bet365']);
+    expect(deployment.vars.ODDS_API_IO_BOOKMAKERS).toBe('Bet365,Unibet');
+    expect(loadConfig(deployment.vars).oddsApiIoBookmakers).toEqual(['Bet365', 'Unibet']);
+  });
+
+  it('still permits a single-bookmaker override without silently appending another', () => {
+    expect(loadConfig({ ODDS_API_IO_BOOKMAKERS: 'Bet365' }).oddsApiIoBookmakers).toEqual(['Bet365']);
   });
 
   it('uses purpose-specific defaults', () => {
