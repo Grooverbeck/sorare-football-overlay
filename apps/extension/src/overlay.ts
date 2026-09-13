@@ -1,8 +1,9 @@
 import {
   getMlsAaPercentileBand,
   getMlsCleanSheetPercentileBand,
-  getMlsHistoricalMarketProbabilityBand,
-  getMlsMarketProbabilityBand,
+  getEuropeanHistoricalMarketProbabilityBand,
+  getEuropeanMarketProbabilityBand,
+  EUROPEAN_MARKET_BENCHMARKS,
   hasAnyDisplayData,
   fixtureStatusKey,
   lineupGoalSortValue as sharedLineupGoalSortValue,
@@ -1756,12 +1757,12 @@ function compactMarketCell(
   }
   const longLabel = market === 'goal' ? 'Tor' : 'Assist';
   const band = historical
-    ? getMlsHistoricalMarketProbabilityBand(
+    ? getEuropeanHistoricalMarketProbabilityBand(
         market,
         position,
         probability?.probability,
       )
-    : getMlsMarketProbabilityBand(
+    : getEuropeanMarketProbabilityBand(
         market,
         position,
         probability?.probability,
@@ -1770,6 +1771,8 @@ function compactMarketCell(
     cell.dataset.tone = band.tone;
     cell.dataset.bandLabel = band.label;
     cell.dataset.benchmarkSource = historical ? 'historical' : 'market';
+    cell.dataset.benchmarkRegion = 'european-set';
+    cell.dataset.benchmarkVersion = String(EUROPEAN_MARKET_BENCHMARKS.version);
   }
   const iconNode = sorareMarketIconNode(market);
   const valueNode = document.createElement('span');

@@ -7265,8 +7265,8 @@ describe('Sorare card DOM discovery', () => {
     ).toBe('elite');
     expect(
       bracket?.querySelector<HTMLElement>('[data-market="assist"]')?.dataset.tone,
-    ).toBe('low');
-    expect(bracket?.dataset.foldTone).toBe('low');
+    ).toBe('good');
+    expect(bracket?.dataset.foldTone).toBe('good');
     expect(
       bracket
         ?.querySelector<HTMLElement>('[data-market="goal"]')
@@ -7301,7 +7301,7 @@ describe('Sorare card DOM discovery', () => {
     expect(
       bracket?.querySelector<HTMLElement>('[data-market="assist"]')?.dataset.available,
     ).toBe('true');
-    expect(bracket?.dataset.foldTone).toBe('low');
+    expect(bracket?.dataset.foldTone).toBe('good');
     expect(view.host.shadowRoot?.querySelector('.decisive-probability')).toBeNull();
 
     view.render({
@@ -8476,7 +8476,7 @@ describe('Sorare card DOM discovery', () => {
     expect(assist?.textContent).toBe('18%');
     expect(assist?.dataset.source).toBeUndefined();
     expect(assist?.dataset.benchmarkSource).toBe('market');
-    expect(assist?.dataset.tone).toBe('balanced');
+    expect(assist?.dataset.tone).toBe('good');
     expect(assist?.getAttribute('aria-label')).toBe(
       'Assist: 18 Prozent, 2 Buchmacher',
     );

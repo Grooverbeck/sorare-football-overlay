@@ -483,24 +483,19 @@ Vorrang. Die zusätzliche Einsatzhistorie wird nur geladen, wenn diese Option
 aktiv ist. Die Option ist bei einer neuen Installation standardmäßig
 deaktiviert.
 
-Historische Werte verwenden bewusst eine andere, niedrigere Farbskala als
-Next-Match-Quoten. Die sechs Grenzen sind Rot, Orange, Gelb, Grün, Blau und
-Lila:
+Tor- und Assistfarben verwenden seit dem 13.09.2026 einen festen europäischen
+Positionsvergleich aus Premier League, Bundesliga, LaLiga und Ligue 1.
+Die sechs Farben Rot, Orange, Gelb, Grün, Blau und Lila bleiben erhalten.
+Grundlage sind 1.977 Tor- und 1.902 Assistwerte aus 72 Spielen; historische
+Werte haben eine eigene Skala aus einer unabhängigen Sorare-Spielerstichprobe.
+Beispielsweise ist eine direkte Assistquote von 25 % bei einem Mittelfeldspieler
+jetzt lila. Eine Torquote von 13 % bei einem Verteidiger ist grün.
+Die Prozentwerte selbst und die Sortierung bleiben unverändert.
 
-| Historischer Wert | Position | Rot unter | Orange unter | Gelb unter | Grün unter | Blau unter | Lila ab |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Tor | Defender | 1 % | 4 % | 7,5 % | 10 % | 15 % | 15 % |
-| Tor | Midfielder | 3 % | 7,5 % | 12 % | 18 % | 25 % | 25 % |
-| Tor | Forward | 5 % | 10 % | 18 % | 25 % | 35 % | 35 % |
-| Assist | Defender | 1 % | 4 % | 7,5 % | 12 % | 18 % | 18 % |
-| Assist | Midfielder | 3 % | 8 % | 13 % | 20 % | 27 % | 27 % |
-| Assist | Forward | 3 % | 7,5 % | 12 % | 18 % | 25 % | 25 % |
-
-Damit ist beispielsweise ein historischer Assist-Anteil von 20 % bei einem
-Forward bereits blau („sehr gut“), während dieselbe direkte Next-Match-Quote
-weiterhin nur gelb („mittel“) ist. Die historische Skala ist separat
-versioniert und kann später anhand einer vollständigen MLS-Saisonverteilung
-neu kalibriert werden.
+Die Referenz hängt weder von der eigenen Sammlung noch von geladenen Karten
+oder Filtern ab. Historische Werte bleiben in Klammern; 0 % bleibt rot,
+fehlende Daten bleiben grau. Alle Grenzen, Stichproben und Einschränkungen
+stehen in [Europäische Farbbänder](docs/EUROPEAN_MARKET_BENCHMARKS.md).
 
 Das Backend lädt die Märkte erst innerhalb des je Wettbewerb konfigurierten
 Abruffensters und friert jeden erfolgreich gelieferten Markt anschließend
@@ -539,8 +534,8 @@ Der CS-Snapshot umfasst bis zum 23. Juli 2026 insgesamt 238 abgeschlossene Spiel
 
 Die statischen Fallback-Snapshots liegen in
 `packages/shared/src/mls-aa-benchmarks.ts`,
-`packages/shared/src/mls-clean-sheet-benchmarks.ts` und
-`packages/shared/src/market-probability-benchmarks.ts`. Grundlage für AA sind
+`packages/shared/src/mls-clean-sheet-benchmarks.ts`. Tor/Assist verwenden
+inzwischen `packages/shared/src/european-market-benchmarks.ts`. Grundlage für AA sind
 Spieler der Sorare-Competition `mlspa` mit mindestens fünf gültigen
 Club-Einsätzen. Das Analyseskript verwendet dieselbe Berechnung wie das Overlay:
 die neuesten zehn tatsächlich gespielten Partien der konkreten Kartenposition,
