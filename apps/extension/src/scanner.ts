@@ -21,7 +21,7 @@ import {
 } from './dom.js';
 import { OverlayView } from './overlay.js';
 import { LineupSortHydrator } from './lineup-sort-hydrator.js';
-import { setSortFinalCheck, sortRetryEvent, sortModeEvent } from './lineup-sort-readiness.js';
+import { setSortFinalCheck, sortFinalCheckAttribute, sortRetryEvent, sortModeEvent } from './lineup-sort-readiness.js';
 import { findSorareCardMedia } from './card-media.js';
 import { FixtureRefreshScheduler, fixtureChangedEvent, olderFixture, retiredFixture } from './fixture-refresh.js';
 import { fixtureStatusKey } from '@sorare-overlay/shared';
@@ -1980,7 +1980,7 @@ export class SorareCardScanner {
       knownHydrationGrid ??
       (root instanceof Element
         ? root.closest<HTMLElement>(
-            `[${lineupSortHydrationGridAttribute}]`,
+            `[${lineupSortHydrationGridAttribute}], [${sortFinalCheckAttribute}]`,
           )
         : null);
     const targets = rootHydrationGrid
@@ -2114,7 +2114,7 @@ export class SorareCardScanner {
     const targetsByGrid = new Map<HTMLElement, CardTarget[]>();
     for (const target of targets) {
       const grid = target.container.closest<HTMLElement>(
-        `[${lineupSortHydrationGridAttribute}]`,
+        `[${lineupSortHydrationGridAttribute}], [${sortFinalCheckAttribute}]`,
       );
       if (!grid) continue;
       const gridTargets = targetsByGrid.get(grid) ?? [];
@@ -2435,6 +2435,9 @@ export class SorareCardScanner {
       target: mounted.target,
     });
     container.setAttribute(deferredOverlayKeyAttribute, mounted.key);
+    // A card can leave the viewport before its full request finishes. Keep
+    // its compact state registered even after the pool's initial completion.
+    this.hydrateLineupTargets([mounted.target]);
     this.visibilityObserver.observe(container);
     this.layoutTargetsDirty = true;
   }

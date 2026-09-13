@@ -72,6 +72,8 @@ Response-Budgets und serverseitigen In-flight-Sperren bleiben erhalten.
   behalten ihre bisherigen Wiederherstellungs- und Abbruchregeln.
 - Gleichwertige DOM-Neumounts derselben Karte übernehmen ihren bisherigen
   Platz; neue Pools erhalten einen eigenen Prüf- und Sortierdurchlauf.
+- Nachträglich neu erkannte oder wieder ausgeblendete Karten bleiben beim
+  Sortier-Lader registriert, auch wenn der erste Abgleich bereits beendet ist.
 
 ## Rollout und Tests
 

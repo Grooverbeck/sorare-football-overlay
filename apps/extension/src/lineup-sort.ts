@@ -1569,6 +1569,8 @@ export class LineupCardSorter {
   }
 
   private cancelPoolLoad(): void {
+    this.completedGrid?.removeAttribute(sortFinalCheckAttribute);
+    this.loadingGrid?.removeAttribute(sortFinalCheckAttribute);
     this.lockedOrder = null;
     this.lockedValues.clear();
     this.updatedValueCount = 0;

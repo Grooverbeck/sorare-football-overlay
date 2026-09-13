@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LineupSortValue, LineupSortValuesRequest, LineupSortValuesSuccessResponse } from '@sorare-overlay/shared';
 import { LineupSortValuesRequestSchema } from '@sorare-overlay/shared';
 import { LineupSortHydrator } from '../lineup-sort-hydrator.js';
+import { SorareCardScanner, StatsBatchCoordinator } from '../scanner.js';
 import { readSortReadiness, setSortReadiness, sortFinalCheckAttribute } from '../lineup-sort-readiness.js';
 
 let hydrator: LineupSortHydrator | undefined;
@@ -19,6 +20,18 @@ function response(request: LineupSortValuesRequest, build: (slug: string) => Par
 }
 
 describe('honest sort completion', () => {
+  it('registers a newly mounted card in an already completed pool', async () => {
+    const pool=grid(1);
+    pool.setAttribute(sortFinalCheckAttribute,'complete');
+    hydrator=new LineupSortHydrator(async req=>response(req,()=>({})));
+    const scanner=new SorareCardScanner(new StatsBatchCoordinator(vi.fn(),60000),undefined,hydrator);
+    const hydrate=vi.spyOn(hydrator,'hydrate').mockResolvedValue();
+    try {
+      scanner.scan(pool);
+      expect(hydrate).toHaveBeenCalledWith(pool,expect.arrayContaining([expect.objectContaining({container:pool.querySelector('article')})]));
+    } finally {scanner.stop();}
+  });
+
   it('continues newly partial full-overlay data without waiting for another visibility event', async () => {
     const pool=grid(1), fetcher=vi.fn(async(req:LineupSortValuesRequest)=>response(req,()=>({})));
     hydrator=new LineupSortHydrator(fetcher);

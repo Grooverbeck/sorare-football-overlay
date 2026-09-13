@@ -6,7 +6,7 @@ import type {
   LineupSortValuesSuccessResponse,
   LineupSortReadiness,
 } from '@sorare-overlay/shared';
-import { readSortReadiness, setSortReadiness, readinessIsSettled, uniformReadiness, setSortFinalCheck } from './lineup-sort-readiness.js';
+import { readSortReadiness, setSortReadiness, readinessIsSettled, uniformReadiness, setSortFinalCheck, sortFinalCheckAttribute } from './lineup-sort-readiness.js';
 import { fetchLineupSortValues } from './api.js';
 import { findCardTargets, type CardTarget } from './dom.js';
 import { findCardMediaContainer, findSorareCardMedia } from './card-media.js';
@@ -194,6 +194,7 @@ function roundedDuration(startedAt: number): number {
 
 export class LineupSortHydrator {
   private readonly handleValueChange = (event: Event): void => {
+    if (this.finalCheckRequested && !this.grid?.hasAttribute(sortFinalCheckAttribute) && !this.grid?.hasAttribute('data-sorare-overlay-lineup-sort-hydration')) return;
     if (!(event.target instanceof HTMLElement)) return;
     const state = this.states.get(event.target);
     const readiness = readSortReadiness(event.target);
