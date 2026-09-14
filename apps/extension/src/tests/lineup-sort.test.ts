@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LineupSortHydrator } from '../lineup-sort-hydrator.js';
-import { setSortReadiness } from '../lineup-sort-readiness.js';
+import { setSortReadiness, setSortFinalCheck } from '../lineup-sort-readiness.js';
 import { findCardTargets } from '../dom.js';
 import { filledSlotsMarkup } from './fixtures/filled-slots.js';
 import {
@@ -118,6 +118,9 @@ const immediatePoolLoader: LineupPoolLoader = async ({ onProgress }) => {
   if (grid) onProgress(grid.children.length);
   return grid;
 };
+
+const progressPrimary = () => document.querySelector('[data-sorare-overlay-sort-progress-primary]')?.textContent;
+const progressDetail = () => document.querySelector('[data-sorare-overlay-sort-progress-detail]')?.textContent;
 
 function appendLoadingCell(grid: HTMLElement): HTMLElement {
   const loadingCell = document.createElement('div');
@@ -504,37 +507,28 @@ describe('lineup card sorting', () => {
     });
 
     setLineupSortDataReady(historical, true);
-    await new Promise((resolve) => window.setTimeout(resolve, 20));
+    await vi.waitFor(()=>expect(progressPrimary()).toBe('2 von 3 Werten geprüft'));
     setLineupSortDataReady(historical, false);
     await new Promise((resolve) => window.setTimeout(resolve, 20));
     expect(label.textContent).toBe('AA lädt …');
     expect(label.textContent).not.toMatch(/\d/);
-    expect(
-      document.querySelector(
-        '[data-sorare-overlay-lineup-sort-player-status-label]',
-      )?.textContent,
-    ).toBe('1 von 3 Werten geprüft');
+    expect(progressPrimary()).toBe('2 von 3 Werten geprüft');
+    expect(progressDetail()).toBe('1 Wert wird aktualisiert');
 
     setLineupSortDataReady(historical, true);
     setLineupSortDataReady(missing, true);
     await new Promise((resolve) => window.setTimeout(resolve, 100));
     expect(label.textContent).toBe('AA lädt …');
-    expect(
-      document.querySelector(
-        '[data-sorare-overlay-lineup-sort-player-status-label]',
-      )?.textContent,
-    ).toBe('3 Spieler · Sortiere …');
+    expect(progressPrimary()).toBe('3 von 3 Werten geprüft');
+    expect(progressDetail()).toBe('Sortierung wird abgeschlossen');
 
     setLineupSortDataReady(missing, false);
     await new Promise((resolve) => window.setTimeout(resolve, 20));
     setLineupSortDataReady(missing, true);
     await new Promise((resolve) => window.setTimeout(resolve, 100));
     expect(label.textContent).toBe('AA lädt …');
-    expect(
-      document.querySelector(
-        '[data-sorare-overlay-lineup-sort-player-status-label]',
-      )?.textContent,
-    ).toBe('3 Spieler · Sortiere …');
+    expect(progressPrimary()).toBe('3 von 3 Werten geprüft');
+    expect(progressDetail()).toBe('Sortierung wird abgeschlossen');
 
     await vi.waitFor(() => expect(label.textContent).toBe('AA'));
     expect(label.title).toBe(
@@ -551,12 +545,9 @@ describe('lineup card sorting', () => {
 
     setLineupSortDataReady(missing, false);
     await new Promise((resolve) => window.setTimeout(resolve, 20));
-    expect(label.textContent).toBe('AA');
-    expect(
-      document.querySelector(
-        '[data-sorare-overlay-lineup-sort-player-status-label]',
-      )?.textContent,
-    ).toBe('3 Spieler · 1 Wert lädt');
+    expect(label.textContent).toBe('AA lädt …');
+    expect(progressPrimary()).toBe('3 von 3 Werten geprüft');
+    expect(progressDetail()).toBe('1 Wert wird aktualisiert');
     setLineupSortDataReady(missing, true);
     expect(market.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
   });
@@ -1055,12 +1046,86 @@ describe('lineup card sorting', () => {
     sorter.start();document.querySelector<HTMLButtonElement>(`[${lineupGoalSortOptionAttribute}]`)!.click();
     await vi.waitFor(()=>expect(document.querySelector<HTMLElement>('[data-cell="market"]')!.style.order).toBe('-3'));
     setSortReadiness(card,{goal:'pending',aa:'ready',cleanSheet:'unavailable'});setLineupGoalSortValue(card,null);
-    await vi.waitFor(()=>expect(document.querySelector('[data-sorare-overlay-lineup-sort-player-status-label]')?.textContent).toBe('3 Spieler · 1 Wert lädt'));
+    await vi.waitFor(()=>expect(progressPrimary()).toBe('3 von 3 Werten geprüft'));
+    expect(progressDetail()).toBe('1 Wert wird aktualisiert');
     expect(document.querySelector('[data-sorare-overlay-sort-action]')).toBeNull();
     setLineupGoalSortValue(card,.6,'market');
     setSortReadiness(card,{goal:'ready',aa:'ready',cleanSheet:'unavailable'});
     await vi.waitFor(()=>expect(document.querySelector('[data-sorare-overlay-lineup-sort-player-status-label]')?.textContent).toBe('1 neuer Wert verfügbar'));
     expect(document.querySelector('[data-sorare-overlay-sort-action]')?.textContent).toBe('Neu sortieren');
+  });
+
+  it('does not declare completion when every card was checked once but updates remain pending', async () => {
+    const card=document.querySelector<HTMLElement>('[data-player="market"]')!;
+    setLineupAaSortValue(card,30);sorter.start();
+    document.querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)!.click();
+    await vi.waitFor(()=>expect(progressPrimary()).toBe('3 Spieler sortiert'));
+    setSortReadiness(card,{goal:'ready',aa:'pending',cleanSheet:'unavailable'});
+    await vi.waitFor(()=>expect(progressDetail()).toBe('1 Wert wird aktualisiert'));
+    await new Promise(resolve=>setTimeout(resolve,700));
+    expect(progressPrimary()).toBe('3 von 3 Werten geprüft');
+    expect(document.querySelector('[data-native-trigger-label]')?.textContent).toBe('AA lädt …');
+    setSortReadiness(card,{goal:'ready',aa:'ready',cleanSheet:'unavailable'});
+    await vi.waitFor(()=>expect(progressPrimary()).toBe('3 Spieler sortiert'));
+    expect(progressDetail()).toBeUndefined();
+  });
+
+  it('transfers checked progress to an equivalent card remount without counting it twice', async () => {
+    const cell=document.querySelector<HTMLElement>('[data-cell="market"]')!;
+    sorter.start();document.querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)!.click();
+    await vi.waitFor(()=>expect(progressPrimary()).toBe('3 Spieler sortiert'));
+    const replacement=cell.cloneNode(true) as HTMLElement;
+    const card=replacement.querySelector<HTMLElement>('article')!;
+    setLineupSortDataReady(card,false);cell.replaceWith(replacement);
+    await vi.waitFor(()=>expect(progressDetail()).toBe('1 Wert wird aktualisiert'));
+    expect(progressPrimary()).toBe('3 von 3 Werten geprüft');
+    setLineupSortDataReady(card,true);
+    await vi.waitFor(()=>expect(progressPrimary()).toBe('3 Spieler sortiert'));
+  });
+
+  it('starts a fresh checked counter for a different metric on the same pool', async () => {
+    const cards=[...document.querySelectorAll<HTMLElement>('[data-player]')];
+    cards.forEach((card,index)=>setSortReadiness(card,{goal:'ready',aa:index===0?'ready':'pending',cleanSheet:'unavailable'}));
+    sorter.start();document.querySelector<HTMLButtonElement>(`[${lineupGoalSortOptionAttribute}]`)!.click();
+    await vi.waitFor(()=>expect(progressPrimary()).toBe('3 Spieler sortiert'));
+    document.querySelector('[data-native-sort]')!.setAttribute('aria-expanded','true');
+    document.querySelector('#sort-dialog')!.setAttribute('data-state','open');sorter.scan(document);
+    document.querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)!.click();
+    await vi.waitFor(()=>expect(progressPrimary()).toBe('1 von 3 Werten geprüft'));
+    expect(progressDetail()).toBeUndefined();
+  });
+
+  it('does not inherit the previous pool progress for a replacement player pool', async () => {
+    sorter.start();document.querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)!.click();
+    await vi.waitFor(()=>expect(progressPrimary()).toBe('3 Spieler sortiert'));
+    const newGrid=document.createElement('div');newGrid.dataset.playerGrid='';newGrid.style.display='grid';
+    newGrid.innerHTML=Array.from({length:3},(_,i)=>`<div><article data-sorare-overlay-sort-data-ready="false"><img alt="New Player ${i} - common"></article></div>`).join('');
+    document.querySelector('[data-player-grid]')!.replaceWith(newGrid);sorter.scan(document);
+    await vi.waitFor(()=>expect(progressPrimary()).toBe('0 von 3 Werten geprüft'));
+    expect(progressDetail()).toBeUndefined();
+  });
+
+  it('keeps previously checked progress but exposes a failed recheck as an error', async () => {
+    const card=document.querySelector<HTMLElement>('[data-player="market"]')!;
+    sorter.start();document.querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)!.click();
+    await vi.waitFor(()=>expect(progressPrimary()).toBe('3 Spieler sortiert'));
+    setSortReadiness(card,{goal:'ready',aa:'error',cleanSheet:'unavailable'});
+    await vi.waitFor(()=>expect(progressPrimary()).toBe('3 von 3 geprüft · 1 offen'));
+    expect(document.querySelector('[data-native-trigger-label]')?.textContent).toBe('AA · Wiederholen');
+    expect(document.querySelector('[data-sorare-overlay-sort-action]')?.textContent).toBe('Erneut prüfen');
+  });
+
+  it('waits for the final cache barrier despite a fully checked display counter', async () => {
+    const grid=document.querySelector<HTMLElement>('[data-player-grid]')!;
+    grid.addEventListener(lineupPoolReadyEvent,()=>setSortFinalCheck(grid,'pending'),{once:true});
+    sorter.start();
+    document.querySelector<HTMLButtonElement>(`[${lineupAaSortOptionAttribute}]`)!.click();
+    await vi.waitFor(()=>expect(progressDetail()).toBe('Abschließender Abgleich …'));
+    await new Promise(resolve=>setTimeout(resolve,700));
+    expect(progressPrimary()).toBe('3 von 3 Werten geprüft');
+    expect(document.querySelector('[data-native-trigger-label]')?.textContent).toBe('AA lädt …');
+    setSortFinalCheck(grid,'complete');
+    await vi.waitFor(()=>expect(progressPrimary()).toBe('3 Spieler sortiert'));
   });
 
   it('sorts the goalkeeper slot by clean-sheet probability', async () => {

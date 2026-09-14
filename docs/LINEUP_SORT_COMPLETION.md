@@ -103,6 +103,14 @@ Response-Budgets und serverseitigen In-flight-Sperren bleiben erhalten.
 - Während des Ladens bleibt die Anzahl der gefundenen Spieler sichtbar.
 - Nach vollständiger Erkennung wird die Zahl der tatsächlich geprüften
   Karten angezeigt. Fehler bleiben als „offen“ sichtbar, mit „Erneut prüfen“.
+- Der sichtbare Prüffortschritt zählt pro Pool und Kennzahl jede Karte nur
+  einmal als bereits geprüft. Nachprüfungen nehmen diesen Fortschritt nicht
+  zurück; sie stehen separat in einer zweiten Zeile. Äquivalente Karten-Neumounts
+  übernehmen den Fortschritt, neue Pools und Kennzahlen beginnen neu.
+  Die Fertigmeldung richtet sich weiterhin ausschließlich nach der aktuellen
+  Readiness und der Abschlussprüfung, niemals nach diesem historischen Zähler.
+  Ein fehlgeschlagener Folgeabruf bleibt als Fehler sichtbar, auch wenn die
+  betroffene Karte vorher schon einmal erfolgreich geprüft wurde.
 - Nach dem Abschluss (oder einem ausdrücklich unvollständigen Ergebnis ohne
   weiter laufende Versuche) wird die visuelle Reihenfolge festgehalten.
 - Spätere Werte aktualisieren weiterhin die Daten, verschieben aber keine

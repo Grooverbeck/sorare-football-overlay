@@ -1011,6 +1011,10 @@ export class LineupCardSorter {
   private poolReadyCount = 0;
   private poolValueCount = 0;
   private poolErrorCount = 0;
+  // Display-only history. Completion still uses the current readiness counts.
+  private checkedProgressMode: LineupSortMode | null = null;
+  private readonly checkedCells = new Set<HTMLElement>();
+  private readonly recheckingCells = new Set<HTMLElement>();
   private lockedOrder: HTMLElement[] | null = null;
   private readonly lockedValues = new Map<HTMLElement, number | null>();
   private updatedValueCount = 0;
@@ -1290,8 +1294,19 @@ export class LineupCardSorter {
       label.setAttribute(nativeTriggerLabelAttribute, 'true');
       const config = lineupSortConfigs[this.activeMode];
       const baseLabel = config.label;
-      const loading = this.poolLoading || (!this.lockedOrder && this.poolHydrationUiPending);
+      const loading = this.poolLoading || this.poolHydrating || this.poolHydrationUiPending;
       const pendingValues = Math.max(0, this.poolCardCount - this.poolReadyCount - this.poolErrorCount);
+      const checkedCount = this.checkedCells.size;
+      const recheckingCount = this.recheckingCells.size;
+      const progressDetail = !this.poolLoading && !this.poolLoadFailed
+        ? recheckingCount > 0
+          ? `${recheckingCount} ${recheckingCount === 1 ? 'Wert wird' : 'Werte werden'} aktualisiert`
+          : this.poolReadyCount === this.poolCardCount && this.poolCardCount > 0 && loading
+            ? this.completedGrid?.getAttribute(sortFinalCheckAttribute) === 'pending'
+              ? 'Abschließender Abgleich …'
+              : 'Sortierung wird abgeschlossen'
+            : null
+        : null;
       const unidentifiedCount = this.completedGrid?.querySelectorAll(
         `[${lineupSortIdentityMissingAttribute}]`,
       ).length ?? 0;
@@ -1312,20 +1327,19 @@ export class LineupCardSorter {
             ? `${displayedPlayerCount} Spieler · unvollständig`
             : 'Spielerliste unvollständig'
           : this.poolErrorCount > 0 && !this.poolLoading
-            ? `${this.poolReadyCount} von ${displayedPlayerCount} geprüft · ${this.poolErrorCount} offen`
-          : this.lockedOrder && pendingValues > 0
-            ? `${displayedPlayerCount} Spieler · ${pendingValues} ${pendingValues === 1 ? 'Wert lädt' : 'Werte laden'}`
+            ? `${checkedCount} von ${displayedPlayerCount} geprüft · ${this.poolErrorCount} offen`
+          : !this.poolLoading && (loading || pendingValues > 0)
+            ? `${checkedCount} von ${displayedPlayerCount} Werten geprüft`
           : this.updatedValueCount > 0
             ? `${this.updatedValueCount} ${this.updatedValueCount === 1 ? 'neuer Wert' : 'neue Werte'} verfügbar`
-          : this.poolHydrating && !this.poolLoading
-            ? `${this.poolReadyCount} von ${displayedPlayerCount} Werten geprüft`
           : displayedPlayerCount > 0
             ? !loading && unidentifiedCount > 0
               ? `${displayedPlayerCount} Spieler · ${unidentifiedCount} nicht erkannt`
               : this.poolLoading
                 ? `${displayedPlayerCount} Spieler gefunden`
-                : loading ? `${displayedPlayerCount} Spieler · Sortiere …` : `${displayedPlayerCount} Spieler sortiert`
+                : `${displayedPlayerCount} Spieler sortiert`
             : null,
+        progressDetail,
       );
       const nextLabel = loading
         ? `${baseLabel} lädt …`
@@ -1334,6 +1348,8 @@ export class LineupCardSorter {
           : baseLabel;
       const nextTitle = this.poolLoading
         ? `${loadingPlayerDescription}Die vollständige Spielerliste wird geladen. Danach wird automatisch sortiert.`
+        : recheckingCount > 0
+          ? `${totalPlayerDescription}${checkedCount} Karten wurden bereits geprüft. ${progressDetail}. Noch offene Aktualisierungen müssen abgeschlossen werden; die bisherige Reihenfolge bleibt erhalten.`
         : this.poolHydrationUiPending
           ? `${totalPlayerDescription}${config.loadingDescription} Noch offene Daten werden unabhängig vom Scrollbereich geprüft.`
           : this.poolLoadFailed
@@ -1366,6 +1382,7 @@ export class LineupCardSorter {
   private syncNativeTriggerPlayerStatus(
     trigger: HTMLButtonElement,
     text: string | null,
+    detail: string | null = null,
   ): void {
     let status = trigger.querySelector<HTMLSpanElement>(
       `:scope > [${nativeTriggerPlayerStatusLabelAttribute}]`,
@@ -1381,7 +1398,22 @@ export class LineupCardSorter {
       status.setAttribute('aria-hidden', 'true');
       trigger.append(status);
     }
-    if (status.textContent !== text) status.textContent = text;
+    let primary = status.querySelector<HTMLElement>(':scope > [data-sorare-overlay-sort-progress-primary]');
+    if (!primary) {
+      primary = document.createElement('span');
+      primary.setAttribute('data-sorare-overlay-sort-progress-primary', 'true');
+      status.replaceChildren(primary);
+    }
+    if (primary.textContent !== text) primary.textContent = text;
+    let secondary = status.querySelector<HTMLElement>(':scope > [data-sorare-overlay-sort-progress-detail]');
+    if (detail) {
+      if (!secondary) {
+        secondary = document.createElement('span');
+        secondary.setAttribute('data-sorare-overlay-sort-progress-detail', 'true');
+        status.append(secondary);
+      }
+      if (secondary.textContent !== detail) secondary.textContent = detail;
+    } else secondary?.remove();
     trigger.setAttribute(nativeTriggerPlayerStatusAttribute, 'true');
   }
 
@@ -1499,6 +1531,21 @@ export class LineupCardSorter {
     this.modeCounts = emptySortCounts();
     this.changedLockedCells.clear();
     this.lockedOrdersByCell.clear();
+    this.resetCheckedProgress();
+  }
+
+  private resetCheckedProgress(): void {
+    this.checkedProgressMode = null;
+    this.checkedCells.clear();
+    this.recheckingCells.clear();
+  }
+
+  private trackCheckedProgress(record: SortableCellRecord): void {
+    if (!this.activeMode || this.checkedProgressMode !== this.activeMode) return;
+    const readiness = record.readiness[this.activeMode];
+    if (readinessIsSettled(readiness)) this.checkedCells.add(record.cell);
+    if (readiness === 'pending' && this.checkedCells.has(record.cell)) this.recheckingCells.add(record.cell);
+    else this.recheckingCells.delete(record.cell);
   }
 
   private adjustCounts(record: SortableCellRecord, direction: 1 | -1): void {
@@ -1536,6 +1583,7 @@ export class LineupCardSorter {
       }
       // Keep references held by unaffected per-mode sort arrays valid.
       Object.assign(previous, current);
+      this.trackCheckedProgress(current);
       if (this.lockedOrder && this.activeMode && this.lockedValues.has(cell)) {
         if (readinessIsSettled(current.readiness[this.activeMode]) && this.lockedValues.get(cell) !== current.values[this.activeMode]) this.changedLockedCells.add(cell);
         else this.changedLockedCells.delete(cell);
@@ -1835,6 +1883,11 @@ export class LineupCardSorter {
       this.poolCardCount,
     );
     const activeMode = this.activeMode;
+    if (this.checkedProgressMode !== activeMode) {
+      this.resetCheckedProgress();
+      this.checkedProgressMode = activeMode;
+      for (const record of records) this.trackCheckedProgress(record);
+    }
     this.poolReadyCount = activeMode ? this.modeCounts[activeMode].ready : 0;
     this.poolErrorCount = activeMode ? this.modeCounts[activeMode].errors : 0;
     this.poolValueCount = activeMode ? this.modeCounts[activeMode].values : 0;
@@ -1955,6 +2008,8 @@ export class LineupCardSorter {
       return true;
     }
     for (const { previous, current } of replacements) {
+      if (this.checkedCells.delete(previous)) this.checkedCells.add(current);
+      this.recheckingCells.delete(previous);
       if (this.lockedOrder) {
         this.lockedOrder = this.lockedOrder.map(cell => cell === previous ? current : cell);
         if (this.lockedValues.has(previous)) this.lockedValues.set(current, this.lockedValues.get(previous)!);
@@ -1986,6 +2041,7 @@ export class LineupCardSorter {
         this.completedCellRecordByCell.set(current, currentRecord);
         this.adjustCounts(previousRecord, -1);
         this.adjustCounts(currentRecord, 1);
+        this.trackCheckedProgress(currentRecord);
         if (this.lockedOrder && this.activeMode && readinessIsSettled(currentRecord.readiness[this.activeMode]) && this.lockedValues.get(current) !== currentRecord.values[this.activeMode]) {
           this.changedLockedCells.add(current);
         }
