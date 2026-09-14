@@ -51,7 +51,7 @@ describe('honest sort completion', () => {
       const count=(seen.get(slug)??0)+1;seen.set(slug,count);
       return count===1?{goal:null,aa:null,readiness:{goal:'pending',aa:'pending',cleanSheet:'unavailable'}}:{};
     }));
-    hydrator=new LineupSortHydrator(fetcher,50,[10,20]);
+    hydrator=new LineupSortHydrator(fetcher,50,[10,20],0);
     await hydrator.hydrate(pool, targets(pool)); hydrator.finalizePool(pool);
     expect(pool.getAttribute(sortFinalCheckAttribute)).toBe('pending');
     expect([...pool.querySelectorAll('article')].every(c=>readSortReadiness(c)?.goal==='pending')).toBe(true);
@@ -168,7 +168,7 @@ describe('honest sort completion', () => {
   it('cancels pending retries without resurrecting a finished sort session', async () => {
     vi.useFakeTimers();
     const pool=grid(1),fetcher=vi.fn(async(req:LineupSortValuesRequest)=>response(req,()=>({goal:null,readiness:{goal:'pending',aa:'ready',cleanSheet:'unavailable'}})));
-    hydrator=new LineupSortHydrator(fetcher,50,[10]);
+    hydrator=new LineupSortHydrator(fetcher,50,[10],0);
     await hydrator.hydrate(pool,targets(pool));hydrator.finalizePool(pool);hydrator.cancel();
     await vi.advanceTimersByTimeAsync(100);
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -178,7 +178,7 @@ describe('honest sort completion', () => {
   it('ignores an old in-flight response after cancellation', async () => {
     const pool=grid(1);let finish!:(value:LineupSortValuesSuccessResponse)=>void;
     hydrator=new LineupSortHydrator(()=>new Promise(resolve=>{finish=resolve}));
-    const pending=hydrator.hydrate(pool,targets(pool));await Promise.resolve();hydrator.cancel();
+    const pending=hydrator.hydrate(pool,targets(pool));await vi.waitFor(()=>expect(finish).toBeTypeOf('function'));hydrator.cancel();
     finish(response({slugs:['test-player-0']},()=>({})));await pending;
     expect(pool.querySelector('article')!.hasAttribute('data-sorare-overlay-goal-sort-probability')).toBe(false);
     expect(pool.hasAttribute(sortFinalCheckAttribute)).toBe(false);
@@ -187,7 +187,7 @@ describe('honest sort completion', () => {
   it('pauses retry work and resumes the same pool without discarding completed metrics', async () => {
     vi.useFakeTimers();const pool=grid(1);let complete=false;
     const fetcher=vi.fn(async(req:LineupSortValuesRequest)=>response(req,()=>complete?{}:{goal:null,readiness:{goal:'pending',aa:'ready',cleanSheet:'unavailable'}}));
-    hydrator=new LineupSortHydrator(fetcher,50,[10]);await hydrator.hydrate(pool,targets(pool));hydrator.suspend();
+    hydrator=new LineupSortHydrator(fetcher,50,[10],0);await hydrator.hydrate(pool,targets(pool));hydrator.suspend();
     await vi.advanceTimersByTimeAsync(100);expect(fetcher).toHaveBeenCalledTimes(1);
     complete=true;hydrator.resume();await vi.advanceTimersByTimeAsync(1);
     expect(fetcher).toHaveBeenCalledTimes(2);expect(readSortReadiness(pool.querySelector('article')!)?.goal).toBe('ready');
@@ -209,7 +209,7 @@ describe('honest sort completion', () => {
   it('drops obsolete AA retries when switching back to an already complete goal market', async () => {
     vi.useFakeTimers();const pool=grid(1);
     const fetcher=vi.fn(async(req:LineupSortValuesRequest)=>response(req,()=>({goal:{probability:.5,source:'market'},aa:null,readiness:{goal:'ready',aa:'pending',cleanSheet:'unavailable'}})));
-    hydrator=new LineupSortHydrator(fetcher,50,[10]);hydrator.configureMode('aa');
+    hydrator=new LineupSortHydrator(fetcher,50,[10],0);hydrator.configureMode('aa');
     await hydrator.hydrate(pool,targets(pool));hydrator.configureMode('goal');
     await vi.advanceTimersByTimeAsync(100);
     expect(fetcher).toHaveBeenCalledTimes(1);

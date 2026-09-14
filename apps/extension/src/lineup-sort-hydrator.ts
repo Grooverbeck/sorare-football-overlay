@@ -256,6 +256,8 @@ export class LineupSortHydrator {
   private marketCacheRevision = 0;
   private pumpPromise: Promise<void> | undefined;
   private pumpGeneration: number | undefined;
+  private batchTimer: number | undefined;
+  private finishBatchDelay: (() => void) | undefined;
   private historicalGoalWindow: HistoricalMarketWindow | null = null;
   private phaseStartedAt = 0;
   private phaseCompleted = true;
@@ -267,6 +269,7 @@ export class LineupSortHydrator {
   suspend(): void {
     this.suspended = true;
     this.generation += 1;
+    this.releaseBatchDelay();
     this.fixtureScheduler.stop();
     for (const timer of this.retryTimers.values()) window.clearTimeout(timer);
     this.retryTimers.clear();
@@ -339,6 +342,7 @@ export class LineupSortHydrator {
     private readonly fetcher: SortValuesFetcher = fetchLineupSortValues,
     private readonly batchSize = 50,
     private readonly retryDelaysMs: readonly number[] = [1_000, 5_000, 15_000, 30_000],
+    private readonly coalesceDelayMs = 24,
   ) {}
 
   finalizePool(grid: HTMLElement): void {
@@ -490,7 +494,9 @@ export class LineupSortHydrator {
 
   private requestTarget(state: HydrationState): CardTarget {
     const resolved = this.resolvedIdentities.get(state.key);
-    return resolved ? { ...state.target, ...resolved } : state.target;
+    // Learn identity, not a new position override. Automatic and explicit
+    // card positions have different backend form-cache keys and semantics.
+    return resolved ? { ...state.target, slug: resolved.slug } : state.target;
   }
 
   private requestScope(state: HydrationState): string {
@@ -528,10 +534,11 @@ export class LineupSortHydrator {
       const cachedSnapshot = this.snapshotForTarget(target, key);
       if (existing) {
         const previousTarget = this.requestTarget(existing);
+        const previousResolved = this.resolvedIdentities.get(existing.key);
         const resolved = this.resolvedIdentities.get(key);
         const nextTarget = resolved ? { ...target, ...resolved } : target;
         const samePlayer = playerRequestIdentity(previousTarget) === playerRequestIdentity(nextTarget) &&
-          previousTarget.position === nextTarget.position && previousTarget.teamSlug === nextTarget.teamSlug;
+          (previousTarget.position ?? previousResolved?.position) === nextTarget.position && previousTarget.teamSlug === nextTarget.teamSlug;
         this.removeState(target.container);
         if (!cachedSnapshot || !samePlayer) this.clearTargetValues(target.container, samePlayer);
       }
@@ -667,6 +674,7 @@ export class LineupSortHydrator {
   }
 
   stop(): void {
+    this.releaseBatchDelay();
     this.pausedReconcileTeams.clear();
     this.pausedReconcileAll = false;
     this.grid?.removeEventListener('sorare-overlay:lineup-sort-value-changed', this.handleValueChange);
@@ -691,6 +699,7 @@ export class LineupSortHydrator {
   }
 
   private reset(grid: HTMLElement, clearLightweightValues = false): void {
+    this.releaseBatchDelay();
     this.suspended = false;
     this.pausedReconcileTeams.clear();
     this.pausedReconcileAll = false;
@@ -729,12 +738,13 @@ export class LineupSortHydrator {
 
   private ensurePump(): Promise<void> {
     if (this.suspended) return Promise.resolve();
+    if (this.queue.length >= this.effectiveBatchSize()) this.releaseBatchDelay();
     const generation = this.generation;
     if (this.pumpPromise && this.pumpGeneration === generation) {
       return this.pumpPromise;
     }
-    // Coalesce discoveries from the same JS turn. No fixed delay, no waiting
-    // for fifty players, and no increase in concurrent backend requests.
+    // Coalesce same-turn discoveries before considering a bounded wait for
+    // small batches. Concurrent backend requests remain limited to one.
     const promise = Promise.resolve().then(() => this.pump(generation)).finally(() => {
       if (this.pumpPromise === promise) {
         this.pumpPromise = undefined;
@@ -751,6 +761,13 @@ export class LineupSortHydrator {
 
   private async pump(generation: number): Promise<void> {
     while (!this.suspended && generation === this.generation) {
+      if (this.queue.length > 0 && this.queue.length < this.effectiveBatchSize() && this.coalesceDelayMs > 0) {
+        await new Promise<void>(resolve => {
+          this.finishBatchDelay = resolve;
+          this.batchTimer = window.setTimeout(() => this.releaseBatchDelay(), this.coalesceDelayMs);
+        });
+        if (this.suspended || generation !== this.generation) return;
+      }
       const groups = this.takeBatch();
       if (groups.length === 0) return;
       const batch = groups.flatMap(group => group.states);
@@ -804,6 +821,14 @@ export class LineupSortHydrator {
         for (const state of batch) this.retryOrComplete(state);
       }
     }
+  }
+
+  private releaseBatchDelay(): void {
+    if (this.batchTimer !== undefined) window.clearTimeout(this.batchTimer);
+    this.batchTimer = undefined;
+    const finish = this.finishBatchDelay;
+    this.finishBatchDelay = undefined;
+    finish?.();
   }
 
   private takeBatch(): HydrationBatchGroup[] {

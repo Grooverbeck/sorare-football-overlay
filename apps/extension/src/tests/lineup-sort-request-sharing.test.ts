@@ -51,7 +51,7 @@ describe('shared compact sort requests',()=>{
     expect(targets.every(target=>readSortReadiness(target.container)?.goal==='ready')).toBe(true);
   });
 
-  it('coalesces separate discoveries from the same turn without a fixed timer',async()=>{
+  it('coalesces separate discoveries without waiting for a full fifty-player batch',async()=>{
     const {grid,targets}=pool(2);targets[1]!.slug='second-player';
     const fetcher=vi.fn(async(request:LineupSortValuesRequest)=>response(request));hydrator=new LineupSortHydrator(fetcher);
     const first=hydrator.hydrate(grid,targets.slice(0,1)),second=hydrator.hydrate(grid,targets.slice(1));
@@ -62,7 +62,7 @@ describe('shared compact sort requests',()=>{
   it('joins a duplicate discovered during an in-flight request',async()=>{
     const {grid,targets}=pool(2);let finish!:(value:LineupSortValuesSuccessResponse)=>void;
     const fetcher=vi.fn(()=>new Promise<LineupSortValuesSuccessResponse>(resolve=>{finish=resolve}));hydrator=new LineupSortHydrator(fetcher);
-    const first=hydrator.hydrate(grid,targets.slice(0,1));await Promise.resolve();
+    const first=hydrator.hydrate(grid,targets.slice(0,1));await vi.waitFor(()=>expect(fetcher).toHaveBeenCalledTimes(1));
     const second=hydrator.hydrate(grid,targets.slice(1));finish(response({slugs:['test-player']}));await Promise.all([first,second]);
     expect(fetcher).toHaveBeenCalledTimes(1);expect(targets.every(t=>readSortReadiness(t.container)?.goal==='ready')).toBe(true);
   });
@@ -120,5 +120,41 @@ describe('shared compact sort requests',()=>{
     await hydrator.hydrate(grid,[{...targets[0]!,slug:'other-player'}]);
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(targets[0]!.container.getAttribute('data-sorare-overlay-goal-sort-probability')).toBe('0.2');
+  });
+
+  it('keeps automatic position selection when using a learned slug for a subsequent request',async()=>{
+    const {grid,targets}=pool(1);const named:CardTarget={container:targets[0]!.container,playerName:'Test Player'};
+    const fetcher=vi.fn(async(request:LineupSortValuesRequest)=>response(request));hydrator=new LineupSortHydrator(fetcher);
+    await hydrator.hydrate(grid,[named]);
+    setLineupGoalSortValue(named.container,null);
+    await hydrator.reconcileMissingGoals();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[1]![0].slugs).toEqual(['test-player']);
+    expect(fetcher.mock.calls[1]![0].positions).toBeUndefined();
+  });
+
+  it('coalesces discoveries in adjacent tasks, then starts within the bounded delay',async()=>{
+    vi.useFakeTimers();const {grid,targets}=pool(2);targets[1]!.slug='second-player';
+    const fetcher=vi.fn(async(request:LineupSortValuesRequest)=>response(request));hydrator=new LineupSortHydrator(fetcher);
+    const first=hydrator.hydrate(grid,targets.slice(0,1));await vi.advanceTimersByTimeAsync(10);
+    const second=hydrator.hydrate(grid,targets.slice(1));expect(fetcher).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(14);await Promise.all([first,second]);
+    expect(fetcher).toHaveBeenCalledTimes(1);expect(fetcher.mock.calls[0]![0].slugs).toHaveLength(2);
+  });
+
+  it('starts a full batch before the remaining coalescing delay',async()=>{
+    vi.useFakeTimers();const {grid,targets}=pool(50);targets.forEach((t,i)=>{t.slug=`player-${i}`;});
+    const fetcher=vi.fn(async(request:LineupSortValuesRequest)=>response(request));hydrator=new LineupSortHydrator(fetcher);
+    const first=hydrator.hydrate(grid,targets.slice(0,1));await vi.advanceTimersByTimeAsync(10);
+    const rest=hydrator.hydrate(grid,targets.slice(1));await vi.advanceTimersByTimeAsync(0);await Promise.all([first,rest]);
+    expect(fetcher).toHaveBeenCalledTimes(1);expect(fetcher.mock.calls[0]![0].slugs).toHaveLength(50);
+  });
+
+  it('cancels during the coalescing delay without starting a request',async()=>{
+    vi.useFakeTimers();const {grid,targets}=pool(1);
+    const fetcher=vi.fn(async(request:LineupSortValuesRequest)=>response(request));hydrator=new LineupSortHydrator(fetcher);
+    const pending=hydrator.hydrate(grid,targets);await vi.advanceTimersByTimeAsync(10);
+    hydrator.cancel();await vi.advanceTimersByTimeAsync(100);await pending;
+    expect(fetcher).not.toHaveBeenCalled();
   });
 });

@@ -444,7 +444,7 @@ describe('LineupSortHydrator', () => {
     );
     const hydrator = new LineupSortHydrator(fetcher);
     const hydration = hydrator.hydrate(grid);
-    await Promise.resolve();
+    await vi.waitFor(()=>expect(resolveRequest).toBeTypeOf('function'));
     const card = grid.querySelector<HTMLElement>('[data-testid="card-1"]');
     if (!card) throw new Error('Expected card');
 
@@ -696,7 +696,7 @@ describe('LineupSortHydrator', () => {
     markLineupSortFullDataUpdated(target.container);
     const reconciliation = hydrator.reconcileMissingGoals();
     setLineupSortDataReady(target.container, false);
-    await Promise.resolve();
+    await vi.waitFor(()=>expect(finish).toBeTypeOf('function'));
     finish?.(responseFor({slugs:['sort-player-1'], playerNames:[], historicalGoalWindow:null}));
     await reconciliation;
     expect(target.container.getAttribute(lineupSortDataReadyAttribute)).toBe('true');
@@ -720,7 +720,7 @@ describe('LineupSortHydrator', () => {
         fixtureRefresh:{key:value.slug==='sort-player-3'?'fixture-status:v1:1956596400:other:opponent':calls===1?oldKey:newKey,nextCheckAt:new Date(Date.now()+((calls===1&&value.slug!=='sort-player-3')?1000:3_600_000)).toISOString()},
       }))};
     });
-    const hydrator=new LineupSortHydrator(fetcher);
+    const hydrator=new LineupSortHydrator(fetcher,50,undefined,0);
     try {
       await hydrator.hydrate(grid);
       await vi.advanceTimersByTimeAsync(1000);

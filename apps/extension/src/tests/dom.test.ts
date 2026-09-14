@@ -4221,7 +4221,7 @@ describe('Sorare card DOM discovery', () => {
       const scanner = new SorareCardScanner(
         coordinator,
         undefined,
-        new LineupSortHydrator(sortFetcher, 25, [1_000]),
+        new LineupSortHydrator(sortFetcher, 25, [1_000], 0),
       );
 
       scanner.start();

@@ -56,8 +56,11 @@ Teamhinweise werden dabei nicht zu einer kanonischen Teamzuordnung erhoben.
 Positions- und Fixture-Grenzen gelten auch für wiederverwendete Aliase.
 
 Entdeckungen desselben JavaScript-Durchlaufs werden vor dem Requeststart über
-einen Microtask zusammengefasst. Es gibt keine neue feste Wartezeit und keine
-höhere Request-Parallelität. Die abschließende Erkennungsrunde reicht ihre
+einen Microtask zusammengefasst. Kleine Batches warten zusätzlich höchstens
+24 ms auf benachbarte Entdeckungen; volle Batches starten früher. Es gibt keine
+höhere Request-Parallelität. Die bestätigte Spielerkennung verändert keine
+automatische Positionswahl in einen expliziten Positionsparameter, sodass
+vorhandene Backend-Cachepfade weiter passen. Die abschließende Erkennungsrunde reicht ihre
 Targets pro Arbeitspaket weiter; eine separate Erkennungssperre verhindert
 eine vorzeitige Fertigmeldung, solange noch Karten zu besuchen sind.
 
