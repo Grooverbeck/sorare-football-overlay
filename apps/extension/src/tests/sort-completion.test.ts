@@ -178,7 +178,7 @@ describe('honest sort completion', () => {
   it('ignores an old in-flight response after cancellation', async () => {
     const pool=grid(1);let finish!:(value:LineupSortValuesSuccessResponse)=>void;
     hydrator=new LineupSortHydrator(()=>new Promise(resolve=>{finish=resolve}));
-    const pending=hydrator.hydrate(pool,targets(pool));hydrator.cancel();
+    const pending=hydrator.hydrate(pool,targets(pool));await Promise.resolve();hydrator.cancel();
     finish(response({slugs:['test-player-0']},()=>({})));await pending;
     expect(pool.querySelector('article')!.hasAttribute('data-sorare-overlay-goal-sort-probability')).toBe(false);
     expect(pool.hasAttribute(sortFinalCheckAttribute)).toBe(false);

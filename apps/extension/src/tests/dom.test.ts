@@ -3801,7 +3801,8 @@ describe('Sorare card DOM discovery', () => {
     expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
 
     frameCallbacks.shift()?.(performance.now());
-    expect(hydrate).not.toHaveBeenCalled();
+    expect(hydrate).toHaveBeenCalledTimes(1);
+    expect(hydrate.mock.calls[0]?.[1]?.length).toBeLessThan(40);
     expect(frameCallbacks).toHaveLength(1);
 
     let flushedFrames = 1;
@@ -3813,8 +3814,7 @@ describe('Sorare card DOM discovery', () => {
 
     expect(flushedFrames).toBeGreaterThanOrEqual(3);
     expect(frameCallbacks).toHaveLength(0);
-    expect(hydrate).toHaveBeenCalledTimes(1);
-    expect(hydrate.mock.calls[0]?.[1]).toHaveLength(40);
+    expect(hydrate.mock.calls.flatMap(([, chunk])=>chunk??[])).toHaveLength(40);
     expect(imageRects.every(({ mock }) => mock.calls.length === 0)).toBe(true);
     scanner.stop();
     vi.unstubAllGlobals();

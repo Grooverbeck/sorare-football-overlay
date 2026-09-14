@@ -444,6 +444,7 @@ describe('LineupSortHydrator', () => {
     );
     const hydrator = new LineupSortHydrator(fetcher);
     const hydration = hydrator.hydrate(grid);
+    await Promise.resolve();
     const card = grid.querySelector<HTMLElement>('[data-testid="card-1"]');
     if (!card) throw new Error('Expected card');
 
@@ -475,7 +476,7 @@ describe('LineupSortHydrator', () => {
         request: LineupSortValuesRequest,
       ): Promise<LineupSortValuesSuccessResponse> => {
         requestNumber += 1;
-        const names = request.playerNames ?? [];
+        const names = [...(request.playerNames ?? []), ...(request.slugs ?? []).map(slug => `Sort Player ${slug.split('-').at(-1)}`)];
         return {
           data: names.map((displayName, index) => ({
             slug: `sort-player-${index + 1}`,
@@ -512,7 +513,8 @@ describe('LineupSortHydrator', () => {
     await hydrator.reconcileMissingGoals(['team-one']);
 
     expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(fetcher.mock.calls[1]?.[0].playerNames).toEqual(['Sort Player 1']);
+    expect(fetcher.mock.calls[1]?.[0].slugs).toEqual(['sort-player-1']);
+    expect(fetcher.mock.calls[1]?.[0].playerNames).toEqual([]);
     expect(
       firstCard.getAttribute('data-sorare-overlay-goal-sort-probability'),
     ).toBe('0.42');
@@ -531,7 +533,7 @@ describe('LineupSortHydrator', () => {
       async (
         request: LineupSortValuesRequest,
       ): Promise<LineupSortValuesSuccessResponse> => ({
-        data: (request.playerNames ?? []).map((displayName, index) => ({
+        data: [...(request.playerNames ?? []), ...(request.slugs ?? []).map(slug => `Sort Player ${slug.split('-').at(-1)}`)].map((displayName, index) => ({
           slug: `sort-player-${index + 1}`,
           displayName,
           position: 'Midfielder',
@@ -694,6 +696,7 @@ describe('LineupSortHydrator', () => {
     markLineupSortFullDataUpdated(target.container);
     const reconciliation = hydrator.reconcileMissingGoals();
     setLineupSortDataReady(target.container, false);
+    await Promise.resolve();
     finish?.(responseFor({slugs:['sort-player-1'], playerNames:[], historicalGoalWindow:null}));
     await reconciliation;
     expect(target.container.getAttribute(lineupSortDataReadyAttribute)).toBe('true');

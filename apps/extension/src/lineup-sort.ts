@@ -1291,13 +1291,14 @@ export class LineupCardSorter {
       const config = lineupSortConfigs[this.activeMode];
       const baseLabel = config.label;
       const loading = this.poolLoading || (!this.lockedOrder && this.poolHydrationUiPending);
+      const pendingValues = Math.max(0, this.poolCardCount - this.poolReadyCount - this.poolErrorCount);
       const unidentifiedCount = this.completedGrid?.querySelectorAll(
         `[${lineupSortIdentityMissingAttribute}]`,
       ).length ?? 0;
       const displayedPlayerCount = this.displayedPoolCardCount;
       const loadingPlayerDescription =
         displayedPlayerCount > 0
-          ? `${displayedPlayerCount} Spieler bisher geladen. `
+          ? `${displayedPlayerCount} Spieler bisher gefunden. `
           : '';
       const totalPlayerDescription =
         displayedPlayerCount > 0
@@ -1312,14 +1313,18 @@ export class LineupCardSorter {
             : 'Spielerliste unvollständig'
           : this.poolErrorCount > 0 && !this.poolLoading
             ? `${this.poolReadyCount} von ${displayedPlayerCount} geprüft · ${this.poolErrorCount} offen`
+          : this.lockedOrder && pendingValues > 0
+            ? `${displayedPlayerCount} Spieler · ${pendingValues} ${pendingValues === 1 ? 'Wert lädt' : 'Werte laden'}`
           : this.updatedValueCount > 0
-            ? `${this.updatedValueCount} neue Werte verfügbar`
+            ? `${this.updatedValueCount} ${this.updatedValueCount === 1 ? 'neuer Wert' : 'neue Werte'} verfügbar`
           : this.poolHydrating && !this.poolLoading
-            ? `${this.poolReadyCount} von ${displayedPlayerCount} geprüft`
+            ? `${this.poolReadyCount} von ${displayedPlayerCount} Werten geprüft`
           : displayedPlayerCount > 0
             ? !loading && unidentifiedCount > 0
               ? `${displayedPlayerCount} Spieler · ${unidentifiedCount} nicht erkannt`
-              : `${displayedPlayerCount} Spieler ${loading ? 'geladen' : 'sortiert'}`
+              : this.poolLoading
+                ? `${displayedPlayerCount} Spieler gefunden`
+                : loading ? `${displayedPlayerCount} Spieler · Sortiere …` : `${displayedPlayerCount} Spieler sortiert`
             : null,
       );
       const nextLabel = loading
@@ -1532,7 +1537,7 @@ export class LineupCardSorter {
       // Keep references held by unaffected per-mode sort arrays valid.
       Object.assign(previous, current);
       if (this.lockedOrder && this.activeMode && this.lockedValues.has(cell)) {
-        if (this.lockedValues.get(cell) !== current.values[this.activeMode]) this.changedLockedCells.add(cell);
+        if (readinessIsSettled(current.readiness[this.activeMode]) && this.lockedValues.get(cell) !== current.values[this.activeMode]) this.changedLockedCells.add(cell);
         else this.changedLockedCells.delete(cell);
         const order = this.lockedOrdersByCell.get(cell);
         if (order !== undefined && cell.style.order !== order) cell.style.order = order;
@@ -1981,7 +1986,7 @@ export class LineupCardSorter {
         this.completedCellRecordByCell.set(current, currentRecord);
         this.adjustCounts(previousRecord, -1);
         this.adjustCounts(currentRecord, 1);
-        if (this.lockedOrder && this.activeMode && this.lockedValues.get(current) !== currentRecord.values[this.activeMode]) {
+        if (this.lockedOrder && this.activeMode && readinessIsSettled(currentRecord.readiness[this.activeMode]) && this.lockedValues.get(current) !== currentRecord.values[this.activeMode]) {
           this.changedLockedCells.add(current);
         }
       }
@@ -2164,7 +2169,7 @@ export class LineupCardSorter {
     const text = retry ? 'Erneut prüfen' : 'Neu sortieren';
     const title = retry
       ? `${this.poolErrorCount} Karten konnten noch nicht abschließend geprüft werden. Nur offene Werte erneut laden.`
-      : `${this.updatedValueCount} neue Werte verfügbar. Die Reihenfolge erst jetzt aktualisieren.`;
+      : `${this.updatedValueCount} ${this.updatedValueCount === 1 ? 'neuer Wert' : 'neue Werte'} verfügbar. Die Reihenfolge erst jetzt aktualisieren.`;
     if (this.actionButton.textContent !== text) this.actionButton.textContent = text;
     if (this.actionButton.title !== title) this.actionButton.title = title;
     if (this.actionButton.getAttribute('aria-label') !== title) this.actionButton.setAttribute('aria-label', title);

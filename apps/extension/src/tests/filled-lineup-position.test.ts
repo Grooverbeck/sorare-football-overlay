@@ -180,13 +180,16 @@ describe('filled lineup slot identity', () => {
       grid.dispatchEvent(new CustomEvent(lineupPoolReadyEvent, { bubbles: true }));
       grid.removeAttribute(lineupSortHydrationGridAttribute);
       frames.shift()!(performance.now());
-      expect(hydrate).not.toHaveBeenCalled();
+      expect(hydrate).toHaveBeenCalledTimes(1);
+      expect(hydrate.mock.calls[0]![1]!.length).toBeLessThan(40);
+      hydrate.mockClear();
+      const cancel=vi.spyOn(hydrator,'cancel');
       selectSlot(3);
       let count = 0;
       while (frames.length && count++ < 100) frames.shift()!(performance.now());
       expect(count).toBeLessThan(100);
-      expect(hydrate).toHaveBeenCalledTimes(1);
-      const targets = hydrate.mock.calls[0]![1];
+      expect(cancel).toHaveBeenCalled();
+      const targets = hydrate.mock.calls.flatMap(([, chunk])=>chunk??[]);
       expect(targets).toHaveLength(40);
       expect(targets.every(target => target.position === 'Forward')).toBe(true);
     } finally {

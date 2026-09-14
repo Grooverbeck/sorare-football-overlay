@@ -75,6 +75,11 @@ interface PositionlessSnapshotAlias {
   ambiguous: boolean;
 }
 
+interface HydrationBatchGroup {
+  scope: string;
+  states: HydrationState[];
+}
+
 function positionlessTargetKey(target: CardTarget): string {
   return playerTargetKey({
     ...(target.slug ? { slug: target.slug } : {}),
@@ -147,10 +152,9 @@ function targetMatchesValue(
   value: LineupSortValue,
 ): boolean {
   if (target.position && target.position !== value.position) return false;
-  return Boolean(
-    (target.slug && target.slug === value.slug) ||
-      (target.playerName &&
-        playerNamesLikelyMatch(target.playerName, value.displayName)),
+  // A known slug must never be replaced by a different player with a similar name.
+  return target.slug ? target.slug === value.slug : Boolean(
+    target.playerName && playerNamesLikelyMatch(target.playerName, value.displayName),
   );
 }
 
@@ -238,6 +242,7 @@ export class LineupSortHydrator {
   private grid: HTMLElement | null = null;
   private readonly states = new Map<HTMLElement, HydrationState>();
   private readonly snapshots = new Map<string, SortValueSnapshot>();
+  private readonly resolvedIdentities = new Map<string, { slug: string; position: FootballPosition } | null>();
   private readonly positionlessSnapshots = new Map<
     string,
     PositionlessSnapshotAlias
@@ -256,6 +261,7 @@ export class LineupSortHydrator {
   private phaseCompleted = true;
   private finalCheckRequested = false;
   private finalCheckStarted = false;
+  private discoveryPending = false;
   private mode: 'goal' | 'aa' | 'clean-sheet' = 'goal';
 
   suspend(): void {
@@ -293,6 +299,7 @@ export class LineupSortHydrator {
     this.grid?.removeAttribute(sortFinalCheckAttribute);
     this.states.clear();
     this.snapshots.clear();
+    this.resolvedIdentities.clear();
     this.positionlessSnapshots.clear();
     this.pausedReconcileTeams.clear();
     this.pausedReconcileAll = false;
@@ -300,6 +307,7 @@ export class LineupSortHydrator {
     this.phaseCompleted = true;
     this.finalCheckRequested = false;
     this.finalCheckStarted = false;
+    this.discoveryPending = false;
   }
 
   configureMode(mode: 'goal' | 'aa' | 'clean-sheet'): void {
@@ -335,11 +343,18 @@ export class LineupSortHydrator {
 
   finalizePool(grid: HTMLElement): void {
     if (this.grid !== grid || this.suspended) return;
+    this.discoveryPending = false;
     this.finalCheckRequested = true;
     this.finalCheckStarted = false;
     this.phaseCompleted = false;
     setSortFinalCheck(grid, 'pending');
     if (!this.pumpPromise) this.maybeLogCompletion();
+  }
+
+  beginPoolReconciliation(grid: HTMLElement): void {
+    if (this.grid !== grid) this.reset(grid);
+    this.discoveryPending = true;
+    setSortFinalCheck(grid, 'pending');
   }
 
   retryOpenValues(): void {
@@ -407,6 +422,19 @@ export class LineupSortHydrator {
     const snapshot = snapshotForTarget(target);
     if (!snapshot) return;
     this.snapshots.set(key, snapshot);
+    const resolved = this.resolvedIdentities.get(key);
+    if (resolved && snapshot.position === resolved.position) {
+      const canonical = { ...target, slug: resolved.slug, position: resolved.position };
+      const canonicalKey = playerTargetKey(canonical);
+      if (canonicalKey !== key) {
+        this.snapshots.set(canonicalKey, snapshot);
+        this.rememberPositionlessSnapshot(canonical, snapshot);
+      }
+    }
+    this.rememberPositionlessSnapshot(target, snapshot);
+  }
+
+  private rememberPositionlessSnapshot(target: CardTarget, snapshot: SortValueSnapshot): void {
     if (!snapshot.position) return;
 
     const aliasKey = positionlessTargetKey(target);
@@ -436,10 +464,40 @@ export class LineupSortHydrator {
     target: CardTarget,
     key: string,
   ): SortValueSnapshot | undefined {
-    const exact = this.snapshots.get(key);
-    if (exact || target.position !== undefined) return exact;
-    const alias = this.positionlessSnapshots.get(positionlessTargetKey(target));
-    return alias?.ambiguous ? undefined : alias?.snapshot;
+    const resolved = this.resolvedIdentities.get(key);
+    const exact = (resolved ? this.snapshots.get(playerTargetKey({ ...target, ...resolved })) : undefined) ?? this.snapshots.get(key);
+    const currentFixture = target.container.getAttribute(fixtureIdentityAttribute);
+    // Do not carry a cached price back over a fixture transition already known
+    // by the live card, including an explicit retired/no-fixture state.
+    const alias = target.position === undefined ? this.positionlessSnapshots.get(positionlessTargetKey(target)) : undefined;
+    const snapshot = exact ?? (alias?.ambiguous ? undefined : alias?.snapshot);
+    if (snapshot && currentFixture !== null && snapshot.fixtureIdentity !== undefined && currentFixture !== snapshot.fixtureIdentity) return undefined;
+    return snapshot;
+  }
+
+  private rememberResolvedIdentity(state: HydrationState, value: LineupSortValue): void {
+    const previous = this.resolvedIdentities.get(state.key);
+    if (previous === null) return;
+    if (previous && (previous.slug !== value.slug || previous.position !== value.position)) {
+      this.resolvedIdentities.set(state.key, null);
+      return;
+    }
+    const resolved = { slug: value.slug, position: value.position };
+    this.resolvedIdentities.set(state.key, resolved);
+    const canonicalKey = playerTargetKey({ ...state.target, ...resolved });
+    this.resolvedIdentities.set(canonicalKey, resolved);
+  }
+
+  private requestTarget(state: HydrationState): CardTarget {
+    const resolved = this.resolvedIdentities.get(state.key);
+    return resolved ? { ...state.target, ...resolved } : state.target;
+  }
+
+  private requestScope(state: HydrationState): string {
+    const target = this.requestTarget(state);
+    return JSON.stringify([playerRequestIdentity(target), target.position ?? null,
+      target.teamSlug ?? null, target.container.getAttribute(fixtureIdentityAttribute),
+      Boolean(state.fixtureRefreshRequest)]);
   }
 
   hydrate(
@@ -467,20 +525,26 @@ export class LineupSortHydrator {
         this.preserve(target);
         continue;
       }
+      const cachedSnapshot = this.snapshotForTarget(target, key);
       if (existing) {
+        const previousTarget = this.requestTarget(existing);
+        const resolved = this.resolvedIdentities.get(key);
+        const nextTarget = resolved ? { ...target, ...resolved } : target;
+        const samePlayer = playerRequestIdentity(previousTarget) === playerRequestIdentity(nextTarget) &&
+          previousTarget.position === nextTarget.position && previousTarget.teamSlug === nextTarget.teamSlug;
         this.removeState(target.container);
-        this.clearTargetValues(target.container);
+        if (!cachedSnapshot || !samePlayer) this.clearTargetValues(target.container, samePlayer);
       }
 
       const lightweightKey = target.container.getAttribute(
         lineupSortLightweightReadyAttribute,
       );
-      if (lightweightKey && lightweightKey !== key) {
+      if (lightweightKey && lightweightKey !== key && (!existing || !cachedSnapshot)) {
         this.clearTargetValues(target.container);
       }
 
       const existingReadiness = readSortReadiness(target.container);
-      if (
+      if (!existing && (!lightweightKey || lightweightKey === key) &&
         target.container.getAttribute(lineupSortDataReadyAttribute) === 'true' &&
         (!existingReadiness || readinessIsSettled(existingReadiness[this.metricKey()]))
       ) {
@@ -494,7 +558,7 @@ export class LineupSortHydrator {
         continue;
       }
 
-      const snapshot = this.snapshotForTarget(target, key);
+      const snapshot = cachedSnapshot;
       if (snapshot) {
         this.applySnapshot(target, key, snapshot);
         const settled = !snapshot.readiness || readinessIsSettled(snapshot.readiness[this.metricKey()]);
@@ -616,12 +680,14 @@ export class LineupSortHydrator {
     }
     this.states.clear();
     this.snapshots.clear();
+    this.resolvedIdentities.clear();
     this.positionlessSnapshots.clear();
     this.queue.length = 0;
     this.grid = null;
     this.phaseCompleted = true;
     this.finalCheckRequested = false;
     this.finalCheckStarted = false;
+    this.discoveryPending = false;
   }
 
   private reset(grid: HTMLElement, clearLightweightValues = false): void {
@@ -646,6 +712,7 @@ export class LineupSortHydrator {
     }
     this.states.clear();
     this.snapshots.clear();
+    this.resolvedIdentities.clear();
     this.positionlessSnapshots.clear();
     this.queue.length = 0;
     this.grid = grid;
@@ -653,6 +720,7 @@ export class LineupSortHydrator {
     this.phaseCompleted = true;
     this.finalCheckRequested = false;
     this.finalCheckStarted = false;
+    this.discoveryPending = false;
   }
 
   private effectiveBatchSize(): number {
@@ -665,7 +733,9 @@ export class LineupSortHydrator {
     if (this.pumpPromise && this.pumpGeneration === generation) {
       return this.pumpPromise;
     }
-    const promise = this.pump(generation).finally(() => {
+    // Coalesce discoveries from the same JS turn. No fixed delay, no waiting
+    // for fifty players, and no increase in concurrent backend requests.
+    const promise = Promise.resolve().then(() => this.pump(generation)).finally(() => {
       if (this.pumpPromise === promise) {
         this.pumpPromise = undefined;
         this.pumpGeneration = undefined;
@@ -681,8 +751,10 @@ export class LineupSortHydrator {
 
   private async pump(generation: number): Promise<void> {
     while (!this.suspended && generation === this.generation) {
-      const batch = this.takeBatch();
-      if (batch.length === 0) return;
+      const groups = this.takeBatch();
+      if (groups.length === 0) return;
+      const batch = groups.flatMap(group => group.states);
+      const requestedCacheRevision = this.marketCacheRevision;
       const startedAt = performance.now();
       for (const state of batch) {
         state.status = 'in-flight';
@@ -695,12 +767,27 @@ export class LineupSortHydrator {
       }
       try {
         const response = await this.fetcher(
-          requestForBatch(batch, this.historicalGoalWindow),
+          requestForBatch(groups.map(group => {
+            const state = group.states[0]!;
+            return { ...state, target: this.requestTarget(state) };
+          }), this.historicalGoalWindow),
         );
         if (generation !== this.generation) return;
+        // A duplicate card can be discovered while the common request is in
+        // flight. Join only an exact scope; other positions/teams/fixtures wait.
+        const scopes = new Set(groups.map(group => group.scope));
+        for (const state of this.queue) {
+          if (state.status !== 'queued' || this.states.get(state.target.container) !== state ||
+            !state.target.container.isConnected || !scopes.has(this.requestScope(state))) continue;
+          state.status = 'in-flight'; state.attempts += 1;
+          state.fullDataRevisionAtRequest = state.target.container.getAttribute(lineupSortFullDataRevisionAttribute);
+          if (state.finalCheckMetric) state.finalCheckRevision = requestedCacheRevision;
+          batch.push(state);
+        }
         this.applyResponse(batch, response);
         logStatsDiagnostic('lineup-sort-batch-complete', {
-          requested: batch.length,
+          requested: groups.length,
+          cards: batch.length,
           returned: response.data.length,
           attempt: Math.max(...batch.map(({ attempts }) => attempts)),
           durationMs: roundedDuration(startedAt),
@@ -709,7 +796,7 @@ export class LineupSortHydrator {
       } catch (error) {
         if (generation !== this.generation) return;
         logStatsDiagnostic('lineup-sort-batch-failed', {
-          requested: batch.length,
+          requested: groups.length,
           attempt: Math.max(...batch.map(({ attempts }) => attempts)),
           durationMs: roundedDuration(startedAt),
           message: error instanceof Error ? error.message : String(error),
@@ -719,27 +806,33 @@ export class LineupSortHydrator {
     }
   }
 
-  private takeBatch(): HydrationState[] {
-    const batch: HydrationState[] = [];
-    const identities = new Set<string>();
+  private takeBatch(): HydrationBatchGroup[] {
+    const batch: HydrationBatchGroup[] = [];
+    const identities = new Map<string, HydrationBatchGroup>();
     const deferred: HydrationState[] = [];
-    while (this.queue.length > 0 && batch.length < this.effectiveBatchSize()) {
-      const state = this.queue.shift();
+    const seen = new Set<HydrationState>();
+    for (const state of this.queue.splice(0)) {
       if (
-        !state ||
+        seen.has(state) ||
         state.status !== 'queued' ||
         !state.target.container.isConnected ||
         this.states.get(state.target.container) !== state
       ) {
         continue;
       }
-      const identity = playerRequestIdentity(state.target);
-      if (identities.has(identity)) {
+      seen.add(state);
+      const identity = playerRequestIdentity(this.requestTarget(state));
+      const scope = this.requestScope(state);
+      const existing = identities.get(identity);
+      if (existing?.scope === scope) {
+        existing.states.push(state);
+      } else if (existing || batch.length >= this.effectiveBatchSize()) {
         deferred.push(state);
-        continue;
+      } else {
+        const group = { scope, states: [state] };
+        identities.set(identity, group);
+        batch.push(group);
       }
-      identities.add(identity);
-      batch.push(state);
     }
     this.queue.push(...deferred);
     return batch;
@@ -751,10 +844,13 @@ export class LineupSortHydrator {
   ): void {
     const changedPlayers=new Set<string>();
     for (const state of batch) {
-      const value = response.data.find((candidate) =>
-        targetMatchesValue(state.target, candidate),
+      if (!state.target.container.isConnected || this.states.get(state.target.container) !== state) continue;
+      const candidates = response.data.filter((candidate) =>
+        targetMatchesValue(this.requestTarget(state), candidate),
       );
+      const value = candidates.length === 1 ? candidates[0] : undefined;
       if (value) {
+        this.rememberResolvedIdentity(state, value);
         const before=state.target.container.getAttribute(fixtureIdentityAttribute);
         this.completeState(state, value);
         const readiness = readSortReadiness(state.target.container);
@@ -962,11 +1058,13 @@ export class LineupSortHydrator {
     setLineupSortDataReady(container, !snapshot.readiness || readinessIsSettled(snapshot.readiness[this.metricKey()]));
   }
 
-  private clearTargetValues(container: HTMLElement): void {
+  private clearTargetValues(container: HTMLElement, preserveFixture = false): void {
     setSortReadiness(container, null);
-    container.removeAttribute(fixtureRefreshAttribute);
-    container.removeAttribute(fixtureIdentityAttribute);
-    container.removeAttribute(retiredFixtureAttribute);
+    if (!preserveFixture) {
+      container.removeAttribute(fixtureRefreshAttribute);
+      container.removeAttribute(fixtureIdentityAttribute);
+      container.removeAttribute(retiredFixtureAttribute);
+    }
     setLineupGoalSortValue(container, null);
     setLineupAaSortValue(container, null);
     setLineupCleanSheetSortValue(container, null);
@@ -991,7 +1089,7 @@ export class LineupSortHydrator {
   }
 
   private maybeLogCompletion(): void {
-    if (this.suspended || this.phaseCompleted || this.retryTimers.size > 0) return;
+    if (this.suspended || this.discoveryPending || this.phaseCompleted || this.retryTimers.size > 0) return;
     const connected = [...this.states.values()].filter(
       ({ target }) =>
         target.container.isConnected && Boolean(this.grid?.contains(target.container)),

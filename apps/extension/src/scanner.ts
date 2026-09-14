@@ -2036,13 +2036,13 @@ export class SorareCardScanner {
 
   private scheduleLineupPoolReadyScan(grid: HTMLElement): void {
     this.cancelLineupPoolReadyScan();
+    this.lineupSortHydrator.beginPoolReconciliation(grid);
     const generation = this.poolReadyScanGeneration;
     const knownLineupPosition = activeLineupPosition();
     const roots = Array.from(grid.children).filter(
       (child): child is HTMLElement => child instanceof HTMLElement,
     );
     if (roots.length === 0) roots.push(grid);
-    const targets = new Map<HTMLElement, CardTarget>();
     let nextRootIndex = 0;
 
     const scheduleNextFrame = (): void => {
@@ -2062,11 +2062,13 @@ export class SorareCardScanner {
       if (activeLineupPosition() !== knownLineupPosition) {
         // A slot switch between frames invalidates every captured target,
         // including the already processed prefix of a large/reused pool.
+        this.lineupSortHydrator.cancel();
         this.scheduleLineupPoolReadyScan(grid);
         return;
       }
       const startedAt = performance.now();
       let processedRoots = 0;
+      const frameTargets: CardTarget[] = [];
       while (nextRootIndex < roots.length) {
         const root = roots[nextRootIndex];
         nextRootIndex += 1;
@@ -2080,7 +2082,7 @@ export class SorareCardScanner {
             0,
             grid,
           )) {
-            targets.set(target.container, target);
+            frameTargets.push(target);
           }
         }
         processedRoots += 1;
@@ -2091,6 +2093,9 @@ export class SorareCardScanner {
           break;
         }
       }
+      // Start these reads while the next frame continues discovery. Finalize
+      // only after every root has been visited, even when early reads finish.
+      if (frameTargets.length) void this.lineupSortHydrator.hydrate(grid, frameTargets);
       if (nextRootIndex < roots.length) {
         scheduleNextFrame();
         return;
@@ -2103,7 +2108,6 @@ export class SorareCardScanner {
       this.flushPictureNameRescans(grid);
       // The ready event is authoritative. Keep this explicit because the
       // hydration attribute can disappear immediately after the final card.
-      void this.lineupSortHydrator.hydrate(grid, [...targets.values()]);
       this.lineupSortHydrator.finalizePool(grid);
     };
 

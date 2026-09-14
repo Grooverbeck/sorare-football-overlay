@@ -36,11 +36,30 @@ den gewählten Sortiermodus nicht.
 
 ## Nachladen
 
-Jede Karte belegt im Request genau einen Identitätseintrag: vorhandene
+Jeder Spieler belegt im Request höchstens einen Identitätseintrag: vorhandene
 Spielerkennung hat Vorrang vor dem zusätzlich bekannten Namen. Auch gemischte
 Batches aus gelernten Karten und reinen Namens-Karten bleiben damit innerhalb
 des gemeinsamen Limits von 50 Einträgen. Der große Regressionstest prüft
 zusätzlich die echte Request-Schema-Validierung.
+
+Identische Kartenkopien teilen eine Antwort nur bei gleichem Spieler,
+Positionskontext, Teamhinweis, Fixture-Identität und Refresh-Zweck. Verschiedene
+Kontexte desselben Spielers werden in getrennte Requests gelegt, weil die API
+Positions-/Teamparameter pro Spielerkennung überträgt. Spät während eines
+Requests entdeckte identische Kopien können dieselbe Antwort übernehmen.
+Die angezeigte Poolgröße zählt weiterhin Karten, nicht eindeutige Spieler.
+
+Ein vom Backend bestätigter Name/Slug-Zusammenhang wird im aktuellen Pool
+als Alias gespeichert. Das ist keine unscharfe Namenssuche: Ein vorhandener
+abweichender Slug oder eine mehrdeutige Antwort wird nicht übernommen.
+Teamhinweise werden dabei nicht zu einer kanonischen Teamzuordnung erhoben.
+Positions- und Fixture-Grenzen gelten auch für wiederverwendete Aliase.
+
+Entdeckungen desselben JavaScript-Durchlaufs werden vor dem Requeststart über
+einen Microtask zusammengefasst. Es gibt keine neue feste Wartezeit und keine
+höhere Request-Parallelität. Die abschließende Erkennungsrunde reicht ihre
+Targets pro Arbeitspaket weiter; eine separate Erkennungssperre verhindert
+eine vorzeitige Fertigmeldung, solange noch Karten zu besuchen sind.
 
 Der Sortier-Lader arbeitet über den gesamten erkannten Pool, unabhängig vom
 Viewport. Automatische Wiederholungen sind begrenzt (nach 1, 5, 15 und 30
@@ -86,6 +105,10 @@ Response-Budgets und serverseitigen In-flight-Sperren bleiben erhalten.
 - Spätere Werte aktualisieren weiterhin die Daten, verschieben aber keine
   Karten beim Scrollen. Der Hinweis „Neue Werte verfügbar“ und „Neu sortieren“
   erlauben eine bewusste Aktualisierung.
+- Nur abgeschlossene Wertänderungen zählen als neu verfügbar. Vorläufig
+  fehlende Werte nach einem Karten-Neuaufbau werden als laufende Prüfung
+  angezeigt, nicht als neue Werte. Die Ladeanzeige trennt gefundene Spieler,
+  geprüfte Werte und den abschließenden Sortierschritt.
 - Ein bewusster Wechsel zwischen Tor, AA und CS verwendet die neuesten
   vorhandenen Werte. Die native Sorare-Sortierung sowie Filter-/Slotwechsel
   behalten ihre bisherigen Wiederherstellungs- und Abbruchregeln.
