@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { LineupSortValuesRequestSchema, type LineupSortValuesRequest, type LineupSortValuesSuccessResponse } from '@sorare-overlay/shared';
+import { LineupSortValuesRequestSchema, type LineupSortValue, type LineupSortValuesRequest, type LineupSortValuesSuccessResponse } from '@sorare-overlay/shared';
 import { LineupSortHydrator } from '../lineup-sort-hydrator.js';
 import type { CardTarget } from '../dom.js';
 import { readSortReadiness, sortFinalCheckAttribute } from '../lineup-sort-readiness.js';
@@ -23,6 +23,71 @@ function response(request: LineupSortValuesRequest): LineupSortValuesSuccessResp
 }
 
 describe('shared compact sort requests',()=>{
+  it('accepts identical name/slug answers for automatic and explicit positions without retrying', async () => {
+    const {grid, targets} = pool(2);
+    const named: CardTarget = {container: targets[1]!.container, playerName: 'Test Player', position: 'Forward'};
+    delete targets[0]!.position;
+    targets[0]!.teamSlug = 'team-one';
+    const fetcher = vi.fn(async (request: LineupSortValuesRequest) => {
+      const result = response(request);
+      expect(result.data).toHaveLength(2);
+      // Independent JSON objects, including a different property order.
+      for (const value of result.data) {
+        value.fixtureIdentity = 'fixture-status:v1:100:one:two';
+        value.fixtureRefresh = {key: 'fixture-status:v1:100:one:two', nextCheckAt: '2026-09-16T21:30:00Z'};
+      }
+      result.data[1]!.readiness = {aa: 'ready', cleanSheet: 'unavailable', goal: 'ready'};
+      return result;
+    });
+    hydrator = new LineupSortHydrator(fetcher, 50, []);
+    await hydrator.hydrate(grid, [targets[0]!, named]);
+    hydrator.finalizePool(grid);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0]![0]).toMatchObject({slugs: ['test-player'], playerNames: ['Test Player']});
+    expect(targets.every(t => readSortReadiness(t.container)?.goal === 'ready')).toBe(true);
+    expect(targets.every(t => t.container.getAttribute('data-sorare-overlay-goal-sort-probability') === '0.4')).toBe(true);
+    expect(grid.getAttribute(sortFinalCheckAttribute)).toBe('complete');
+  });
+
+  it.each<[string, Partial<LineupSortValue>]>([
+    ['player', {slug: 'another-player'}],
+    ['position', {position: 'Midfielder'}],
+    ['fixture', {fixtureIdentity: 'fixture-status:v1:200:one:three'}],
+    ['missing fixture identity', {fixtureIdentity: undefined}],
+    ['no fixture', {fixtureIdentity: null}],
+    ['refresh identity', {fixtureRefresh: {key: 'different-team-fixture', nextCheckAt: '2026-09-16T21:30:00Z'}}],
+    ['refresh time', {fixtureRefresh: {key: 'fixture-status:v1:100:one:two', nextCheckAt: '2026-09-17T21:30:00Z'}}],
+    ['goal', {goal: {probability: .8, source: 'market'}}],
+    ['goal source', {goal: {probability: .4, source: 'historical'}}],
+    ['AA', {aa: 20}],
+    ['CS', {cleanSheet: .5}],
+    ['readiness', {readiness: {goal: 'pending', aa: 'ready', cleanSheet: 'unavailable'}}],
+  ])('still rejects conflicting duplicate %s answers for an unresolved card', async (_label, conflict) => {
+    const {grid, targets} = pool(1);
+    const named: CardTarget = {container: targets[0]!.container, playerName: 'Test Player'};
+    hydrator = new LineupSortHydrator(async request => {
+      const result = response(request);
+      const value: LineupSortValue = {...result.data[0]!, fixtureIdentity: 'fixture-status:v1:100:one:two',
+        fixtureRefresh: {key: 'fixture-status:v1:100:one:two', nextCheckAt: '2026-09-16T21:30:00Z'}};
+      return {...result, data: [value, {...value, ...conflict}]};
+    }, 50, []);
+    await hydrator.hydrate(grid, [named]);
+    expect(readSortReadiness(named.container)?.goal).toBe('error');
+    expect(named.container.hasAttribute('data-sorare-overlay-goal-sort-probability')).toBe(false);
+  });
+
+  it('selects the explicit card position even when other positions occur in a duplicate response', async () => {
+    const {grid, targets} = pool(1);
+    hydrator = new LineupSortHydrator(async request => {
+      const result = response(request);
+      const value = result.data[0]!;
+      return {...result, data: [value, {...value}, {...value, position: 'Midfielder', aa: 30}]};
+    }, 50, []);
+    await hydrator.hydrate(grid, targets);
+    expect(readSortReadiness(targets[0]!.container)?.goal).toBe('ready');
+    expect(targets[0]!.container.getAttribute('data-sorare-overlay-aa-sort-value')).toBe('10');
+  });
+
   it('reuses the confirmed name/slug alias and publishes later values back to that alias',async()=>{
     const {grid,targets}=pool(1);const named:CardTarget={container:targets[0]!.container,playerName:'Test Player',position:'Forward'};
     const fetcher=vi.fn(async(request:LineupSortValuesRequest)=>response(request));hydrator=new LineupSortHydrator(fetcher);

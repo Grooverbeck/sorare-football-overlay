@@ -40,7 +40,7 @@ import {
   playerTeamFixtureIdentity,
   sameFixtureIdentity,
 } from './fixture-identity.js';
-import { mapSettledWithConcurrency } from './concurrency.js';
+import { mapSettledWithConcurrency, mapWithConcurrency } from './concurrency.js';
 import type { PlayerLoadLeases } from './player-load-leases.js';
 
 export interface StatsServiceResult {
@@ -93,6 +93,30 @@ function hasRequestedHistoricalWindows(
   );
 }
 
+type StatsPhase = Exclude<keyof StatsServiceResult['diagnostics']['durationsMs'], 'total'>;
+interface StatsLoadProgress {
+  ready: Map<string, PlayerStats>;
+  requests: SourcePlayerRequest[];
+  cacheHits: number;
+  phase: StatsPhase;
+  phaseStartedAt: number;
+  durationsMs: Record<StatsPhase, number>;
+}
+
+function createStatsLoadProgress(): StatsLoadProgress {
+  return {
+    ready: new Map(), requests: [], cacheHits: 0,
+    phase: 'nameResolution', phaseStartedAt: performance.now(),
+    durationsMs: {nameResolution: 0, cache: 0, baseAndHistory: 0, result: 0},
+  };
+}
+
+function startStatsPhase(progress: StatsLoadProgress, phase: StatsPhase): void {
+  progress.durationsMs[progress.phase] = elapsedMs(progress.phaseStartedAt);
+  progress.phase = phase;
+  progress.phaseStartedAt = performance.now();
+}
+
 export interface PlayerMarketSnapshotsResult {
   data: PlayerMarketSnapshot[];
   source: 'sorare' | 'mock';
@@ -104,6 +128,7 @@ const CACHE_ONLY_ODDS_BATCH_MAX_MS = 1_600;
 const BACKGROUND_PLAYER_LOAD_CHUNK_SIZE = 8;
 const BACKGROUND_PLAYER_LOAD_CONCURRENCY = 2;
 const HISTORY_COMPLETION_CONCURRENCY = 4;
+const FIXTURE_REFRESH_CLAIM_CONCURRENCY = 6;
 
 function chunks<T>(values: readonly T[], size: number): T[][] {
   const output: T[][] = [];
@@ -393,7 +418,7 @@ export class StatsService {
     request: ValidatedPlayerStatsRequest,
   ): Promise<StatsServiceResult> {
     if (!this.scheduleBackground) return this.loadPlayerStats(request);
-    const progress = { ready: new Map<string, PlayerStats>(), requests: [] as SourcePlayerRequest[], cacheHits: 0 };
+    const progress = createStatsLoadProgress();
     const pending = this.loadPlayerStats(request, progress);
     const settled = await settleWithin(pending, this.responseBudgetMs);
     if (settled.status === 'fulfilled') return settled.value;
@@ -433,10 +458,10 @@ export class StatsService {
         partialHistories: data.filter(stats => stats.pendingRefreshes?.includes('formHistory')).length,
         responseBudgetExceeded: true,
         durationsMs: {
-          nameResolution: 0,
-          cache: 0,
-          baseAndHistory: 0,
-          result: 0,
+          ...progress.durationsMs,
+          // Preserve the phase that actually exhausted the deadline instead
+          // of reporting zero for every phase on the slowest requests.
+          [progress.phase]: elapsedMs(progress.phaseStartedAt),
           total: this.responseBudgetMs,
         },
       },
@@ -540,7 +565,7 @@ export class StatsService {
 
   private async loadPlayerStats(
     request: ValidatedPlayerStatsRequest,
-    progress = { ready: new Map<string, PlayerStats>(), requests: [] as SourcePlayerRequest[], cacheHits: 0 },
+    progress = createStatsLoadProgress(),
   ): Promise<StatsServiceResult> {
     const requestStartedAt = performance.now();
     const nameResolutionStartedAt = performance.now();
@@ -580,6 +605,7 @@ export class StatsService {
       ).values(),
     ];
     const cacheStartedAt = performance.now();
+    startStatsPhase(progress, 'cache');
     progress.requests = [...directRequests, ...resolvedRequests];
     const immediate = progress.ready;
     const fixtureRefreshEntries: FixtureRefreshEntry[] = [];
@@ -753,8 +779,22 @@ export class StatsService {
             : { ...cached, parts: { ...cached.parts, fixture: shared } };
         }),
       );
+      // Publish all available form/fixture snapshots before waiting on refresh
+      // leases. A slow lease must not hide unrelated cache hits at the response
+      // deadline. Fixture readiness stays pending until its check has settled.
+      for (const { key, parts } of hydratedCachedParts) {
+        if (!parts.form || !hasRequestedHistoricalWindows(parts.form, request.includeHistoricalAssists)) continue;
+        cacheHits += 1;
+        immediate.set(key, {
+          ...parts.form,
+          nextGame: parts.fixture ?? null,
+          ...(parts.fixture !== null || unresolvedFixtureIdentities.has(key)
+            ? { pendingRefreshes: ['fixture'] as PendingRefresh[] } : {}),
+        });
+      }
+      progress.cacheHits = cacheHits;
       const claimedFixtureRefreshes = new Set<string>();
-      for (const { key, playerRequest, parts } of hydratedCachedParts) {
+      await mapWithConcurrency(hydratedCachedParts, FIXTURE_REFRESH_CLAIM_CONCURRENCY, async ({ key, playerRequest, parts }) => {
         if (
           parts.form === undefined ||
           !hasRequestedHistoricalWindows(
@@ -762,9 +802,8 @@ export class StatsService {
             request.includeHistoricalAssists,
           )
         ) {
-          continue;
+          return;
         }
-        cacheHits += 1;
         if (parts.fixture !== undefined) {
           let fixtureRefreshDue = false;
           if (parts.fixture !== null) {
@@ -805,7 +844,7 @@ export class StatsService {
             form: parts.form,
           });
         }
-      }
+      });
     } else {
       const cachedPlayers = await Promise.all(
         playerRequests.map(async (playerRequest) => {
@@ -829,6 +868,7 @@ export class StatsService {
     const cacheDurationMs = elapsedMs(cacheStartedAt);
     progress.cacheHits = cacheHits;
     const baseAndHistoryStartedAt = performance.now();
+    startStatsPhase(progress, 'baseAndHistory');
 
     if (
       (request.refreshFixtures || request.checkFixtureStatus) &&
@@ -950,6 +990,7 @@ export class StatsService {
     }
     const baseAndHistoryDurationMs = elapsedMs(baseAndHistoryStartedAt);
     const resultStartedAt = performance.now();
+    startStatsPhase(progress, 'result');
     cachedOrLoaded = harmonizePlayerTeamFixtures(
       cachedOrLoaded,
       fixtureIdentityRequests,

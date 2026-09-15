@@ -158,6 +158,25 @@ function targetMatchesValue(
   );
 }
 
+function sameSortValue(left: LineupSortValue, right: LineupSortValue): boolean {
+  // A name and an automatic-position slug can resolve to the same record.
+  // Collapse only equivalent answers, never choose between conflicting
+  // players, card positions, fixtures, readiness states or metric snapshots.
+  return left.slug === right.slug &&
+    left.displayName === right.displayName &&
+    left.position === right.position &&
+    left.fixtureIdentity === right.fixtureIdentity &&
+    left.fixtureRefresh?.key === right.fixtureRefresh?.key &&
+    left.fixtureRefresh?.nextCheckAt === right.fixtureRefresh?.nextCheckAt &&
+    left.readiness?.goal === right.readiness?.goal &&
+    left.readiness?.aa === right.readiness?.aa &&
+    left.readiness?.cleanSheet === right.readiness?.cleanSheet &&
+    left.goal?.probability === right.goal?.probability &&
+    left.goal?.source === right.goal?.source &&
+    left.aa === right.aa &&
+    left.cleanSheet === right.cleanSheet;
+}
+
 function requestForBatch(
   states: readonly HydrationState[],
   historicalGoalWindow: HistoricalMarketWindow | null,
@@ -873,7 +892,9 @@ export class LineupSortHydrator {
       const candidates = response.data.filter((candidate) =>
         targetMatchesValue(this.requestTarget(state), candidate),
       );
-      const value = candidates.length === 1 ? candidates[0] : undefined;
+      const first = candidates[0];
+      const value = first && candidates.every(candidate => sameSortValue(first, candidate))
+        ? first : undefined;
       if (value) {
         this.rememberResolvedIdentity(state, value);
         const before=state.target.container.getAttribute(fixtureIdentityAttribute);
