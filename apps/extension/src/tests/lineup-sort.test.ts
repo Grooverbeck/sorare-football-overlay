@@ -1525,6 +1525,30 @@ describe('lineup card sorting', () => {
     expect(loadCalls).toBe(1);
   });
 
+  it.each([lineupCleanSheetSortOptionAttribute,lineupGoalSortOptionAttribute,lineupAaSortOptionAttribute])('does not restart a 104-card pool when an offscreen video is unloaded (%s)',async option=>{
+    sorter.stop();const loader=vi.fn(immediatePoolLoader);sorter=new LineupCardSorter(loader);
+    const grid=document.querySelector<HTMLElement>('[data-player-grid]')!;
+    const poster='https://assets.sorare.com/cardsamplepicture/video-keeper/picture/card.png';
+    grid.innerHTML=`<div><button data-position="Defender" data-sorare-overlay-sort-data-ready="true"><div data-frame style="--mask-image-src:url(${poster})"><video poster="${poster}"></video></div></button></div>`+
+      Array.from({length:103},(_,i)=>`<div><article data-position="Defender" data-sorare-overlay-sort-data-ready="true"><img alt="Player ${i} - common"></article></div>`).join('');
+    for(const card of grid.querySelectorAll<HTMLElement>('[data-position]')) {setLineupSortPosition(card,'Defender');setLineupCleanSheetSortValue(card,.4);setLineupGoalSortValue(card,.2,'historical');setLineupAaSortValue(card,10);}
+    sorter.start();document.querySelector<HTMLButtonElement>(`[${option}]`)!.click();
+    await vi.waitFor(()=>expect(progressPrimary()).toBe('104 Spieler sortiert'));
+    await vi.waitFor(()=>expect((grid.firstElementChild as HTMLElement).style.order).toBe('-104'));
+    const video=grid.querySelector('video')!,frame=grid.querySelector('[data-frame]')!;
+    const orders=[...grid.children].map(cell=>(cell as HTMLElement).style.order);
+    for(let pass=0;pass<3;pass++) {
+      video.remove();sorter.scan(grid);
+      await new Promise(resolve=>setTimeout(resolve,120));
+      expect(progressPrimary()).toBe('104 Spieler sortiert');expect(loader).toHaveBeenCalledTimes(1);
+      expect([...grid.children].map(cell=>(cell as HTMLElement).style.order)).toEqual(orders);
+      frame.append(video);sorter.scan(grid);
+    }
+    grid.lastElementChild!.remove();sorter.scan(grid);
+    await vi.waitFor(()=>expect(loader).toHaveBeenCalledTimes(2));
+    await vi.waitFor(()=>expect(progressPrimary()).toBe('103 Spieler sortiert'));
+  });
+
   it('restores the old grid before loading and sorting a newly selected position', async () => {
     sorter.stop();
     const grid = document.querySelector<HTMLElement>('[data-player-grid]');

@@ -125,6 +125,10 @@ Response-Budgets und serverseitigen In-flight-Sperren bleiben erhalten.
   behalten ihre bisherigen Wiederherstellungs- und Abbruchregeln.
 - Gleichwertige DOM-Neumounts derselben Karte übernehmen ihren bisherigen
   Platz; neue Pools erhalten einen eigenen Prüf- und Sortierdurchlauf.
+- Ein Videorahmen mit gültiger Sorare-Bildkennung in `--mask-image-src`
+  bleibt eine Karte, auch wenn Sorare sein Video vorübergehend entfernt.
+  Solange Bild/Video derselben Edition vorhanden ist, zählt der Rahmen nicht
+  zusätzlich. Dadurch löst ein Medienwechsel keinen falschen Pool-Neustart aus.
 - Nachträglich neu erkannte oder wieder ausgeblendete Karten bleiben beim
   Sortier-Lader registriert, auch wenn der erste Abgleich bereits beendet ist.
 - Während das Sorare-Filtermenü geöffnet ist, werden die nativen Reihenfolgen

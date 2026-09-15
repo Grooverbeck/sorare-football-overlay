@@ -74,6 +74,20 @@ describe('Full Art card identities', () => {
     } finally { scanner.stop(); }
   });
 
+  it('keeps the same identity and container when the video unloads but its masked frame remains',()=>{
+    const card=document.querySelector<HTMLElement>('[data-card]')!;
+    const frame=card.querySelector<HTMLElement>('[style*="--mask-image-src"]')!;
+    frame.style.setProperty('--mask-image-src',`url(${poster})`);
+    const video=card.querySelector('video')!;
+    for(let pass=0;pass<3;pass++) {
+      expect(findCardTargets(document,{activeLineupPosition:'Goalkeeper'})).toMatchObject([{slug:unaiSlug,container:card}]);
+      video.remove();
+      const targets=findCardTargets(document,{activeLineupPosition:'Goalkeeper'});
+      expect(targets).toHaveLength(1);expect(targets[0]).toMatchObject({slug:unaiSlug,container:card});
+      frame.append(video);
+    }
+  });
+
   it.each(['video','image','mixed'])('learns an unknown picture from its own placeholder plus %s media', media => {
     const id = `new-${media}-picture`;
     const url = `https://assets.sorare.com/cardsamplepicture/${id}/picture/card.png`;
