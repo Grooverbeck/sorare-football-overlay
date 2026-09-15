@@ -1,6 +1,6 @@
 import type { FootballPosition, SortMetricReadiness } from '@sorare-overlay/shared';
 import { readSortReadiness, readinessIsSettled, sortReadinessAttribute, sortFinalCheckAttribute, sortRetryEvent, sortModeEvent, sortSessionEvent } from './lineup-sort-readiness.js';
-import { extractCardPictureId, findSorareCardMedia } from './card-media.js';
+import { extractCardPictureId, findSorareCardMedia, hasSorareCardMedia } from './card-media.js';
 import { logStatsDiagnostic } from './stats-diagnostics.js';
 import { lineupPositionFromButton, readLineupPositionSelection } from './lineup-position.js';
 
@@ -499,7 +499,7 @@ function valueForCell(cell: HTMLElement, valueAttribute: string): number | null 
 function gridCardCells(grid: HTMLElement): HTMLElement[] {
   return Array.from(grid.children).filter(
     (child): child is HTMLElement =>
-      child instanceof HTMLElement && findSorareCardMedia(child).length > 0,
+      child instanceof HTMLElement && hasSorareCardMedia(child),
   );
 }
 
@@ -602,12 +602,11 @@ function gridLoadingCell(grid: HTMLElement): HTMLElement | null {
     Array.from(grid.children).find(
       (child): child is HTMLElement =>
         child instanceof HTMLElement &&
-        findSorareCardMedia(child).length === 0 &&
         Boolean(
           child.querySelector(
             '[role="progressbar"][aria-busy="true"]',
           ),
-        ),
+        ) && !hasSorareCardMedia(child),
     ) ?? null
   );
 }

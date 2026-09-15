@@ -1,10 +1,33 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { extractCardPictureId, findCardMediaContainer, findSorareCardMedia } from '../card-media.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { extractCardPictureId, findCardMediaContainer, findSorareCardMedia, hasSorareCardMedia } from '../card-media.js';
 
 const url='https://assets.sorare.com/image-resize/cardsamplepicture/example-card/picture/card.png?width=160';
 afterEach(()=>document.body.replaceChildren());
 
 describe('persistent video card frames',()=>{
+  it.each([
+    '<img alt="Player - common">',
+    `<video poster="${url}"></video>`,
+    `<div style="--mask-image-src:url(${url})"></div>`,
+    `<div style="--mask-image-src:url(${url})"><video poster="${url}"></video></div>`,
+    `<div style="--mask-shape:url(${url})"></div>`,
+    '<img alt="Team"><div role="progressbar" aria-busy="true"></div>',
+    '<div style="--mask-image-src:url(https://example.com/cardsamplepicture/foreign/picture/a.png)"></div>',
+    '<div style="--mask-image-src:none"></div>',
+  ])('uses the same physical-card presence rule as full discovery: %s', markup => {
+    document.body.innerHTML = markup;
+    for (const root of [document, document.body, document.body.firstElementChild!]) {
+      expect(hasSorareCardMedia(root)).toBe(findSorareCardMedia(root).length > 0);
+    }
+  });
+
+  it('stops after the first recognized media instead of parsing every decorative layer', () => {
+    document.body.innerHTML = `<article><img alt="Player - common"><video poster="${url}"></video></article>`;
+    const poster = vi.spyOn(document.querySelector('video')!, 'poster', 'get');
+    expect(hasSorareCardMedia(document.querySelector('article')!)).toBe(true);
+    expect(poster).not.toHaveBeenCalled();
+  });
+
   it('recognizes a picture-bearing frame while its video is absent',()=>{
     document.body.innerHTML=`<button><div style="--mask-image-src:url(${url})"><div></div></div></button>`;
     const frame=document.querySelector<HTMLElement>('div')!;

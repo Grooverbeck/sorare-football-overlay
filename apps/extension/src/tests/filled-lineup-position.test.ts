@@ -196,4 +196,40 @@ describe('filled lineup slot identity', () => {
       scanner.stop();
     }
   });
+
+  it('invalidates streamed requests and rescans the prefix when the slot changes during a mutation backlog', async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => frames.push(callback));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    vi.stubGlobal('IntersectionObserver', class {
+      observe(): void {} unobserve(): void {} disconnect(): void {}
+    });
+    selectSlot(1);
+    const grid = document.querySelector<HTMLElement>('[data-player-grid]')!;
+    grid.replaceChildren();
+    grid.setAttribute(lineupSortHydrationGridAttribute, 'true');
+    const hydrator = new LineupSortHydrator(vi.fn());
+    const hydrate = vi.spyOn(hydrator, 'hydrate').mockResolvedValue();
+    const cancel = vi.spyOn(hydrator, 'cancel');
+    const scanner = new SorareCardScanner(new StatsBatchCoordinator(vi.fn(), 60_000), undefined, hydrator);
+    try {
+      scanner.start(); frames.length = 0; hydrate.mockClear(); cancel.mockClear();
+      grid.innerHTML = Array.from({length: 40}, (_, i) =>
+        `<div><button><img alt="Backlog Player ${i} - limited"></button></div>`).join('');
+      await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0));
+      vi.spyOn(performance, 'now').mockReturnValue(0);
+      frames.shift()!(0);
+      const prefix = hydrate.mock.calls.flatMap(([, targets]) => targets ?? []);
+      expect(prefix).toHaveLength(16);
+      expect(prefix.every(target => target.position === 'Defender')).toBe(true);
+      hydrate.mockClear(); selectSlot(3);
+      let count = 0;
+      while (frames.length && count++ < 100) frames.shift()!(0);
+      expect(count).toBeLessThan(100);
+      expect(cancel).toHaveBeenCalled();
+      const targets = hydrate.mock.calls.flatMap(([, chunk]) => chunk ?? []);
+      expect(new Set(targets.map(target => target.container)).size).toBe(40);
+      expect(targets.every(target => target.position === 'Forward')).toBe(true);
+    } finally { scanner.stop(); }
+  });
 });

@@ -105,9 +105,14 @@ export async function fetchLineupSortValues(
       `${response.error.code}: ${response.error.message} (Request-ID: ${response.requestId})`,
     );
   }
+  const durationMs = Math.round((performance.now() - startedAt) * 10) / 10;
   logStatsDiagnostic('lineup-sort-response', {
     requestId: response.requestId,
-    durationMs: Math.round((performance.now() - startedAt) * 10) / 10,
+    durationMs,
+    workerDurationMs: response.durationMs,
+    // Separate fetch/validation inside the extension worker from message
+    // dispatch/wakeup and the page's delay in consuming the callback.
+    messageOverheadMs: Math.max(0, Math.round((durationMs - response.durationMs) * 10) / 10),
     backendDurationMs: response.value.meta.durationMs,
     requested: response.value.meta.requested,
     returned: response.value.meta.returned,

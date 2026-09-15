@@ -28,15 +28,26 @@ export function extractCardPictureId(media: HTMLElement): string | null {
   return cssCardPictureId(media, '--mask-shape') ?? cssCardPictureId(media, '--mask-image-src');
 }
 
+function isSorareCardMedia(media: HTMLElement): boolean {
+  return (media instanceof HTMLImageElement && sorareCardNamePattern.test(media.alt)) ||
+    extractCardPictureId(media) !== null;
+}
+
+/** Presence only: counting a grid cell needs no edition-ID map or dedup pass. */
+export function hasSorareCardMedia(root: ParentNode): boolean {
+  if (root instanceof HTMLElement && root.matches(sorareCardMediaSelector) && isSorareCardMedia(root)) return true;
+  for (const media of root.querySelectorAll<HTMLElement>(sorareCardMediaSelector)) {
+    if (isSorareCardMedia(media)) return true;
+  }
+  return false;
+}
+
 export function findSorareCardMedia(root: ParentNode): HTMLElement[] {
   const candidates = [
     ...(root instanceof HTMLElement && root.matches(sorareCardMediaSelector) ? [root] : []),
     ...root.querySelectorAll<HTMLElement>(sorareCardMediaSelector),
   ];
-  const recognized = candidates.filter(media =>
-    (media instanceof HTMLImageElement && sorareCardNamePattern.test(media.alt)) ||
-    extractCardPictureId(media) !== null,
-  );
+  const recognized = candidates.filter(isSorareCardMedia);
   const ids = new Map(recognized.map(media => [media, extractCardPictureId(media)]));
   return recognized.filter(media => {
     if (media instanceof HTMLImageElement || media instanceof HTMLVideoElement ||

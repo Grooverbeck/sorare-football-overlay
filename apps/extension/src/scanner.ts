@@ -1690,7 +1690,7 @@ export class SorareCardScanner {
     | FootballPosition
     | null
     | undefined;
-  private readonly mutationHydrationTargets: CardTarget[] = [];
+  private readonly mutationBacklogTargets = new Map<HTMLElement, CardTarget>();
   private readonly pendingPositionScopes = new Set<Element>();
   private readonly pendingPictureNameRescanIds = new Set<string>();
   private pictureNameRescanTimer: number | undefined;
@@ -1942,7 +1942,7 @@ export class SorareCardScanner {
     this.pendingScanRoots.clear();
     this.mutationScanBacklog = [];
     this.mutationBacklogLineupPosition = undefined;
-    this.mutationHydrationTargets.length = 0;
+    this.mutationBacklogTargets.clear();
     this.pendingPositionScopes.clear();
     if (this.pictureNameRescanTimer !== undefined) {
       window.clearTimeout(this.pictureNameRescanTimer);
@@ -1968,9 +1968,10 @@ export class SorareCardScanner {
     knownLineupPosition = activeLineupPosition(),
     hydrateLineupSortTargets = true,
     knownHydrationPriority?: number,
+    syncLineupSorter = true,
   ): CardTarget[] {
     decorateNativeSorareLineupProbabilities(root);
-    this.lineupSorter.scan(root);
+    if (syncLineupSorter) this.lineupSorter.scan(root);
     const targets = this.discoverAndMountTargets(
       root,
       knownLineupPosition,
@@ -2676,12 +2677,13 @@ export class SorareCardScanner {
     const continuesBacklog = this.mutationScanBacklog.length > 0;
     const knownLineupPosition = activeLineupPosition();
     if (continuesBacklog && knownLineupPosition !== this.mutationBacklogLineupPosition) {
+      this.lineupSortHydrator.cancel();
       // Do not finish a new slot's batch with targets captured for the old
       // position. Reconcile only the processed prefix, within the same budget.
-      for (const target of this.mutationHydrationTargets) {
+      for (const target of this.mutationBacklogTargets.values()) {
         if (target.container.isConnected) this.pendingScanRoots.add(target.container);
       }
-      this.mutationHydrationTargets.length = 0;
+      this.mutationBacklogTargets.clear();
     }
     const roots = this.takeMutationScanRoots();
     const positionScopes = outermostElements(this.pendingPositionScopes);
@@ -2691,6 +2693,10 @@ export class SorareCardScanner {
     const processedRoots: Element[] = [];
     const processedTargets: CardTarget[] = [];
     const startedAt = performance.now();
+    // Slot/filter/menu state belongs to this synchronous frame, not each
+    // individual card. Re-reading the whole picker for every root multiplies
+    // toolbar/slot discovery by the number of newly loaded cards.
+    if (roots.length > 0) this.lineupSorter.scan(document);
     let processedCount = 0;
     while (processedCount < roots.length) {
       const root = roots[processedCount];
@@ -2701,9 +2707,10 @@ export class SorareCardScanner {
         knownLineupPosition,
         false,
         0,
+        false,
       );
       processedTargets.push(...targets);
-      this.mutationHydrationTargets.push(...targets);
+      for (const target of targets) this.mutationBacklogTargets.set(target.container, target);
       processedRoots.push(root);
       processedCount += 1;
       if (
@@ -2718,13 +2725,17 @@ export class SorareCardScanner {
       this.mutationScanBacklog.length > 0
         ? knownLineupPosition
         : undefined;
+    // Stream the already resolved prefix even while Sorare keeps adding DOM
+    // work. The hydrator still coalesces/bounds requests, and the final pool
+    // reconciliation remains the barrier before the UI reports completion.
+    if (processedTargets.length > 0) this.hydrateLineupTargets(processedTargets);
     if (
       this.mutationScanBacklog.length === 0 &&
-      this.pendingScanRoots.size === 0 &&
-      this.mutationHydrationTargets.length > 0
+      this.pendingScanRoots.size === 0
     ) {
-      this.hydrateLineupTargets(this.mutationHydrationTargets);
-      this.mutationHydrationTargets.length = 0;
+      // Retain this list only across frames so a slot change can rescan the
+      // processed prefix; never submit that whole prefix a second time.
+      this.mutationBacklogTargets.clear();
     }
     if (processedRoots.length > 0) {
       this.reconcileMountedOverlays(

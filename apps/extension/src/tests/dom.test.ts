@@ -23,6 +23,7 @@ import {
   OverlayView,
 } from '../overlay.js';
 import {
+  LineupCardSorter,
   lineupCleanSheetSortProbabilityAttribute,
   lineupGoalSortOptionAttribute,
   lineupPoolProgressEvent,
@@ -8055,8 +8056,10 @@ describe('Sorare card DOM discovery', () => {
       hydrator,
     );
     const scan = vi.spyOn(scanner, 'scan');
+    const sorterScan = vi.spyOn(LineupCardSorter.prototype, 'scan');
     scanner.start();
     scan.mockClear();
+    sorterScan.mockClear();
     hydrate.mockClear();
     requestAnimationFrame.mockClear();
 
@@ -8089,7 +8092,15 @@ describe('Sorare card DOM discovery', () => {
     }
     pool.append(fragment);
     await vi.waitFor(() => expect(requestAnimationFrame).toHaveBeenCalled());
-    let flushFrames = 0;
+    // Exercise the deterministic 16-root cap, independent of CI wall time.
+    vi.spyOn(performance, 'now').mockReturnValue(0);
+    frameCallbacks.shift()?.(performance.now());
+    // A busy DOM backlog must not postpone requests until every root is done.
+    expect(hydrate).toHaveBeenCalledTimes(1);
+    expect(hydrate.mock.calls[0]?.[1]?.length).toBeGreaterThan(0);
+    expect(hydrate.mock.calls[0]?.[1]?.length).toBeLessThan(40);
+    expect(sorterScan).toHaveBeenCalledTimes(1);
+    let flushFrames = 1;
     while (frameCallbacks.length > 0 && flushFrames < 100) {
       flushFrames += 1;
       frameCallbacks.shift()?.(performance.now());
@@ -8107,8 +8118,8 @@ describe('Sorare card DOM discovery', () => {
       ),
     ).toBe(true);
     expect(layoutReadCounts.every((count) => count() === 0)).toBe(true);
-    expect(hydrate).toHaveBeenCalledTimes(1);
-    expect(hydrate.mock.calls[0]?.[1]).toHaveLength(40);
+    expect(hydrate.mock.calls.flatMap(([, targets]) => targets ?? [])).toHaveLength(40);
+    expect(sorterScan.mock.calls.length).toBeLessThan(40);
   });
 
   it('does not reposition the existing pool for direct lazy-grid growth', () => {
