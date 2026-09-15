@@ -203,8 +203,28 @@ describe('shared compact sort requests',()=>{
     const fetcher=vi.fn(async(request:LineupSortValuesRequest)=>response(request));hydrator=new LineupSortHydrator(fetcher);
     const first=hydrator.hydrate(grid,targets.slice(0,1));await vi.advanceTimersByTimeAsync(10);
     const second=hydrator.hydrate(grid,targets.slice(1));expect(fetcher).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(14);await Promise.all([first,second]);
+    await vi.advanceTimersByTimeAsync(110);await Promise.all([first,second]);
     expect(fetcher).toHaveBeenCalledTimes(1);expect(fetcher.mock.calls[0]![0].slugs).toHaveLength(2);
+  });
+
+  it('combines a streamed row across frames into one request within 120 ms', async () => {
+    vi.useFakeTimers();
+    const {grid, targets} = pool(12);
+    targets.forEach((target, i) => {target.slug = `streamed-player-${i}`;});
+    const fetcher = vi.fn(async (request: LineupSortValuesRequest) => response(request));
+    hydrator = new LineupSortHydrator(fetcher);
+    const chunks = [hydrator.hydrate(grid, targets.slice(0, 4))];
+    await vi.advanceTimersByTimeAsync(40);
+    chunks.push(hydrator.hydrate(grid, targets.slice(4, 8)));
+    await vi.advanceTimersByTimeAsync(40);
+    chunks.push(hydrator.hydrate(grid, targets.slice(8)));
+    await vi.advanceTimersByTimeAsync(39);
+    expect(fetcher).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await Promise.all(chunks);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0]![0].slugs).toHaveLength(12);
+    expect(targets.every(target => readSortReadiness(target.container)?.goal === 'ready')).toBe(true);
   });
 
   it('starts a full batch before the remaining coalescing delay',async()=>{

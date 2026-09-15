@@ -361,7 +361,9 @@ export class LineupSortHydrator {
     private readonly fetcher: SortValuesFetcher = fetchLineupSortValues,
     private readonly batchSize = 50,
     private readonly retryDelaysMs: readonly number[] = [1_000, 5_000, 15_000, 30_000],
-    private readonly coalesceDelayMs = 24,
+    // Discovery streams across frames. Give nearby chunks a short bounded
+    // window to join; a full fifty-identity queue still releases immediately.
+    private readonly coalesceDelayMs = 120,
   ) {}
 
   finalizePool(grid: HTMLElement): void {
