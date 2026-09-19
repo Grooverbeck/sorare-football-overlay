@@ -1,4 +1,4 @@
-import type { PlayerStats } from '../contracts.js';
+import {LineupSortValueSchema, type PlayerStats} from '../contracts.js';
 import { describe, expect, it } from 'vitest';
 import {
   lineupGoalSortValue,
@@ -26,6 +26,30 @@ function stats(overrides: Partial<PlayerStats> = {}): PlayerStats {
 }
 
 describe('lineup sort values', () => {
+  it('carries goal provenance from the same cache snapshot without adding unrelated assist payloads', () => {
+    const goal = {probability: .4, bookmakerCount: 1, bookmakerQuotes: [
+      {key: 'book', title: 'Book', decimalOdds: 2.5, probability: .4},
+    ]};
+    const value = lineupSortValueForPlayer(stats({nextGame: {
+      date: '2030-01-02T18:00:00Z', homeTeamSlug: 'home', awayTeamSlug: 'away', cleanSheetProbability: null,
+      marketOdds: {source: 'odds-api-io', capturedAt: '2030-01-01T18:00:00Z', goal,
+        assist: {probability: .2, bookmakerCount: 1}},
+    }}), 15);
+    expect(LineupSortValueSchema.parse(value).goalMarket).toEqual({
+      source: 'odds-api-io', capturedAt: '2030-01-01T18:00:00Z', goal,
+    });
+    expect(value.goal?.probability).toBe(value.goalMarket?.goal.probability);
+    expect(value.goalMarket).not.toHaveProperty('assist');
+    // Old clients ignore the additive field; new clients still accept an old worker.
+    expect(LineupSortValueSchema.omit({goalMarket: true}).parse(value).goal).toEqual(value.goal);
+    const {goalMarket: _details, ...legacy} = value;
+    expect(LineupSortValueSchema.parse(legacy).goal).toEqual(value.goal);
+  });
+
+  it('does not invent goal market details for a historical fallback', () => {
+    expect(lineupSortValueForPlayer(stats(), 15).goalMarket).toBeUndefined();
+  });
+
   it('prefers cached market odds over every historical window', () => {
     expect(
       lineupGoalSortValue(

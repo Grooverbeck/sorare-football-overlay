@@ -284,6 +284,9 @@ export type MatchProbabilities = z.infer<typeof MatchProbabilitiesSchema>;
 export type BookmakerMarketQuote = z.infer<typeof BookmakerMarketQuoteSchema>;
 export type MarketProbability = z.infer<typeof MarketProbabilitySchema>;
 export type PlayerMarketOdds = z.infer<typeof PlayerMarketOddsSchema>;
+export const GoalMarketSnapshotSchema = PlayerMarketOddsSchema.pick({source: true, capturedAt: true})
+  .extend({goal: MarketProbabilitySchema});
+export type GoalMarketSnapshot = z.infer<typeof GoalMarketSnapshotSchema>;
 export type PlayerStats = z.infer<typeof PlayerStatsSchema>;
 
 export const PlayerStatsSuccessResponseSchema = z.object({
@@ -393,6 +396,9 @@ export type SortMetricReadiness = z.infer<typeof SortMetricReadinessSchema>;
 export type LineupSortReadiness = z.infer<typeof LineupSortReadinessSchema>;
 
 export const LineupSortValueSchema = z.object({
+  // Optional during rolling updates. Reuse the existing cache read, carrying
+  // only goal provenance/details so the visible bracket can share this value.
+  goalMarket: GoalMarketSnapshotSchema.optional(),
   // Additive: old clients ignore this; new clients still accept old workers.
   readiness: LineupSortReadinessSchema.optional(),
   fixtureRefresh: z.object({key:z.string(), nextCheckAt:z.string().datetime()}).optional(),

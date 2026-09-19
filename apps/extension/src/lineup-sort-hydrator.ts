@@ -35,6 +35,7 @@ import {
   teamSlugsLikelyMatch,
 } from './player-identity.js';
 import { logStatsDiagnostic } from './stats-diagnostics.js';
+import {clearGoalMarketState, goalMarketChangedEvent, goalMarketSignature, readGoalMarketState, rememberGoalMarketState, type GoalMarketState} from './goal-market-state.js';
 
 type SortValuesFetcher = (
   request: LineupSortValuesRequest,
@@ -57,6 +58,7 @@ interface HydrationState {
 }
 
 interface SortValueSnapshot {
+  goalMarket?: GoalMarketState;
   readiness?: LineupSortReadiness;
   retiredFixture?: string;
   fixtureIdentity?: string;
@@ -130,6 +132,7 @@ function snapshotForTarget(target: CardTarget): SortValueSnapshot | null {
       ? rawGoalSource
       : null;
   return {
+    ...(readGoalMarketState(container) ? {goalMarket: readGoalMarketState(container)!} : {}),
     ...(readiness ? { readiness } : {}),
     position: sortPositionFromContainer(container, target.position),
     ...(container.hasAttribute(retiredFixtureAttribute) ? {retiredFixture:container.getAttribute(retiredFixtureAttribute)!} : {}),
@@ -163,6 +166,7 @@ function sameSortValue(left: LineupSortValue, right: LineupSortValue): boolean {
   // Collapse only equivalent answers, never choose between conflicting
   // players, card positions, fixtures, readiness states or metric snapshots.
   return left.slug === right.slug &&
+    goalMarketSignature(left.goalMarket) === goalMarketSignature(right.goalMarket) &&
     left.displayName === right.displayName &&
     left.position === right.position &&
     left.fixtureIdentity === right.fixtureIdentity &&
@@ -912,7 +916,11 @@ export class LineupSortHydrator {
       if (value) {
         this.rememberResolvedIdentity(state, value);
         const before=state.target.container.getAttribute(fixtureIdentityAttribute);
+        const beforeMarket = readGoalMarketState(state.target.container);
         this.completeState(state, value);
+        if (readGoalMarketState(state.target.container) !== beforeMarket) {
+          state.target.container.dispatchEvent(new Event(goalMarketChangedEvent));
+        }
         const readiness = readSortReadiness(state.target.container);
         if (readiness?.[this.metricKey()] === 'pending') this.retryOrComplete(state);
         else if (readiness?.[this.metricKey()] === 'error') state.status = 'error';
@@ -1004,12 +1012,24 @@ export class LineupSortHydrator {
       if(value.fixtureIdentity===null && value.fixtureRefresh)container.setAttribute(retiredFixtureAttribute,value.fixtureRefresh.key);
       fixtureChanged=previous!==null && previous!==(value.fixtureIdentity??'');
       if(fixtureChanged) {
+        clearGoalMarketState(container);
         setLineupGoalSortValue(container,null);
         setLineupCleanSheetSortValue(container,null);
       }
       container.setAttribute(fixtureIdentityAttribute,value.fixtureIdentity??'');
       if(value.fixtureRefresh)container.setAttribute(fixtureRefreshAttribute,JSON.stringify(value.fixtureRefresh));
       else container.removeAttribute(fixtureRefreshAttribute);
+    }
+    if (value?.fixtureIdentity && value.goal?.source === 'market' && value.goalMarket &&
+      value.goal.probability === value.goalMarket.goal.probability) {
+      const selected = rememberGoalMarketState(container, {
+        slug: value.slug, position: value.position, fixtureIdentity: value.fixtureIdentity, market: value.goalMarket,
+      });
+      // Compare provider snapshot times, not just "there is already a market".
+      // Newer prices may rise OR fall; null/history never erases this snapshot.
+      setLineupGoalSortValue(container, selected.market.goal.probability, 'market');
+      const current = readSortReadiness(container);
+      if (current) setSortReadiness(container, {...current, goal: 'ready'});
     }
     // A visible card can finish its full stats request while this compact
     // cache-only request is still in flight. The full response is newer and
@@ -1102,25 +1122,28 @@ export class LineupSortHydrator {
     snapshot: SortValueSnapshot,
   ): void {
     const container = target.container;
+    const market = snapshot.goalMarket ? rememberGoalMarketState(container, snapshot.goalMarket) : undefined;
     if(snapshot.fixtureIdentity!==undefined)container.setAttribute(fixtureIdentityAttribute,snapshot.fixtureIdentity);
     if(snapshot.retiredFixture)container.setAttribute(retiredFixtureAttribute,snapshot.retiredFixture);
     if(snapshot.fixtureRefresh)container.setAttribute(fixtureRefreshAttribute,JSON.stringify(snapshot.fixtureRefresh));
     setLineupSortPosition(container, snapshot.position);
-    if (container.getAttribute(lineupGoalSortSourceAttribute) !== 'market') setLineupGoalSortValue(
+    if (market || container.getAttribute(lineupGoalSortSourceAttribute) !== 'market') setLineupGoalSortValue(
       container,
-      snapshot.goal?.probability ?? null,
-      snapshot.goal?.source,
+      market?.market.goal.probability ?? snapshot.goal?.probability ?? null,
+      market ? 'market' : snapshot.goal?.source,
     );
     setLineupAaSortValue(container, snapshot.aa);
     setLineupCleanSheetSortValue(container, snapshot.cleanSheet);
     setSortReadiness(container, snapshot.readiness ?? null);
     container.setAttribute(lineupSortLightweightReadyAttribute, key);
     setLineupSortDataReady(container, !snapshot.readiness || readinessIsSettled(snapshot.readiness[this.metricKey()]));
+    if (snapshot.goalMarket) container.dispatchEvent(new Event(goalMarketChangedEvent));
   }
 
   private clearTargetValues(container: HTMLElement, preserveFixture = false): void {
     setSortReadiness(container, null);
     if (!preserveFixture) {
+      clearGoalMarketState(container);
       container.removeAttribute(fixtureRefreshAttribute);
       container.removeAttribute(fixtureIdentityAttribute);
       container.removeAttribute(retiredFixtureAttribute);

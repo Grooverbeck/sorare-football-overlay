@@ -16,6 +16,7 @@ import { readSortReadiness, setSortReadiness, readinessIsSettled, uniformReadine
 import { supportsCompactViewPath } from './compact-view-route.js';
 import { fixtureIdentityAttribute, fixtureRefreshAttribute, olderFixture, retiredFixture, retiredFixtureAttribute } from './fixture-refresh.js';
 import { isScoreDetailsDialogTarget } from './dom.js';
+import {clearGoalMarketState, goalMarketChangedEvent, readGoalMarketState, withGoalMarketState} from './goal-market-state.js';
 import { findSorareCardMedia, sorareCardNamePattern as sorareCardImageAlt } from './card-media.js';
 import {
   isLineupPoolProbeScrollEvent,
@@ -2877,6 +2878,12 @@ function schedulePositionsAfterUiInteraction(event: Event): void {
   }, uiInteractionSettleDelayMs);
 }
 
+function visibleFixtureAllowsGoalMarket(stats: PlayerStats, teamRow: HTMLElement | null): boolean {
+  if (!stats.nextGame) return false;
+  const sides = teamRow && lineupTeamSides(teamRow);
+  return !sides || !lineupFixtureDefinitelyMismatches(stats.nextGame, sides);
+}
+
 // During SPA history navigation the cards can already have their final size,
 // while the outgoing page/transition still covers them. No resize or image
 // animation follows for static cards. Retry only hidden, active mounts, with
@@ -3137,6 +3144,44 @@ export class OverlayView {
   private viewportPriorityActive = true;
   private destroyed = false;
   private lastRawStats: PlayerStats | null = null;
+  private lastDisplayStats: PlayerStats | null = null;
+  private readonly handleGoalMarketChange = (): void => {
+    if (this.destroyed || !this.lastRawStats) return;
+    const teamRow = lineupBuilderTeamRow(this.container);
+    const projected = statsForVisibleLineupFixture(this.lastRawStats, teamRow,
+      this.lastDisplayStats ? [this.lastDisplayStats] : []);
+    if (!visibleFixtureAllowsGoalMarket(projected, teamRow)) {
+      const fallback = goalSortValue(projected);
+      setLineupGoalSortValue(this.container, fallback?.probability ?? null, fallback?.source);
+      return;
+    }
+    const displayStats = withGoalMarketState(this.container, projected, false);
+    const goal = displayStats.nextGame?.marketOdds?.goal;
+    if (!goal) return;
+    this.lastDisplayStats = displayStats;
+    setLineupGoalSortValue(this.container, goal.probability, 'market');
+    const readiness = readSortReadiness(this.container);
+    if (readiness) setSortReadiness(this.container, {...readiness, goal: 'ready'});
+    const current = this.panel.querySelector<HTMLElement>('.market-bracket');
+    const updated = marketBracketNode(displayStats);
+    const currentGoal = current?.querySelector('[data-bracket-slot="goal"]');
+    const updatedGoal = updated?.querySelector<HTMLElement>('[data-bracket-slot="goal"]');
+    if (!current || !updated || !currentGoal || !updatedGoal) {
+      this.render(displayStats);
+      return;
+    }
+    // Update only the goal slot. Compact market enrichment must not repaint
+    // AA/CS from an older full-stat snapshot or change their readiness.
+    updatedGoal.addEventListener('mouseenter', this.openPlayerMarketTooltip);
+    updatedGoal.addEventListener('mouseleave', this.closePlayerMarketTooltip);
+    currentGoal.replaceWith(updatedGoal);
+    delete current.dataset.historicalGoal;
+    const cells = [...current.querySelectorAll<HTMLElement>('.market-cell')];
+    for (const cell of cells) cell.classList.toggle('market-fold-end', cell === cells.at(-1));
+    current.dataset.foldTone = cells.at(-1)?.dataset.tone ?? 'unavailable';
+    current.setAttribute('aria-label', updated.getAttribute('aria-label') ?? 'Spielerquoten');
+    this.renderPlayerMarketTooltip(displayStats);
+  };
   private renderedFixturePresentationKey = 'null';
   private renderedLineupSortFixtureKey = 'null';
   private readonly openMarketBracketForCardHover = (): void => {
@@ -3411,6 +3456,8 @@ export class OverlayView {
       this.host,
       this.lineupTooltipHost,
     );
+    this.container.addEventListener(goalMarketChangedEvent, this.handleGoalMarketChange);
+    this.cleanupCallbacks.push(() => this.container.removeEventListener(goalMarketChangedEvent, this.handleGoalMarketChange));
     this.container.addEventListener(
       'mouseenter',
       this.openMarketBracketForCardHover,
@@ -3551,6 +3598,7 @@ export class OverlayView {
     if (this.destroyed) return;
     this.destroyed = true;
     if (!options.preserveLineupSortData) {
+      clearGoalMarketState(this.container);
       setSortReadiness(this.container, null);
       this.container.removeAttribute(fixtureIdentityAttribute);
       this.container.removeAttribute(fixtureRefreshAttribute);
@@ -3633,7 +3681,10 @@ export class OverlayView {
   ): void {
     markLineupSortFullDataUpdated(this.container);
     this.container.removeAttribute(lineupSortLightweightReadyAttribute);
-    if (!preservedMarketGoal) setLineupGoalSortValue(this.container, null);
+    if (!preservedMarketGoal) {
+      clearGoalMarketState(this.container);
+      setLineupGoalSortValue(this.container, null);
+    }
     setLineupAaSortValue(this.container, null);
     setLineupCleanSheetSortValue(this.container, null);
     this.clearLineupOdds();
@@ -3660,6 +3711,7 @@ export class OverlayView {
     else this.container.removeAttribute(fixtureRefreshAttribute);
     const previousIdentity=this.container.getAttribute(fixtureIdentityAttribute);
     if(previousIdentity!==null && previousIdentity!==(incomingIdentity??'')) {
+      clearGoalMarketState(this.container);
       setLineupGoalSortValue(this.container,null);
       setLineupCleanSheetSortValue(this.container,null);
       this.container.removeAttribute(lineupSortLightweightReadyAttribute);
@@ -3667,16 +3719,32 @@ export class OverlayView {
     this.container.setAttribute(fixtureIdentityAttribute,incomingIdentity??'');
     this.lastRawStats = stats;
     const teamRow = lineupBuilderTeamRow(this.container);
-    const displayStats = statsForVisibleLineupFixture(
+    const projectedStats = statsForVisibleLineupFixture(
       stats,
       teamRow,
       fixtureCandidates,
     );
+    const canUseGoalMarket = visibleFixtureAllowsGoalMarket(projectedStats, teamRow);
+    const previousMarket = readGoalMarketState(this.container);
+    if (previousMarket && (previousMarket.slug !== projectedStats.slug || previousMarket.position !== projectedStats.position)) {
+      clearGoalMarketState(this.container);
+      setLineupGoalSortValue(this.container, null);
+    }
+    // Team-odds projection may borrow H-D-A from a teammate and intentionally
+    // omit their props. Preserve this player's own raw quote only when both
+    // snapshots refer to that exact same visible fixture.
+    if (canUseGoalMarket && stats.nextGame && projectedStats.nextGame &&
+      fixtureStatusKey(stats.nextGame) === fixtureStatusKey(projectedStats.nextGame)) {
+      withGoalMarketState(this.container, stats);
+    }
+    const displayStats = canUseGoalMarket ? withGoalMarketState(this.container, projectedStats) : projectedStats;
+    this.lastDisplayStats = displayStats;
+    if (!canUseGoalMarket) setLineupGoalSortValue(this.container, null);
     const sortReadiness = lineupSortReadinessForPlayer(displayStats, historicalAssistFallbackEnabled ? historicalAssistWindow : null);
     const nextLineupSortFixtureKey = lineupSortFixtureKey(displayStats);
     const existingMarketGoal = currentMarketGoalSortValue(this.container);
     const preservedMarketGoal =
-      existingMarketGoal &&
+      canUseGoalMarket && existingMarketGoal &&
       (this.container.hasAttribute(lineupSortLightweightReadyAttribute) ||
         (this.renderedLineupSortFixtureKey !== 'null' &&
           this.renderedLineupSortFixtureKey === nextLineupSortFixtureKey))
