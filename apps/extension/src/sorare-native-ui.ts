@@ -1,3 +1,5 @@
+import {hasSorareCardMedia} from './card-media.js';
+
 const nativeLineupTriggerSelector =
   'span[type="button"][aria-haspopup="dialog"]';
 const nativeLineupAttribute = 'data-sorare-overlay-native-lineup';
@@ -16,6 +18,44 @@ const nativeLineupToneAttribute =
 const cardImageSelector =
   'img[src*="/cardsamplepicture/"], img[alt$=" - common" i], img[alt$=" - limited" i], img[alt$=" - rare" i], img[alt$=" - super rare" i], img[alt$=" - unique" i]';
 const percentagePattern = /^(\d{1,3})\s*%$/;
+const nativeGradeAttribute = 'data-sorare-overlay-native-grade-hidden';
+const nativeGradeCandidateSelector = `[style*="--bg"], [${nativeGradeAttribute}]`;
+
+function hasNearbyCardMedia(element: HTMLElement): boolean {
+  let scope = element.parentElement;
+  for (let depth = 0; scope && depth < 5; depth += 1) {
+    if (scope === document.body || scope === document.documentElement) return false;
+    if (hasSorareCardMedia(scope)) return true;
+    scope = scope.parentElement;
+  }
+  return false;
+}
+
+function hideNativePlayerGrades(root: ParentNode): void {
+  const candidates = new Set(root.querySelectorAll<HTMLElement>(nativeGradeCandidateSelector));
+  if (root instanceof Element) {
+    const closest = root.closest<HTMLElement>(nativeGradeCandidateSelector);
+    if (closest) candidates.add(closest);
+  }
+  for (const surface of candidates) {
+    if (!(surface instanceof HTMLElement)) continue;
+    // Sorare's grade is a non-interactive score-colored sibling of its
+    // lineup-probability trigger. Do not hide arbitrary letters (captain C),
+    // numeric scores, the percentage itself, or controls elsewhere on the page.
+    const trigger = surface.parentElement?.querySelector<HTMLElement>(`:scope > ${nativeLineupTriggerSelector}`);
+    const percentage = trigger?.textContent?.trim().match(percentagePattern);
+    const isGrade = !surface.closest('[data-sorare-overlay-root], [data-sorare-overlay-companion]') &&
+      /^var\(--c-score-[\w-]+\)$/.test(surface.style.getPropertyValue('--bg').trim()) &&
+      /^[A-F]$/.test(surface.textContent?.trim() ?? '') &&
+      !surface.matches('a, button, [role="button"], [title]') &&
+      !surface.querySelector('a, button, input, select, [role="button"], [title]') &&
+      Boolean(trigger?.querySelector('svg')) && Boolean(percentage && Number(percentage[1]) <= 100) &&
+      hasNearbyCardMedia(surface);
+    if (isGrade) {
+      if (surface.getAttribute(nativeGradeAttribute) !== 'true') surface.setAttribute(nativeGradeAttribute, 'true');
+    } else surface.removeAttribute(nativeGradeAttribute);
+  }
+}
 
 type NativeLineupTone =
   | 'very-low'
@@ -60,6 +100,7 @@ function nativeLineupTriggers(root: ParentNode): HTMLElement[] {
 export function decorateNativeSorareLineupProbabilities(
   root: ParentNode,
 ): void {
+  hideNativePlayerGrades(root);
   for (const trigger of nativeLineupTriggers(root)) {
     if (
       trigger.closest(
@@ -109,6 +150,7 @@ export function decorateNativeSorareLineupProbabilities(
 }
 
 export function clearNativeSorareLineupProbabilityDecorations(): void {
+  for (const grade of document.querySelectorAll(`[${nativeGradeAttribute}]`)) grade.removeAttribute(nativeGradeAttribute);
   for (const trigger of document.querySelectorAll<HTMLElement>(
     `[${nativeLineupAttribute}]`,
   )) {
