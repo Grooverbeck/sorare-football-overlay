@@ -2083,12 +2083,19 @@ function aaStatNode(
   value.textContent = score(stats.aaL10);
   stat.append(icon, value);
   const limitedClubSample = hasAaValue && stats.aaL10.sampleSize < 10;
-  if (limitedClubSample) {
-    const sampleWarningReason =
+  const aaHistoryLoading = !hasAaValue && stats.pendingRefreshes?.includes('formHistory') === true;
+  if (limitedClubSample || !hasAaValue) {
+    const sampleWarningTitle = hasAaValue
+      ? 'Begrenzte AA-Datenbasis'
+      : aaHistoryLoading ? 'AA-Daten werden geladen' : 'Keine AA-Daten';
+    const sampleWarningReason = hasAaValue ?
       `AA ${score(stats.aaL10)} · Datenbasis: ${stats.aaL10.sampleSize}/10 gültige ` +
       `Spiele mit mindestens 60 Minuten beim aktuellen Verein. ` +
-      `Andere Vereine/Nationalteam ausgeschlossen.`;
-    stat.dataset.limitedSample = 'true';
+      `Andere Vereine/Nationalteam ausgeschlossen.` :
+      (aaHistoryLoading ? 'Die AA-Spielhistorie wird noch geladen. ' : 'Derzeit ist kein AA-Wert verfügbar. ') +
+      'Für AA zählen nur Spiele mit mindestens 60 Minuten beim aktuellen Verein. ' +
+      'Andere Vereine/Nationalteam ausgeschlossen.';
+    if (limitedClubSample) stat.dataset.limitedSample = 'true';
     stat.dataset.clubSampleSize = String(stats.aaL10.sampleSize);
     const warning = document.createElement('span');
     warning.className = 'aa-sample-warning';
@@ -2097,7 +2104,7 @@ function aaStatNode(
     warning.setAttribute('role', 'note');
     warning.setAttribute(
       'aria-label',
-      `Warnung: Begrenzte AA-Datenbasis. ${sampleWarningReason}`,
+      `${hasAaValue ? 'Warnung' : 'Hinweis'}: ${sampleWarningTitle}. ${sampleWarningReason}`,
     );
     const warningGlyph = svgElement('svg', {
       class: 'aa-sample-warning-glyph',
@@ -2119,7 +2126,7 @@ function aaStatNode(
     warningTooltip.setAttribute('aria-hidden', 'true');
     const warningTitle = document.createElement('span');
     warningTitle.className = 'aa-sample-warning-title';
-    warningTitle.textContent = 'Begrenzte AA-Datenbasis';
+    warningTitle.textContent = sampleWarningTitle;
     const warningDetail = document.createElement('span');
     warningDetail.className = 'aa-sample-warning-detail';
     warningDetail.textContent = sampleWarningReason;
@@ -2148,6 +2155,7 @@ function aaStatNode(
               ? `; Warnung: nur ${stats.aaL10.sampleSize} Vereinsspiele mit mindestens 60 Minuten`
               : ''
           }`
+        : aaHistoryLoading ? 'AA L10: Daten werden noch geladen'
         : 'AA L10: noch keine gültigen Spiele mit mindestens 60 Minuten beim aktuellen Verein',
     );
     return stat;

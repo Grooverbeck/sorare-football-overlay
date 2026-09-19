@@ -5588,13 +5588,14 @@ describe('Sorare card DOM discovery', () => {
       view.host.shadowRoot?.querySelector<HTMLElement>('.market-bracket');
     const unavailableAa =
       bracket?.querySelector<HTMLElement>('.aa-bracket-cell');
-    expect(unavailableAa?.textContent).toBe('AA—');
+    expect(unavailableAa?.querySelector('.aa-market-icon')?.textContent).toBe('AA');
+    expect(unavailableAa?.querySelector('.market-value')?.textContent).toBe('—');
     expect(unavailableAa?.dataset.available).toBe('false');
     expect(unavailableAa?.dataset.tone).toBe('unavailable');
     expect(unavailableAa?.getAttribute('aria-label')).toBe(
-      'AA L10: noch keine gültigen Spiele mit mindestens 60 Minuten beim aktuellen Verein',
+      'AA L10: Daten werden noch geladen',
     );
-    expect(unavailableAa?.querySelector('.aa-sample-warning')).toBeNull();
+    expect(unavailableAa?.querySelector('.aa-sample-warning-title')?.textContent).toBe('AA-Daten werden geladen');
     expect(
       bracket?.querySelector('.clean-sheet-bracket-cell .market-value')
         ?.textContent,
