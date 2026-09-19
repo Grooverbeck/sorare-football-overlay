@@ -795,6 +795,18 @@ export class LineupSortHydrator {
       const requestedCacheRevision = this.marketCacheRevision;
       const startedAt = performance.now();
       for (const state of batch) {
+        const container = state.target.container;
+        const readiness = readSortReadiness(container);
+        if (container.getAttribute(lineupSortDataReadyAttribute) === 'true' &&
+          !container.hasAttribute(lineupSortLightweightReadyAttribute) && readiness &&
+          !readinessIsSettled(readiness[this.metricKey()])) {
+          // A partial full-overlay response may have arrived during the last
+          // compact request. That older response was correctly ignored, but
+          // this new read must be allowed to settle the still-open metric.
+          // completeState keeps settled neighbors and checks the full-data
+          // revision again, so a newer quote arriving in flight still wins.
+          state.reconcileFullOverlay = true;
+        }
         state.status = 'in-flight';
         state.attempts += 1;
         if (state.finalCheckMetric) state.finalCheckRevision = this.marketCacheRevision;
