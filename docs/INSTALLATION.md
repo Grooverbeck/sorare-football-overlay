@@ -13,7 +13,18 @@ Die manuell installierte Version wird gegen das öffentliche Backend des
 Projekts gebaut. Zugangsdaten oder Sorare-Passwörter gehören niemals in die
 Erweiterung.
 
-## Erstinstallation
+## Installation über den Chrome Web Store
+
+Öffne den
+[Chrome-Web-Store-Eintrag](https://chromewebstore.google.com/detail/sorare-football-stats-ove/ddolakmpillologhigdmolbbmfphakjm)
+und installiere die Erweiterung über den Store. Updates werden anschließend
+automatisch verteilt. Neue GitHub-Versionen können vor der Google-Freigabe
+erscheinen und sind dann zunächst nur manuell verfügbar.
+
+Store- und manuelle Version nicht gleichzeitig aktivieren, sonst können
+Anzeigen doppelt erscheinen.
+
+## Manuelle Erstinstallation
 
 1. Öffne das
    [neueste GitHub-Release](https://github.com/Grooverbeck/sorare-football-overlay/releases/latest).
@@ -89,6 +100,6 @@ Ordner und wähle genau den Ordner aus, in dem `manifest.json` liegt.
 2. Bei der Erweiterung **Entfernen** auswählen.
 3. Danach kann der lokale Erweiterungsordner gelöscht werden.
 
-Sobald eine freigegebene Chrome-Web-Store-Version verfügbar ist, übernimmt
-der Store Installation und Updates automatisch. Bis dahin ist das hier
-beschriebene Release-Verfahren die vorgesehene Installationsmethode.
+Bei einer Installation über den Chrome Web Store übernimmt der Store die
+Updates automatisch. Die Schritte zum manuellen Update gelten nur für
+entpackt installierte Versionen.

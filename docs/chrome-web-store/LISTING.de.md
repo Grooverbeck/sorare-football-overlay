@@ -1,4 +1,4 @@
-# Chrome Web Store – Listing 0.4.13 (Deutsch)
+# Chrome Web Store – Listing 0.4.15 (Deutsch)
 
 Name: Sorare Football Stats Overlay – Unofficial
 Kategorie: Tools (bestehender Store-Eintrag)
@@ -22,15 +22,22 @@ Features
 • Overlay im Squad und in der Lineup-Übersicht separat ein- und ausschalten.
 • Automatisches Nachladen verfügbarer Daten und früherer Wechsel zur nächsten Begegnung nach bestätigtem Spielende bei aktiver Nutzung.
 
-Verbesserungen in 0.4.13
-• Neue Sorare-Set-Karten und gesperrte Sonderkarten werden zuverlässiger erkannt.
-• Korrekturen für fehlende oder doppelte Anzeigen und hängenbleibende Sortierung.
-• Verbesserte Wiederherstellung der Anzeigen nach dem Zurücknavigieren.
+Neu und verbessert in 0.4.15
+• Animierte Set-Karten werden über einen gemeinsamen Kartenkatalog besser erkannt. Bereits erfasste Varianten müssen nicht mehr auf jedem PC einzeln angelernt werden.
+• Passendere Farbstufen für Tor- und Assistwahrscheinlichkeiten im europäischen Set.
+• Ein Hinweiszeichen erklärt fehlende AA-Daten auch in der grauen Klammer.
+• Die zusätzlichen Buchstabenbewertungen neben der Startelfwahrscheinlichkeit werden ausgeblendet; die Prozentanzeige bleibt erhalten.
 
-Nicht für jeden Spieler, jedes Spiel oder jeden Wettbewerb sind Marktquoten verfügbar. Die angezeigten Werte sind Statistik-Kontext und keine Garantie für zukünftige Ergebnisse.
+Bugfixes in 0.4.15
+• Große Spielerpools werden zuverlässiger vollständig geladen und sortiert, auch mit nachgeladenen Videokarten.
+• Korrekturen für hängenbleibende AA-, Torquoten- und Clean-Sheet-Sortierungen sowie springende Ladeanzeigen.
+• Die angezeigte Torquote und die für die Sortierung verwendete Quote werden zuverlässig abgeglichen.
+• Verbesserte Erkennung der Kartenposition für die AA-Auswertung und stabilere Matchbalken beim Scrollen.
+
+Nicht für jeden Spieler, jedes Spiel oder jeden Wettbewerb sind Marktquoten verfügbar. Sehr neue oder seltene Kartenvarianten können bis zur Ergänzung im Kartenkatalog noch fehlen. Die angezeigten Werte sind Statistik-Kontext und keine Garantie für zukünftige Ergebnisse.
 
 Daten und Berechtigungen
-Die Erweiterung verarbeitet auf Sorare dargestellte öffentliche Spieler- und Karteninformationen. Öffentliche Spielerkennungen, Kartenpositionen, Team- und Begegnungskontext sowie erforderliche Abrufoptionen werden verschlüsselt an den eigenen Statistikdienst gesendet. Für eine vollständige Sortierung werden auch bereits geladene Karten außerhalb des sichtbaren Ausschnitts berücksichtigt.
+Die Erweiterung verarbeitet auf Sorare dargestellte öffentliche Spieler- und Karteninformationen. Öffentliche Spielerkennungen, Kartenpositionen, Team- und Begegnungskontext sowie erforderliche Abrufoptionen werden verschlüsselt an den eigenen Statistikdienst gesendet. Unbekannte öffentliche Kartenbild-Kennungen werden in Gruppen von bis zu 100 mit einem gemeinsam genutzten Sorare-Kartenkatalog abgeglichen. Die lokale Zuordnungsliste und Besitzerkennungen werden nicht hochgeladen. Für eine vollständige Sortierung werden auch bereits geladene Karten außerhalb des sichtbaren Ausschnitts berücksichtigt.
 
 Anzeigeoptionen und begrenzte Zuordnungen von Kartenbildern zu öffentlichen Spielern bleiben lokal gespeichert. Klick-, Hover-, Scroll- und Sichtbarkeitszustände werden lokal für Darstellung, Sortierung und Aktualisierung berücksichtigt; es werden keine Maus- oder Scrollverlaufsprotokolle an den Statistikdienst gesendet. Cloudflare verarbeitet technisch erforderliche Verbindungsdaten, etwa die IP-Adresse. Es werden keine Sorare-Passwörter, Authentifizierungs-Cookies, Wallet- oder Zahlungsdaten ausgelesen und kein allgemeiner Browserverlauf gesammelt.
 

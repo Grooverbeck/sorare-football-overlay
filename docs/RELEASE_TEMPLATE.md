@@ -5,6 +5,14 @@ Erstinstallation und manuelle Updates fehlen. `<VERSION>` und die Änderungen
 vor dem Veröffentlichen ersetzen.
 
 ```markdown
+## Chrome Web Store
+
+[Im Chrome Web Store installieren](https://chromewebstore.google.com/detail/sorare-football-stats-ove/ddolakmpillologhigdmolbbmfphakjm)
+
+Store-Updates erscheinen nach Einreichung und Freigabe durch Google. Bis dahin
+kann dort eine ältere Version angeboten werden. Store- und manuelle Version
+nicht gleichzeitig aktivieren.
+
 ## Installation
 
 1. Unter **Assets** die Datei
@@ -45,5 +53,7 @@ Erweiterungsseite **Neu laden** anklicken und offene Sorare-Tabs aktualisieren.
   obersten Ebene.
 - Release-Text enthält Installation, Update, Änderungen und den Link zu dieser
   Anleitung.
+- Der Store-Link ist enthalten; eine noch nicht eingereichte/freigegebene
+  Version wird nicht als bereits im Store verfügbar beschrieben.
 - Die automatisch erzeugten GitHub-Source-Code-Archive werden nicht als
   Installationspaket bezeichnet.

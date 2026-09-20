@@ -3,7 +3,8 @@
 Produktionsnahes TypeScript-Monorepo für eine Chrome-/Edge-Manifest-V3-Extension, die kompakte, positionsabhängige L10-Statistiken auf dynamisch geladenen Sorare-Fußballkarten anzeigt.
 
 > Du möchtest die fertige Erweiterung nur benutzen?
-> Zur [Installations- und Update-Anleitung](docs/INSTALLATION.md) – Node.js
+> [Im Chrome Web Store installieren](https://chromewebstore.google.com/detail/sorare-football-stats-ove/ddolakmpillologhigdmolbbmfphakjm)
+> oder zur [Installations- und Update-Anleitung](docs/INSTALLATION.md) – Node.js
 > oder ein eigener Build sind dafür nicht erforderlich.
 
 ## Architektur
