@@ -64,6 +64,25 @@ const verifiedSetPictures: Readonly<Record<string, string>> = {
 const knownPlayerSlugsByPictureId = new Map(Object.entries(verifiedSetPictures));
 const discoveredPlayerSlugsByPictureId = new Map<string, string>();
 
+export function hasKnownCardPictureIdentity(id: string): boolean {
+  return knownPlayerSlugsByPictureId.has(id) || knownPlayerNamesByPictureId.has(id);
+}
+
+export function findUnknownCardPictures(root: ParentNode): Array<{pictureId: string; container: HTMLElement}> {
+  const found = new Map<HTMLElement, string>();
+  const checked = new Set<HTMLElement>();
+  for (const media of findSorareCardMedia(root)) {
+    const id = extractCardPictureId(media);
+    if (!id || hasKnownCardPictureIdentity(id)) continue;
+    const container = findCardMediaContainer(media);
+    if (!container || checked.has(container) || isScoreDetailsDialogTarget(container)) continue;
+    checked.add(container);
+    const ids = new Set(findSorareCardMedia(container).map(extractCardPictureId).filter(Boolean));
+    if (ids.size === 1) found.set(container, id);
+  }
+  return [...found].map(([container,pictureId])=>({container,pictureId}));
+}
+
 export function hydrateCardPictureSlugs(entries: Readonly<Record<string, string>>): void {
   knownPlayerSlugsByPictureId.clear();
   discoveredPlayerSlugsByPictureId.clear();

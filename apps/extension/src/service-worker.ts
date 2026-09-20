@@ -1,5 +1,7 @@
 import {
   ApiErrorResponseSchema,
+  CardIdentitiesRequestSchema,
+  CardIdentitiesResponseSchema,
   LineupSortValuesRequestSchema,
   LineupSortValuesSuccessResponseSchema,
   PlayerMarketSnapshotsRequestSchema,
@@ -75,6 +77,7 @@ export async function handleMessage(
   }
   if (
     message?.type !== 'FETCH_PLAYER_STATS' &&
+    message?.type !== 'FETCH_CARD_IDENTITIES' &&
     message?.type !== 'FETCH_LINEUP_SORT_VALUES' &&
     message?.type !== 'FETCH_PLAYER_MARKET_SNAPSHOTS'
   ) {
@@ -86,9 +89,10 @@ export async function handleMessage(
     );
   }
   const isLineupSortRequest = message.type === 'FETCH_LINEUP_SORT_VALUES';
+  const isCardIdentityRequest = message.type === 'FETCH_CARD_IDENTITIES';
   const isMarketSnapshotRequest =
     message.type === 'FETCH_PLAYER_MARKET_SNAPSHOTS';
-  const request = isLineupSortRequest
+  const request = isCardIdentityRequest ? CardIdentitiesRequestSchema.safeParse(message.payload) : isLineupSortRequest
     ? LineupSortValuesRequestSchema.safeParse(message.payload)
     : isMarketSnapshotRequest
       ? PlayerMarketSnapshotsRequestSchema.safeParse(message.payload)
@@ -112,7 +116,7 @@ export async function handleMessage(
     const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
     const response = await fetchImpl(
       `${apiBaseUrl}${
-        isLineupSortRequest
+        isCardIdentityRequest ? '/api/card-identities' : isLineupSortRequest
           ? '/api/lineup-sort-values'
           : isMarketSnapshotRequest
             ? '/api/player-market-snapshots'
@@ -163,11 +167,20 @@ export async function handleMessage(
             response.status,
           );
     }
-    const parsed = isLineupSortRequest
+    const parsed = isCardIdentityRequest ? CardIdentitiesResponseSchema.safeParse(json) : isLineupSortRequest
       ? LineupSortValuesSuccessResponseSchema.safeParse(json)
       : isMarketSnapshotRequest
         ? PlayerMarketSnapshotsSuccessResponseSchema.safeParse(json)
         : PlayerStatsSuccessResponseSchema.safeParse(json);
+    if (parsed.success && isCardIdentityRequest) {
+      const identities=CardIdentitiesResponseSchema.parse(parsed.data);
+      const allowed=new Set(CardIdentitiesRequestSchema.parse(message.payload).pictureIds);
+      if(identities.data.some(row=>!allowed.has(row.pictureId))) {
+        return errorResponse('INVALID_BACKEND_RESPONSE','Unexpected card identity',backendRequestId,startedAt);
+      }
+      // Existing cross-tab storage notifications trigger scoped rescans.
+      if(identities.data.length) await mergeCardPictureUpdates({slugs:Object.fromEntries(identities.data.map(row=>[row.pictureId,row.playerSlug]))});
+    }
     return parsed.success
       ? {
           ok: true,

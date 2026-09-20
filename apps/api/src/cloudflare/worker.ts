@@ -19,6 +19,8 @@ import { D1PlayerLoadLeases } from './player-load-leases.js';
 import { createWorkerLogger } from './logger.js';
 import { FixtureLifecycle } from '../services/fixture-lifecycle.js';
 import { SorareFixtureStatusSource } from '../graphql/fixture-status-source.js';
+import { CardCatalogRefresher, CardIdentityService, SorareCardCatalogSource } from '../services/card-catalog.js';
+import { D1CardCatalogStore } from './card-catalog-store.js';
 
 const configKeys = [
   'PORT',
@@ -60,6 +62,7 @@ const configKeys = [
 
 const WEEKLY_MLS_AA_CRON = '0 10 * * MON';
 const DAILY_MARKET_PREWARM_CRON = '0 5 * * *';
+const CARD_CATALOG_CRON = '*/5 * * * *';
 const CACHE_CLEANUP_BATCH_SIZE = 2_000;
 const CACHE_CLEANUP_MAX_BATCHES = 12;
 
@@ -173,6 +176,7 @@ function createWorkerAppServices(
     },
     logger,
     corsOrigins: config.corsOrigins,
+    get cardIdentityService() { return new CardIdentityService(new D1CardCatalogStore(env.CACHE_DB)); },
     consumeApiRateLimit: async (key) => {
       const { success } = await env.API_RATE_LIMITER.limit({ key });
       return success;
@@ -208,6 +212,18 @@ export default {
     context: ExecutionContext,
   ): void {
     const { config, logger } = createWorkerBase(env);
+    if(controller.cron===CARD_CATALOG_CRON) {
+      if(config.mockMode) return;
+      const source=new SorareCardCatalogSource(new SorareGraphqlClient({
+        url:config.graphqlUrl,requestTimeoutMs:5_000,maxRetries:0,logger,
+        ...(config.apiKey?{apiKey:config.apiKey}:{}),
+        // Public catalogue only: never use a user's Sorare session/token.
+      }));
+      context.waitUntil(new CardCatalogRefresher(source,new D1CardCatalogStore(env.CACHE_DB)).run()
+        .then(summary=>logger.info(summary,'Card identity catalog slice completed'))
+        .catch(error=>logger.warn({error:error instanceof Error?error.message:String(error)},'Card identity catalog refresh paused; keeping verified entries')));
+      return;
+    }
     if (
       controller.cron !== WEEKLY_MLS_AA_CRON &&
       controller.cron !== DAILY_MARKET_PREWARM_CRON

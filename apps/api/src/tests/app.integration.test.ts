@@ -9,11 +9,12 @@ import { MockPlayerMarketOddsProvider } from '../providers/market-odds-provider.
 import type { AppLogger } from '../logger.js';
 import { StatsService } from '../services/stats-service.js';
 import { MAX_API_BODY_BYTES } from '../request-body.js';
+import { CardIdentityService } from '../services/card-catalog.js';
 
 const logger = pino({ level: 'silent' });
 
 describe('API request byte limits', () => {
-  for (const route of ['/api/player-stats','/api/player-market-snapshots','/api/lineup-sort-values']) {
+  for (const route of ['/api/player-stats','/api/player-market-snapshots','/api/lineup-sort-values','/api/card-identities']) {
     it(`rejects oversized bodies before parsing on ${route}`, async () => {
       const response = await testApp().request(route, {method:'POST',body:'x'.repeat(MAX_API_BODY_BYTES + 1)});
       expect(response.status).toBe(413);
@@ -64,6 +65,21 @@ describe('API request byte limits', () => {
     const response = await testApp().request('/api/player-stats',{method:'POST',body:JSON.stringify({slugs:['test-player'],positions})});
     expect(response.status).toBe(400);
   });
+});
+
+it('serves read-only shared card identities and rejects attempts to submit mappings',async()=>{
+  const id='70f9f242-6638-4505-bf9d-9d8c40fe811a';
+  const read=vi.fn(async()=>[{pictureId:id,playerSlug:'future-player'}]);
+  const app=createApp({
+    get statsService():StatsService {throw new Error('Stats runtime must stay lazy');},
+    logger,corsOrigins:[],cardIdentityService:new CardIdentityService({read}),
+  });
+  const good=await app.request('/api/card-identities',{method:'POST',body:JSON.stringify({pictureIds:[id]})});
+  expect(good.status).toBe(200);expect(await good.json()).toEqual({data:[{pictureId:id,playerSlug:'future-player'}],retryAfterSeconds:300});
+  for(const payload of [{pictureIds:[id],playerSlug:'injected'},{pictureIds:['invalid']}]) {
+    expect((await app.request('/api/card-identities',{method:'POST',body:JSON.stringify(payload)})).status).toBe(400);
+  }
+  expect(read).toHaveBeenCalledTimes(1);
 });
 
 function testApp() {

@@ -17,6 +17,7 @@ import {
   extractCardPictureId,
   extractPlayerName,
   findCardTargets,
+  findUnknownCardPictures,
   type CardTarget,
 } from './dom.js';
 import { OverlayView } from './overlay.js';
@@ -1766,6 +1767,7 @@ export class SorareCardScanner {
     ) => void,
     private readonly lineupSortHydrator = new LineupSortHydrator(),
     private readonly onCardPictureSlugsDiscovered?: (entries: Readonly<Record<string,string>>) => void,
+    private readonly onUnknownCardPictures?: (candidates: Array<{pictureId:string;container:HTMLElement}>) => void,
   ) {}
 
   configureHistoricalAssistFallback(
@@ -2032,6 +2034,7 @@ export class SorareCardScanner {
       );
     }
     if (rootHydrationGrid) this.lineupSortHydrator.settleUnidentifiedCards(root, targets);
+    if (this.onUnknownCardPictures) this.onUnknownCardPictures(findUnknownCardPictures(root));
     return targets;
   }
 

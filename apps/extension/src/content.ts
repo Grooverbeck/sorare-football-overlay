@@ -1,4 +1,5 @@
 import { SorareCardScanner } from './scanner.js';
+import { CardIdentityLookup } from './card-identity-lookup.js';
 import { hydrateCardPictureNames, hydrateCardPictureSlugs } from './dom.js';
 import { supportsCompactViewPath } from './compact-view-route.js';
 import { OverlayVisibilityController } from './overlay-visibility.js';
@@ -39,6 +40,12 @@ let pictureNameSaveTimer: number | undefined;
 let pendingPictureNames: Record<string,string> = {};
 let pendingPictureSlugs: Record<string,string> = {};
 let pictureSyncGeneration = 0;
+const cardIdentityLookup = new CardIdentityLookup(slugs => {
+  if(!Object.keys(slugs).length) return;
+  Object.assign(rememberedCardPictureSlugs,slugs);
+  hydrateCardPictureSlugs({...rememberedCardPictureSlugs,...pendingPictureSlugs});
+  scanner.refreshRememberedCardPictures(Object.keys(slugs));
+});
 
 function saveDiscoveredPictures(): void {
   if (pictureNameSaveTimer !== undefined) window.clearTimeout(pictureNameSaveTimer);
@@ -71,6 +78,7 @@ const scanner = new SorareCardScanner(
     Object.assign(pendingPictureSlugs, entries);
     saveDiscoveredPictures();
   },
+  candidates => cardIdentityLookup.add(candidates),
 );
 let enabled = false;
 const overlayVisibility = new OverlayVisibilityController(() => window.location.pathname, applyEnabled);
@@ -111,8 +119,8 @@ window.addEventListener('pageshow', () => overlayVisibility.refresh());
 function applyEnabled(nextEnabled: boolean): void {
   if (enabled === nextEnabled) return;
   enabled = nextEnabled;
-  if (enabled) scanner.start();
-  else scanner.stop();
+  if (enabled) {cardIdentityLookup.start();scanner.start();}
+  else {cardIdentityLookup.stop();scanner.stop();}
 }
 
 void Promise.all([

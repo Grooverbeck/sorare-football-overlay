@@ -1,5 +1,7 @@
 import {
   ApiErrorResponseSchema,
+  CardIdentitiesRequestSchema,
+  CardIdentitiesResponseSchema,
   lineupSortValueForPlayer,
   LineupSortValuesRequestSchema,
   LineupSortValuesSuccessResponseSchema,
@@ -22,6 +24,7 @@ import {
   supportPage,
 } from './public-pages.js';
 import type { StatsService } from './services/stats-service.js';
+import type { CardIdentityService } from './services/card-catalog.js';
 import {
   mlsAaContextForPlayer,
   type MlsAaBenchmarkStore,
@@ -56,6 +59,7 @@ export interface CreateAppOptions {
   logger: AppLogger;
   corsOrigins: readonly string[];
   mlsAaBenchmarkStore?: MlsAaBenchmarkStore;
+  cardIdentityService?: CardIdentityService;
   consumeApiRateLimit?: (key: string) => Promise<boolean>;
 }
 
@@ -169,6 +173,14 @@ export function createApp<TBindings extends object = Record<string, never>>(
   app.get('/privacy', (context) => servePublicHtml(context, privacyPage));
   app.get('/support', (context) => servePublicHtml(context, supportPage));
   app.get('/health', (context) => context.json({ status: 'ok' }));
+
+  app.post('/api/card-identities', async context => {
+    const parsed=CardIdentitiesRequestSchema.safeParse(await readApiJson(context.req.raw));
+    if(!parsed.success) throw new AppError(400,'INVALID_REQUEST','Invalid card picture IDs');
+    const service=context.get('services').cardIdentityService;
+    if(!service) throw new AppError(503,'CATALOG_UNAVAILABLE','Card catalog is not configured');
+    return context.json(CardIdentitiesResponseSchema.parse(await service.resolve(parsed.data.pictureIds)));
+  });
 
   app.post('/api/player-stats', async (context) => {
     const services = context.get('services');

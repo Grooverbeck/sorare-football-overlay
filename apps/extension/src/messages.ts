@@ -27,6 +27,7 @@ export interface FetchPlayerMarketSnapshotsMessage {
 }
 
 export type ExtensionMessage =
+  | {type: 'FETCH_CARD_IDENTITIES'; requestId: string; payload: import('@sorare-overlay/shared').CardIdentitiesRequest}
   | {type: 'REMEMBER_CARD_PICTURES'; requestId: string; payload: import('./card-picture-store.js').CardPictureUpdates}
   | FetchPlayerStatsMessage
   | FetchLineupSortValuesMessage
