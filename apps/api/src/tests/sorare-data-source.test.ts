@@ -237,6 +237,7 @@ describe('SorareDataSource player-name resolution', () => {
               slug: 'nicolas-fernandez-mercau',
               displayName: 'Nicolás Fernández-Mercau',
               position: 'Midfielder',
+              activeClub: {slug: 'test-club'},
             },
           ],
         };
@@ -252,6 +253,7 @@ describe('SorareDataSource player-name resolution', () => {
     ).resolves.toEqual([
       {
         slug: 'nicolas-fernandez-mercau',
+        teamSlug: 'test-club',
         resolvedFromName: 'Nicolás Fernández-Mercau',
         nameResolution: 'direct',
       },
@@ -273,6 +275,7 @@ describe('SorareDataSource player-name resolution', () => {
                 slug: 'tim-ream',
                 displayName: 'Tim Ream',
                 position: 'Defender',
+                activeClub: {slug: 'charlotte-fc-charlotte-north-carolina'},
               },
             ],
           };
@@ -292,6 +295,7 @@ describe('SorareDataSource player-name resolution', () => {
         slug: 'tim-ream',
         resolvedFromName: 'Tim Ream',
         nameResolution: 'direct',
+        teamSlug: 'charlotte-fc-charlotte-north-carolina',
       },
     ]);
     expect(request).toHaveBeenCalledTimes(2);

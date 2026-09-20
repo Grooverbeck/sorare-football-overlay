@@ -953,7 +953,7 @@ export class StatsService {
     ) {
       throw firstColdLoadError;
     }
-    cachedOrLoaded = await this.recoverEmptyNameResolutions(
+    cachedOrLoaded = await this.recoverUnconfirmedNameResolutions(
       playerRequests,
       cachedOrLoaded,
       request.positions,
@@ -1398,7 +1398,7 @@ export class StatsService {
     );
   }
 
-  private async recoverEmptyNameResolutions(
+  private async recoverUnconfirmedNameResolutions(
     playerRequests: readonly SourcePlayerRequest[],
     loadedStats: readonly PlayerStats[],
     positions: Readonly<Record<string, FootballPosition>> | undefined,
@@ -1420,7 +1420,7 @@ export class StatsService {
         firstStatsBySlug.set(stats.slug, stats);
       }
     }
-    const emptyNameMatches = playerRequests.flatMap((playerRequest) => {
+    const unconfirmedNameMatches = playerRequests.flatMap((playerRequest) => {
       if (
         !playerRequest.resolvedFromName ||
         playerRequest.nameResolution === 'search'
@@ -1434,17 +1434,21 @@ export class StatsService {
         : firstStatsBySlug.get(playerRequest.slug);
       return stats &&
         !stats.pendingRefreshes?.includes('formHistory') &&
-        hasNoUsablePlayerData(stats)
+        (hasNoUsablePlayerData(stats) ||
+          // Legacy name-cache entries may predate resolution provenance. Old
+          // appearances do not establish identity when neither club nor next
+          // game is known. Search once, even if historical sampleSize > 0.
+          (!playerRequest.teamSlug && stats.nextGame === null))
         ? [{ playerRequest, stats }]
         : [];
     });
-    if (emptyNameMatches.length === 0) return [...loadedStats];
+    if (unconfirmedNameMatches.length === 0) return [...loadedStats];
     const replacedStats = new Set<PlayerStats>();
 
     try {
       const names = [
         ...new Set(
-          emptyNameMatches.map(
+          unconfirmedNameMatches.map(
             ({ playerRequest }) => playerRequest.resolvedFromName!,
           ),
         ),
@@ -1462,7 +1466,7 @@ export class StatsService {
         ),
       );
       const replacements = new Map<PlayerStats, SourcePlayerRequest>();
-      for (const { playerRequest, stats } of emptyNameMatches) {
+      for (const { playerRequest, stats } of unconfirmedNameMatches) {
         const corrected = searchedByName.get(playerRequest.resolvedFromName!);
         if (!corrected || corrected.slug === playerRequest.slug) continue;
         replacements.set(stats, {

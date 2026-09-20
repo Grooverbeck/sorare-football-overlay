@@ -513,6 +513,10 @@ export class SorareDataSource implements PlayerStatsDataSource {
       const activeClubSlug = player.activeClub?.slug.toLowerCase();
       if (
         requestedName &&
+        // A matching guessed slug/name/position is not sufficient when Sorare
+        // cannot confirm a current club: old namesakes can have real history.
+        // Let the normal player/card search verify these candidates instead.
+        activeClubSlug &&
         position &&
         (!expectedPosition || position === expectedPosition) &&
         teamSlugsLikelyMatch(activeClubSlug, expectedTeamSlug) &&
@@ -865,6 +869,13 @@ export class SorareDataSource implements PlayerStatsDataSource {
           );
         }
       } else if (cached) {
+        if (cached.nameResolution === 'direct' && !cached.teamSlug) {
+          // Repair only weak direct mappings created by older versions. A
+          // searched/confirmed clubless player remains valid; no cache flush.
+          this.resolvedNames.delete(key);
+          this.unresolvedNamesUntil.delete(key);
+          continue;
+        }
         this.resolvedNames.set(key, cached);
         this.unresolvedNamesUntil.delete(key);
       }
