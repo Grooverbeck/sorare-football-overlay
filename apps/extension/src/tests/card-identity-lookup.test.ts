@@ -50,9 +50,18 @@ it('does not poll while disabled or hidden and backs off after failures',async()
   Object.defineProperty(document,'hidden',{configurable:true,value:true});
   await vi.advanceTimersByTimeAsync(100);expect(fetcher).not.toHaveBeenCalled();
   Object.defineProperty(document,'hidden',{configurable:true,value:false});
-  await vi.advanceTimersByTimeAsync(300000);expect(fetcher).toHaveBeenCalledTimes(1);
+  document.dispatchEvent(new Event('visibilitychange'));
+  await vi.advanceTimersByTimeAsync(100);expect(fetcher).toHaveBeenCalledTimes(1);
   await vi.advanceTimersByTimeAsync(10000);expect(fetcher).toHaveBeenCalledTimes(1);
   lookup.stop();await vi.advanceTimersByTimeAsync(300000);expect(fetcher).toHaveBeenCalledTimes(1);
+});
+it('splits a large unknown pool into bounded batches without immediate miss rechecks',async()=>{
+  const ids=Array.from({length:150},(_,i)=>`00000000-0000-4000-8000-${String(i).padStart(12,'0')}`);
+  document.body.innerHTML=ids.map(id=>card(id)).join('');
+  const fetcher=vi.fn(async()=>({data:[],retryAfterSeconds:300}));
+  lookup=new CardIdentityLookup(vi.fn(),fetcher);lookup.start();lookup.add(findUnknownCardPictures(document));
+  await vi.advanceTimersByTimeAsync(300);
+  expect(fetcher.mock.calls.map(args=>args[0].length)).toEqual([100,50]);
 });
 it('ignores unrelated or late results after stopping',async()=>{
   let resolve!:(value:CardIdentitiesResponse)=>void;
