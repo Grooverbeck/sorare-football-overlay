@@ -1,6 +1,6 @@
-# Chrome Web Store – Datenschutzangaben (0.4.13)
+# Chrome Web Store – Datenschutzangaben
 
-Abgeglichen mit der öffentlichen Datenschutzerklärung vom 11. September 2026 und dem aktuellen Code. Keine neue Datenerhebung durch diese Textaktualisierung.
+Abgeglichen mit der öffentlichen Datenschutzerklärung vom 20. September 2026 (1.3). Die neue Kartenkatalog-Funktion überträgt zusätzlich unbekannte öffentliche Kartenbild-Kennungen zur Spielerauflösung. Vor der nächsten Store-Einreichung diese aktualisierte Beschreibung im Dashboard berücksichtigen; das Store-Paket wird durch ein Backend-Deployment nicht geändert.
 
 ## Datentypen im Dashboard
 
@@ -16,7 +16,7 @@ Die Erweiterung hilft beim Vergleichen von Sorare-Fußballspielern: Sie ergänzt
 
 ## Begründung für storage
 
-Die storage-Berechtigung speichert lokal Anzeigeoptionen: Aktivierung insgesamt sowie für Squad/Lineups, Klammerseite, Compact View, Werteformat und historische Ersatzwerte. Zusätzlich werden begrenzte Zuordnungen öffentlicher Kartenbild-Kennungen zu Spielernamen und Spieler-Slugs gespeichert (jeweils maximal 2.000). Das verbessert die Wiedererkennung dynamischer Karten. Es werden keine Zugangsdaten, Wallet-, Zahlungs- oder privaten Kontodaten gespeichert.
+Die storage-Berechtigung speichert lokal Anzeigeoptionen: Aktivierung insgesamt sowie für Squad/Lineups, Klammerseite, Compact View, Werteformat und historische Ersatzwerte. Zusätzlich werden begrenzte Zuordnungen öffentlicher Kartenbild-Kennungen zu Spielernamen und Spieler-Slugs gespeichert (jeweils maximal 2.000). Unbekannte Bildkennungen werden in Gruppen von höchstens 100 an den eigenen Statistikdienst gesendet, der sie mit einem aus öffentlichen Sorare-Daten aufgebauten Katalog abgleicht. Bestätigte Katalogeinträge haben kein automatisches Ablaufdatum und werden nicht mit Nutzerkonten verknüpft. Die lokale Zuordnungsliste und Kartenbesitz-Kennungen werden nicht hochgeladen. Es werden keine Zugangsdaten, Wallet-, Zahlungs- oder privaten Kontodaten gespeichert.
 
 ## Begründung für Hostberechtigung
 

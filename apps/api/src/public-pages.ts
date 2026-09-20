@@ -123,7 +123,7 @@ export const privacyPage = page(
   'Datenschutzerklärung – Football Stats Overlay',
   'Datenschutzerklärung für das inoffizielle Football Stats Overlay.',
   `
-    <span class="eyebrow">Stand: 11. September 2026 · Version 1.2</span>
+    <span class="eyebrow">Stand: 20. September 2026 · Version 1.3</span>
     <h1>Datenschutzerklärung</h1>
     <p class="lead">
       Diese Erklärung beschreibt, welche Daten das inoffizielle Football Stats Overlay
@@ -155,7 +155,9 @@ export const privacyPage = page(
     <p>
       Öffentliche Spielerkennungen, Kartenpositionen, Team- und Begegnungskontext sowie erforderliche
       Abrufoptionen (zum Beispiel der gewünschte historische Zeitraum) werden über HTTPS an den eigenen
-      Statistikdienst übertragen. Die Zuordnungsliste der Kartenbilder wird nicht als Liste übertragen.
+      Statistikdienst übertragen. Zur Erkennung unbekannter Karten werden zusätzlich bis zu 100
+      öffentliche Kartenbild-Kennungen gebündelt an diesen Dienst gesendet. Die lokal gespeicherte
+      Zuordnungsliste und Besitzerkennungen werden dabei nicht übertragen.
       Bei einer aktiven Sortierung werden auch bereits geladene Karten außerhalb des sichtbaren
       Ausschnitts berücksichtigt, damit die Reihenfolge den vollständigen Kartenpool umfasst.
     </p>
@@ -167,6 +169,8 @@ export const privacyPage = page(
       Zusätzlich werden begrenzte Zuordnungen öffentlicher Kartenbild-Kennungen zu Spielernamen
       beziehungsweise Spieler-Slugs gespeichert (jeweils höchstens 2.000 Einträge).
       Daraus aufgelöste Spielerkennungen werden für die oben beschriebenen Statistikabfragen verwendet.
+      Fehlende Zuordnungen können aus einem gemeinsam genutzten, anhand öffentlicher Sorare-Daten
+      aufgebauten Kartenkatalog ergänzt werden.
       Diese lokalen Speicherwerte können durch Entfernen der Erweiterung gelöscht werden.
       Geladene Statistiken und Sortierzustände werden außerdem vorübergehend im Arbeitsspeicher gehalten.
     </p>
@@ -212,6 +216,9 @@ export const privacyPage = page(
       Status-Prüfergebnisse und Daten bestätigter laufender oder unterbrochener Spiele können bis
       zu sieben Tage gespeichert bleiben. Das sind gemeinsam genutzte öffentliche Sportdaten,
       keine einer Person zugeordneten Nutzungsprofile.
+      Bestätigte Zuordnungen öffentlicher Kartenbild-Kennungen zu Spieler-Slugs werden ohne
+      automatisches Ablaufdatum im gemeinsamen Kartenkatalog gespeichert. Katalogabfragen werden
+      nicht als kontobezogene Besitz- oder Aufstellungslisten gespeichert.
       Öffentliche, vor dem Spiel erfasste Tor-, Assist- und Tor-oder-Assist-Marktsnapshots werden unabhängig von
       Nutzern ohne automatisches Ablaufdatum gespeichert, damit dieselben Buchmacherquoten nicht
       wiederholt kostenpflichtig abgerufen werden.
@@ -227,7 +234,7 @@ export const privacyPage = page(
       </li>
       <li>
         Die offizielle Sorare GraphQL API wird vom Backend ausschließlich mit öffentlichen
-        Spieler- und Spieldaten abgefragt. Sorare erhält dabei keine Zugangsdaten des
+        Spieler-, Karten- und Spieldaten abgefragt. Sorare erhält dabei keine Zugangsdaten des
         Extension-Nutzers.
       </li>
       <li>
@@ -280,7 +287,10 @@ export const privacyPage = page(
       The extension processes public player, card-position, team and fixture information on Sorare
       and sends the identifiers and required query options via HTTPS to its statistics service.
       Display settings and bounded mappings from public card-picture IDs to player names or slugs
-      are stored locally. Sorting includes already loaded offscreen cards. Page and interaction
+      are stored locally. Unknown public picture IDs are sent in batches of up to 100 to the service
+      for lookup in a shared, public Sorare-derived identity catalogue. The local mapping list and
+      card ownership identifiers are not uploaded. Verified catalogue entries have no automatic
+      expiration and are not linked to user accounts. Sorting includes already loaded offscreen cards. Page and interaction
       states are used locally for display, sorting and refresh scheduling, not behavioral profiling.
       No Sorare credentials, cookies, wallet or payment data are accessed. No separate account-linked
       ownership or lineup database is built. There is no general browsing-history collection.
