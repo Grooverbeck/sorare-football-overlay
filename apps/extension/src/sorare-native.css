@@ -2,6 +2,13 @@
   display: none !important;
 }
 
+/* Retain Sorare's strip when our data is missing/loading or the overlay is
+   disabled. A temporarily occluded ready bar still reserves its own space. */
+:is(button, [role="button"]):has([data-sorare-overlay-companion="lineup-odds"][data-lineup-odds-ready="true"])
+  + div[data-sorare-overlay-native-match-odds="true"] {
+  display: none !important;
+}
+
 [data-sorare-overlay-native-lineup="true"] {
   color: #0d1117;
   font-family:

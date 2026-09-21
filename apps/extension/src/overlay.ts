@@ -33,6 +33,7 @@ import {
   setLineupSortDataReady,
   setLineupSortPosition,
 } from './lineup-sort.js';
+import { NativeMatchOddsReplacement } from './native-match-odds.js';
 import type {
   HistoricalAssistWindow,
   MarketBracketSide,
@@ -3142,6 +3143,7 @@ export class OverlayView {
   private lastStablePackRect: DOMRect | null = null;
   private packLayoutPhase: 'none' | 'reveal' | 'result' = 'none';
   private viewportPriorityActive = true;
+  private readonly nativeMatchOdds = new NativeMatchOddsReplacement();
   private destroyed = false;
   private lastRawStats: PlayerStats | null = null;
   private lastDisplayStats: PlayerStats | null = null;
@@ -3226,6 +3228,7 @@ export class OverlayView {
         delete this.host.dataset.compactMarketBrackets;
       }
       if (!this.container.isConnected) {
+        this.nativeMatchOdds.clear();
         this.host.style.display = 'none';
         this.lineupOddsHost.hidden = true;
         this.bindLineupTeamRow(null);
@@ -3233,6 +3236,7 @@ export class OverlayView {
         return;
       }
       if (isScoreDetailsDialogTarget(this.container)) {
+        this.nativeMatchOdds.clear();
         this.host.style.display = 'none';
         this.lineupOddsHost.hidden = true;
         this.bindLineupTeamRow(null);
@@ -3270,6 +3274,7 @@ export class OverlayView {
       // The candidate row may belong to another view during a DOM remount.
       // Only the successfully claimed row may receive this view's odds bar.
       const teamRow = this.lineupTeamRow;
+      if (teamRow) this.nativeMatchOdds.update(teamRow);
       if (
         this.lineupOddsBar.dataset.ready !== 'true' ||
         !teamRow ||
@@ -3597,6 +3602,7 @@ export class OverlayView {
   destroy(options: { preserveLineupSortData?: boolean } = {}): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.nativeMatchOdds.clear();
     if (!options.preserveLineupSortData) {
       clearGoalMarketState(this.container);
       setSortReadiness(this.container, null);
