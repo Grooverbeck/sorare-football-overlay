@@ -1,4 +1,4 @@
-# Chrome Web Store – Listing 0.4.15 (Deutsch)
+# Chrome Web Store – Listing 0.4.16 (Deutsch)
 
 Name: Sorare Football Stats Overlay – Unofficial
 Kategorie: Tools (bestehender Store-Eintrag)
@@ -22,7 +22,11 @@ Features
 • Overlay im Squad und in der Lineup-Übersicht separat ein- und ausschalten.
 • Automatisches Nachladen verfügbarer Daten und früherer Wechsel zur nächsten Begegnung nach bestätigtem Spielende bei aktiver Nutzung.
 
-Neu und verbessert in 0.4.15
+Bugfixes in 0.4.16
+• Keine doppelten Matchbalken: Sorare bleibt sichtbar, bis unser Overlay einen eigenen Balken anzeigt. Beim Ausschalten des Overlays wird der Sorare-Balken wieder angezeigt.
+• Vorhandene Match- und Clean-Sheet-Quoten bei Länderspielen werden dem richtigen Nationalteam zugeordnet.
+
+Weitere Verbesserungen seit 0.4.15
 • Animierte Set-Karten werden über einen gemeinsamen Kartenkatalog besser erkannt. Bereits erfasste Varianten müssen nicht mehr auf jedem PC einzeln angelernt werden.
 • Passendere Farbstufen für Tor- und Assistwahrscheinlichkeiten im europäischen Set.
 • Ein Hinweiszeichen erklärt fehlende AA-Daten auch in der grauen Klammer.
