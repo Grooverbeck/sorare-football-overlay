@@ -61,6 +61,40 @@ beforeEach(async () => {
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe('Cloudflare Worker', () => {
+  it('refreshes only legacy fixtures with missing team identity and keeps the form cache', async () => {
+    const now=Date.parse('2032-09-21T12:00:00Z');
+    const store=new D1JsonKeyValueStore(env.CACHE_DB,undefined,()=>now/1000);
+    const context=createExecutionContext();
+    const cache=new CloudflarePlayerStatsCache(store,604800,14400,context,()=>now);
+    const key='international-keeper:Goalkeeper:no-low';
+    const fixture:Fixture={date:'2032-09-24T18:45:00Z',competitionSlug:'uefa-nations-league',homeTeamSlug:'norway',awayTeamSlug:'denmark',homeTeamName:'Norway',awayTeamName:'Denmark',playerTeamName:null,opponentTeamName:null,cleanSheetProbability:null,matchProbabilities:null};
+    const form={slug:'international-keeper',displayName:'Keeper',position:'Goalkeeper' as const,aaL10:{value:22.2,sampleSize:10},aaL10TeamWinRate:{value:0.4,sampleSize:10},goalL10:{value:0,sampleSize:10},cleanSheetL10:{value:0.4,sampleSize:10},excludedLowCoverage:0};
+    await cache.setForm(key,form);await waitOnExecutionContext(context);
+    await store.put('player-fixture:v1:international-keeper:auto-v3:no-low',JSON.stringify({cachePolicyVersion:3,nextGame:fixture}));
+    const parts=await cache.getParts(key);expect(parts.form?.aaL10.value).toBe(22.2);expect(parts.fixture).toBeUndefined();
+    const corrected={...fixture,playerTeamSlug:'norway',playerTeamName:'Norway',opponentTeamName:'Denmark',cleanSheetProbability:1/2.62,matchProbabilities:{win:0.53,draw:0.24,loss:0.23}};
+    await cache.setFixture(key,corrected);await waitOnExecutionContext(context);
+    const freshContext=createExecutionContext();
+    const fresh=new CloudflarePlayerStatsCache(store,604800,14400,freshContext,()=>now);
+    expect((await fresh.getParts(key)).fixture).toMatchObject(corrected);
+    expect((await store.get<{teamIdentityVersion:number}>('player-fixture:v1:international-keeper:auto-v3:no-low','json'))?.teamIdentityVersion).toBe(1);
+    await waitOnExecutionContext(freshContext);
+  });
+
+  it('keeps new unresolved fixtures and healthy legacy fixtures without a migration stampede', async () => {
+    const now=Date.parse('2032-09-21T12:00:00Z');
+    const store=new D1JsonKeyValueStore(env.CACHE_DB,undefined,()=>now/1000);
+    const context=createExecutionContext();
+    const cache=new CloudflarePlayerStatsCache(store,604800,14400,context,()=>now);
+    const unresolved:Fixture={date:'2032-09-24T18:45:00Z',homeTeamName:'Home',awayTeamName:'Away',playerTeamName:null,opponentTeamName:null,cleanSheetProbability:null,matchProbabilities:null};
+    await cache.setFixture('unknown:auto-v3:no-low',unresolved);await waitOnExecutionContext(context);
+    expect((await cache.getParts('unknown:auto-v3:no-low')).fixture).toMatchObject(unresolved);
+    const healthy={...unresolved,playerTeamSlug:'home',playerTeamName:'Home',opponentTeamName:'Away'};
+    await store.put('player-fixture:v1:healthy:auto-v3:no-low',JSON.stringify({cachePolicyVersion:3,nextGame:healthy}));
+    expect((await cache.getParts('healthy:auto-v3:no-low')).fixture).toMatchObject(healthy);
+    await waitOnExecutionContext(context);
+  });
+
   it('repairs a later new-club fixture through the service and persists it across D1 cache instances', async () => {
     const now = Date.parse('2032-09-12T10:00:00Z');
     const store = new D1JsonKeyValueStore(env.CACHE_DB, undefined, () => now / 1000);

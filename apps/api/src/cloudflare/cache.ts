@@ -111,6 +111,9 @@ const CachedPlayerFormStatsSchema = PlayerFormStatsSchema.extend({
 const PLAYER_FIXTURE_CACHE_POLICY_VERSION = 3;
 const PlayerFixtureEnvelopeSchema = z.object({
   nextGame: PlayerStatsSchema.shape.nextGame,
+  // Only legacy fixtures with unresolved team identity need a one-off reload.
+  // Keep the cache key/policy and all healthy club fixtures unchanged.
+  teamIdentityVersion: z.literal(1).optional(),
   cachePolicyVersion: z
     .literal(PLAYER_FIXTURE_CACHE_POLICY_VERSION)
     .optional(),
@@ -1291,6 +1294,7 @@ class CloudflarePlayerFixtureCache
       `player-fixture:v1:${key}`,
       PlayerFixtureEnvelopeSchema.parse({
         nextGame: resolved,
+        teamIdentityVersion: 1,
         cachePolicyVersion: PLAYER_FIXTURE_CACHE_POLICY_VERSION,
       }),
       await this.storageExpiration(resolved),
@@ -1311,6 +1315,7 @@ class CloudflarePlayerFixtureCache
       `player-fixture:v1:${key}`,
       PlayerFixtureEnvelopeSchema.parse({
         nextGame: resolved,
+        teamIdentityVersion: 1,
         cachePolicyVersion: PLAYER_FIXTURE_CACHE_POLICY_VERSION,
       }),
       await this.storageExpiration(resolved),
@@ -1437,6 +1442,7 @@ class CloudflarePlayerFixtureCache
       `player-fixture:v1:${key}`,
       PlayerFixtureEnvelopeSchema.parse({
         nextGame: refreshed,
+        teamIdentityVersion: 1,
         cachePolicyVersion: PLAYER_FIXTURE_CACHE_POLICY_VERSION,
       }),
       await this.storageExpiration(refreshed),
@@ -1475,6 +1481,13 @@ class CloudflarePlayerFixtureCache
       return undefined;
     }
     const fixture = parsed.data.nextGame;
+    if (fixture && parsed.data.teamIdentityVersion !== 1 &&
+      !fixture.playerTeamSlug && (!fixture.playerTeamName || !fixture.opponentTeamName)) {
+      // Older readers matched only activeClub and lost international odds.
+      // Do not delete the row or form cache; fetch and replace just this
+      // requested fixture. New unresolved responses are marked to avoid loops.
+      return undefined;
+    }
     if(fixture && await this.lifecycle?.isFinished(fixture)) return undefined;
     const rolloverExpiration = fixture
       ? fixtureRolloverExpiration(fixture.date)

@@ -12,6 +12,10 @@ export const PLAYER_STATS_BATCH_QUERY = /* GraphQL */ `
           id
           slug
         }
+        activeNationalTeam {
+          id
+          slug
+        }
         nextGame {
           __typename
           ... on Game {
@@ -86,6 +90,10 @@ export const PLAYER_NEXT_GAMES_QUERY = /* GraphQL */ `
       ... on Player {
         slug
         activeClub {
+          id
+          slug
+        }
+        activeNationalTeam {
           id
           slug
         }

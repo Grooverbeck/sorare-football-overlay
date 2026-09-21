@@ -1189,9 +1189,14 @@ export class SorareDataSource implements PlayerStatsDataSource {
   ) {
     const game = player.nextGame;
     if (!game || game.__typename !== 'Game') return null;
-    const clubId = player.activeClub?.id;
-    const activeHome = clubId !== undefined && game.homeTeam?.id === clubId;
-    const activeAway = clubId !== undefined && game.awayTeam?.id === clubId;
+    // A player's next game can be international even when activeClub is set.
+    // Match official membership IDs to this fixture, never infer nationality
+    // from a DOM hint, player name or an opponent's odds.
+    const memberships = [player.activeClub, player.activeNationalTeam];
+    const homeMembership = memberships.find(team => team?.id && team.id === game.homeTeam?.id);
+    const awayMembership = memberships.find(team => team?.id && team.id === game.awayTeam?.id);
+    const activeHome = Boolean(homeMembership);
+    const activeAway = Boolean(awayMembership);
     const expectedHome = teamSlugsLikelyMatch(
       game.homeTeam?.slug,
       expectedTeamSlug,
@@ -1201,18 +1206,16 @@ export class SorareDataSource implements PlayerStatsDataSource {
       expectedTeamSlug,
     );
     const home =
-      activeHome ||
+      (activeHome && !activeAway) ||
       (!activeHome && !activeAway && expectedHome && !expectedAway);
     const away =
-      activeAway ||
+      (activeAway && !activeHome) ||
       (!activeHome && !activeAway && expectedAway && !expectedHome);
-    const playerTeamSlug = activeHome || activeAway
-      ? player.activeClub?.slug
-      : home
-        ? game.homeTeam?.slug
-        : away
-          ? game.awayTeam?.slug
-          : undefined;
+    const playerTeamSlug = home
+      ? homeMembership?.slug ?? game.homeTeam?.slug
+      : away
+        ? awayMembership?.slug ?? game.awayTeam?.slug
+        : undefined;
     const stats = home ? game.homeStats : away ? game.awayStats : null;
     const footballStats = stats?.__typename === 'FootballTeamGameStats' ? stats : null;
     return {
