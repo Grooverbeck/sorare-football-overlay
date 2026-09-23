@@ -24,6 +24,7 @@ import {
   quotaUsage,
 } from '../providers/odds-usage.js';
 import type { OddsApiIoRoute } from '../providers/competition-odds-routes.js';
+import { ODDS_API_IO_ROUTES } from '../providers/competition-odds-routes.js';
 import { SupplementingPlayerMarketOddsProvider } from '../providers/sports-game-odds-provider.js';
 
 const now = Date.parse('2026-07-30T12:00:00.000Z');
@@ -35,6 +36,78 @@ const logger: AppLogger = {
   warn: () => undefined,
   error: () => undefined,
 };
+
+const nationsRoute=ODDS_API_IO_ROUTES.find(route=>route.competitionSlugs.includes('uefa-nations-league'))!;
+function internationalPlayer():PlayerStats {
+  return player({slug:'lamine-yamal-nasraoui-ebana',displayName:'Lamine Yamal',position:'Forward',nextGame:{
+    ...player().nextGame!,competitionSlug:'uefa-nations-league',date:new Date(now+80*3600000).toISOString(),
+    homeTeamName:'England',awayTeamName:'Spain',homeTeamSlug:'england',awayTeamSlug:'spain',playerTeamName:'Spain',playerTeamSlug:'spain',opponentTeamName:'England',
+  }});
+}
+function nationsEvent(id='nations-event') {
+  return {id,date:internationalPlayer().nextGame!.date,home:'England',away:'Spain',sport:{slug:'football'},league:{slug:'international-uefa-nations-league-league-c-gr-2'}};
+}
+function nationsOdds() {
+  return [{...nationsEvent(),bookmakers:{
+    Bet365:[{name:'Anytime Goalscorer',odds:[{label:'Lamine Yamal',over:'3.400'}]},
+      {name:'Player To Score or Assist',odds:[{label:'Lamine Yamal (Assist) (2)',over:'4.000'},{label:'Lamine Yamal (Score or Assist) (2)',over:'2.050'}]}],
+    Unibet:[{name:'Anytime Goalscorer',odds:[{label:'Lamine Yamal',over:'2.90'}]}],
+  }}];
+}
+
+describe('Odds.io grouped international competition lookup',()=>{
+  it('finds a senior fixture with one search and keeps goal, assist and score-or-assist separate',async()=>{
+    const fetchImpl=vi.fn<typeof fetch>(async(input)=>{
+      const url=new URL(String(input));
+      if(url.pathname.endsWith('/events/search')) {
+        expect(url.searchParams.get('query')).toBe('England');
+        return json([nationsEvent(),nationsEvent(),{...nationsEvent('cricket'),sport:{slug:'cricket'}},
+          {...nationsEvent('women'),league:{slug:'international-uefa-nations-league-women'}},
+          {...nationsEvent('other-date'),date:'2026-10-03T18:45:00Z'}]);
+      }
+      expect(url.pathname).toBe('/v3/odds/multi');expect(url.searchParams.get('eventIds')).toBe('nations-event');
+      return json(nationsOdds());
+    });
+    const {provider}=createProvider(fetchImpl,undefined,[nationsRoute]);
+    const stats=internationalPlayer();const result=await provider.load([stats,stats]);
+    const odds=result.get(playerMarketOddsKey(stats));
+    expect(odds?.goal?.probability).toBeCloseTo(1/3.15);
+    expect(odds?.assist?.probability).toBeCloseTo(1/4);
+    expect(odds?.decisive?.probability).toBeCloseTo(1/2.05);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    await provider.load([stats],{cacheOnly:true});expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+  it('tries the other team only when the first search could not identify the fixture',async()=>{
+    const fetchImpl=vi.fn<typeof fetch>(async(input)=>{
+      const url=new URL(String(input));
+      if(url.pathname.endsWith('/events/search'))return json(url.searchParams.get('query')==='England'?[]:[nationsEvent()]);
+      return json(nationsOdds());
+    });
+    const {provider}=createProvider(fetchImpl,undefined,[nationsRoute]);await provider.load([internationalPlayer()]);
+    expect(fetchImpl.mock.calls.map(([input])=>new URL(String(input)).searchParams.get('query'))).toEqual(['England','Spain',null]);
+  });
+  it('does not fetch odds for other sports, women, youth, unrelated leagues or missing metadata',async()=>{
+    const fetchImpl=vi.fn<typeof fetch>(async(input)=>{
+      expect(new URL(String(input)).pathname).toBe('/v3/events/search');
+      return json([{...nationsEvent(),sport:{slug:'cricket'}},{...nationsEvent(),league:{slug:'international-uefa-nations-league-women'}},
+        {...nationsEvent(),league:{slug:'international-uefa-nations-league-u21'}},{...nationsEvent(),league:{slug:'england-premier-league'}},
+        {id:'missing-metadata',date:internationalPlayer().nextGame!.date,home:'England',away:'Spain'}]);
+    });
+    const {provider}=createProvider(fetchImpl,undefined,[nationsRoute]);
+    expect((await provider.load([internationalPlayer()])).get(playerMarketOddsKey(internationalPlayer()))).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+  it('keeps the 96-hour boundary and cache-only reads free of external requests',async()=>{
+    const fetchImpl=vi.fn<typeof fetch>();const {provider}=createProvider(fetchImpl,undefined,[nationsRoute]);
+    const stats=internationalPlayer();
+    await provider.load([stats],{cacheOnly:true});
+    await provider.load([{...stats,nextGame:{...stats.nextGame!,date:new Date(now+97*3600000).toISOString()}}]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+  it('rejects stateful search expressions that could leak matches across requests',()=>{
+    expect(()=>createProvider(vi.fn(),undefined,[{...nationsRoute,eventSearchLeaguePattern:/nations/g}])).toThrow('stateless');
+  });
+});
 
 function player(overrides: Partial<PlayerStats> = {}): PlayerStats {
   return {

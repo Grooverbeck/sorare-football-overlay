@@ -1,11 +1,12 @@
 import type { PlayerStats } from '@sorare-overlay/shared';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { TtlCache } from '../cache.js';
 import { loadConfig } from '../config.js';
 import type { AppLogger } from '../logger.js';
 import {
   playerMarketFieldDrivesRequest,
   playerMarketFieldSupported,
+  playerMarketOddsKey,
 } from '../providers/market-odds-provider.js';
 import { createStatsRuntime } from '../service-factory.js';
 
@@ -177,6 +178,71 @@ describe('createStatsRuntime European market routing', () => {
         playerMarketFieldSupported(runtime.marketOddsProvider, stats, 'goal'),
       ).toBe(false);
       expect(runtime.fixtureMatchOddsProvider.supports(stats)).toBe(false);
+    }
+  });
+
+  it('routes Nations League player markets exclusively to Odds.io and retains match-only The Odds API fallback', () => {
+    const stats=player('uefa-nations-league');
+    for(const keys of [{THE_ODDS_API_KEY:'test-key'},{SPORTS_GAME_ODDS_API_KEY:'test-key'}]) {
+      const runtime=createStatsRuntime({config:loadConfig({MOCK_MODE:'false',...keys}),logger,statsCache:new TtlCache<PlayerStats>(60000)});
+      expect(runtime.marketOddsProvider.supports(stats)).toBe(false);
+      expect(runtime.fixtureMatchOddsProvider.supports(stats)).toBe('THE_ODDS_API_KEY' in keys);
+    }
+    const runtime=createStatsRuntime({config:loadConfig({MOCK_MODE:'false',ODDS_API_IO_KEY:'test-key'}),logger,statsCache:new TtlCache<PlayerStats>(60000)});
+    expect(playerMarketFieldSupported(runtime.marketOddsProvider,stats,'goal')).toBe(true);
+    expect(playerMarketFieldSupported(runtime.marketOddsProvider,stats,'assist')).toBe(true);
+    expect(playerMarketFieldDrivesRequest(runtime.marketOddsProvider,stats,'goal')).toBe(true);
+    expect(playerMarketFieldDrivesRequest(runtime.marketOddsProvider,stats,'assist')).toBe(false);
+  });
+
+  it('loads Nations League props 80 hours ahead through the complete provider chain without paid-provider calls', async () => {
+    const stats: PlayerStats = {
+      ...player('uefa-nations-league'),
+      slug: 'lamine-yamal-nasraoui-ebana',
+      displayName: 'Lamine Yamal',
+      nextGame: {
+        ...player('uefa-nations-league').nextGame!,
+        date: new Date(Date.now() + 80 * 60 * 60 * 1_000).toISOString(),
+        homeTeamName: 'England',
+        awayTeamName: 'Spain',
+        playerTeamName: 'Spain',
+        opponentTeamName: 'England',
+      },
+    };
+    const event = {
+      id: 'nations-event', date: stats.nextGame!.date,
+      home: 'England', away: 'Spain',
+      sport: { slug: 'football' },
+      league: { slug: 'international-uefa-nations-league-league-c-gr-2' },
+    };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      expect(url.hostname).toBe('api.odds-api.io');
+      if (url.pathname === '/v3/events/search') return Response.json([event]);
+      expect(url.pathname).toBe('/v3/odds/multi');
+      return Response.json([{ ...event, bookmakers: { Bet365: [
+        { name: 'Anytime Goalscorer', odds: [{ label: 'Lamine Yamal', over: '3.4' }] },
+        { name: 'Player To Assist', odds: [{ label: 'Lamine Yamal', over: '4.0' }] },
+      ] } }]);
+    });
+    try {
+      const runtime = createStatsRuntime({
+        config: loadConfig({
+          MOCK_MODE: 'false', THE_ODDS_API_KEY: 'test-key',
+          SPORTS_GAME_ODDS_API_KEY: 'test-key', ODDS_API_IO_KEY: 'test-key',
+        }),
+        logger,
+        statsCache: new TtlCache<PlayerStats>(60_000),
+      });
+      const result = await runtime.marketOddsProvider.load([stats]);
+      expect(result.get(playerMarketOddsKey(stats))?.goal?.probability).toBeCloseTo(1 / 3.4);
+      expect(result.get(playerMarketOddsKey(stats))?.assist?.probability).toBe(0.25);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      const cached = await runtime.marketOddsProvider.load([stats], { cacheOnly: true });
+      expect(cached.get(playerMarketOddsKey(stats))?.assist?.probability).toBe(0.25);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      fetchSpy.mockRestore();
     }
   });
 });

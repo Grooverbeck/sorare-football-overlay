@@ -6,9 +6,23 @@ import {
   EUROPEAN_THE_ODDS_API_PLAYER_ROUTES,
   LEAGUES_CUP_COMPETITION_SLUGS,
   LEAGUES_CUP_THE_ODDS_API_ROUTES,
+  NATIONS_LEAGUE_THE_ODDS_API_MATCH_ROUTES,
   ODDS_API_IO_ROUTES,
   SPORTS_GAME_ODDS_ROUTES,
 } from '../providers/competition-odds-routes.js';
+
+describe('Nations League routes', () => {
+  it('uses the confirmed match feed without inventing a monthly-credit player-props route', () => {
+    expect(NATIONS_LEAGUE_THE_ODDS_API_MATCH_ROUTES).toEqual([{
+      sportKeys:['soccer_uefa_nations_league'],competitionSlugs:['uefa-nations-league'],region:'eu',fallbackRegion:'uk',
+    }]);
+    expect(SPORTS_GAME_ODDS_ROUTES.some(route=>route.competitionSlugs.includes('uefa-nations-league'))).toBe(false);
+    const route=ODDS_API_IO_ROUTES.find(route=>route.competitionSlugs.includes('uefa-nations-league'))!;
+    expect(route).toMatchObject({playerMarkets:['goal'],playerFetchWindowMs:96*60*60*1000,matchOdds:true});
+    for(const slug of ['international-uefa-nations-league','international-uefa-nations-league-league-a-gr-1','international-uefa-nations-league-league-c-gr-2']) expect(route.eventSearchLeaguePattern?.test(slug)).toBe(true);
+    for(const slug of ['international-uefa-nations-league-women','international-concacaf-nations-league-league-a-group-a','international-uefa-nations-league-u21','england-premier-league']) expect(route.eventSearchLeaguePattern?.test(slug)).toBe(false);
+  });
+});
 
 describe('Leagues Cup external odds route', () => {
   it('maps the Sorare competition to the dedicated CONCACAF feed', () => {

@@ -26,6 +26,18 @@ export const LEAGUES_CUP_THE_ODDS_API_ROUTES = [
   },
 ] as const satisfies readonly MatchOddsRoute[];
 
+export const NATIONS_LEAGUE_COMPETITION_SLUGS = ['uefa-nations-league'] as const;
+
+// The sport feed is confirmed, but Nations League player props are not part
+// of The Odds API's documented soccer coverage. Do not spend monthly credits
+// on speculative scorer/assist requests; use this feed for match fallback only.
+export const NATIONS_LEAGUE_THE_ODDS_API_MATCH_ROUTES = [{
+  sportKeys: ['soccer_uefa_nations_league'],
+  competitionSlugs: NATIONS_LEAGUE_COMPETITION_SLUGS,
+  region: 'eu',
+  fallbackRegion: 'uk',
+}] as const satisfies readonly MatchOddsRoute[];
+
 export interface TheOddsApiPlayerRoute {
   sportKeys: readonly [string, ...string[]];
   competitionSlugs: readonly string[];
@@ -38,6 +50,9 @@ export interface TheOddsApiPlayerRoute {
 export interface OddsApiIoRoute {
   competitionSlugs: readonly string[];
   leagueSlugs: readonly string[];
+  // Grouped tournaments use a bounded team search instead of querying every
+  // group feed. Returned events must match this family AND the football sport.
+  eventSearchLeaguePattern?: RegExp;
   playerMarkets?: readonly PlayerMarketField[];
   matchOdds?: boolean;
   playerFetchWindowMs?: number;
@@ -325,6 +340,14 @@ export const SPORTS_GAME_ODDS_ROUTES: readonly SportsGameOddsRoute[] = [
 ];
 
 const BASE_ODDS_API_IO_ROUTES = [
+  {
+    competitionSlugs: NATIONS_LEAGUE_COMPETITION_SLUGS,
+    leagueSlugs: ['international-uefa-nations-league'],
+    eventSearchLeaguePattern: /^international-uefa-nations-league(?:-league-[a-d]-gr-[1-4])?$/,
+    playerMarkets: ['goal'],
+    matchOdds: true,
+    playerFetchWindowMs: 96 * 60 * 60 * 1_000,
+  },
   {
     competitionSlugs: ['mlspa'],
     leagueSlugs: ['usa-mls'],

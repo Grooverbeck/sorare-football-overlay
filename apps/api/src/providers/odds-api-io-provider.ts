@@ -64,6 +64,11 @@ const OddsApiIoEventSchema = z.object({
 });
 
 const OddsApiIoEventsSchema = z.array(OddsApiIoEventSchema);
+const OddsApiIoSearchEventSchema = OddsApiIoEventSchema.extend({
+  sport: z.object({slug: z.string()}),
+  league: z.object({slug: z.string()}),
+});
+const OddsApiIoSearchResultsSchema = z.array(z.unknown()).max(5_000);
 type OddsApiIoEvent = z.infer<typeof OddsApiIoEventSchema>;
 
 const OddsApiIoDecimalOddSchema = z.union([z.string(), z.number()]);
@@ -723,6 +728,9 @@ export class OddsApiIoPlayerMarketOddsProvider
     this.sleep = options.sleep ?? defaultSleep;
     this.now = options.now ?? Date.now;
     for (const route of options.routes) {
+      if (route.eventSearchLeaguePattern?.global || route.eventSearchLeaguePattern?.sticky) {
+        throw new Error('Event search league patterns must be stateless');
+      }
       for (const competitionSlug of route.competitionSlugs) {
         const key = competitionSlug.trim().toLocaleLowerCase();
         if (!this.routesByCompetition.has(key)) {
@@ -1482,24 +1490,56 @@ export class OddsApiIoPlayerMarketOddsProvider
       homeTeamName: string;
       awayTeamName: string;
     }> = [];
-    for (const league of route.leagueSlugs) {
+    const seenEventIds = new Set<string>();
+    // Nations League events are spread across group feeds, sometimes labelled
+    // inconsistently by the upstream provider. Search each home team once,
+    // then unresolved opponents as a fallback. Never scan all group leagues.
+    const searchLeaguePattern = route.eventSearchLeaguePattern;
+    const unresolved = fixtures.filter((fixture) => !matched.has(fixture.key));
+    const searchTeams = searchLeaguePattern
+      ? [...new Set([
+          ...unresolved.map((fixture) => fixture.homeTeamName),
+          ...unresolved.map((fixture) => fixture.awayTeamName),
+        ])].filter((name) => name.trim().length >= 3)
+      : [];
+    for (const lookup of searchLeaguePattern ? searchTeams : route.leagueSlugs) {
       if (matched.size === fixtures.length) break;
-      queriedLeagues.push(league);
-      const eventsResponse = await this.requestJson('/events', {
-        sport: 'football',
-        league,
-        status: 'pending',
-        from: rfc3339Seconds(
-          Math.min(...kickoffs) - 36 * 60 * 60 * 1_000,
-        ),
-        to: rfc3339Seconds(
-          Math.max(...kickoffs) + 36 * 60 * 60 * 1_000,
-        ),
-      });
-      const events = OddsApiIoEventsSchema.parse(eventsResponse);
+      // Do not query another team once all its requested matches are resolved.
+      if (searchLeaguePattern && !fixtures.some((fixture) =>
+        !matched.has(fixture.key) &&
+        [fixture.homeTeamName, fixture.awayTeamName].includes(lookup),
+      )) continue;
+      queriedLeagues.push(searchLeaguePattern ? `search:${lookup}` : lookup);
+      const eventsResponse = searchLeaguePattern
+        ? await this.requestJson('/events/search', { query: lookup, status: 'upcoming' })
+        : await this.requestJson('/events', {
+            sport: 'football',
+            league: lookup,
+            status: 'pending',
+            from: rfc3339Seconds(
+              Math.min(...kickoffs) - 36 * 60 * 60 * 1_000,
+            ),
+            to: rfc3339Seconds(
+              Math.max(...kickoffs) + 36 * 60 * 60 * 1_000,
+            ),
+          });
+      const events: OddsApiIoEvent[] = searchLeaguePattern
+        ? OddsApiIoSearchResultsSchema.parse(eventsResponse).flatMap((raw) => {
+            const parsed = OddsApiIoSearchEventSchema.safeParse(raw);
+            return parsed.success && parsed.data.sport.slug === 'football' &&
+              searchLeaguePattern.test(parsed.data.league.slug)
+              ? [parsed.data] : [];
+          })
+        : OddsApiIoEventsSchema.parse(eventsResponse);
       eventCount += events.length;
       eventCandidates.push(
-        ...events.map((event) => ({
+        // Overlapping searches must not turn the same event into two competing
+        // fixture candidates. Distinct IDs still retain the ambiguity guard.
+        ...events.filter((event) => {
+          if (seenEventIds.has(event.id)) return false;
+          seenEventIds.add(event.id);
+          return true;
+        }).map((event) => ({
           event,
           eventId: event.id,
           date: event.date,

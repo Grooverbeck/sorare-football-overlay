@@ -47,6 +47,7 @@ import {
   EUROPEAN_THE_ODDS_API_MATCH_ROUTES,
   EUROPEAN_THE_ODDS_API_PLAYER_ROUTES,
   LEAGUES_CUP_THE_ODDS_API_ROUTES,
+  NATIONS_LEAGUE_THE_ODDS_API_MATCH_ROUTES,
   ODDS_API_IO_ROUTES,
   SPORTS_GAME_ODDS_ROUTES,
 } from './providers/competition-odds-routes.js';
@@ -367,6 +368,7 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
                 : {}),
             },
             ...LEAGUES_CUP_THE_ODDS_API_ROUTES,
+            ...NATIONS_LEAGUE_THE_ODDS_API_MATCH_ROUTES,
             {
               sportKeys: [
                 'soccer_uefa_champs_league_qualification',

@@ -225,6 +225,20 @@ bereinigte Buchmacher-Median wird anschließend bis nach dem Spiel gespeichert.
 Bereits vorhandene Sorare-Werte werden dabei nie durch den externen Fallback
 ersetzt.
 
+Für die UEFA Nations League (`uefa-nations-league`) lädt Odds-API.io
+Spielerquoten bereits ab **96 Stunden vor Anpfiff**. Die Torquote steuert den
+Abruf; verfügbare Assist- und Tor-oder-Assist-Märkte werden aus derselben Antwort
+getrennt übernommen. Fehlende Assists allein lösen keinen zusätzlichen Abruf aus.
+Da die Spiele auf teilweise unzuverlässig bezeichnete Gruppenfeeds verteilt sind,
+wird zuerst nach dem Heimteam und nur bei Bedarf nach dem Auswärtsteam gesucht.
+Sport, Wettbewerbsfamilie, beide Teams und Anstoßzeit müssen zur Begegnung passen;
+Frauen- und Jugendwettbewerbe sind ausgeschlossen. Es werden nicht alle Gruppen
+einzeln abgefragt. The Odds API ergänzt bei Bedarf ausschließlich Matchquoten
+über `soccer_uefa_nations_league` (EU, danach UK); ein unbestätigtes
+SportsGameOdds- oder The-Odds-API-Spielermarkt-Routing wird nicht aktiviert.
+Bestehende Request-Limits, Wiederholungsregeln und Zeitfenster anderer
+Wettbewerbe sowie das Matchquoten-Fallback-Fenster bleiben unverändert.
+
 Der tägliche Cron speichert außerdem die Kontingentnutzung der Quotenanbieter.
 The Odds API verzichtet ab 70 % auf den zusätzlichen Regionen-Fallback und ab
 85 % auf reine Ergänzungsprüfungen. Notwendige Erstabrufe für bisher fehlende
