@@ -27,6 +27,7 @@ import { UnavailablePlayerMarketOddsProvider } from '../providers/market-odds-pr
 import { MockDataSource } from '../mock/mock-data-source.js';
 import { SorareGraphqlClient } from '../graphql/client.js';
 import type { AppLogger } from '../logger.js';
+import { AaContextService, type AaContextSource } from '../services/aa-context.js';
 import {
   FIXTURE_IDENTITY_VERSION,
   normalizeTeamName,
@@ -61,6 +62,29 @@ beforeEach(async () => {
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe('Cloudflare Worker', () => {
+  it('persists national AA independently in D1 while keeping the club form readable', async () => {
+    const store=new D1JsonKeyValueStore(env.CACHE_DB);
+    const context=createExecutionContext();
+    const cache=new CloudflarePlayerStatsCache(store,604800,14400,context);
+    const key='aa-player:Defender:no-low';
+    const form={slug:'aa-player',displayName:'AA Player',position:'Defender' as const,aaL10:{value:1.455,sampleSize:4},
+      aaL10TeamWinRate:{value:.25,sampleSize:4},goalL10:{value:0,sampleSize:10},cleanSheetL10:{value:.4,sampleSize:10},excludedLowCoverage:0};
+    await cache.setForm(key,form);await waitOnExecutionContext(context);
+    const source: AaContextSource={memberships:vi.fn(async()=>new Map([['aa-player',{
+      club:{id:'club',slug:'club',shortName:'Club'},national:{id:'national',slug:'austria',shortName:'Austria'}}]])),
+      national:vi.fn(async()=>({aaL10:{value:17.332,sampleSize:10},aaL10TeamWinRate:{value:.5,sampleSize:10}}))};
+    const stats={...form,nextGame:{date:'2032-09-24T18:45:00Z',playerTeamSlug:'austria',cleanSheetProbability:.4,matchProbabilities:null}};
+    const result=(await new AaContextService(store,source,true).decorate([stats]))[0]!;
+    expect(result.aaL10.value).toBe(17.332);
+    const saved=await store.get<{aaL10:{value:number}}> (`player-form:v3:${key}`,'json');
+    expect(saved?.aaL10.value).toBe(1.455);
+    const nextRequest=await new AaContextService(new D1JsonKeyValueStore(env.CACHE_DB),source,true).decorate([stats]);
+    expect(nextRequest[0]?.aaL10.value).toBe(17.332);
+    expect(source.national).toHaveBeenCalledTimes(1);
+    const record=await env.CACHE_DB.prepare('SELECT expires_at FROM cache_entries WHERE cache_key=?1')
+      .bind('player-aa-team:v1:aa-player:Defender:no-low:austria').first<{expires_at:number|null}>();
+    expect(record?.expires_at).toBeNull();
+  });
   it('refreshes only legacy fixtures with missing team identity and keeps the form cache', async () => {
     const now=Date.parse('2032-09-21T12:00:00Z');
     const store=new D1JsonKeyValueStore(env.CACHE_DB,undefined,()=>now/1000);

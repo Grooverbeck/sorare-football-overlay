@@ -2085,18 +2085,29 @@ function aaStatNode(
   value.textContent = score(stats.aaL10);
   stat.append(icon, value);
   const limitedClubSample = hasAaValue && stats.aaL10.sampleSize < 10;
-  const aaHistoryLoading = !hasAaValue && stats.pendingRefreshes?.includes('formHistory') === true;
-  if (limitedClubSample || !hasAaValue) {
-    const sampleWarningTitle = hasAaValue
+  const nationalAa = stats.aaContext?.kind === 'national';
+  const contextLoading = stats.aaContext?.state === 'loading';
+  const scope = nationalAa ? 'bei der aktuellen Nationalmannschaft' : 'beim aktuellen Verein';
+  const excluded = nationalAa ? 'Vereinsspiele ausgeschlossen.' : 'Andere Vereine/Nationalteam ausgeschlossen.';
+  const gameLabel = nationalAa ? 'Länderspiele' : 'Vereinsspiele';
+  const aaHistoryLoading = contextLoading || (!hasAaValue && stats.pendingRefreshes?.includes('formHistory') === true);
+  if (stats.aaContext) {
+    stat.dataset.aaContext = stats.aaContext.kind;
+    stat.title = `AA ${score(stats.aaL10)} · ${stats.aaL10.sampleSize}/10 ${gameLabel}` +
+      (stats.aaContext.teamName ? ` für ${stats.aaContext.teamName}` : '') +
+      ` mit mindestens 60 Minuten. ${excluded}` +
+      (contextLoading ? ' Der AA-Kontext für das nächste Spiel wird noch geladen; bisherige Werte bleiben sichtbar.' : '');
+  }
+  if (limitedClubSample || !hasAaValue || contextLoading) {
+    const sampleWarningTitle = contextLoading ? 'AA-Kontext wird geladen' : hasAaValue
       ? 'Begrenzte AA-Datenbasis'
       : aaHistoryLoading ? 'AA-Daten werden geladen' : 'Keine AA-Daten';
-    const sampleWarningReason = hasAaValue ?
+    const sampleWarningReason = (hasAaValue ?
       `AA ${score(stats.aaL10)} · Datenbasis: ${stats.aaL10.sampleSize}/10 gültige ` +
-      `Spiele mit mindestens 60 Minuten beim aktuellen Verein. ` +
-      `Andere Vereine/Nationalteam ausgeschlossen.` :
+      `Spiele mit mindestens 60 Minuten ${scope}. ` + excluded :
       (aaHistoryLoading ? 'Die AA-Spielhistorie wird noch geladen. ' : 'Derzeit ist kein AA-Wert verfügbar. ') +
-      'Für AA zählen nur Spiele mit mindestens 60 Minuten beim aktuellen Verein. ' +
-      'Andere Vereine/Nationalteam ausgeschlossen.';
+      `Für AA zählen nur Spiele mit mindestens 60 Minuten ${scope}. ` + excluded) +
+      (contextLoading ? ' Der passende AA-Kontext für das nächste Spiel wird geladen. Bis dahin bleiben die bisherigen Werte sichtbar.' : '');
     if (limitedClubSample) stat.dataset.limitedSample = 'true';
     stat.dataset.clubSampleSize = String(stats.aaL10.sampleSize);
     const warning = document.createElement('span');
@@ -2154,11 +2165,11 @@ function aaStatNode(
       hasAaValue
         ? `AA L10 ${score(stats.aaL10)}: keine belastbare MLS-Perzentileinstufung${
             limitedClubSample
-              ? `; Warnung: nur ${stats.aaL10.sampleSize} Vereinsspiele mit mindestens 60 Minuten`
+              ? `; Warnung: nur ${stats.aaL10.sampleSize} ${gameLabel} mit mindestens 60 Minuten`
               : ''
           }`
         : aaHistoryLoading ? 'AA L10: Daten werden noch geladen'
-        : 'AA L10: noch keine gültigen Spiele mit mindestens 60 Minuten beim aktuellen Verein',
+        : `AA L10: noch keine gültigen Spiele mit mindestens 60 Minuten ${scope}`,
     );
     return stat;
   }
@@ -2170,7 +2181,7 @@ function aaStatNode(
       stats.mlsAaContext ? `, Stand ${stats.mlsAaContext.asOf}` : ''
     }${
       limitedClubSample
-        ? `; Warnung: nur ${stats.aaL10.sampleSize} Vereinsspiele mit mindestens 60 Minuten`
+        ? `; Warnung: nur ${stats.aaL10.sampleSize} ${gameLabel} mit mindestens 60 Minuten`
         : ''
     }`,
   );
@@ -4030,6 +4041,7 @@ export class OverlayView {
     const nextWin = stats.nextGame?.matchProbabilities?.win;
     const historical = stats.aaL10TeamWinRate;
     if (
+      stats.aaContext?.state === 'loading' ||
       nextWin === null ||
       nextWin === undefined ||
       historical?.value === null ||

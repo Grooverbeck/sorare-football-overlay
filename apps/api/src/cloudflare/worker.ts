@@ -105,6 +105,7 @@ function createWorkerRuntime(
     config,
     logger,
     ...(fixtureLifecycle?{fixtureLifecycle}:{}),
+    aaContextStore: cacheStore,
     statsCache: new CloudflarePlayerStatsCache(
       cacheStore,
       formTtlSeconds,

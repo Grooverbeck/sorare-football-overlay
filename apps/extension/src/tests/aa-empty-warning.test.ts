@@ -25,6 +25,23 @@ function render(stats = baseStats) {
 }
 
 describe('empty AA bracket information', () => {
+  it('explains national history for both a small and a complete sample', () => {
+    const context = {kind:'national' as const,teamSlug:'austria',teamName:'Austria',state:'ready' as const};
+    let root=render({...baseStats,aaL10:{value:17.3,sampleSize:4},aaContext:context});
+    expect(root.querySelector('.aa-sample-warning-detail')?.textContent).toContain('aktuellen Nationalmannschaft');
+    expect(root.querySelector('.aa-sample-warning-detail')?.textContent).toContain('Vereinsspiele ausgeschlossen');
+    expect(root.querySelector('.aa-bracket-cell')?.getAttribute('aria-label')).toContain('4 Länderspiele');
+    root=render({...baseStats,aaL10:{value:17.3,sampleSize:10},aaContext:context});
+    expect(root.querySelector('.aa-sample-warning')).toBeNull();
+    expect(root.querySelector('.aa-bracket-cell')?.getAttribute('title')).toContain('10/10 Länderspiele für Austria');
+  });
+
+  it('labels retained club values while the matching context is still loading', () => {
+    const root=render({...baseStats,aaL10:{value:1.5,sampleSize:4},aaContext:{kind:'club',state:'loading'},pendingRefreshes:['aaContext']});
+    expect(root.querySelector('.aa-sample-warning-title')?.textContent).toBe('AA-Kontext wird geladen');
+    expect(root.querySelector('.aa-sample-warning-detail')?.textContent).toContain('bisherigen Werte sichtbar');
+    expect(root.querySelector('.aa-bracket-cell .market-value')?.textContent).toBe('1.5');
+  });
   it.each(['/football/series/test/compose-team', '/football/series/squad', '/football/series/test/lineups'])('reuses the accessible sample-warning icon on %s', path => {
     window.history.replaceState({}, '', path);
     const root = render();

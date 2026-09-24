@@ -11,6 +11,7 @@ import type {
 } from '@sorare-overlay/shared';
 import { fixtureRolloverAtMs, hasAnyDisplayData } from '@sorare-overlay/shared';
 import { fetchPlayerMarketSnapshots, fetchPlayerStats } from './api.js';
+import { mergeAaContext } from './aa-context.js';
 import {
   drainDiscoveredCardPictureNames,
   drainDiscoveredCardPictureSlugs,
@@ -1191,7 +1192,8 @@ export class StatsBatchCoordinator {
       );
       if (activeViews.length === 0) return;
       this.refreshWork.delete(key);
-      if (work.refreshMarketOdds && !work.refreshFixture) {
+      if (work.refreshMarketOdds && !work.refreshFixture &&
+        !this.cachedStatsForTarget(work.target)?.pendingRefreshes?.includes('aaContext')) {
         this.marketSnapshotRequestKeys.add(key);
       }
       this.queueTarget(work.target, connectedViews, work.priority);
@@ -1510,18 +1512,21 @@ export class StatsBatchCoordinator {
     const cachedIsPartialForm =
       cached?.pendingRefreshes?.includes('formHistory') === true;
     if(cached && incoming.nextGame && (cached.nextGame ? olderFixture(fixtureStatusKey(incoming.nextGame),fixtureStatusKey(cached.nextGame)) : retiredFixture(fixtureStatusKey(incoming.nextGame),cached.fixtureRefresh?.key??null))) {
-      incoming={...incoming,nextGame:cached.nextGame,fixtureRefresh:cached.fixtureRefresh};
+      incoming={...incoming,nextGame:cached.nextGame,fixtureRefresh:cached.fixtureRefresh,
+        // AA now belongs to the fixture's team context, so reject the old
+        // projection together with the retired fixture in either direction.
+        aaL10:cached.aaL10,aaL10TeamWinRate:cached.aaL10TeamWinRate,
+        aaContext:cached.aaContext,aaClub:cached.aaClub};
     }
     let merged = incoming;
     if (cached && isPartialFormRefresh && !cachedIsPartialForm) {
       merged = {
         ...cached,
         ...incoming,
-        aaL10: cached.aaL10,
         cleanSheetL10: cached.cleanSheetL10,
         goalL10: cached.goalL10,
         excludedLowCoverage: cached.excludedLowCoverage,
-        ...(cached.mlsAaContext
+        ...(cached.mlsAaContext && incoming.aaContext?.kind !== 'national'
           ? { mlsAaContext: cached.mlsAaContext }
           : {}),
         ...(cached.historicalGoals
@@ -1537,6 +1542,12 @@ export class StatsBatchCoordinator {
       this.dataExpiry.set(merged, this.dataExpiry.get(cached) ?? 0);
     }
 
+    const beforeAaMerge = merged;
+    merged = mergeAaContext(merged, cached);
+    if (merged !== beforeAaMerge) {
+      const expires = this.dataExpiry.get(beforeAaMerge);
+      if (expires !== undefined) this.dataExpiry.set(merged, expires);
+    }
     if (
       !cached?.nextGame ||
       !merged.nextGame ||

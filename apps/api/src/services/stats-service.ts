@@ -42,6 +42,7 @@ import {
 } from './fixture-identity.js';
 import { mapSettledWithConcurrency, mapWithConcurrency } from './concurrency.js';
 import type { PlayerLoadLeases } from './player-load-leases.js';
+import type { AaContextService } from './aa-context.js';
 
 export interface StatsServiceResult {
   data: PlayerStats[];
@@ -319,7 +320,7 @@ function harmonizePlayerTeamFixtures(
   });
 }
 
-type PendingRefresh = 'formHistory' | 'fixture' | 'marketOdds';
+type PendingRefresh = NonNullable<PlayerStats['pendingRefreshes']>[number];
 
 interface FixtureRefreshEntry {
   key: string;
@@ -405,13 +406,18 @@ export class StatsService {
     private readonly responseBudgetMs = 9_000,
     private readonly playerLoadLeases?: PlayerLoadLeases,
     private readonly fixtureLifecycle?: FixtureLifecycle,
+    private readonly aaContextService?: AaContextService,
   ) {}
 
   async getPlayerStats(
     request: ValidatedPlayerStatsRequest,
   ): Promise<StatsServiceResult> {
     const result=await this.getPlayerStatsWithinBudget(request);
-    return this.fixtureLifecycle ? {...result,data:await this.fixtureLifecycle.decorate(result.data)} : result;
+    let data = this.fixtureLifecycle ? await this.fixtureLifecycle.decorate(result.data) : result.data;
+    // Project only after club form/fixture loading and persistence have ended.
+    // Legacy clients keep their existing club-scoped contract and tooltips.
+    if (request.supportsAaContext && this.aaContextService) data = await this.aaContextService.decorate(data);
+    return {...result, data};
   }
 
   private async getPlayerStatsWithinBudget(

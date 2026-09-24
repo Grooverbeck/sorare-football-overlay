@@ -58,6 +58,7 @@ export const PlayerStatsRequestSchema = z
     // the `formHistory` refresh hint, so the backend may only return an early
     // partial form window when the caller opts in explicitly.
     supportsPartialFormHistory: z.boolean().default(false),
+    supportsAaContext: z.boolean().optional(),
     // Follow-up reads may hydrate a missing/expired fixture synchronously.
     // The initial request remains fast and can return cached L10 form values
     // with `pendingRefreshes: ['fixture']`.
@@ -83,6 +84,7 @@ export type ValidatedPlayerStatsRequest = z.output<typeof PlayerStatsRequestSche
 
 export const LineupSortValuesRequestSchema = z
   .object({
+    supportsAaContext: z.boolean().optional(),
     checkFixtureStatus: z.boolean().optional(),
     slugs: z
       .array(z.string().trim().min(1).max(160).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i))
@@ -203,6 +205,18 @@ export const PlayerStatsSchema = z.object({
   // appearances used by aaL10. Optional keeps old extension responses and
   // form cache entries backwards compatible during lazy enrichment.
   aaL10TeamWinRate: MetricSchema.optional(),
+  // Response-only projection. The backend's existing weekly form remains
+  // club-scoped; national history lives in a separate store.
+  aaContext: z.object({
+    kind: z.enum(['club', 'national']),
+    teamSlug: z.string().optional(),
+    teamName: z.string().optional(),
+    state: z.enum(['ready', 'loading']),
+  }).optional(),
+  aaClub: z.object({
+    aaL10: MetricSchema,
+    aaL10TeamWinRate: MetricSchema.optional(),
+  }).optional(),
   // Response-only league comparison. It is supplied from the weekly backend
   // snapshot and deliberately kept out of the per-player form cache.
   mlsAaContext: MlsAaContextSchema.optional(),
@@ -269,7 +283,7 @@ export const PlayerStatsSchema = z.object({
   // background. `formHistory` always denotes an intentionally partial form
   // response which must never be persisted as the normal weekly L10 value.
   pendingRefreshes: z
-    .array(z.enum(['formHistory', 'fixture', 'marketOdds']))
+    .array(z.enum(['formHistory', 'fixture', 'marketOdds', 'aaContext']))
     .min(1)
     .optional(),
   excludedLowCoverage: z.number().int().nonnegative(),

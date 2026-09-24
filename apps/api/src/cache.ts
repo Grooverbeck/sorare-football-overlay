@@ -7,7 +7,7 @@ interface CacheEntry<T> {
 
 export type PlayerFormStats = Omit<
   PlayerStats,
-  'nextGame' | 'pendingRefreshes' | 'mlsAaContext' | 'fixtureRefresh'
+  'nextGame' | 'pendingRefreshes' | 'mlsAaContext' | 'fixtureRefresh' | 'aaContext' | 'aaClub'
 >;
 export type PlayerFixtureStats = PlayerStats['nextGame'];
 
@@ -282,6 +282,8 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
       pendingRefreshes: _pendingRefreshes,
       mlsAaContext: _mlsAaContext,
       fixtureRefresh: _fixtureRefresh,
+      aaContext: _aaContext,
+      aaClub: _aaClub,
       ...form
     } = value;
     await Promise.all([
@@ -355,6 +357,8 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
       pendingRefreshes: _pendingRefreshes,
       mlsAaContext: _mlsAaContext,
       fixtureRefresh: _fixtureRefresh,
+      aaContext: _aaContext,
+      aaClub: _aaClub,
       ...form
     } = value;
     const [existingForm, existingFixture] = await Promise.all([

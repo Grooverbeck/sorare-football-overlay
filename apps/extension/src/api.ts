@@ -26,7 +26,7 @@ export async function fetchPlayerStats(
   const requestId = beginStatsDiagnosticRequest(payload, __API_BASE_URL__);
   const message: FetchPlayerStatsMessage = {
     type: 'FETCH_PLAYER_STATS',
-    payload: {...payload,checkFixtureStatus:document.visibilityState!=='hidden'},
+    payload: {...payload,supportsAaContext:true,checkFixtureStatus:document.visibilityState!=='hidden'},
     requestId,
   };
   const response = await new Promise<PlayerStatsWorkerResponse>((resolve, reject) => {
@@ -66,7 +66,7 @@ export async function fetchLineupSortValues(
   const startedAt = performance.now();
   const message: FetchLineupSortValuesMessage = {
     type: 'FETCH_LINEUP_SORT_VALUES',
-    payload: {...payload,checkFixtureStatus:document.visibilityState!=='hidden'},
+    payload: {...payload,supportsAaContext:true,checkFixtureStatus:document.visibilityState!=='hidden'},
     requestId,
   };
   logStatsDiagnostic('lineup-sort-request', {

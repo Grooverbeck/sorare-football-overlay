@@ -51,6 +51,8 @@ import {
   ODDS_API_IO_ROUTES,
   SPORTS_GAME_ODDS_ROUTES,
 } from './providers/competition-odds-routes.js';
+import { AaContextService, InMemoryAaContextStore, type AaContextStore } from './services/aa-context.js';
+import { SorareAaContextSource } from './graphql/aa-context-source.js';
 import type {
   PlayerNameResolutionCache,
   PlayerStatsDataSource,
@@ -72,6 +74,7 @@ export interface CreateStatsRuntimeOptions {
   playerLoadLeases?: PlayerLoadLeases;
   scheduleBackground?: BackgroundTaskScheduler;
   fixtureLifecycle?: FixtureLifecycle;
+  aaContextStore?: AaContextStore;
 }
 
 export interface StatsRuntime {
@@ -164,6 +167,7 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
   let dataSource: PlayerStatsDataSource;
   let marketOddsProvider: PlayerMarketOddsProvider;
   let fixtureMatchOddsProvider: FixtureMatchOddsProvider;
+  let aaContextService: AaContextService | undefined;
 
   if (config.mockMode) {
     dataSource = new MockDataSource();
@@ -189,6 +193,16 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
       config.nameMissCacheTtlMs,
       config.excludeLowCoverage,
       options.nameResolutionCache,
+    );
+    aaContextService = new AaContextService(
+      options.aaContextStore ?? new InMemoryAaContextStore(),
+      new SorareAaContextSource(new SorareGraphqlClient({
+        url: config.graphqlUrl, requestTimeoutMs: 5_000, maxRetries: 0, logger,
+        ...(config.apiKey ? {apiKey: config.apiKey} : {}),
+        ...(config.authToken ? {authToken: config.authToken} : {}),
+        ...(config.jwtAud ? {jwtAud: config.jwtAud} : {}),
+      }), config.excludeLowCoverage),
+      config.excludeLowCoverage, options.scheduleBackground, logger,
     );
     const marketSnapshotStore =
       options.marketSnapshotStore ??
@@ -429,6 +443,7 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
       undefined,
       options.playerLoadLeases,
       options.fixtureLifecycle,
+      aaContextService,
     ),
     marketOddsProvider,
     fixtureMatchOddsProvider,

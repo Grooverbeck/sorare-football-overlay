@@ -461,6 +461,9 @@ Beispielantwort:
 - DNPs (`minsPlayed <= 0`) werden immer ausgeschlossen.
 - Optional ausgeschlossene Low-Coverage-Spiele werden gezählt und im Overlay kenntlich gemacht.
 - AA L10 ist der Mittelwert von `allAroundScore` über höchstens zehn gültige Einsätze.
+- Bei einem anstehenden Länderspiel verwenden neue Extension-Versionen die AA-Spiele der aktuellen Nationalmannschaft; bei Vereinsspielen bleibt die AA des aktuellen Vereins maßgeblich. Beide verwenden die Kartenposition, mindestens 60 Minuten und den Coverage-Filter. Der Siegquotenvergleich verwendet exakt dieselben AA-Spiele.
+- Vereins-AA bleibt im bisherigen Formcache erhalten. Nationalteam-AA liegt zusätzlich unter `player-aa-team:v1:<spieler>:<position>:<coverage>:<team>`. Erfolgreiche Nationalteamwerte bleiben bei Ladefehlern erhalten; eine leere Ersatzantwort überschreibt keine zuvor bestätigte Historie. Ein Kontextwechsel löscht keine Vereinswerte.
+- Der Nationalteam-Abruf durchsucht höchstens 40 vergangene Spiele der Nationalmannschaft bis zu zehn gültigen Einsätzen. Er läuft bedarfsgesteuert mit gemeinsamen Refresh-Sperren und begrenzter Parallelität. Während der ersten Abfrage bleiben vorhandene Werte mit Ladehinweis sichtbar; die AA-Sortierung wartet auf den passenden Kontext. Ältere Extensions ohne `supportsAaContext` erhalten weiterhin Vereins-AA und bleiben kompatibel.
 - CS L10 ist `cleanSheet60 >= 1` geteilt durch Einsätze mit mindestens 60 Minuten.
 - Goal L10 ist `goals >= 1` geteilt durch Einsätze mit mindestens einer Minute.
 - Assist L10/L15/L40 ist `goalAssist >= 1` geteilt durch die tatsächlichen Einsätze des gewählten Fensters.

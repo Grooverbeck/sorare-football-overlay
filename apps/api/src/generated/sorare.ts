@@ -34965,6 +34965,22 @@ export type VisitCampaignPagePayload = {
   readonly errors: ReadonlyArray<UserError>;
 };
 
+export type AaMembershipsQueryVariables = Exact<{
+  slugs?: InputMaybe<ReadonlyArray<Scalars['String']['input']> | Scalars['String']['input']>;
+}>;
+
+
+export type AaMembershipsQuery = { readonly __typename?: 'Query', readonly players: ReadonlyArray<{ readonly __typename: 'BaseballPlayer' } | { readonly __typename: 'NBAPlayer' } | { readonly __typename: 'Player', readonly slug: string, readonly activeClub?: { readonly __typename?: 'Club', readonly id: string, readonly slug: string, readonly shortName: string } | null, readonly activeNationalTeam?: { readonly __typename?: 'NationalTeam', readonly id: string, readonly slug: string, readonly shortName: string } | null }> };
+
+export type NationalAaHistoryQueryVariables = Exact<{
+  slug: Scalars['String']['input'];
+  position: Position;
+  after?: InputMaybe<Scalars['String']['input']>;
+}>;
+
+
+export type NationalAaHistoryQuery = { readonly __typename?: 'Query', readonly anyPlayer: { readonly __typename: 'BaseballPlayer' } | { readonly __typename: 'NBAPlayer' } | { readonly __typename: 'Player', readonly activeNationalTeam?: { readonly __typename?: 'NationalTeam', readonly id: string, readonly slug: string, readonly shortName: string, readonly latestGames: { readonly __typename?: 'GameConnection', readonly pageInfo: { readonly __typename?: 'PageInfo', readonly hasNextPage: boolean, readonly endCursor?: string | null }, readonly nodes: ReadonlyArray<{ readonly __typename?: 'Game', readonly id: string, readonly date: any, readonly lowCoverage: boolean, readonly statusTyped: GameStatus, readonly winner?: { readonly __typename?: 'Club', readonly id: string } | { readonly __typename?: 'NationalTeam', readonly id: string } | null, readonly playerGameScore?: { readonly __typename: 'BaseballPlayerGameScore', readonly positionTyped: Position } | { readonly __typename: 'BasketballPlayerGameScore', readonly positionTyped: Position } | { readonly __typename: 'PlayerGameScore', readonly allAroundScore: number, readonly positionTyped: Position, readonly footballPlayerGameStats: { readonly __typename?: 'PlayerGameStats', readonly minsPlayed?: number | null, readonly playedInGame: boolean, readonly anyTeam: { readonly __typename?: 'Club', readonly id: string } | { readonly __typename?: 'NationalTeam', readonly id: string } } } | { readonly __typename: 'So5Score', readonly positionTyped: Position } | null }> } } | null } };
+
 export type PlayerStatsBatchQueryVariables = Exact<{
   slugs?: InputMaybe<ReadonlyArray<Scalars['String']['input']> | Scalars['String']['input']>;
   position?: InputMaybe<Position>;

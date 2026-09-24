@@ -98,3 +98,22 @@ it('keeps the original expiry when a partial response retains complete form valu
     expect(c.dataExpiry.get(merged)).toBe(expiry);
   } finally {spy.mockRestore();}
 });
+
+it('does not let a late club fixture overwrite the current national AA projection', () => {
+  const stats: PlayerStats={slug:'danso',displayName:'Danso',position:'Defender',
+    aaL10:{value:17.332,sampleSize:10},aaL10TeamWinRate:{value:.5,sampleSize:10},
+    aaContext:{kind:'national',teamSlug:'austria',state:'ready'},aaClub:{aaL10:{value:1.455,sampleSize:4}},
+    goalL10:{value:.1,sampleSize:10},cleanSheetL10:{value:.2,sampleSize:10},excludedLowCoverage:0,
+    nextGame:{date:'2030-09-26T18:45:00Z',homeTeamSlug:'austria',awayTeamSlug:'israel',playerTeamSlug:'austria',
+      cleanSheetProbability:.4,matchProbabilities:null}};
+  const c=new StatsBatchCoordinator() as unknown as {
+    cacheStatsAliases(stats:PlayerStats,batch:never[]):void;
+    mergeWithCachedStats(stats:PlayerStats):PlayerStats;
+  };
+  c.cacheStatsAliases(stats,[]);
+  const result=c.mergeWithCachedStats({...stats,aaL10:{value:1.455,sampleSize:4},aaContext:{kind:'club',teamSlug:'sunderland',state:'ready'},
+    nextGame:{...stats.nextGame!,date:'2030-09-20T18:45:00Z',homeTeamSlug:'sunderland',awayTeamSlug:'arsenal',playerTeamSlug:'sunderland'}});
+  expect(result.nextGame?.playerTeamSlug).toBe('austria');
+  expect(result.aaL10.value).toBe(17.332);
+  expect(result.aaContext?.kind).toBe('national');
+});

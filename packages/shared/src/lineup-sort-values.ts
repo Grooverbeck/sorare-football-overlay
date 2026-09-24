@@ -39,7 +39,9 @@ export function lineupSortReadinessForPlayer(
     goal: !outfield ? 'unavailable' : goal?.source === 'market' ? 'ready' :
       pending.has('formHistory') || historyMissing || pending.has('fixture') || pending.has('marketOdds') ? 'pending' :
         goal ? 'ready' : 'unavailable',
-    aa: pending.has('formHistory') ? 'pending' : stats.aaL10.value === null ? 'unavailable' : 'ready',
+    aa: pending.has('aaContext') || stats.aaContext?.state === 'loading' ||
+      (pending.has('formHistory') && stats.aaContext?.kind !== 'national')
+      ? 'pending' : stats.aaL10.value === null ? 'unavailable' : 'ready',
     cleanSheet: !usesCs ? 'unavailable' : stats.nextGame?.cleanSheetProbability != null ? 'ready' :
       pending.has('fixture') ? 'pending' : 'unavailable',
   };

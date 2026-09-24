@@ -303,6 +303,7 @@ export function createApp<TBindings extends object = Record<string, never>>(
         : {}),
       includeHistoricalAssists: parsed.data.historicalGoalWindow !== null,
       supportsPartialFormHistory: true,
+      supportsAaContext: parsed.data.supportsAaContext,
       // Sorare fixture identity may be hydrated; bookmaker access stays cache-only.
       refreshFixtures: true,
       // Sorting may observe provider snapshots that already exist, but it must

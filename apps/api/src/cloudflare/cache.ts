@@ -87,6 +87,8 @@ const ProviderRequestBlockSchema = z.object({
 });
 
 const PlayerFormStatsSchema = PlayerStatsSchema.omit({
+  aaContext: true,
+  aaClub: true,
   fixtureRefresh: true,
   nextGame: true,
   pendingRefreshes: true,
