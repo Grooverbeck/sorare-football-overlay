@@ -54,6 +54,7 @@ export function lineupSortValueForPlayer(
   const market = stats.position !== 'Goalkeeper' ? stats.nextGame?.marketOdds : null;
   return {
     ...(market?.goal ? {goalMarket: {source: market.source, capturedAt: market.capturedAt, goal: market.goal}} : {}),
+    ...(stats.pendingRefreshes?.includes('aaContext') ? {aaContextPending: true} : {}),
     readiness: lineupSortReadinessForPlayer(stats, historicalGoalWindow),
     slug: stats.slug,
     displayName: stats.displayName,

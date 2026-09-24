@@ -44,6 +44,7 @@ type SortValuesFetcher = (
 type HydrationStatus = 'queued' | 'in-flight' | 'retry' | 'ready' | 'error';
 
 interface HydrationState {
+  aaContextPending?: boolean;
   finalCheckMetric?: keyof LineupSortReadiness;
   finalCheckRevision?: number;
   verified?: Partial<Record<keyof LineupSortReadiness, { signature: string; at: number }>>;
@@ -870,6 +871,7 @@ export class LineupSortHydrator {
 
   private takeBatch(): HydrationBatchGroup[] {
     const batch: HydrationBatchGroup[] = [];
+    let limit = this.effectiveBatchSize();
     const identities = new Map<string, HydrationBatchGroup>();
     const deferred: HydrationState[] = [];
     const seen = new Set<HydrationState>();
@@ -886,9 +888,13 @@ export class LineupSortHydrator {
       const identity = playerRequestIdentity(this.requestTarget(state));
       const scope = this.requestScope(state);
       const existing = identities.get(identity);
+      // Initial cache reads remain batches of fifty. Once the backend reports
+      // a cold AA team context, request its bounded warmup group so the tail
+      // of a large pool does not exhaust retries behind the first eight.
+      if (this.metricKey() === 'aa' && state.aaContextPending) limit = Math.min(limit, 8);
       if (existing?.scope === scope) {
         existing.states.push(state);
-      } else if (existing || batch.length >= this.effectiveBatchSize()) {
+      } else if (existing || batch.length >= limit) {
         deferred.push(state);
       } else {
         const group = { scope, states: [state] };
@@ -914,6 +920,7 @@ export class LineupSortHydrator {
       const value = first && candidates.every(candidate => sameSortValue(first, candidate))
         ? first : undefined;
       if (value) {
+        state.aaContextPending = value.aaContextPending === true;
         this.rememberResolvedIdentity(state, value);
         const before=state.target.container.getAttribute(fixtureIdentityAttribute);
         const beforeMarket = readGoalMarketState(state.target.container);

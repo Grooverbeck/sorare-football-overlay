@@ -410,6 +410,8 @@ export type SortMetricReadiness = z.infer<typeof SortMetricReadinessSchema>;
 export type LineupSortReadiness = z.infer<typeof LineupSortReadinessSchema>;
 
 export const LineupSortValueSchema = z.object({
+  // Lets AA-only follow-ups match the backend's bounded context warmup size.
+  aaContextPending: z.boolean().optional(),
   // Optional during rolling updates. Reuse the existing cache read, carrying
   // only goal provenance/details so the visible bracket can share this value.
   goalMarket: GoalMarketSnapshotSchema.optional(),

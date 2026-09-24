@@ -123,6 +123,28 @@ describe('LineupSortHydrator', () => {
     hydrator.stop();
   });
 
+  it('finishes all fifty cold national AA contexts within the normal retry budget', async () => {
+    const grid=renderGrid(50);
+    const warm=new Set<string>();
+    const fetcher=vi.fn(async (request:LineupSortValuesRequest)=>{
+      for(const slug of (request.slugs??[]).filter(slug=>!warm.has(slug)).slice(0,8)) warm.add(slug);
+      const response=responseFor(request);
+      return {...response,data:response.data.map(value=>({...value,
+        aaContextPending:!warm.has(value.slug),
+        readiness:{goal:'ready' as const,cleanSheet:'ready' as const,aa:warm.has(value.slug)?'ready' as const:'pending' as const},
+      }))};
+    });
+    const hydrator=new LineupSortHydrator(fetcher,50,[1,1],5);
+    hydrator.configureMode('aa');
+    try {
+      await hydrator.hydrate(grid);
+      await vi.waitFor(()=>expect(grid.querySelectorAll('[data-sorare-overlay-sort-data-ready="true"]')).toHaveLength(50));
+      expect(warm.size).toBe(50);
+      expect(fetcher.mock.calls[0]?.[0].slugs).toHaveLength(50);
+      expect(fetcher.mock.calls.slice(1).every(([request])=>(request.slugs?.length??0)<=8)).toBe(true);
+    } finally {hydrator.stop();}
+  });
+
   it('caps configured batches at the fifty-player API contract', async () => {
     const grid = renderGrid(51);
     const fetcher = vi.fn(async (request: LineupSortValuesRequest) =>
