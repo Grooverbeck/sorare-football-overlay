@@ -27,7 +27,7 @@ import { UnavailablePlayerMarketOddsProvider } from '../providers/market-odds-pr
 import { MockDataSource } from '../mock/mock-data-source.js';
 import { SorareGraphqlClient } from '../graphql/client.js';
 import type { AppLogger } from '../logger.js';
-import { AaContextService, type AaContextSource } from '../services/aa-context.js';
+import { AaContextService, AA_CONTEXT_RETENTION_SECONDS, type AaContextSource } from '../services/aa-context.js';
 import {
   FIXTURE_IDENTITY_VERSION,
   normalizeTeamName,
@@ -83,7 +83,8 @@ describe('Cloudflare Worker', () => {
     expect(source.national).toHaveBeenCalledTimes(1);
     const record=await env.CACHE_DB.prepare('SELECT expires_at FROM cache_entries WHERE cache_key=?1')
       .bind('player-aa-team:v1:aa-player:Defender:no-low:austria').first<{expires_at:number|null}>();
-    expect(record?.expires_at).toBeNull();
+    expect(record?.expires_at).toBeGreaterThan(Math.floor(Date.now()/1000)+AA_CONTEXT_RETENTION_SECONDS-60);
+    expect(record?.expires_at).toBeLessThanOrEqual(Math.floor(Date.now()/1000)+AA_CONTEXT_RETENTION_SECONDS);
   });
   it('refreshes only legacy fixtures with missing team identity and keeps the form cache', async () => {
     const now=Date.parse('2032-09-21T12:00:00Z');

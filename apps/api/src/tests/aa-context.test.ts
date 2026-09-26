@@ -1,6 +1,6 @@
 import { PlayerStatsRequestSchema, lineupSortReadinessForPlayer, type PlayerStats } from '@sorare-overlay/shared';
 import { describe, expect, it, vi } from 'vitest';
-import { AaContextService, InMemoryAaContextStore, type AaContextSource } from '../services/aa-context.js';
+import { AaContextService, AA_CONTEXT_RETENTION_SECONDS, InMemoryAaContextStore, type AaContextSource } from '../services/aa-context.js';
 import { SorareAaContextSource, NATIONAL_AA_QUERY } from '../graphql/aa-context-source.js';
 import { SorareGraphqlClient } from '../graphql/client.js';
 import { SplitPlayerStatsCache, TtlCache, type PlayerFormStats, type PlayerFixtureStats } from '../cache.js';
@@ -38,8 +38,8 @@ describe('independent club and national AA', () => {
   });
 
   it('keeps the previous national snapshot on failed and unexpectedly empty refreshes', async () => {
-    const store = new InMemoryAaContextStore(); const src = source();
-    let now = Date.now(); const service = new AaContextService(store, src, true, undefined, undefined, () => now);
+    let now = Date.now(); const store = new InMemoryAaContextStore(() => now); const src = source();
+    const service = new AaContextService(store, src, true, undefined, undefined, () => now);
     await service.decorate([player()]);
     now += 2 * 86_400_000;
     // A separate fixture gets its own source refresh after the shared lease.
@@ -50,6 +50,21 @@ describe('independent club and national AA', () => {
     await store.put(key, '{}', {expirationTtl: -1});
     vi.mocked(src.national).mockResolvedValueOnce({aaL10:{value:null,sampleSize:0},aaL10TeamWinRate:{value:null,sampleSize:0}});
     expect((await service.decorate([player()]))[0]?.aaL10.value).toBe(17.332);
+  });
+
+  it('expires a national snapshot seven days after its last successful refresh', async () => {
+    let now = Date.now();
+    const store = new InMemoryAaContextStore(() => now);
+    const src = source();
+    const service = new AaContextService(store, src, true, undefined, undefined, () => now);
+    expect((await service.decorate([player()]))[0]?.aaL10.value).toBe(17.332);
+    const key = 'player-aa-team:v1:test-player:Defender:no-low:austria';
+    now += AA_CONTEXT_RETENTION_SECONDS * 1_000 - 1;
+    expect(await store.get(key, 'json')).not.toBeNull();
+    now += 1;
+    expect(await store.get(key, 'json')).toBeNull();
+    vi.mocked(src.national).mockResolvedValueOnce({aaL10:{value:18,sampleSize:10},aaL10TeamWinRate:{value:.6,sampleSize:10}});
+    expect((await service.decorate([player()]))[0]?.aaL10.value).toBe(18);
   });
 
   it('does not fill a genuinely empty national history with club scores', async () => {

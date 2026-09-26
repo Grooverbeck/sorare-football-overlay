@@ -31,6 +31,7 @@ const RecordSchema = z.object({
 });
 type AaRecord = z.infer<typeof RecordSchema>;
 const REFRESH_MS = 24 * 60 * 60 * 1_000;
+export const AA_CONTEXT_RETENTION_SECONDS = 7 * 24 * 60 * 60;
 
 // Separate, additive storage: this service never writes to the weekly club
 // form cache. Only complete successful national queries replace a snapshot.
@@ -107,9 +108,11 @@ export class AaContextService {
         kind, teamSlug: team.slug, teamName: team.shortName,
         checkedAt: this.now(), fixtureDate: stats.nextGame!.date, ...metrics,
       };
-      // National snapshots have no expiry: failed refreshes keep the last
-      // successful value. Freshness is checked independently above.
-      await this.store.put(key, JSON.stringify(record));
+      // Retain the last successful value through transient refresh failures,
+      // then expire it at most seven days after the last successful check.
+      await this.store.put(key, JSON.stringify(record), {
+        expirationTtl: AA_CONTEXT_RETENTION_SECONDS,
+      });
       records.set(key, record);
     });
     if (settled.some(r => r.status === 'rejected')) throw new Error('AA context refresh incomplete');
@@ -136,12 +139,13 @@ export class AaContextService {
 
 export class InMemoryAaContextStore implements AaContextStore {
   private readonly values = new Map<string, {value: string; expires: number}>();
+  constructor(private readonly now: () => number = Date.now) {}
   async get<T>(key: string): Promise<T | null> {
     const entry = this.values.get(key);
-    return entry && entry.expires > Date.now() ? JSON.parse(entry.value) as T : null;
+    return entry && entry.expires > this.now() ? JSON.parse(entry.value) as T : null;
   }
   async put(key: string, value: string, options?: {expirationTtl: number}): Promise<void> {
-    this.values.set(key, {value, expires: options ? Date.now() + options.expirationTtl * 1_000 : Infinity});
+    this.values.set(key, {value, expires: options ? this.now() + options.expirationTtl * 1_000 : Infinity});
   }
   async putIfAbsent(key: string, value: string, options: {expirationTtl: number}): Promise<boolean> {
     if (await this.get(key)) return false;

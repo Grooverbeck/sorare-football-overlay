@@ -123,7 +123,7 @@ export const privacyPage = page(
   'Datenschutzerklärung – Football Stats Overlay',
   'Datenschutzerklärung für das inoffizielle Football Stats Overlay.',
   `
-    <span class="eyebrow">Stand: 20. September 2026 · Version 1.3</span>
+    <span class="eyebrow">Stand: 26. September 2026 · Version 1.4</span>
     <h1>Datenschutzerklärung</h1>
     <p class="lead">
       Diese Erklärung beschreibt, welche Daten das inoffizielle Football Stats Overlay
@@ -210,8 +210,12 @@ export const privacyPage = page(
       Karteninformationen werden ausschließlich verwendet, um die angeforderten Statistikwerte
       zu bestimmen. Öffentliche Fußballstatistiken und Spielerzuordnungen werden unabhängig von
       einem einzelnen Nutzer zwischengespeichert, um Sorare-Abfragen und Ladezeiten zu reduzieren.
-      Formwerte werden regulär bis zum Wochenwechsel (höchstens sieben Tage) gehalten,
-      erfolgreiche Namenszuordnungen bis zu 30 Tage und erfolglose Zuordnungen bis zu zwei Stunden.
+      Vereinsformwerte werden regulär bis zum Wochenwechsel (höchstens sieben Tage) gehalten.
+      Die getrennte Zuordnung des AA-Kontexts und bestätigte Nationalteam-AA-Werte laufen spätestens
+      sieben Tage nach ihrer letzten erfolgreichen Aktualisierung ab. Bei einem vorübergehend
+      fehlgeschlagenen Abruf bleiben vorhandene Werte innerhalb dieser Frist erhalten.
+      Erfolgreiche Namenszuordnungen werden bis zu 30 Tage gehalten,
+      erfolglose Zuordnungen bis zu zwei Stunden.
       Begegnungsdaten werden abhängig von Anpfiff, Spielstatus und Spielwechsel zwischengespeichert;
       Status-Prüfergebnisse und Daten bestätigter laufender oder unterbrochener Spiele können bis
       zu sieben Tage gespeichert bleiben. Das sind gemeinsam genutzte öffentliche Sportdaten,
@@ -289,7 +293,9 @@ export const privacyPage = page(
       Display settings and bounded mappings from public card-picture IDs to player names or slugs
       are stored locally. Unknown public picture IDs are sent in batches of up to 100 to the service
       for lookup in a shared, public Sorare-derived identity catalogue. The local mapping list and
-      card ownership identifiers are not uploaded. Verified catalogue entries have no automatic
+      card ownership identifiers are not uploaded. Club form values expire by the weekly rollover;
+      national-team AA values and their team context expire no later than seven days after the last
+      successful refresh. Verified catalogue entries have no automatic
       expiration and are not linked to user accounts. Sorting includes already loaded offscreen cards. Page and interaction
       states are used locally for display, sorting and refresh scheduling, not behavioral profiling.
       No Sorare credentials, cookies, wallet or payment data are accessed. No separate account-linked
