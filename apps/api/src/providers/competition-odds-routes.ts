@@ -1,5 +1,5 @@
 import type { MatchOddsRoute } from './match-odds-provider.js';
-import type { PlayerMarketField } from './market-odds-provider.js';
+import type { OddsMarketKey, PlayerMarketField } from './market-odds-provider.js';
 
 // The Odds API consumes monthly credits per returned market. Keep its European
 // player-prop fallback close to kickoff, while providers with free or regularly
@@ -28,15 +28,26 @@ export const LEAGUES_CUP_THE_ODDS_API_ROUTES = [
 
 export const NATIONS_LEAGUE_COMPETITION_SLUGS = ['uefa-nations-league'] as const;
 
-// The sport feed is confirmed, but Nations League player props are not part
-// of The Odds API's documented soccer coverage. Do not spend monthly credits
-// on speculative scorer/assist requests; use this feed for match fallback only.
+// Match odds remain independent of player-market coverage.
 export const NATIONS_LEAGUE_THE_ODDS_API_MATCH_ROUTES = [{
   sportKeys: ['soccer_uefa_nations_league'],
   competitionSlugs: NATIONS_LEAGUE_COMPETITION_SLUGS,
   region: 'eu',
   fallbackRegion: 'uk',
 }] as const satisfies readonly MatchOddsRoute[];
+
+// Confirmed live for Spain-Croatia: BetRivers offers an Over 0.5 selection in
+// player_assists_alternate. Use only that US market after Odds-API.io has not
+// already supplied an assist; do not request a second paid region.
+export const NATIONS_LEAGUE_THE_ODDS_API_PLAYER_ROUTE = {
+  sportKeys: ['soccer_uefa_nations_league'],
+  competitionSlugs: NATIONS_LEAGUE_COMPETITION_SLUGS,
+  region: 'us',
+  fallbackRegion: null,
+  markets: ['assist'],
+  fetchWindowMs: 36 * 60 * 60 * 1_000,
+  marketKeyOverrides: { player_assists: 'player_assists_alternate' },
+} as const satisfies TheOddsApiPlayerRoute;
 
 export interface TheOddsApiPlayerRoute {
   sportKeys: readonly [string, ...string[]];
@@ -45,6 +56,7 @@ export interface TheOddsApiPlayerRoute {
   fallbackRegion: string | null;
   markets: readonly PlayerMarketField[];
   fetchWindowMs: number;
+  marketKeyOverrides?: Partial<Record<OddsMarketKey, string>>;
 }
 
 export interface OddsApiIoRoute {

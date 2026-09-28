@@ -750,6 +750,7 @@ interface TheOddsApiOptions {
   refreshUsage?: boolean;
   supportedCompetitionSlugs?: readonly string[];
   supportedMarkets?: readonly PlayerMarketField[];
+  marketKeyOverrides?: Partial<Record<OddsMarketKey, string>>;
   supplementBatchDelayMs?: number;
   supplementBatchTtlMs?: number;
   refreshLeaseTtlMs?: number;
@@ -1554,11 +1555,12 @@ function extractMarketSnapshot(
   response: EventOdds,
   market: OddsMarketKey,
   capturedAt: string,
+  providerMarketKey: string = market,
 ): FrozenMarketSnapshot | null {
   const probabilities = new Map<string, BookmakerMarketQuote[]>();
   for (const bookmaker of response.bookmakers) {
     const bookmakerMarket = bookmaker.markets.find(
-      (candidate) => candidate.key === market,
+      (candidate) => candidate.key === providerMarketKey,
     );
     if (!bookmakerMarket) continue;
     const byPlayer = new Map<string, OddsOutcome[]>();
@@ -2414,6 +2416,14 @@ export class TheOddsApiPlayerMarketOddsProvider
     );
   }
 
+  private providerMarketKey(market: OddsMarketKey): string {
+    return this.options.marketKeyOverrides?.[market] ?? market;
+  }
+
+  private providerMarketKeys(markets: readonly OddsMarketKey[]): string {
+    return markets.map((market) => this.providerMarketKey(market)).join(',');
+  }
+
   private sportKeys(): string[] {
     return [
       ...new Set(
@@ -2909,7 +2919,7 @@ export class TheOddsApiPlayerMarketOddsProvider
         )}/events/${encodeURIComponent(event.id)}/odds`,
         {
           regions: this.options.region,
-          markets: markets.join(','),
+          markets: this.providerMarketKeys(markets),
           oddsFormat: 'decimal',
         },
       );
@@ -2925,7 +2935,9 @@ export class TheOddsApiPlayerMarketOddsProvider
       const parsed = EventOddsSchema.parse(response.body);
       const capturedAt = new Date(this.now()).toISOString();
       for (const market of markets) {
-        const extracted = extractMarketSnapshot(parsed, market, capturedAt);
+        const extracted = extractMarketSnapshot(
+          parsed, market, capturedAt, this.providerMarketKey(market),
+        );
         const existing = snapshots.get(market);
         if (!extracted && existing?.status === 'available') {
           const checked = recordFrozenSnapshotCheck(
@@ -3048,7 +3060,7 @@ export class TheOddsApiPlayerMarketOddsProvider
         )}/events/${encodeURIComponent(event.id)}/odds`,
         {
           regions: fallbackRegion,
-          markets: fallbackMarkets.join(','),
+          markets: this.providerMarketKeys(fallbackMarkets),
           oddsFormat: 'decimal',
         },
       );
@@ -3114,7 +3126,7 @@ export class TheOddsApiPlayerMarketOddsProvider
         )}/events/${encodeURIComponent(event.id)}/odds`,
         {
           regions: fallbackRegion,
-          markets: market,
+          markets: this.providerMarketKey(market),
           oddsFormat: 'decimal',
         },
       );
@@ -3158,7 +3170,9 @@ export class TheOddsApiPlayerMarketOddsProvider
     const capturedAt = new Date(this.now()).toISOString();
     const resolver = createPlayerProbabilityResolver(fixture.players);
     for (const market of markets) {
-      const extracted = extractMarketSnapshot(parsed, market, capturedAt);
+      const extracted = extractMarketSnapshot(
+        parsed, market, capturedAt, this.providerMarketKey(market),
+      );
       if (!extracted) continue;
       const existing = snapshots.get(market);
       const existingAvailable =
@@ -3206,7 +3220,7 @@ export class TheOddsApiPlayerMarketOddsProvider
         )}/events/${encodeURIComponent(event.id)}/odds`,
         {
           regions: this.options.region,
-          markets: market,
+          markets: this.providerMarketKey(market),
           oddsFormat: 'decimal',
         },
       );
@@ -3224,6 +3238,7 @@ export class TheOddsApiPlayerMarketOddsProvider
         EventOddsSchema.parse(response.body),
         market,
         capturedAt,
+        this.providerMarketKey(market),
       );
       const existing = snapshots.get(market);
       if (!extracted && existing?.status === 'available') {

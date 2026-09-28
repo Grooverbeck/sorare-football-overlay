@@ -228,14 +228,20 @@ ersetzt.
 Für die UEFA Nations League (`uefa-nations-league`) lädt Odds-API.io
 Spielerquoten bereits ab **96 Stunden vor Anpfiff**. Die Torquote steuert den
 Abruf; verfügbare Assist- und Tor-oder-Assist-Märkte werden aus derselben Antwort
-getrennt übernommen. Fehlende Assists allein lösen keinen zusätzlichen Abruf aus.
+getrennt übernommen. Ein fehlender Assist allein löst bei Odds-API.io keinen
+zusätzlichen Abruf aus. Fehlt er danach noch, kann The Odds API ab 36 Stunden
+vor Anpfiff den bestätigten US-Markt `player_assists_alternate` ergänzen.
+Dabei wird nur `Over 0.5` als Assist für den jeweiligen Spieler verwendet;
+der monatliche Creditschutz und der eingefrorene Snapshot gelten weiter. Die
+beiden Anbieter laufen nacheinander, sodass ein vorhandener Odds-API.io-Assist
+keinen zusätzlichen The-Odds-API-Request verursacht.
 Da die Spiele auf teilweise unzuverlässig bezeichnete Gruppenfeeds verteilt sind,
 wird zuerst nach dem Heimteam und nur bei Bedarf nach dem Auswärtsteam gesucht.
 Sport, Wettbewerbsfamilie, beide Teams und Anstoßzeit müssen zur Begegnung passen;
 Frauen- und Jugendwettbewerbe sind ausgeschlossen. Es werden nicht alle Gruppen
-einzeln abgefragt. The Odds API ergänzt bei Bedarf ausschließlich Matchquoten
-über `soccer_uefa_nations_league` (EU, danach UK); ein unbestätigtes
-SportsGameOdds- oder The-Odds-API-Spielermarkt-Routing wird nicht aktiviert.
+einzeln abgefragt. The Odds API ergänzt unabhängig davon bei Bedarf Matchquoten
+über `soccer_uefa_nations_league` (EU, danach UK). SportsGameOdds ist für die
+Nations League im aktuell konfigurierten Zugang nicht freigeschaltet.
 Bestehende Request-Limits, Wiederholungsregeln und Zeitfenster anderer
 Wettbewerbe sowie das Matchquoten-Fallback-Fenster bleiben unverändert.
 

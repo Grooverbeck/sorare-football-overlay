@@ -68,6 +68,7 @@ export class CompetitionRoutedPlayerMarketOddsProvider
   constructor(
     private readonly providers: readonly PlayerMarketOddsProvider[],
     private readonly routeIndex: ReadonlyMap<string, number>,
+    private readonly usageProviders: readonly PlayerMarketOddsProvider[] = providers,
   ) {
     this.reportsRefreshDue = providers.every(
       (provider) => provider.reportsRefreshDue === true,
@@ -196,7 +197,7 @@ export class CompetitionRoutedPlayerMarketOddsProvider
 
   async refreshUsage(): Promise<ProviderQuotaUsage[]> {
     const results = await Promise.allSettled(
-      this.providers.map(
+      this.usageProviders.map(
         (provider) => provider.refreshUsage?.() ?? Promise.resolve([]),
       ),
     );

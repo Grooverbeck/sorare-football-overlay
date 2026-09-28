@@ -18,6 +18,7 @@ import {
   MockPlayerMarketOddsProvider,
   TheOddsApiPlayerMarketOddsProvider,
   UnavailablePlayerMarketOddsProvider,
+  type OddsMarketKey,
   type MarketSnapshotStore,
   type PlayerMarketField,
   type PlayerMarketOddsProvider,
@@ -48,6 +49,8 @@ import {
   EUROPEAN_THE_ODDS_API_PLAYER_ROUTES,
   LEAGUES_CUP_THE_ODDS_API_ROUTES,
   NATIONS_LEAGUE_THE_ODDS_API_MATCH_ROUTES,
+  NATIONS_LEAGUE_THE_ODDS_API_PLAYER_ROUTE,
+  NATIONS_LEAGUE_COMPETITION_SLUGS,
   ODDS_API_IO_ROUTES,
   SPORTS_GAME_ODDS_ROUTES,
 } from './providers/competition-odds-routes.js';
@@ -91,6 +94,7 @@ interface TheOddsPlayerProviderPlan {
   region?: string;
   fallbackRegion?: string | null;
   markets?: readonly PlayerMarketField[];
+  marketKeyOverrides?: Partial<Record<OddsMarketKey, string>>;
   fetchWindowMs?: number;
   refreshUsage: boolean;
 }
@@ -108,6 +112,10 @@ const THE_ODDS_PLAYER_PROVIDER_PLANS: readonly TheOddsPlayerProviderPlan[] = [
     fallbackRegion: route.fallbackRegion,
     refreshUsage: false,
   })),
+  {
+    ...NATIONS_LEAGUE_THE_ODDS_API_PLAYER_ROUTE,
+    refreshUsage: false,
+  },
   {
     competitionSlugs: ['uefa-champions-league'],
     sportKeys: [
@@ -149,6 +157,14 @@ const THE_ODDS_PLAYER_ROUTE_INDEX = createCompetitionRouteIndex(
 const SPORTS_GAME_ODDS_ROUTE_INDEX = createCompetitionRouteIndex(
   SPORTS_GAME_ODDS_ROUTES.map(({ competitionSlugs }) => competitionSlugs),
 );
+const PRIORITIZED_NATIONS_LEAGUE_ROUTE_INDEX = createCompetitionRouteIndex([
+  [...new Set([
+    ...THE_ODDS_PLAYER_PROVIDER_PLANS.flatMap((route) => route.competitionSlugs),
+    ...SPORTS_GAME_ODDS_ROUTES.flatMap((route) => route.competitionSlugs),
+    ...ODDS_API_IO_ROUTES.flatMap((route) => route.competitionSlugs),
+  ])].filter((slug) => !NATIONS_LEAGUE_COMPETITION_SLUGS.some((nation) => nation === slug)),
+  NATIONS_LEAGUE_COMPETITION_SLUGS,
+]);
 
 function supplementFixtureMatchOddsProviders(
   providers: readonly FixtureMatchOddsProvider[],
@@ -218,6 +234,7 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
         region?: string;
         fallbackRegion?: string | null;
         markets?: readonly PlayerMarketField[];
+        marketKeyOverrides?: Partial<Record<OddsMarketKey, string>>;
         fetchWindowMs?: number;
         refreshUsage?: boolean;
       } = {},
@@ -251,6 +268,9 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
         ...(providerOptions.markets
           ? { supportedMarkets: providerOptions.markets }
           : {}),
+        ...(providerOptions.marketKeyOverrides
+          ? { marketKeyOverrides: providerOptions.marketKeyOverrides }
+          : {}),
         // Player cards arrive progressively from the extension. A short
         // distributed batching window lets one full-fixture market response
         // satisfy the whole visible cohort instead of refreshing per card.
@@ -274,6 +294,9 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
                 ? { fallbackRegion: plan.fallbackRegion }
                 : {}),
               ...(plan.markets ? { markets: plan.markets } : {}),
+              ...(plan.marketKeyOverrides
+                ? { marketKeyOverrides: plan.marketKeyOverrides }
+                : {}),
               ...(plan.fetchWindowMs !== undefined
                 ? { fetchWindowMs: plan.fetchWindowMs }
                 : {}),
@@ -359,7 +382,7 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
           usageStore: providerQuotaUsageStore,
         })
       : null;
-    marketOddsProvider = oddsApiIoProvider
+    const standardMarketOddsProvider = oddsApiIoProvider
       ? new SupplementingPlayerMarketOddsProvider(
           configuredMarketOddsProvider,
           oddsApiIoProvider,
@@ -368,6 +391,25 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
           ['goal'],
         )
       : configuredMarketOddsProvider;
+    // For Nations League, first reuse free/regularly resetting Odds-API.io
+    // snapshots. Spend a monthly The Odds API credit only for a still-missing
+    // assist in its single confirmed US alternate-assist market.
+    marketOddsProvider = oddsApiIoProvider && config.oddsApiKey
+      ? new CompetitionRoutedPlayerMarketOddsProvider(
+          [
+            standardMarketOddsProvider,
+            new SupplementingPlayerMarketOddsProvider(
+              oddsApiIoProvider,
+              theOddsProvider,
+              ['assist'],
+              undefined,
+              ['assist'],
+            ),
+          ],
+          PRIORITIZED_NATIONS_LEAGUE_ROUTE_INDEX,
+          [standardMarketOddsProvider],
+        )
+      : standardMarketOddsProvider;
     const theOddsMatchProvider = config.oddsApiKey
       ? new TheOddsApiFixtureMatchOddsProvider({
           apiKey: config.oddsApiKey,

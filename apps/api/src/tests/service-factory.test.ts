@@ -181,11 +181,12 @@ describe('createStatsRuntime European market routing', () => {
     }
   });
 
-  it('routes Nations League player markets exclusively to Odds.io and retains match-only The Odds API fallback', () => {
+  it('uses The Odds API only for Nations League assists and leaves SGO unsupported', () => {
     const stats=player('uefa-nations-league');
     for(const keys of [{THE_ODDS_API_KEY:'test-key'},{SPORTS_GAME_ODDS_API_KEY:'test-key'}]) {
       const runtime=createStatsRuntime({config:loadConfig({MOCK_MODE:'false',...keys}),logger,statsCache:new TtlCache<PlayerStats>(60000)});
-      expect(runtime.marketOddsProvider.supports(stats)).toBe(false);
+      expect(playerMarketFieldSupported(runtime.marketOddsProvider,stats,'goal')).toBe(false);
+      expect(playerMarketFieldSupported(runtime.marketOddsProvider,stats,'assist')).toBe('THE_ODDS_API_KEY' in keys);
       expect(runtime.fixtureMatchOddsProvider.supports(stats)).toBe('THE_ODDS_API_KEY' in keys);
     }
     const runtime=createStatsRuntime({config:loadConfig({MOCK_MODE:'false',ODDS_API_IO_KEY:'test-key'}),logger,statsCache:new TtlCache<PlayerStats>(60000)});
@@ -193,6 +194,9 @@ describe('createStatsRuntime European market routing', () => {
     expect(playerMarketFieldSupported(runtime.marketOddsProvider,stats,'assist')).toBe(true);
     expect(playerMarketFieldDrivesRequest(runtime.marketOddsProvider,stats,'goal')).toBe(true);
     expect(playerMarketFieldDrivesRequest(runtime.marketOddsProvider,stats,'assist')).toBe(false);
+    const combined=createStatsRuntime({config:loadConfig({MOCK_MODE:'false',THE_ODDS_API_KEY:'test-key',ODDS_API_IO_KEY:'test-key'}),logger,statsCache:new TtlCache<PlayerStats>(60000)});
+    expect(playerMarketFieldDrivesRequest(combined.marketOddsProvider,stats,'goal')).toBe(true);
+    expect(playerMarketFieldDrivesRequest(combined.marketOddsProvider,stats,'assist')).toBe(true);
   });
 
   it('loads Nations League props 80 hours ahead through the complete provider chain without paid-provider calls', async () => {
@@ -244,5 +248,49 @@ describe('createStatsRuntime European market routing', () => {
     } finally {
       fetchSpy.mockRestore();
     }
+  });
+
+  it.each([false,true])('uses the paid Nations League assist only if Odds-API.io has none (IO assist: %s)', async (ioHasAssist) => {
+    const date=new Date(Date.now()+30*60*60*1_000).toISOString();
+    const nextGame={...player('uefa-nations-league').nextGame!,date,
+      homeTeamName:'Spain',awayTeamName:'Croatia',playerTeamName:'Spain',opponentTeamName:'Croatia'};
+    const yamal={...player('uefa-nations-league'),slug:'lamine-yamal-nasraoui-ebana',displayName:'Lamine Yamal',position:'Forward' as const,nextGame};
+    const laporte={...player('uefa-nations-league'),slug:'aymeric-laporte',displayName:'Aymeric Laporte',position:'Defender' as const,nextGame};
+    const ioEvent={id:'io-spain-croatia',date,home:'Spain',away:'Croatia',sport:{slug:'football'},
+      league:{slug:'international-uefa-nations-league-league-c-gr-2'}};
+    const fetchSpy=vi.spyOn(globalThis,'fetch').mockImplementation(async input=>{
+      const url=new URL(String(input));
+      if(url.hostname==='api.odds-api.io') {
+        if(url.pathname.endsWith('/events/search')) return Response.json([ioEvent]);
+        expect(url.pathname).toBe('/v3/odds/multi');
+        return Response.json([{...ioEvent,bookmakers:{Bet365:[
+          {name:'Anytime Goalscorer',odds:[{label:'Lamine Yamal',over:'2.5'},{label:'Aymeric Laporte',over:'11'}]},
+          ...(ioHasAssist?[{name:'Player To Assist',odds:[{label:'Lamine Yamal',over:'4'},{label:'Aymeric Laporte',over:'10'}]}]:[]),
+        ]}}]);
+      }
+      expect(url.hostname).toBe('api.the-odds-api.com');
+      if(url.pathname.endsWith('/events')) return Response.json([{
+        id:'odds-spain-croatia',commence_time:date,home_team:'Spain',away_team:'Croatia',
+      }]);
+      expect(url.searchParams.get('markets')).toBe('player_assists_alternate');
+      expect(url.searchParams.get('regions')).toBe('us');
+      return Response.json({id:'odds-spain-croatia',commence_time:date,home_team:'Spain',away_team:'Croatia',
+        bookmakers:[{key:'betrivers',title:'BetRivers',markets:[{key:'player_assists_alternate',outcomes:[
+          {name:'Over',description:'Lamine Yamal',point:0.5,price:2.4},
+          {name:'Over',description:'Aymeric Laporte',point:0.5,price:10},
+        ]}]}]});
+    });
+    try {
+      const runtime=createStatsRuntime({config:loadConfig({MOCK_MODE:'false',THE_ODDS_API_KEY:'test-key',
+        SPORTS_GAME_ODDS_API_KEY:'test-key',ODDS_API_IO_KEY:'test-key'}),logger,statsCache:new TtlCache<PlayerStats>(60000)});
+      const values=await runtime.marketOddsProvider.load([yamal,laporte]);
+      expect(values.get(playerMarketOddsKey(yamal))?.goal?.probability).toBeCloseTo(0.4);
+      expect(values.get(playerMarketOddsKey(yamal))?.assist?.probability).toBeCloseTo(ioHasAssist?0.25:1/2.4);
+      expect(values.get(playerMarketOddsKey(laporte))?.assist?.probability).toBeCloseTo(0.1);
+      expect(fetchSpy).toHaveBeenCalledTimes(ioHasAssist?2:4);
+      const cached=await runtime.marketOddsProvider.load([yamal,laporte],{cacheOnly:true});
+      expect(cached.get(playerMarketOddsKey(yamal))?.assist?.probability).toBeCloseTo(ioHasAssist?0.25:1/2.4);
+      expect(fetchSpy).toHaveBeenCalledTimes(ioHasAssist?2:4);
+    } finally {fetchSpy.mockRestore();}
   });
 });

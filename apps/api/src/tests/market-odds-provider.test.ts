@@ -204,6 +204,54 @@ function unavailableMarketResponse() {
 }
 
 describe('TheOddsApiPlayerMarketOddsProvider', () => {
+  it('maps the confirmed Nations League Over 0.5 alternate assist without requesting goal or UK markets', async () => {
+    const fixture = {
+      ...player().nextGame!, competitionSlug: 'uefa-nations-league',
+      homeTeamName: 'Spain', awayTeamName: 'Croatia',
+      playerTeamName: 'Spain', opponentTeamName: 'Croatia',
+    };
+    const yamal = player({slug:'lamine-yamal-nasraoui-ebana',displayName:'Lamine Yamal',nextGame:fixture});
+    const laporte = player({slug:'aymeric-laporte',displayName:'Aymeric Laporte',position:'Defender',nextGame:fixture});
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/events')) return json([{
+        id:'spain-croatia',commence_time:kickoff,home_team:'Spain',away_team:'Croatia',
+      }]);
+      expect(url.searchParams.get('markets')).toBe('player_assists_alternate');
+      expect(url.searchParams.get('regions')).toBe('us');
+      return json({id:'spain-croatia',commence_time:kickoff,home_team:'Spain',away_team:'Croatia',
+        bookmakers:[{key:'betrivers',title:'BetRivers',markets:[{
+          key:'player_assists_alternate',outcomes:[
+            {name:'Over',description:'Lamine Yamal',point:0.5,price:2.4},
+            {name:'Over',description:'Aymeric Laporte',point:0.5,price:10},
+            {name:'Over',description:'Unrelated Player',point:1.5,price:1.2},
+          ],
+        }]}]});
+    });
+    const store = new InMemoryMarketSnapshotStore(60_000, () => now);
+    const provider = new TheOddsApiPlayerMarketOddsProvider({
+      apiKey:'test-key',baseUrl:'https://api.the-odds-api.com/v4',
+      sportKey:'soccer_uefa_nations_league',region:'us',
+      fetchWindowMs:36*60*60*1_000,requestTimeoutMs:1_000,maxRetries:0,
+      supportedCompetitionSlugs:['uefa-nations-league'],supportedMarkets:['assist'],
+      marketKeyOverrides:{player_assists:'player_assists_alternate'},
+      store,logger,fetchImpl,now:()=>now,
+    });
+    const values=await provider.load([yamal,laporte]);
+    expect(values.get(playerMarketOddsKey(yamal))).toMatchObject({
+      goal:null,assist:{probability:1/2.4,bookmakerCount:1},
+    });
+    expect(values.get(playerMarketOddsKey(laporte))).toMatchObject({
+      goal:null,assist:{probability:0.1,bookmakerCount:1},
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect((await provider.load([yamal,laporte],{cacheOnly:true})).get(playerMarketOddsKey(yamal))?.assist?.probability).toBeCloseTo(1/2.4);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const later={...yamal,nextGame:{...fixture,date:new Date(now+37*60*60*1_000).toISOString()}};
+    await provider.load([later]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it('normalizes common Liga MX names used by Leagues Cup feeds', () => {
     expect(normalizeTeamName('Atlético de San Luis FC')).toBe(
       'atletico san luis',
