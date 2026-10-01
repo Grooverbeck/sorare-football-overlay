@@ -1,7 +1,17 @@
-const nativeMatchOddsAttribute = 'data-sorare-overlay-native-match-odds';
+export const nativeMatchOddsAttribute = 'data-sorare-overlay-native-match-odds';
 const owners = new WeakMap<HTMLElement, Set<NativeMatchOddsReplacement>>();
 
-function nativeMatchOddsForRow(teamRow: HTMLElement): HTMLElement | null {
+export interface NativeMatchOddsReading {
+  element: HTMLElement;
+  left: number;
+  draw: number;
+  right: number;
+  kickoffLabel: string;
+}
+
+// Visible Sorare DOM only. These rounded values never enter player statistics,
+// provider snapshots, sorting metrics or the backend cache.
+export function readNativeMatchOdds(teamRow: HTMLElement): NativeMatchOddsReading | null {
   const button = teamRow.closest('button, [role="button"]');
   if (!button || button.querySelectorAll('[aria-label="Team"]').length !== 2) return null;
   const candidate = button.nextElementSibling;
@@ -23,7 +33,10 @@ function nativeMatchOddsForRow(teamRow: HTMLElement): HTMLElement | null {
   });
   if (values.some(value => !Number.isFinite(value) || value < 0 || value > 100)) return null;
   const total = values.reduce((sum, value) => sum + value, 0);
-  return total >= 98 && total <= 102 ? candidate : null;
+  return total >= 98 && total <= 102
+    ? {element: candidate, left: values[0]! / 100, draw: values[1]! / 100, right: values[2]! / 100,
+        kickoffLabel: button.parentElement?.nextElementSibling?.textContent?.trim() ?? ''}
+    : null;
 }
 
 /** CSS hides the marked strip only while a ready replacement is attached.
@@ -33,16 +46,18 @@ function nativeMatchOddsForRow(teamRow: HTMLElement): HTMLElement | null {
 export class NativeMatchOddsReplacement {
   private current: HTMLElement | null = null;
 
-  update(teamRow: HTMLElement): void {
-    const candidate = nativeMatchOddsForRow(teamRow);
-    if (candidate === this.current) return;
+  update(teamRow: HTMLElement): NativeMatchOddsReading | null {
+    const reading = readNativeMatchOdds(teamRow);
+    const candidate = reading?.element ?? null;
+    if (candidate === this.current) return reading;
     this.clear();
-    if (!candidate) return;
+    if (!candidate) return null;
     this.current = candidate;
     const views = owners.get(candidate) ?? new Set<NativeMatchOddsReplacement>();
     views.add(this);
     owners.set(candidate, views);
     candidate.setAttribute(nativeMatchOddsAttribute, 'true');
+    return reading;
   }
 
   clear(): void {

@@ -491,7 +491,10 @@ Beispielantwort:
 - Die API führt für jede historische Kennzahl die tatsächliche Stichprobe als `n=…`; fehlende Kopfleistenwerte erscheinen als `—`.
 - `AA L10` sitzt bei Feldspielern als eigene, farbcodierte Seitenklammer an der Karte.
 - Goalkeeper zeigen stattdessen ausschließlich die teambezogene `CS%` als Seitenklammer. Defender zeigen `NEXT CS%` zusätzlich im Kartenheader; bei Midfieldern und Forwards bleibt die Kopfleiste ausgeblendet.
-- Für alle Positionen rechnet die Extension die von Sorare aus Sicht des Spielerteams gelieferten Sieg-/Unentschieden-/Niederlagen-Wahrscheinlichkeiten in die feste Spielreihenfolge `H/D/A` um. Fehlende Werte werden als „keine Quote“ dargestellt.
+- Der Matchbalken verwendet bevorzugt die bereits auf der Karte sichtbaren Sorare-Prozentwerte. Die eigene Darstellung erscheint dadurch unabhängig vom Laden der AA-/CS-Daten; ältere Backend-Werte überschreiben keine aktuell sichtbaren Sorare-Werte. Links/Remis/Rechts und die markierte Spielerseite werden direkt an derselben Teamzeile zugeordnet.
+- Ist kein eindeutig erkennbarer Sorare-Balken verfügbar, bleibt die bisherige Backend-Darstellung der Sieg-/Unentschieden-/Niederlagen-Wahrscheinlichkeiten in der sichtbaren Teamreihenfolge erhalten. Bei unklarer Zuordnung bleibt Sorare unverändert sichtbar.
+- Der gemeinsame, auf die Kartenbereiche begrenzte DOM-Beobachter übernimmt spätere Änderungen. Es entstehen keine neuen Anbieteranfragen oder Timer pro Karte; unveränderte Balken werden beim Scrollen nicht neu aufgebaut.
+- Lokal gelesene Matchwerte werden nicht in die Datenbank, Spielerstatistik oder Sortierwerte geschrieben und ersetzen keine CS-, Tor- oder Assistquote. Der AA-Siegvergleich im Tooltip erscheint nur bei bestätigten Teams und passendem sichtbaren Spieltermin; der aktuelle Siegwert stammt dann ebenfalls aus dem sichtbaren Balken.
 
 `HistoricalGoalscorerProvider` implementiert die austauschbare `GoalscorerProbabilityProvider`-Schnittstelle. Ein späterer externer Prognoseanbieter kann dadurch ergänzt werden, ohne API-Route oder UI-Vertrag umzubauen.
 

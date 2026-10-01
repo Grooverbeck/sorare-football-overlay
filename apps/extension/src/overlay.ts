@@ -33,7 +33,7 @@ import {
   setLineupSortDataReady,
   setLineupSortPosition,
 } from './lineup-sort.js';
-import { NativeMatchOddsReplacement } from './native-match-odds.js';
+import { NativeMatchOddsReplacement, readNativeMatchOdds, type NativeMatchOddsReading } from './native-match-odds.js';
 import type {
   HistoricalAssistWindow,
   MarketBracketSide,
@@ -1290,6 +1290,61 @@ function fixtureMatchesCanonicalLineupSides(
     teamSlugsLikelyMatch(slug, nextGame.awayTeamSlug),
   );
   return homeIndex >= 0 && awayIndex >= 0 && homeIndex !== awayIndex;
+}
+
+function nativeLineupProbabilities(
+  reading: NativeMatchOddsReading,
+  teamRow: HTMLElement,
+  stats: PlayerStats | null,
+): LineupOddsPresentation | null {
+  const sides = lineupTeamSides(teamRow);
+  if (!sides || sides.some(side => !side.label && !side.slug) ||
+      (sides[0]!.slug && sides[0]!.slug === sides[1]!.slug) ||
+      (!sides[0]!.slug && !sides[1]!.slug && sides[0]!.label === sides[1]!.label)) return null;
+  const selected = sides.flatMap((side, index) => side.selected ? [index] : []);
+  let playerIndex = selected.length === 1 ? selected[0] : undefined;
+  if (selected.length > 1) return null;
+  const fixture = stats?.nextGame;
+  const canonicalPairMatches = fixture && fixtureMatchesCanonicalLineupSides(fixture, sides) === true;
+  if (playerIndex === undefined && canonicalPairMatches) {
+    const matches = sides.flatMap((side, index) => teamSlugsLikelyMatch(side.slug, fixture?.playerTeamSlug) ? [index] : []);
+    if (matches.length === 1) playerIndex = matches[0];
+  }
+  if (playerIndex === undefined) return null;
+  const name = (side: LineupTeamSide): string => canonicalPairMatches
+    ? (teamSlugsLikelyMatch(side.slug, fixture?.homeTeamSlug) ? fixture?.homeTeamName : fixture?.awayTeamName) || side.label || side.slug!
+    : side.label || side.slug!;
+  return {
+    home: reading.left, draw: reading.draw, away: reading.right,
+    playerIsHome: playerIndex === 0, playerIsAway: playerIndex === 1,
+    homeTeamName: name(sides[0]!), awayTeamName: name(sides[1]!),
+  };
+}
+
+function nativeFixtureMatchesBackend(
+  reading: NativeMatchOddsReading,
+  teamRow: HTMLElement,
+  stats: PlayerStats,
+): boolean {
+  const sides = lineupTeamSides(teamRow);
+  const fixture = stats.nextGame;
+  if (!fixture || !sides || fixtureMatchesCanonicalLineupSides(fixture, sides) !== true) return false;
+  const selected = sides.filter(side => side.selected);
+  if (selected.length !== 1 || !teamSlugsLikelyMatch(selected[0]?.slug, fixture.playerTeamSlug)) return false;
+  // The same team pair can meet again. Never attach AA context from another
+  // date merely because the crests match. Date labels are UI-only evidence.
+  const label = reading.kickoffLabel.match(/^([^,]+),\s*(\d{1,2}):(\d{2})$/u);
+  const date = new Date(fixture.date);
+  if (!label || !Number.isFinite(date.getTime())) return false;
+  const lead = date.getTime() - Date.now();
+  if (lead <= 0 || lead > 7 * 24 * 60 * 60 * 1_000) return false;
+  if (stats.aaContext?.teamSlug && !teamSlugsLikelyMatch(stats.aaContext.teamSlug, fixture.playerTeamSlug)) return false;
+  const locale = document.documentElement.lang || window.location.pathname.split('/')[1] || navigator.language;
+  try {
+    const weekday = new Intl.DateTimeFormat(locale, {weekday: 'short'}).format(date);
+    const normalized = (text: string) => text.toLocaleLowerCase().replace(/[.\s]/gu, '');
+    return normalized(label[1]!) === normalized(weekday) && Number(label[2]) === date.getHours() && Number(label[3]) === date.getMinutes();
+  } catch { return false; }
 }
 
 function fixtureSideForTeamSlug(
@@ -3155,6 +3210,7 @@ export class OverlayView {
   private packLayoutPhase: 'none' | 'reveal' | 'result' = 'none';
   private viewportPriorityActive = true;
   private readonly nativeMatchOdds = new NativeMatchOddsReplacement();
+  private lineupOddsPresentationSignature: string | null = null;
   private destroyed = false;
   private lastRawStats: PlayerStats | null = null;
   private lastDisplayStats: PlayerStats | null = null;
@@ -3208,6 +3264,12 @@ export class OverlayView {
 
   get layoutContainer(): HTMLElement {
     return this.container;
+  }
+
+  matchOddsObservationTarget(): HTMLElement | null {
+    // Small, card-local stats/date area, observed by the scanner's existing
+    // shared observer. No timers or new observers per card.
+    return lineupBuilderTeamRow(this.container)?.closest('button, [role="button"]')?.parentElement?.parentElement ?? null;
   }
 
   constructor(
@@ -3285,7 +3347,8 @@ export class OverlayView {
       // The candidate row may belong to another view during a DOM remount.
       // Only the successfully claimed row may receive this view's odds bar.
       const teamRow = this.lineupTeamRow;
-      if (teamRow) this.nativeMatchOdds.update(teamRow);
+      const nativeOdds = teamRow ? this.nativeMatchOdds.update(teamRow) : null;
+      this.renderLineupOdds(this.lastDisplayStats, teamRow, nativeOdds);
       if (
         this.lineupOddsBar.dataset.ready !== 'true' ||
         !teamRow ||
@@ -3939,11 +4002,13 @@ export class OverlayView {
   }
 
   private renderLineupOdds(
-    stats: PlayerStats,
+    stats: PlayerStats | null,
     teamRow: HTMLElement | null,
+    native: NativeMatchOddsReading | null = teamRow ? readNativeMatchOdds(teamRow) : null,
   ): void {
-    const nextGame = stats.nextGame;
-    const probabilities = visualLineupProbabilities(nextGame, teamRow);
+    const probabilities = native && teamRow
+      ? nativeLineupProbabilities(native, teamRow, stats)
+      : stats ? visualLineupProbabilities(stats.nextGame, teamRow) : null;
     if (
       !probabilities ||
       probabilities.home === null ||
@@ -3953,6 +4018,15 @@ export class OverlayView {
       this.clearLineupOdds();
       return;
     }
+
+    const signature = JSON.stringify([
+      probabilities, native ? 'sorare-dom' : 'backend', native?.kickoffLabel,
+      stats?.nextGame?.date, stats?.nextGame?.homeTeamSlug, stats?.nextGame?.awayTeamSlug,
+      stats?.nextGame?.playerTeamSlug, stats?.aaL10TeamWinRate, stats?.aaContext,
+    ]);
+    // Scroll/resize only moves hosts. Unchanged values never rebuild the bar
+    // or tooltip, avoiding flicker and write/read layout churn.
+    if (signature === this.lineupOddsPresentationSignature) return;
 
     const values: Array<{
       outcome: 'home' | 'draw' | 'away';
@@ -4031,8 +4105,11 @@ export class OverlayView {
     );
     const tooltipLabel = document.createElement('div');
     tooltipLabel.className = 'tooltip-label';
-    tooltipLabel.textContent = 'Quoten';
-    const winComparison = this.lineupWinComparison(stats);
+    tooltipLabel.textContent = native ? 'Quoten · Sorare' : 'Quoten';
+    const canCompare = stats && (!native || (teamRow && nativeFixtureMatchesBackend(native, teamRow, stats)));
+    const winComparison = canCompare
+      ? this.lineupWinComparison(stats, probabilities.playerIsHome ? probabilities.home : probabilities.away)
+      : null;
     this.lineupOddsTooltip.replaceChildren(
       tooltipLabel,
       fixture,
@@ -4042,10 +4119,14 @@ export class OverlayView {
     this.lineupOddsTooltip.hidden = false;
     this.lineupOddsBar.dataset.ready = 'true';
     this.lineupOddsHost.dataset.lineupOddsReady = 'true';
+    this.lineupOddsHost.dataset.lineupOddsSource = native ? 'sorare-dom' : 'backend';
+    this.lineupOddsPresentationSignature = signature;
   }
 
-  private lineupWinComparison(stats: PlayerStats): HTMLDivElement | null {
-    const nextWin = stats.nextGame?.matchProbabilities?.win;
+  private lineupWinComparison(
+    stats: PlayerStats,
+    nextWin: number | null | undefined = stats.nextGame?.matchProbabilities?.win,
+  ): HTMLDivElement | null {
     const historical = stats.aaL10TeamWinRate;
     if (
       stats.aaContext?.state === 'loading' ||
@@ -4156,12 +4237,14 @@ export class OverlayView {
   }
 
   private clearLineupOdds(): void {
+    this.lineupOddsPresentationSignature = null;
     this.lineupOddsBar.replaceChildren();
     this.lineupOddsTooltip.replaceChildren();
     this.lineupOddsTooltip.hidden = true;
     this.closeLineupTooltip();
     delete this.lineupOddsBar.dataset.ready;
     delete this.lineupOddsHost.dataset.lineupOddsReady;
+    delete this.lineupOddsHost.dataset.lineupOddsSource;
     this.lineupOddsHost.hidden = true;
   }
 
@@ -4301,6 +4384,7 @@ export class OverlayView {
   ): void {
     if (this.destroyed) return;
     this.lastRawStats = null;
+    this.lastDisplayStats = null;
     this.renderedFixturePresentationKey = 'null';
     if (!preserveLineupSortValues) {
       setLineupGoalSortValue(this.container, null);

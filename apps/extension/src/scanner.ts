@@ -1862,6 +1862,10 @@ export class SorareCardScanner {
         const externalAddedElements = externalAddedNodes.filter(isElementNode);
         const externalRemovedElements =
           externalRemovedNodes.filter(isElementNode);
+        if ([...externalAddedElements, ...externalRemovedElements].some(node =>
+          node.matches('[aria-label="Team"]') || node.querySelector('[aria-label="Team"]'))) {
+          this.layoutTargetsDirty = true;
+        }
         if (
           mutation.type === 'childList' &&
           externalAddedNodes.length === 0 &&
@@ -2486,10 +2490,16 @@ export class SorareCardScanner {
     this.layoutObserver = new MutationObserver((mutations) => {
       const views = new Set<OverlayView>();
       for (const mutation of mutations) {
-        const target = mutation.target;
-        if (!isElementNode(target)) continue;
-        for (const view of this.layoutViewsByTarget.get(target) ?? []) {
-          views.add(view);
+        const target = isElementNode(mutation.target) ? mutation.target : mutation.target.parentElement;
+        if (!target || target.closest(extensionMutationSelector)) continue;
+        // Text changes inside the native strip and selected-team changes are
+        // scoped to a small observed stats block, never a document-wide scan.
+        let scope: Element | null = target;
+        for (let depth = 0; scope && depth < 8; depth += 1, scope = scope.parentElement) {
+          const owners = this.layoutViewsByTarget.get(scope);
+          if (!owners) continue;
+          for (const view of owners) views.add(view);
+          break;
         }
         const container = target.closest<HTMLElement>(
           '[data-sorare-overlay-key]',
@@ -2506,7 +2516,15 @@ export class SorareCardScanner {
     this.layoutTargetsDirty = false;
     this.layoutObserver.disconnect();
     this.layoutViewsByTarget.clear();
+    const matchScopes = new Set<HTMLElement>();
     for (const [container, { view }] of this.overlays) {
+      const matchScope = view.matchOddsObservationTarget();
+      if (matchScope) {
+        matchScopes.add(matchScope);
+        const owners = this.layoutViewsByTarget.get(matchScope) ?? new Set<OverlayView>();
+        owners.add(view);
+        this.layoutViewsByTarget.set(matchScope, owners);
+      }
       let target: HTMLElement | null = container;
       for (let depth = 0; target && depth < 4; depth += 1) {
         const views = this.layoutViewsByTarget.get(target) ?? new Set<OverlayView>();
@@ -2517,15 +2535,21 @@ export class SorareCardScanner {
     }
     for (const target of this.layoutViewsByTarget.keys()) {
       const tracksCardSubtree = this.overlays.has(target as HTMLElement);
+      const tracksMatch = matchScopes.has(target as HTMLElement);
       this.layoutObserver.observe(target, {
         attributes: true,
-        subtree: tracksCardSubtree,
+        subtree: tracksCardSubtree || tracksMatch,
+        childList: tracksMatch,
+        characterData: tracksMatch,
         attributeFilter: [
           'class',
           'style',
           'hidden',
           'inert',
           'aria-hidden',
+          'aria-current',
+          'aria-selected',
+          'data-state',
         ],
       });
     }
