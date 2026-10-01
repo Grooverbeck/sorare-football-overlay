@@ -14,7 +14,7 @@ import {
 } from '@sorare-overlay/shared';
 import { readSortReadiness, setSortReadiness, readinessIsSettled, uniformReadiness } from './lineup-sort-readiness.js';
 import { supportsCompactViewPath } from './compact-view-route.js';
-import { fixtureIdentityAttribute, fixtureRefreshAttribute, olderFixture, retiredFixture, retiredFixtureAttribute } from './fixture-refresh.js';
+import { fixtureIdentityAttribute, fixtureRefreshAttribute, marketRefreshAttribute, readMarketRefresh, olderFixture, retiredFixture, retiredFixtureAttribute } from './fixture-refresh.js';
 import { isScoreDetailsDialogTarget } from './dom.js';
 import {clearGoalMarketState, goalMarketChangedEvent, readGoalMarketState, withGoalMarketState} from './goal-market-state.js';
 import { findSorareCardMedia, sorareCardNamePattern as sorareCardImageAlt } from './card-media.js';
@@ -3619,6 +3619,7 @@ export class OverlayView {
       setSortReadiness(this.container, null);
       this.container.removeAttribute(fixtureIdentityAttribute);
       this.container.removeAttribute(fixtureRefreshAttribute);
+      this.container.removeAttribute(marketRefreshAttribute);
       this.container.removeAttribute(retiredFixtureAttribute);
       setLineupGoalSortValue(this.container, null);
       setLineupAaSortValue(this.container, null);
@@ -3643,6 +3644,10 @@ export class OverlayView {
 
   fixtureRefreshHint(): PlayerStats['fixtureRefresh'] {
     return this.lastRawStats?.fixtureRefresh;
+  }
+
+  marketRefreshHint(): PlayerStats['marketRefresh'] {
+    return readMarketRefresh(this.container);
   }
 
   loading(): void {
@@ -3726,6 +3731,8 @@ export class OverlayView {
     if(!stats.nextGame && stats.fixtureRefresh)this.container.setAttribute(retiredFixtureAttribute,stats.fixtureRefresh.key);
     if(stats.fixtureRefresh) this.container.setAttribute(fixtureRefreshAttribute,JSON.stringify(stats.fixtureRefresh));
     else this.container.removeAttribute(fixtureRefreshAttribute);
+    if(stats.marketRefresh) this.container.setAttribute(marketRefreshAttribute,JSON.stringify(stats.marketRefresh));
+    else this.container.removeAttribute(marketRefreshAttribute);
     const previousIdentity=this.container.getAttribute(fixtureIdentityAttribute);
     if(previousIdentity!==null && previousIdentity!==(incomingIdentity??'')) {
       clearGoalMarketState(this.container);

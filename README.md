@@ -194,15 +194,29 @@ erfasste Spielerwerte bleiben als unveränderlicher Begegnungs-Snapshot ohne
 Ablaufdatum gespeichert. Ein Ergänzungslauf kann später gelistete Spieler und
 Buchmacherdetails hinzufügen, verändert aber keine bereits eingefrorene
 Spielerwahrscheinlichkeit. Fehlende Märkte und konkret angefragte, noch nicht
-gelistete Spieler verwenden einen spielbezogenen Retry-Zustand: nach dem ersten
-Fehlschlag frühestens nach zwölf Stunden, danach nach 24 Stunden und höchstens
-noch einmal vier Stunden vor Anpfiff. Nach der letzten Prüfung und nach
-Spielbeginn werden keine weiteren Quotenabrufe ausgelöst. Bei den
-72-Stunden-Abruffenstern von SportsGameOdds und Odds-API.io ergeben sich dadurch
-höchstens drei Marktprüfungen pro Begegnung statt einer Prüfung alle sechs
-Stunden. Der monatlich kontingentierte The-Odds-API-Fallback für europäische
-Spielermärkte beginnt dagegen erst 24 Stunden vor Anpfiff und nutzt denselben
-begrenzten Retry-Zustand.
+gelistete Spieler verwenden einen spielbezogenen Retry-Zustand. SportsGameOdds
+und The Odds API behalten die sparsame Regel: erste Wiederholung frühestens
+nach zwölf Stunden und nicht vor dem 24-Stunden-Fenster, danach nach 24 Stunden
+und gegebenenfalls eine letzte Prüfung vier Stunden vor Anpfiff.
+Odds-API.io prüft fehlende Torquoten bei aktiver Nutzung früher: mehr als
+24 Stunden vor Anpfiff nach sechs Stunden, zwischen 24 und sechs Stunden nach
+zwei Stunden und in den letzten sechs Stunden nach einer Stunde. Der Wechsel
+in ein kürzeres Fenster ist ebenfalls ein Prüfzeitpunkt. Alte Fehlprüfungen
+werden ohne Migration nach dieser Regel neu bewertet. Bestätigte Spiel-IDs
+werden wiederverwendet; bis zu zehn Spiele derselben Anbieterroute passen in
+eine Sammelabfrage. Fehlende Assists allein starten keinen Odds-API.io-Abruf.
+Bereits erfasste Odds-API.io-Torquoten bleiben bei Fehlern erhalten und nutzen
+weiterhin nur die gezielten Preisprüfungen 24 Stunden und 90 Minuten vor Anpfiff.
+Nach Spielbeginn werden keine neuen Spielerquoten angefragt.
+
+Das Backend liefert den nächsten zulässigen Markt-Prüfzeitpunkt als optionales
+`marketRefresh` mit. Die Extension nutzt dafür denselben zentralen Timer wie
+für den Begegnungswechsel, prüft nur aktive Karten und pausiert in versteckten
+Tabs. Sortierabfragen für unsichtbare Karten bleiben cache-only. Neue Werte
+werden ohne F5 übernommen; Anbieterfehler bleiben von echten Markt-Fehlprüfungen
+getrennt und vorhandene Marktquoten werden nicht durch historische Werte ersetzt.
+The Odds API behält seine bisherigen wettbewerbsabhängigen Abruffenster und
+Monatscredit-Schutzregeln.
 
 Vor einem externen Abruf prüft das Backend zusätzlich die von Sorare gelieferte
 Competition. SportsGameOdds unterstützt gezielt MLS, Champions League,

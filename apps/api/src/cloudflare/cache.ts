@@ -90,6 +90,7 @@ const PlayerFormStatsSchema = PlayerStatsSchema.omit({
   aaContext: true,
   aaClub: true,
   fixtureRefresh: true,
+  marketRefresh: true,
   nextGame: true,
   pendingRefreshes: true,
   mlsAaContext: true,

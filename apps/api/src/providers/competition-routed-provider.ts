@@ -127,6 +127,7 @@ export class CompetitionRoutedPlayerMarketOddsProvider
       const provider = this.providers[providerIndex]!;
       const refreshDuePlayerKeys = new Set<string>();
       const refreshDueState = { complete: false };
+      const marketRefreshHints = new Map<string, NonNullable<PlayerStats['marketRefresh']>>();
       try {
         const values = await provider.load(group, {
           ...options,
@@ -134,10 +135,12 @@ export class CompetitionRoutedPlayerMarketOddsProvider
             ? { refreshDuePlayerKeys }
             : {}),
           ...(options?.refreshDueState ? { refreshDueState } : {}),
+          ...(options?.marketRefreshHints ? { marketRefreshHints } : {}),
         });
         return {
           values,
           refreshDuePlayerKeys,
+          marketRefreshHints,
           fulfilled: true,
           complete: options?.cacheOnly ? refreshDueState.complete : true,
         };
@@ -145,6 +148,7 @@ export class CompetitionRoutedPlayerMarketOddsProvider
         return {
           values: new Map<string, PlayerMarketOdds | null>(),
           refreshDuePlayerKeys,
+          marketRefreshHints,
           fulfilled: false,
           complete: false,
         };
@@ -165,6 +169,9 @@ export class CompetitionRoutedPlayerMarketOddsProvider
         })();
     for (const result of results) {
       for (const [key, value] of result.values) output.set(key, value);
+      if (options?.marketRefreshHints && result.fulfilled) {
+        for (const [key, hint] of result.marketRefreshHints) options.marketRefreshHints.set(key, hint);
+      }
       if (options?.refreshDuePlayerKeys && result.fulfilled) {
         for (const key of result.refreshDuePlayerKeys) {
           options.refreshDuePlayerKeys.add(key);

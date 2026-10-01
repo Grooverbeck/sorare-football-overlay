@@ -1,12 +1,21 @@
 export interface FixtureRefreshHint {key:string; nextCheckAt:string}
 export const fixtureIdentityAttribute='data-sorare-overlay-fixture-identity';
 export const fixtureRefreshAttribute='data-sorare-overlay-fixture-refresh';
+export const marketRefreshAttribute='data-sorare-overlay-market-refresh';
 export const retiredFixtureAttribute='data-sorare-overlay-retired-fixture';
 export const fixtureChangedEvent='sorare-overlay:fixture-changed';
 
 export function readFixtureRefresh(element:HTMLElement):FixtureRefreshHint|undefined {
+  return readRefreshHint(element, fixtureRefreshAttribute);
+}
+
+export function readMarketRefresh(element:HTMLElement):FixtureRefreshHint|undefined {
+  return readRefreshHint(element, marketRefreshAttribute);
+}
+
+function readRefreshHint(element:HTMLElement, attribute:string):FixtureRefreshHint|undefined {
   try {
-    const value:unknown=JSON.parse(element.getAttribute(fixtureRefreshAttribute) ?? 'null');
+    const value:unknown=JSON.parse(element.getAttribute(attribute) ?? 'null');
     if(value && typeof value==='object' && 'key' in value && typeof value.key==='string' && 'nextCheckAt' in value && typeof value.nextCheckAt==='string' && Number.isFinite(Date.parse(value.nextCheckAt))) return {key:value.key,nextCheckAt:value.nextCheckAt};
   } catch { /* absent or obsolete markup */ }
   return undefined;
@@ -52,7 +61,9 @@ export class FixtureRefreshScheduler {
     const now=this.now();
     const due=new Set(this.hints().filter(h=>Date.parse(h.nextCheckAt)<=now && (this.retryAfter.get(h.key)??0)<=now).map(h=>h.key));
     if(!due.size) {this.schedule();return;}
-    for(const key of due) this.retryAfter.set(key,now+30_000);
+    // Provider failures do not become "missing market" entries. Bound local
+    // retries separately while pending cache-only follow-ups can finish sooner.
+    for(const key of due) this.retryAfter.set(key,now+(key.startsWith('market-refresh:') ? 5 * 60_000 : 30_000));
     const generation=this.generation;
     this.running=true;
     try {await this.refresh(due);} catch { /* preserve values; bounded retry */ }

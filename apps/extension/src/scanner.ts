@@ -376,15 +376,23 @@ function viewportPriorityForRect(rect: DOMRectReadOnly): number {
 export class StatsBatchCoordinator {
   private readonly fixtureScheduler = new FixtureRefreshScheduler(
     ()=>[...this.trackedViews].flatMap(([view])=>{
-      const hint=view.fixtureRefreshHint?.();
-      return view.host.isConnected && view.isViewportPriorityActive() && hint ? [hint] : [];
+      const hints=[view.fixtureRefreshHint?.(),view.marketRefreshHint?.()];
+      return view.host.isConnected && view.isViewportPriorityActive() ? hints.filter((h):h is NonNullable<PlayerStats['fixtureRefresh']>=>Boolean(h)) : [];
     }),
     async keys=>{
       for(const [view,target] of this.trackedViews) {
         const hint=view.fixtureRefreshHint?.();
-        if(!hint || !keys.has(hint.key) || !view.host.isConnected || !view.isViewportPriorityActive()) continue;
-        this.fixtureRefreshTargets.add(targetKey(target));
-        this.marketSnapshotRequestKeys.delete(targetKey(target));
+        const marketHint=view.marketRefreshHint?.();
+        const fixtureDue=Boolean(hint && keys.has(hint.key));
+        const marketDue=Boolean(marketHint && keys.has(marketHint.key));
+        if((!fixtureDue && !marketDue) || !view.host.isConnected || !view.isViewportPriorityActive()) continue;
+        const key=targetKey(target);
+        if(fixtureDue)this.fixtureRefreshTargets.add(key);
+        this.marketSnapshotRequestKeys.delete(key);
+        if(marketDue && this.inFlightTargets.has(key)) {
+          const followUp=this.afterFlightTargets.get(key) ?? {...target,views:new Set<OverlayView>(),priority:1};
+          followUp.views.add(view);this.afterFlightTargets.set(key,followUp);
+        }
         this.queueTarget(target,[view],1);
       }
       await this.flush();
@@ -1039,6 +1047,7 @@ export class StatsBatchCoordinator {
         else pending.delete('marketOdds');
         const merged: PlayerStats = {
           ...cached,
+          marketRefresh: snapshot.marketRefresh,
           nextGame: cached.nextGame
             ? {
                 ...cached.nextGame,
@@ -1512,7 +1521,7 @@ export class StatsBatchCoordinator {
     const cachedIsPartialForm =
       cached?.pendingRefreshes?.includes('formHistory') === true;
     if(cached && incoming.nextGame && (cached.nextGame ? olderFixture(fixtureStatusKey(incoming.nextGame),fixtureStatusKey(cached.nextGame)) : retiredFixture(fixtureStatusKey(incoming.nextGame),cached.fixtureRefresh?.key??null))) {
-      incoming={...incoming,nextGame:cached.nextGame,fixtureRefresh:cached.fixtureRefresh,
+      incoming={...incoming,nextGame:cached.nextGame,fixtureRefresh:cached.fixtureRefresh,marketRefresh:cached.marketRefresh,
         // AA now belongs to the fixture's team context, so reject the old
         // projection together with the retired fixture in either direction.
         aaL10:cached.aaL10,aaL10TeamWinRate:cached.aaL10TeamWinRate,

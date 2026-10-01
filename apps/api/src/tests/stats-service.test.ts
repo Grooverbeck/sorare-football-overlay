@@ -37,6 +37,21 @@ import {
 } from '../services/stats-service.js';
 
 describe('StatsService market snapshot reads', () => {
+  it('returns market wake-up metadata without marking a future check pending or starting providers on cache-only reads', async () => {
+    const hint={key:'market-refresh:odds-api-io:fixture',nextCheckAt:'2032-01-01T10:00:00.000Z'};
+    const provider:PlayerMarketOddsProvider={reportsRefreshDue:true,supports:()=>true,
+      load:vi.fn(async(players,options)=>{
+        expect(options?.cacheOnly).toBe(true);
+        if(options?.refreshDueState)options.refreshDueState.complete=true;
+        for(const player of players)options?.marketRefreshHints?.set(playerMarketOddsKey(player),hint);
+        return new Map(players.map(p=>[playerMarketOddsKey(p),null]));
+      })};
+    const service=new StatsService(new MockDataSource(),new HistoricalGoalscorerProvider(),new TtlCache<PlayerStats>(60_000),true,provider);
+    const result=await service.getPlayerStats(PlayerStatsRequestSchema.parse({slugs:['jude-bellingham'],oddsCacheOnly:true}));
+    expect(result.data[0]?.marketRefresh).toEqual(hint);
+    expect(result.data[0]?.pendingRefreshes??[]).not.toContain('marketOdds');
+    expect(provider.load).toHaveBeenCalledTimes(1);
+  });
   it('keeps a timed-out sort cache lookup pending instead of declaring the market absent', async () => {
     const provider: PlayerMarketOddsProvider = {
       supports: () => true,

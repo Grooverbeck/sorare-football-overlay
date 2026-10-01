@@ -10,7 +10,7 @@ import { readSortReadiness, setSortReadiness, readinessIsSettled, uniformReadine
 import { fetchLineupSortValues } from './api.js';
 import { findCardTargets, type CardTarget } from './dom.js';
 import { findCardMediaContainer, findSorareCardMedia } from './card-media.js';
-import { FixtureRefreshScheduler, fixtureIdentityAttribute, fixtureRefreshAttribute, readFixtureRefresh, olderFixture, fixtureChangedEvent, retiredFixture, retiredFixtureAttribute } from './fixture-refresh.js';
+import { FixtureRefreshScheduler, fixtureIdentityAttribute, fixtureRefreshAttribute, readFixtureRefresh, marketRefreshAttribute, readMarketRefresh, olderFixture, fixtureChangedEvent, retiredFixture, retiredFixtureAttribute } from './fixture-refresh.js';
 import {
   setLineupAaSortValue,
   setLineupCleanSheetSortValue,
@@ -64,6 +64,7 @@ interface SortValueSnapshot {
   retiredFixture?: string;
   fixtureIdentity?: string;
   fixtureRefresh?: {key:string;nextCheckAt:string};
+  marketRefresh?: {key:string;nextCheckAt:string};
   position: FootballPosition | null;
   goal: {
     probability: number;
@@ -139,6 +140,7 @@ function snapshotForTarget(target: CardTarget): SortValueSnapshot | null {
     ...(container.hasAttribute(retiredFixtureAttribute) ? {retiredFixture:container.getAttribute(retiredFixtureAttribute)!} : {}),
     ...(container.hasAttribute(fixtureIdentityAttribute) ? {fixtureIdentity:container.getAttribute(fixtureIdentityAttribute)!} : {}),
     ...(readFixtureRefresh(container) ? {fixtureRefresh:readFixtureRefresh(container)!} : {}),
+    ...(readMarketRefresh(container) ? {marketRefresh:readMarketRefresh(container)!} : {}),
     goal:
       goalProbability !== null && goalSource
         ? { probability: goalProbability, source: goalSource }
@@ -173,6 +175,8 @@ function sameSortValue(left: LineupSortValue, right: LineupSortValue): boolean {
     left.fixtureIdentity === right.fixtureIdentity &&
     left.fixtureRefresh?.key === right.fixtureRefresh?.key &&
     left.fixtureRefresh?.nextCheckAt === right.fixtureRefresh?.nextCheckAt &&
+    left.marketRefresh?.key === right.marketRefresh?.key &&
+    left.marketRefresh?.nextCheckAt === right.marketRefresh?.nextCheckAt &&
     left.readiness?.goal === right.readiness?.goal &&
     left.readiness?.aa === right.readiness?.aa &&
     left.readiness?.cleanSheet === right.readiness?.cleanSheet &&
@@ -1048,6 +1052,10 @@ export class LineupSortHydrator {
     const fullOverlayChangedDuringRequest =
       container.getAttribute(lineupSortFullDataRevisionAttribute) !==
       state.fullDataRevisionAtRequest;
+    if (!fullOverlayChangedDuringRequest || fixtureChanged) {
+      if(value?.marketRefresh)container.setAttribute(marketRefreshAttribute,JSON.stringify(value.marketRefresh));
+      else container.removeAttribute(marketRefreshAttribute);
+    }
     if (
       fullOverlayOwnsValues &&
       !fixtureChanged &&
@@ -1133,6 +1141,7 @@ export class LineupSortHydrator {
     if(snapshot.fixtureIdentity!==undefined)container.setAttribute(fixtureIdentityAttribute,snapshot.fixtureIdentity);
     if(snapshot.retiredFixture)container.setAttribute(retiredFixtureAttribute,snapshot.retiredFixture);
     if(snapshot.fixtureRefresh)container.setAttribute(fixtureRefreshAttribute,JSON.stringify(snapshot.fixtureRefresh));
+    if(snapshot.marketRefresh)container.setAttribute(marketRefreshAttribute,JSON.stringify(snapshot.marketRefresh));
     setLineupSortPosition(container, snapshot.position);
     if (market || container.getAttribute(lineupGoalSortSourceAttribute) !== 'market') setLineupGoalSortValue(
       container,
@@ -1152,6 +1161,7 @@ export class LineupSortHydrator {
     if (!preserveFixture) {
       clearGoalMarketState(container);
       container.removeAttribute(fixtureRefreshAttribute);
+      container.removeAttribute(marketRefreshAttribute);
       container.removeAttribute(fixtureIdentityAttribute);
       container.removeAttribute(retiredFixtureAttribute);
     }

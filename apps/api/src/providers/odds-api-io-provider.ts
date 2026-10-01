@@ -17,7 +17,8 @@ import {
   marketFixtureKey,
   markRefreshDueStateComplete,
   missingMarketSnapshot,
-  needsFrozenSnapshotSupplement,
+  nextMarketFailureRetryAt,
+  nextFrozenSnapshotSupplementAt,
   normalizePlayerName,
   playerMarketOddsKey,
   recordFrozenSnapshotCheck,
@@ -176,27 +177,14 @@ const ODDS_API_IO_FINAL_PRICE_REFRESH_MS = 90 * 60 * 1_000;
 const ODDS_API_IO_MATCH_SNAPSHOT_AFTER_KICKOFF_MS = 36 * HOUR_MS;
 const DEFAULT_MATCH_ODDS_MISS_TTL_MS = 6 * HOUR_MS;
 
-function successfulPriceRefreshDue(
+function nextSuccessfulPriceRefreshAt(
   snapshot: FrozenMarketSnapshot,
   kickoff: number,
-  now: number,
-): boolean {
-  const capturedAt = Date.parse(snapshot.capturedAt);
-  const untilKickoff = kickoff - now;
-  if (
-    !Number.isFinite(capturedAt) ||
-    !Number.isFinite(kickoff) ||
-    untilKickoff < 0
-  ) {
-    return false;
-  }
-  return [
-    ODDS_API_IO_GAME_DAY_PRICE_REFRESH_MS,
-    ODDS_API_IO_FINAL_PRICE_REFRESH_MS,
-  ].some(
-    (windowMs) =>
-      untilKickoff <= windowMs && capturedAt < kickoff - windowMs,
-  );
+): number | null {
+  const checkedAt = Date.parse(snapshot.supplementedAt ?? snapshot.capturedAt);
+  const at = [ODDS_API_IO_GAME_DAY_PRICE_REFRESH_MS, ODDS_API_IO_FINAL_PRICE_REFRESH_MS]
+    .map(lead => kickoff - lead).find(at => checkedAt < at);
+  return at ?? null;
 }
 
 function refreshFrozenSnapshotPrices(
@@ -210,6 +198,7 @@ function refreshFrozenSnapshotPrices(
     incoming,
     fixturePlayers,
     fixtureDate,
+    'odds-api-io',
   );
   if (!existing) return supplemented;
   return FrozenMarketSnapshotSchema.parse({
@@ -878,9 +867,28 @@ export class OddsApiIoPlayerMarketOddsProvider
       const route = this.routeForFixtureGroup(fixture);
       const fetchWindowMs =
         route?.playerFetchWindowMs ?? this.options.fetchWindowMs;
+      const nextMissingCheck = !goalSnapshot ? this.now() : goalSnapshot.status === 'unavailable'
+        ? goalSnapshot.fixtureIdentityVersion !== FIXTURE_IDENTITY_VERSION
+          ? this.now() : nextMarketFailureRetryAt(goalSnapshot, kickoff, 'odds-api-io')
+        : protection.allowSnapshotSupplements
+          ? nextFrozenSnapshotSupplementAt(goalSnapshot, fixture.players, fixture.date, this.now(), 'odds-api-io')
+          : null;
+      const nextPriceCheck = goalSnapshot?.status === 'available' && protection.allowSnapshotSupplements
+        ? nextSuccessfulPriceRefreshAt(goalSnapshot, kickoff) : null;
+      const checks = [nextMissingCheck, nextPriceCheck].filter((at): at is number => at !== null && Number.isFinite(at));
+      if (loadOptions?.marketRefreshHints && Number.isFinite(kickoff) && kickoff > this.now() && checks.length) {
+        const at = Math.max(Math.min(...checks), kickoff - fetchWindowMs,
+          protection.allowExternalRequests ? 0 : this.now() + HOUR_MS);
+        if (at < kickoff) {
+          for (const player of fixture.players) loadOptions.marketRefreshHints.set(playerMarketOddsKey(player), {
+            key: `market-refresh:odds-api-io:${fixture.key}`,
+            nextCheckAt: new Date(at).toISOString(),
+          });
+        }
+      }
       if (
         !Number.isFinite(kickoff) ||
-        kickoff < this.now() ||
+        kickoff <= this.now() ||
         kickoff - this.now() > fetchWindowMs
       ) {
         continue;
@@ -888,19 +896,8 @@ export class OddsApiIoPlayerMarketOddsProvider
       const needsApi =
         !goalSnapshot ||
         (goalSnapshot.status === 'unavailable'
-          ? shouldRetryMarketFailure(goalSnapshot, kickoff, this.now())
-          : protection.allowSnapshotSupplements &&
-            (needsFrozenSnapshotSupplement(
-              goalSnapshot,
-              fixture.players,
-              fixture.date,
-              this.now(),
-            ) ||
-              successfulPriceRefreshDue(
-                goalSnapshot,
-                kickoff,
-                this.now(),
-              )));
+          ? shouldRetryMarketFailure(goalSnapshot, kickoff, this.now(), 'odds-api-io')
+          : checks.some(at => at <= this.now()));
       if (
         cacheOnly &&
         loadOptions?.refreshDuePlayerKeys &&
@@ -1218,6 +1215,7 @@ export class OddsApiIoPlayerMarketOddsProvider
         incoming,
         fixture.players,
         fixture.date,
+        'odds-api-io',
       );
       snapshots.set(fixture.key, replayed);
       if (loadOptions?.cacheOnly !== true) {
@@ -1467,8 +1465,9 @@ export class OddsApiIoPlayerMarketOddsProvider
     >();
     for (const fixture of fixtures) {
       const snapshot = goalSnapshots.get(fixture.key);
-      if (snapshot?.status !== 'available') continue;
-      // A successful snapshot already contains a verified provider event ID.
+      if (!snapshot?.eventId || (snapshot.status === 'unavailable' && snapshot.fixtureIdentityVersion !== FIXTURE_IDENTITY_VERSION)) continue;
+      // Both successful and genuinely missing-market snapshots contain a
+      // verified event ID. Resolver-version changes still force rediscovery.
       // Reusing it keeps price-only refreshes to one odds request and avoids a
       // second event-discovery request for the same fixture.
       matched.set(fixture.key, {
@@ -1684,6 +1683,7 @@ export class OddsApiIoPlayerMarketOddsProvider
                 fixture.players,
                 fixture.date,
                 this.now(),
+                'odds-api-io',
               ),
               parserVersion: ODDS_API_IO_PLAYER_MARKET_PARSER_VERSION,
             }
@@ -1694,6 +1694,7 @@ export class OddsApiIoPlayerMarketOddsProvider
                 existing,
                 this.now(),
                 match.event.id,
+                'odds-api-io',
               ),
               parserVersion: ODDS_API_IO_PLAYER_MARKET_PARSER_VERSION,
             };

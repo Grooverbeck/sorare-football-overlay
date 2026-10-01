@@ -480,6 +480,8 @@ export interface PlayerMarketOddsLoadOptions {
   // fresh negative market snapshot from causing blind extension polling.
   refreshDuePlayerKeys?: Set<string>;
   refreshDueState?: { complete: boolean };
+  // Response-only wake-up hints; never persisted in player/form caches.
+  marketRefreshHints?: Map<string, NonNullable<PlayerStats['marketRefresh']>>;
 }
 
 export function markRefreshDueStateComplete(
@@ -2076,6 +2078,7 @@ export function needsFrozenSnapshotSupplement(
   fixturePlayers: readonly MarketSupplementPlayer[],
   fixtureDate: string,
   now: number,
+  retryPolicy: MarketRetryPolicy = 'conservative',
 ): boolean {
   if (snapshot?.status !== 'available') return false;
   if (
@@ -2092,7 +2095,9 @@ export function needsFrozenSnapshotSupplement(
   );
   const finalRetryAt = kickoff - finalMarketRetryLeadMs;
   const unseenPlayerRetryAt =
-    lastFixtureCheck < finalRetryAt
+    retryPolicy === 'odds-api-io'
+      ? oddsApiIoMissingMarketRetryAt(lastFixtureCheck, kickoff)
+      : lastFixtureCheck < finalRetryAt
       ? Math.min(lastFixtureCheck + firstMarketRetryDelayMs, finalRetryAt)
       : null;
   const resolver = createPlayerProbabilityResolver(fixturePlayers);
@@ -2105,7 +2110,7 @@ export function needsFrozenSnapshotSupplement(
         snapshot.missingPlayerChecks?.[playerMarketOddsKey(player)];
       return (
         check
-          ? shouldRetryMarketFailure(check, kickoff, now)
+          ? shouldRetryMarketFailure(check, kickoff, now, retryPolicy)
           : unseenPlayerRetryAt !== null &&
             now >= unseenPlayerRetryAt &&
             now < kickoff
@@ -2119,6 +2124,7 @@ export function supplementFrozenSnapshot(
   incoming: FrozenMarketSnapshot,
   fixturePlayers: readonly MarketSupplementPlayer[],
   fixtureDate: string,
+  retryPolicy: MarketRetryPolicy = 'conservative',
 ): FrozenMarketSnapshot {
   const players = { ...(existing?.players ?? {}) };
   for (const [playerName, probability] of Object.entries(incoming.players)) {
@@ -2152,6 +2158,7 @@ export function supplementFrozenSnapshot(
         missingPlayerChecks[key],
         Date.parse(incoming.capturedAt),
         Date.parse(fixtureDate),
+        retryPolicy,
       );
     } else {
       delete missingPlayerChecks[key];
@@ -2171,6 +2178,7 @@ export function recordFrozenSnapshotCheck(
   fixturePlayers: readonly MarketSupplementPlayer[],
   fixtureDate: string,
   checkedAt: number,
+  retryPolicy: MarketRetryPolicy = 'conservative',
 ): FrozenMarketSnapshot {
   const missingPlayerChecks = {
     ...(existing.missingPlayerChecks ?? {}),
@@ -2183,6 +2191,7 @@ export function recordFrozenSnapshotCheck(
         missingPlayerChecks[key],
         checkedAt,
         Date.parse(fixtureDate),
+        retryPolicy,
       );
     } else {
       delete missingPlayerChecks[key];
@@ -2206,6 +2215,98 @@ const missingMarketRetentionMs = 24 * 60 * 60 * 1_000;
 
 type MarketRetryState = z.infer<typeof MarketRetryStateSchema>;
 type MissingPlayerCheck = z.infer<typeof MissingPlayerCheckSchema>;
+export type MarketRetryPolicy = 'conservative' | 'odds-api-io';
+
+// Derive from checkedAt so legacy misses become eligible without a migration.
+export function oddsApiIoMissingMarketRetryAt(
+  checkedAt: number,
+  kickoff: number,
+): number | null {
+  if (!Number.isFinite(checkedAt) || !Number.isFinite(kickoff) || checkedAt >= kickoff) {
+    return null;
+  }
+  const hour = 60 * 60 * 1_000;
+  const lead = kickoff - checkedAt;
+  const delay = lead > 24 * hour ? 6 * hour : lead > 6 * hour ? 2 * hour : hour;
+  const boundary = lead > 24 * hour
+    ? kickoff - 24 * hour
+    : lead > 6 * hour ? kickoff - 6 * hour : kickoff;
+  const at = Math.min(checkedAt + delay, boundary);
+  return at < kickoff ? at : null;
+}
+
+export function nextMarketFailureRetryAt(
+  failure: MissingPlayerCheck | MarketSnapshot,
+  kickoff: number,
+  retryPolicy: MarketRetryPolicy = 'conservative',
+): number | null {
+  if (typeof failure !== 'string' && 'status' in failure && failure.status === 'available') return null;
+  const checkedAt = Date.parse(typeof failure === 'string' ? failure : failure.checkedAt);
+  if (retryPolicy === 'odds-api-io') return oddsApiIoMissingMarketRetryAt(checkedAt, kickoff);
+  if (typeof failure === 'string' || failure.nextRetryAt === undefined) return checkedAt + firstMarketRetryDelayMs;
+  return failure.nextRetryAt === null ? null : Date.parse(failure.nextRetryAt);
+}
+
+export function nextFrozenSnapshotSupplementAt(
+  snapshot: FrozenMarketSnapshot,
+  players: readonly MarketSupplementPlayer[],
+  fixtureDate: string,
+  now: number,
+  retryPolicy: MarketRetryPolicy = 'conservative',
+): number | null {
+  if (!snapshot.supplementedAt && Object.values(snapshot.players).some(p => !p.bookmakerQuotes?.length)) {
+    return now;
+  }
+  const kickoff = Date.parse(fixtureDate);
+  const checked = Date.parse(snapshot.supplementedAt ?? snapshot.capturedAt);
+  const unseen = retryPolicy === 'odds-api-io'
+    ? oddsApiIoMissingMarketRetryAt(checked, kickoff)
+    : checked < kickoff - finalMarketRetryLeadMs
+      ? Math.min(checked + firstMarketRetryDelayMs, kickoff - finalMarketRetryLeadMs)
+      : null;
+  const resolver = createPlayerProbabilityResolver(players);
+  const times = players.flatMap(player => {
+    if (resolver.probability(snapshot, player) !== null) return [];
+    const failure = snapshot.missingPlayerChecks?.[playerMarketOddsKey(player)];
+    const at = failure ? nextMarketFailureRetryAt(failure, kickoff, retryPolicy) : unseen;
+    return at !== null && Number.isFinite(at) && at < kickoff ? [at] : [];
+  });
+  return times.length ? Math.min(...times) : null;
+}
+
+export function recordFixtureMarketRefreshHint(
+  options: PlayerMarketOddsLoadOptions | undefined,
+  fixture: FixtureGroup,
+  snapshots: ReadonlyMap<OddsMarketKey, MarketSnapshot>,
+  markets: readonly OddsMarketKey[],
+  provider: string,
+  now: number,
+  fetchWindowMs: number,
+  allowSupplements = true,
+): void {
+  if (!options?.marketRefreshHints) return;
+  const kickoff = Date.parse(fixture.date);
+  if (!Number.isFinite(kickoff) || now >= kickoff) return;
+  const checks = markets.flatMap(market => {
+    const snapshot = snapshots.get(market);
+    const at = !snapshot ? now : snapshot.status === 'unavailable'
+      ? snapshot.fixtureIdentityVersion !== FIXTURE_IDENTITY_VERSION
+        ? now : nextMarketFailureRetryAt(snapshot, kickoff)
+      : allowSupplements
+        ? nextFrozenSnapshotSupplementAt(snapshot, fixture.players, fixture.date, now)
+        : null;
+    return at !== null && Number.isFinite(at) ? [at] : [];
+  });
+  if (!checks.length) return;
+  const at = Math.max(Math.min(...checks), kickoff - fetchWindowMs);
+  if (at >= kickoff) return;
+  for (const player of fixture.players) {
+    options.marketRefreshHints.set(playerMarketOddsKey(player), {
+      key: `market-refresh:${provider}:${fixture.key}`,
+      nextCheckAt: new Date(at).toISOString(),
+    });
+  }
+}
 
 function retryAttemptCount(
   previous: MissingPlayerCheck | MarketSnapshot | undefined,
@@ -2223,6 +2324,7 @@ function nextMarketRetryState(
   previous: MissingPlayerCheck | MarketSnapshot | undefined,
   checkedAt: number,
   kickoff: number,
+  retryPolicy: MarketRetryPolicy = 'conservative',
 ): MarketRetryState {
   const attemptCount = retryAttemptCount(previous) + 1;
   const finalRetryAt = kickoff - finalMarketRetryLeadMs;
@@ -2238,6 +2340,7 @@ function nextMarketRetryState(
     nextRetryAt = Math.min(retryAt, finalRetryAt);
     if (nextRetryAt <= checkedAt) nextRetryAt = null;
   }
+  if (retryPolicy === 'odds-api-io') nextRetryAt = oddsApiIoMissingMarketRetryAt(checkedAt, kickoff);
   return MarketRetryStateSchema.parse({
     checkedAt: new Date(checkedAt).toISOString(),
     attemptCount,
@@ -2250,8 +2353,14 @@ export function shouldRetryMarketFailure(
   failure: MissingPlayerCheck | MarketSnapshot,
   kickoff: number,
   now: number,
+  retryPolicy: MarketRetryPolicy = 'conservative',
 ): boolean {
   if (now >= kickoff) return false;
+  if (retryPolicy === 'odds-api-io') {
+    if (typeof failure !== 'string' && 'status' in failure && failure.status === 'unavailable' && failure.fixtureIdentityVersion !== FIXTURE_IDENTITY_VERSION) return true;
+    const at = nextMarketFailureRetryAt(failure, kickoff, retryPolicy);
+    return at !== null && at <= now;
+  }
   if (typeof failure === 'string') {
     return Date.parse(failure) + firstMarketRetryDelayMs <= now;
   }
@@ -2276,9 +2385,10 @@ export function missingMarketSnapshot(
   previous: MarketSnapshot | undefined,
   checkedAt: number,
   eventId?: string,
+  retryPolicy: MarketRetryPolicy = 'conservative',
 ): MarketSnapshot {
   const kickoff = Date.parse(fixture.date);
-  const retry = nextMarketRetryState(previous, checkedAt, kickoff);
+  const retry = nextMarketRetryState(previous, checkedAt, kickoff, retryPolicy);
   return MissingMarketSnapshotSchema.parse({
     status: 'unavailable',
     market,
@@ -2632,6 +2742,13 @@ export class TheOddsApiPlayerMarketOddsProvider
       const insideFetchWindow =
         millisecondsUntilKickoff <= this.options.fetchWindowMs &&
         millisecondsUntilKickoff >= 0;
+      if (protection.allowExternalRequests) {
+        recordFixtureMarketRefreshHint(
+          loadOptions, fixture, byMarket, this.supportedMarketKeys(),
+          'the-odds-api', this.now(), this.options.fetchWindowMs,
+          protection.allowSnapshotSupplements,
+        );
+      }
       if (!insideFetchWindow) continue;
       const missingMarkets = this.marketsNeedingApi(
         fixture,

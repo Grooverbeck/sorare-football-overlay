@@ -23,6 +23,7 @@ import {
   playerMarketFieldSupported,
   playerMarketOddsKey,
   recordFrozenSnapshotCheck,
+  recordFixtureMarketRefreshHint,
   readMarketSnapshotsWithin,
   rememberFixtureIdentityCooldown,
   resolveProviderFixture,
@@ -772,12 +773,16 @@ export class SportsGameOddsPlayerMarketOddsProvider
         cachedFixtureSnapshots.set(fixtureKey, snapshots);
       }
     }
+    const requestBlocked = loadOptions?.marketRefreshHints ? await this.requestIsBlocked() : false;
     for (const fixture of fixtures) {
       const byMarket = cacheOnly
         ? (cachedFixtureSnapshots.get(fixture.key) ??
           new Map<OddsMarketKey, MarketSnapshot>())
         : await this.loadFixtureSnapshots(fixture.key, false);
       snapshots.set(fixture.key, byMarket);
+      if (loadOptions?.marketRefreshHints && !requestBlocked) recordFixtureMarketRefreshHint(
+        loadOptions, fixture, byMarket, this.requestDrivingMarketKeys(), 'sports-game-odds', this.now(), this.options.fetchWindowMs,
+      );
       if (
         !cacheOnly &&
         this.insideWindow(fixture.date, this.options.fetchWindowMs)
@@ -793,7 +798,7 @@ export class SportsGameOddsPlayerMarketOddsProvider
         const markets = this.playerMarketsNeedingRefresh(fixture, byMarket);
         if (
           markets.length > 0 &&
-          !(await this.requestIsBlocked()) &&
+          !(loadOptions?.marketRefreshHints ? requestBlocked : await this.requestIsBlocked()) &&
           !(await fixtureIdentityCooldownActive(
             this.options.store,
             'sports-game-odds',
@@ -1630,6 +1635,8 @@ export class SupplementingPlayerMarketOddsProvider
     let fallbackValues: Map<string, PlayerMarketOdds | null>;
     const primaryRefreshDue = new Set<string>();
     const fallbackRefreshDue = new Set<string>();
+    const primaryHints = new Map<string, NonNullable<PlayerStats['marketRefresh']>>();
+    const fallbackHints = new Map<string, NonNullable<PlayerStats['marketRefresh']>>();
     const primaryRefreshState = { complete: primaryPlayers.length === 0 };
     const fallbackRefreshState = { complete: false };
     if (loadOptions?.cacheOnly) {
@@ -1651,6 +1658,7 @@ export class SupplementingPlayerMarketOddsProvider
       };
       const primaryOptions: PlayerMarketOddsLoadOptions = {
         ...childOptions,
+        ...(loadOptions.marketRefreshHints ? {marketRefreshHints: primaryHints} : {}),
         ...(loadOptions.refreshDuePlayerKeys
           ? { refreshDuePlayerKeys: primaryRefreshDue }
           : {}),
@@ -1660,6 +1668,7 @@ export class SupplementingPlayerMarketOddsProvider
       };
       const fallbackOptions: PlayerMarketOddsLoadOptions = {
         ...childOptions,
+        ...(loadOptions.marketRefreshHints ? {marketRefreshHints: fallbackHints} : {}),
         ...(loadOptions.refreshDuePlayerKeys
           ? { refreshDuePlayerKeys: fallbackRefreshDue }
           : {}),
@@ -1799,9 +1808,28 @@ export class SupplementingPlayerMarketOddsProvider
             playerMarketFieldDrivesRequest(this.fallback, player, market) &&
             !combinedOdds?.[market],
         );
-        if (fallbackContributes || fallbackRequestNeeded) {
+        const fallbackHasDrivingQuote = this.requestMarkets.some(market =>
+          playerMarketFieldDrivesRequest(this.fallback, player, market) && Boolean(fallback?.[market]));
+        if ((fallbackContributes && fallbackHasDrivingQuote) || fallbackRequestNeeded) {
           loadOptions.refreshDuePlayerKeys.add(key);
         }
+      }
+    }
+    if (loadOptions?.marketRefreshHints && loadOptions.cacheOnly) {
+      for (const player of eligiblePlayers) {
+        const key = playerMarketOddsKey(player);
+        const primary = primaryValues.get(key) ?? null;
+        const fallback = fallbackValues.get(key) ?? null;
+        const fallbackRequestNeeded = this.requestMarkets.some(market =>
+          playerMarketFieldDrivesRequest(this.fallback, player, market) && !combined.get(key)?.[market]);
+        const fallbackContributes = this.supplementMarkets.some(market => !primary?.[market] && Boolean(fallback?.[market]));
+        const fallbackHasDrivingQuote = this.requestMarkets.some(market =>
+          playerMarketFieldDrivesRequest(this.fallback, player, market) && Boolean(fallback?.[market]));
+        const fallbackRelevant = fallbackRequestNeeded || (fallbackContributes && fallbackHasDrivingQuote);
+        const hints = [primaryHints.get(key), fallbackRelevant ? fallbackHints.get(key) : undefined]
+          .filter((hint): hint is NonNullable<PlayerStats['marketRefresh']> => hint !== undefined)
+          .sort((a, b) => Date.parse(a.nextCheckAt) - Date.parse(b.nextCheckAt));
+        if (hints[0]) loadOptions.marketRefreshHints.set(key, hints[0]);
       }
     }
     if (loadOptions?.refreshDueState) {

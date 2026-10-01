@@ -197,6 +197,7 @@ export const PlayerMarketOddsSchema = z.object({
 
 export const PlayerStatsSchema = z.object({
   fixtureRefresh: z.object({key:z.string(), nextCheckAt:z.string().datetime()}).optional(),
+  marketRefresh: z.object({key:z.string(), nextCheckAt:z.string().datetime()}).optional(),
   slug: z.string(),
   displayName: z.string(),
   position: FootballPositionSchema,
@@ -371,6 +372,7 @@ export const PlayerMarketSnapshotSchema = z.object({
     .nullable(),
   marketOdds: PlayerMarketOddsSchema.nullable(),
   refreshState: PlayerMarketRefreshStateSchema,
+  marketRefresh: z.object({key:z.string(), nextCheckAt:z.string().datetime()}).optional(),
 });
 
 export const PlayerMarketSnapshotsSuccessResponseSchema = z.object({
@@ -418,6 +420,7 @@ export const LineupSortValueSchema = z.object({
   // Additive: old clients ignore this; new clients still accept old workers.
   readiness: LineupSortReadinessSchema.optional(),
   fixtureRefresh: z.object({key:z.string(), nextCheckAt:z.string().datetime()}).optional(),
+  marketRefresh: z.object({key:z.string(), nextCheckAt:z.string().datetime()}).optional(),
   fixtureIdentity: z.string().nullable().optional(),
   slug: z.string(),
   displayName: z.string(),

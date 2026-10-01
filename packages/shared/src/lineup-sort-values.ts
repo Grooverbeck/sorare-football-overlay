@@ -62,6 +62,7 @@ export function lineupSortValueForPlayer(
     goal: lineupGoalSortValue(stats, historicalGoalWindow),
     aa: stats.aaL10.value,
     ...(stats.fixtureRefresh ? {fixtureRefresh:stats.fixtureRefresh} : {}),
+    ...(stats.marketRefresh ? {marketRefresh:stats.marketRefresh} : {}),
     fixtureIdentity: stats.nextGame ? fixtureStatusKey(stats.nextGame) : null,
     cleanSheet:
       stats.position === 'Goalkeeper' || stats.position === 'Defender'

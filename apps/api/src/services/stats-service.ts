@@ -503,12 +503,14 @@ export class StatsService {
     );
     const refreshDuePlayerKeys = new Set<string>();
     const refreshDueState = { complete: false };
+    const marketRefreshHints = new Map<string, NonNullable<PlayerStats['marketRefresh']>>();
     const marketOdds = await this.loadCacheOnlyWithinBudget(
       this.marketOddsProvider.load(eligiblePlayers, {
         cacheOnly: true,
         cacheOnlyDeadlineMs: Date.now() + this.cacheOnlyOddsBudgetMs,
         refreshDuePlayerKeys,
         refreshDueState,
+        marketRefreshHints,
       }),
     );
 
@@ -559,6 +561,7 @@ export class StatsService {
         fixture,
         marketOdds: odds,
         refreshState,
+        marketRefresh: marketRefreshHints.get(key),
       };
     });
 
@@ -1010,6 +1013,7 @@ export class StatsService {
     );
     const marketRefreshDuePlayerKeys = new Set<string>();
     const marketRefreshDueState = { complete: false };
+    const marketRefreshHints = new Map<string, NonNullable<PlayerStats['marketRefresh']>>();
     const marketCacheOnlyBudgetMs = this.cacheOnlyOddsReadBudgetMs(
       request.oddsCacheOnly,
       oddsEligiblePlayers.length,
@@ -1031,6 +1035,7 @@ export class StatsService {
           cacheOnlyDeadlineMs: cacheOnlyOddsDeadlineMs,
           refreshDuePlayerKeys: marketRefreshDuePlayerKeys,
           refreshDueState: marketRefreshDueState,
+          marketRefreshHints,
         }),
         marketCacheOnlyBudgetMs,
         marketCacheReadState,
@@ -1191,6 +1196,7 @@ export class StatsService {
       return {
         ...stats,
         nextGame,
+        marketRefresh: marketRefreshHints.get(key),
         ...(pending.size > 0
           ? { pendingRefreshes: [...pending] }
           : { pendingRefreshes: undefined }),

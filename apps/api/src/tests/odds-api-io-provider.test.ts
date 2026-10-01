@@ -184,6 +184,100 @@ function createProvider(
 }
 
 describe('OddsApiIoPlayerMarketOddsProvider', () => {
+  it('rechecks a legacy miss after six hours with the verified event ID and loads teammates and assists together', async () => {
+    let clock = now;
+    const store = new InMemoryMarketSnapshotStore(60_000, () => clock);
+    const usage = new InMemoryProviderQuotaUsageStore(() => clock);
+    const fixture = {id: 'verified-event', date: kickoff, home: 'WSG Tirol', away: 'Sturm Graz'};
+    let available = false;
+    const fetchImpl = vi.fn<typeof fetch>(async input => {
+      if (new URL(String(input)).pathname.endsWith('/events')) return json([fixture]);
+      return json([{...fixture, bookmakers: {Bet365: available ? [
+        {name: 'Anytime Goalscorer', odds: [{label: 'Otar Kiteishvili', over: '3.0'}, {label: 'Test Teammate', over: '4.0'}]},
+        {name: 'Player To Score or Assist', odds: [{label: 'Otar Kiteishvili (Assist) (2)', over: '4.5'}]},
+      ] : []}}]);
+    });
+    const {provider} = createProvider(fetchImpl, usage, undefined, 0, store, undefined, logger, () => clock);
+    const players = [player(), player({slug: 'test-teammate', displayName: 'Test Teammate'})];
+    await provider.load(players);
+    const key = oddsApiIoFixtureStoreKey(player().nextGame!)!;
+    const miss = await store.get(key, 'player_goal_scorer_anytime');
+    expect(miss).toMatchObject({status: 'unavailable', nextRetryAt: new Date(now + 6 * 3_600_000).toISOString()});
+    if (!miss || miss.status !== 'unavailable') throw new Error('Expected real missing-market snapshot');
+    store.set(key, {...miss, nextRetryAt: new Date(Date.parse(kickoff) - 24 * 3_600_000).toISOString()});
+    const hints = new Map<string, NonNullable<PlayerStats['marketRefresh']>>();
+    await provider.load(players, {cacheOnly: true, marketRefreshHints: hints});
+    expect(hints.get(playerMarketOddsKey(player()))?.nextCheckAt).toBe(new Date(now + 6 * 3_600_000).toISOString());
+    clock += 6 * 3_600_000 - 1;
+    await provider.load(players);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    clock += 1; available = true;
+    const result = await provider.load(players);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(new URL(String(fetchImpl.mock.calls[2]![0])).pathname).toBe('/v3/odds/multi');
+    expect(result.get(playerMarketOddsKey(players[0]!))).toMatchObject({goal: {probability: 1 / 3}, assist: {probability: 1 / 4.5}});
+    expect(result.get(playerMarketOddsKey(players[1]!))?.goal?.probability).toBe(1 / 4);
+    await provider.load(players);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not emit a fallback wake-up just because the primary already has goals and Odds.io lacks assists', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const {provider} = createProvider(fetchImpl);
+    const primary: PlayerMarketOddsProvider = {reportsRefreshDue: true, supports: () => true,
+      supportsMarket: (_p, market) => market === 'goal',
+      load: async (players, options) => {
+        if (options?.refreshDueState) options.refreshDueState.complete = true;
+        return new Map(players.map(p => [playerMarketOddsKey(p), {source: 'the-odds-api', capturedAt: new Date(now).toISOString(), goal: {probability: 0.4, bookmakerCount: 1}, assist: null}]));
+      }};
+    const combined = new SupplementingPlayerMarketOddsProvider(primary, provider, ['goal', 'assist'], 100, ['goal']);
+    const hints = new Map<string, NonNullable<PlayerStats['marketRefresh']>>();
+    await combined.load([player()], {cacheOnly: true, marketRefreshHints: hints});
+    expect(hints.size).toBe(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('keeps a cached Odds.io assist without searching for an unnecessary secondary goal behind a primary goal', async () => {
+    const store = new InMemoryMarketSnapshotStore(60_000, () => now);
+    const key = oddsApiIoFixtureStoreKey(player().nextGame!)!;
+    store.set(key, {status: 'unavailable', market: 'player_goal_scorer_anytime', fixtureIdentityVersion: 2,
+      checkedAt: new Date(now - 6 * 3_600_000).toISOString(), nextRetryAt: new Date(now).toISOString(), eventId: 'verified'});
+    store.set(key, {status: 'available', market: 'player_assists', eventId: 'verified', capturedAt: new Date(now).toISOString(),
+      players: {'otar kiteishvili': {probability: 0.25, bookmakerCount: 1, bookmakerQuotes: [{key: 'bet365', title: 'Bet365', decimalOdds: 4, probability: 0.25}]}}});
+    const fetchImpl = vi.fn<typeof fetch>();
+    const {provider} = createProvider(fetchImpl, undefined, undefined, 0, store);
+    const primary: PlayerMarketOddsProvider = {reportsRefreshDue: true, supports: () => true,
+      supportsMarket: (_p, market) => market === 'goal', load: async (players, options) => {
+        if (options?.refreshDueState) options.refreshDueState.complete = true;
+        return new Map(players.map(p => [playerMarketOddsKey(p), {source: 'the-odds-api', capturedAt: new Date(now).toISOString(), goal: {probability: 0.4, bookmakerCount: 1}, assist: null}]));
+      }};
+    const combined = new SupplementingPlayerMarketOddsProvider(primary, provider, ['goal', 'assist'], 100, ['goal']);
+    const hints = new Map<string, NonNullable<PlayerStats['marketRefresh']>>();
+    const due = new Set<string>();
+    const result = await combined.load([player()], {cacheOnly: true, marketRefreshHints: hints, refreshDuePlayerKeys: due});
+    expect(result.get(playerMarketOddsKey(player()))).toMatchObject({goal: {probability: 0.4}, assist: {probability: 0.25}});
+    expect(hints.size).toBe(0); expect(due.size).toBe(0); expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('batches eleven verified missing-market fixtures into two odds requests without event searches', async () => {
+    const store = new InMemoryMarketSnapshotStore(60_000, () => now);
+    const players = Array.from({length: 11}, (_, i) => player({slug: `test-player-${i}`, nextGame: {...player().nextGame!, homeTeamName: `Test Club ${i}`, opponentTeamName: `Test Club ${i}`}}));
+    for (const [i, stats] of players.entries()) store.set(oddsApiIoFixtureStoreKey(stats.nextGame!)!, {
+      status: 'unavailable', market: 'player_goal_scorer_anytime', fixtureIdentityVersion: 2, eventId: String(i),
+      checkedAt: new Date(now - 6 * 3_600_000).toISOString(), nextRetryAt: new Date(now).toISOString(),
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async input => {
+      const url = new URL(String(input)); expect(url.pathname).toBe('/v3/odds/multi');
+      const ids = url.searchParams.get('eventIds')!.split(','); expect(ids.length).toBeLessThanOrEqual(10);
+      return json(ids.map(id => ({id, date: kickoff, home: `Test Club ${id}`, away: 'Sturm Graz', bookmakers: {Bet365: [
+        {name: 'Anytime Goalscorer', odds: [{label: 'Otar Kiteishvili', over: '3.0'}]},
+      ]}})));
+    });
+    const {provider} = createProvider(fetchImpl, undefined, undefined, 0, store);
+    await provider.load(players);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps a successful reserved response when telemetry reconciliation fails', async () => {
     const usage = Object.assign(new InMemoryProviderQuotaUsageStore(() => now), {
       reserveOddsApiIo: vi.fn().mockResolvedValue(true),

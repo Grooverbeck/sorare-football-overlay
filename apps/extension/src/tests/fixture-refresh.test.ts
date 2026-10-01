@@ -28,3 +28,14 @@ it('recognizes a late old fixture without confusing equal identities',()=>{
   expect(olderFixture('fixture-status:v1:100:a:b','fixture-status:v1:200:a:c')).toBe(true);
   expect(olderFixture('fixture-status:v1:200:a:c','fixture-status:v1:200:a:c')).toBe(false);
 });
+
+it('shares one wake-up for duplicate market hints and bounds retries separately from genuine missing-market checks',async()=>{
+  vi.useFakeTimers();
+  const hint={key:'market-refresh:odds-api-io:fixture',nextCheckAt:new Date(Date.now()-1).toISOString()};
+  const refresh=vi.fn(async()=>{throw new Error('offline');});
+  const scheduler=new FixtureRefreshScheduler(()=>[hint,hint],refresh);
+  scheduler.schedule();await vi.advanceTimersByTimeAsync(250);
+  expect(refresh).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(5*60_000-1);expect(refresh).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);expect(refresh).toHaveBeenCalledTimes(2);scheduler.stop();
+});
