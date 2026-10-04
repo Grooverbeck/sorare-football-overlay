@@ -1,6 +1,6 @@
 import {env} from 'cloudflare:test';
 import {beforeAll,beforeEach,expect,it} from 'vitest';
-import {D1CardCatalogStore,cardCatalogPictureKey} from '../cloudflare/card-catalog-store.js';
+import {D1CardCatalogStore,cardCatalogPictureKey,cardCatalogStateKey} from '../cloudflare/card-catalog-store.js';
 import {emptyCardCatalogState} from '../services/card-catalog.js';
 
 beforeAll(async()=>{await env.CACHE_DB.exec('CREATE TABLE IF NOT EXISTS cache_entries(cache_key TEXT PRIMARY KEY,value TEXT NOT NULL,expires_at INTEGER,updated_at INTEGER NOT NULL)');});
@@ -27,4 +27,14 @@ it('fences expired owners and blocks conflicting picture identities',async()=>{
 it('ignores corrupt or key-mismatched stored mappings',async()=>{
   await env.CACHE_DB.prepare('INSERT INTO cache_entries VALUES(?,?,NULL,?)').bind(cardCatalogPictureKey(id),JSON.stringify({pictureId:'f0c4cd43-4ff1-4205-9ed2-01f97961c95d',playerSlug:'someone'}),1).run();
   expect(await new D1CardCatalogStore(env.CACHE_DB).read([id])).toEqual([]);
+});
+it('reads existing season-scoped D1 checkpoints without a migration or picture purge',async()=>{
+  const scope={slug:'future-set',customCardEditionNames:['video'],availableCompetitions:[{slug:'league'}]};
+  const previous={...emptyCardCatalogState(),scope:{...scope,season:{startYear:2030}},scopeCheckedAt:123,
+    players:['future-player'],playerIndex:0,sampled:true,missingEditions:['video'],competitionIndex:1};
+  await env.CACHE_DB.prepare('INSERT INTO cache_entries VALUES(?,?,NULL,?)').bind(cardCatalogStateKey,JSON.stringify(previous),1).run();
+  await env.CACHE_DB.prepare('INSERT INTO cache_entries VALUES(?,?,NULL,?)').bind(cardCatalogPictureKey(id),JSON.stringify({pictureId:id,playerSlug:'future-player'}),1).run();
+  const store=new D1CardCatalogStore(env.CACHE_DB);
+  expect(await store.state()).toEqual({...previous,scope});
+  expect(await store.read([id])).toEqual([{pictureId:id,playerSlug:'future-player'}]);
 });

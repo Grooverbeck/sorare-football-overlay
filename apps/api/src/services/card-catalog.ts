@@ -2,16 +2,16 @@ import { CardIdentitySchema, CardPlayerSlugSchema, sorarePictureId, type CardIde
 import * as z from 'zod';
 import type { SorareGraphqlClient } from '../graphql/client.js';
 
-const ScopeSchema = z.object({
+export const CardCatalogScopeSchema = z.object({
   slug: CardPlayerSlugSchema,
   customCardEditionNames: z.array(z.string().min(1).max(120)).max(40),
-  season: z.object({startYear: z.number().int().min(2000).max(2200)}),
   availableCompetitions: z.array(z.object({slug: CardPlayerSlugSchema})).max(40),
 });
-export type CardCatalogScope = z.infer<typeof ScopeSchema>;
+export type CardCatalogScope = z.infer<typeof CardCatalogScopeSchema>;
 const PageInfoSchema = z.object({hasNextPage: z.boolean(), endCursor: z.string().max(1000).nullable()});
 const CardsPageSchema = z.object({cardsWhere: z.object({nodes: z.array(z.object({
   pictureUrl: z.string().max(2000).nullable(), customCardEditionName: z.string().nullable(),
+  cardSet: z.object({slug: CardPlayerSlugSchema}).nullable(),
   anyPlayer: z.object({slug: CardPlayerSlugSchema}),
 })).max(100)})});
 
@@ -20,10 +20,10 @@ export class SorareCardCatalogSource {
   constructor(private readonly client: Pick<SorareGraphqlClient, 'request'>) {}
 
   async scope(): Promise<CardCatalogScope | null> {
-    const data = await this.client.request(`query CardCatalogScope { cardSet { currentSet {
-      slug customCardEditionNames season { startYear } availableCompetitions { slug }
+    const data = await this.client.request(`query CardCatalogScope { cardSet { currentSet(sport: FOOTBALL) {
+      slug customCardEditionNames availableCompetitions { slug }
     } } }`, {});
-    return z.object({cardSet:z.object({currentSet:ScopeSchema.nullable()})}).parse(data).cardSet.currentSet;
+    return z.object({cardSet:z.object({currentSet:CardCatalogScopeSchema.nullable()})}).parse(data).cardSet.currentSet;
   }
 
   async players(competition: string, after: string | null): Promise<{slugs: string[]; next: string | null}> {
@@ -40,15 +40,18 @@ export class SorareCardCatalogSource {
   }
 
   async cards(playerSlug: string, scope: CardCatalogScope, edition?: string): Promise<{identities: CardIdentity[]; editions: string[]}> {
-    const data = CardsPageSchema.parse(await this.client.request(`query CardCatalogPictures($player: String!, $year: Int!, $edition: String, $first: Int!) {
-      cardsWhere(first: $first, sport: FOOTBALL, rarities: [common], seasonStartYears: [$year], playerSlugs: [$player], customCardEditionName: $edition) {
-        nodes { pictureUrl ... on Card { customCardEditionName } anyPlayer { slug } }
+    const data = CardsPageSchema.parse(await this.client.request(`query CardCatalogPictures($player: String!, $edition: String, $first: Int!) {
+      cardsWhere(first: $first, sport: FOOTBALL, rarities: [common], playerSlugs: [$player], customCardEditionName: $edition) {
+        nodes { pictureUrl ... on Card { customCardEditionName } cardSet { slug } anyPlayer { slug } }
       }
-    }`, {player:playerSlug,year:scope.season.startYear,edition:edition??null,first:edition?5:50}));
+    }`, {player:playerSlug,edition:edition??null,first:edition?5:50}));
     const identities = new Map<string,CardIdentity>();
     const editions = new Set<string>();
     for (const card of data.cardsWhere.nodes) {
       if (card.anyPlayer.slug !== playerSlug) throw new Error('Sorare returned a different catalog player');
+      // Edition names and card minting years are not proof of Set membership.
+      // Only Sorare's explicit cardSet relation may admit a picture here.
+      if (card.cardSet?.slug !== scope.slug) continue;
       if (!card.customCardEditionName || !scope.customCardEditionNames.includes(card.customCardEditionName)) continue;
       if (edition && card.customCardEditionName !== edition) throw new Error('Sorare returned a different card edition');
       const pictureId = card.pictureUrl ? sorarePictureId(card.pictureUrl) : null;
@@ -61,7 +64,8 @@ export class SorareCardCatalogSource {
 }
 
 export const CardCatalogStateSchema = z.object({
-  scope: ScopeSchema.nullable(), scopeCheckedAt: z.number(), competitionIndex: z.number().int().min(0),
+  // Zod strips the retired season field from v1 checkpoints, preserving progress.
+  scope: CardCatalogScopeSchema.nullable(), scopeCheckedAt: z.number(), competitionIndex: z.number().int().min(0),
   rosterCursor:z.string().nullable(), players:z.array(CardPlayerSlugSchema).max(100), playerIndex:z.number().int().min(0),
   missingEditions:z.array(z.string()).max(40), sampled:z.boolean(), nextRunAt:z.number(),
 });

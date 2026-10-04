@@ -1,9 +1,9 @@
 // One-off initial public catalogue build. Recurring additions are handled by
 // the Worker's bounded cron. No user cookies, collections or bookmaker calls.
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { SorareGraphqlClient } from '../src/graphql/client.js';
-import { SorareCardCatalogSource } from '../src/services/card-catalog.js';
+import { CardCatalogScopeSchema, SorareCardCatalogSource } from '../src/services/card-catalog.js';
 import { CardIdentitySchema, type CardIdentity } from '@sorare-overlay/shared';
 
 const directory=resolve('artifacts/card-catalog');
@@ -22,11 +22,19 @@ const client=new SorareGraphqlClient({url:process.env.SORARE_GRAPHQL_URL??'https
 });
 const source=new SorareCardCatalogSource(client);
 const scope=await source.scope();if(!scope) throw new Error('No active public card set');
-const file=resolve(directory,`${scope.slug}-${scope.season.startYear}.json`);
+const file=resolve(directory,`${scope.slug}.json`);
 let done:Record<string,CardIdentity[]>={};
-try {const saved=JSON.parse(await readFile(file,'utf8'));if(saved.scope===JSON.stringify(scope)) {
-  for(const [slug,rows] of Object.entries(saved.players??{})) if(Array.isArray(rows)) done[slug]=rows.map(row=>CardIdentitySchema.parse(row));
-}} catch(error) {if(error instanceof Error && !('code' in error && error.code==='ENOENT')) throw error;}
+// Read old season-suffixed checkpoints without overwriting them or repeating
+// their public lookups. The normalized Set scope ignores the retired season.
+const legacyFiles=(await readdir(directory)).filter(name=>name.startsWith(`${scope.slug}-`)&&/^\d{4}\.json$/.test(name.slice(scope.slug.length+1)));
+for(const checkpoint of [...legacyFiles.map(name=>resolve(directory,name)),file]) {
+  try {
+    const saved=JSON.parse(await readFile(checkpoint,'utf8'));
+    const savedScope=CardCatalogScopeSchema.safeParse(JSON.parse(saved.scope));
+    if(!savedScope.success||JSON.stringify(savedScope.data)!==JSON.stringify(scope))continue;
+    for(const [slug,rows] of Object.entries(saved.players??{})) if(Array.isArray(rows)) done[slug]=rows.map(row=>CardIdentitySchema.parse(row));
+  } catch(error) {if(error instanceof Error && !('code' in error && error.code==='ENOENT')) throw error;}
+}
 const slugs=new Set<string>();
 for(const competition of scope.availableCompetitions) {
   let cursor:string|null=null;
@@ -66,6 +74,6 @@ WHEN json_extract(cache_entries.value,'$.conflict')=1 OR json_extract(cache_entr
 THEN json_object('pictureId',json_extract(excluded.value,'$.pictureId'),'conflict',json('true')) ELSE excluded.value END,
 expires_at=NULL,updated_at=excluded.updated_at;`);
 }
-const sql=resolve(directory,`${scope.slug}-${scope.season.startYear}.sql`);
+const sql=resolve(directory,`${scope.slug}.sql`);
 await writeFile(sql,statements.join('\n'));
 console.log(JSON.stringify({complete:true,players:slugs.size,pictures:values.length,sql}));
