@@ -7,7 +7,7 @@ interface CacheEntry<T> {
 
 export type PlayerFormStats = Omit<
   PlayerStats,
-  'nextGame' | 'pendingRefreshes' | 'mlsAaContext' | 'fixtureRefresh' | 'marketRefresh' | 'aaContext' | 'aaClub'
+  'nextGame' | 'pendingRefreshes' | 'mlsAaContext' | 'fixtureRefresh' | 'marketRefresh' | 'aaContext' | 'aaClub' | 'displayedFixture'
 >;
 export type PlayerFixtureStats = PlayerStats['nextGame'];
 
@@ -283,6 +283,7 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
       mlsAaContext: _mlsAaContext,
       fixtureRefresh: _fixtureRefresh,
       marketRefresh: _marketRefresh,
+      displayedFixture: _displayedFixture,
       aaContext: _aaContext,
       aaClub: _aaClub,
       ...form
@@ -359,6 +360,7 @@ export class SplitPlayerStatsCache implements SplitPlayerStatsCacheAccess {
       mlsAaContext: _mlsAaContext,
       fixtureRefresh: _fixtureRefresh,
       marketRefresh: _marketRefresh,
+      displayedFixture: _displayedFixture,
       aaContext: _aaContext,
       aaClub: _aaClub,
       ...form

@@ -5,6 +5,8 @@ import {
   calculatePlayerMetrics,
   fixtureStatusKey,
   type FootballPosition,
+  displayedMatchKey,
+  type DisplayedMatch,
   type PlayerMarketSnapshot,
   type PlayerStats,
   type ValidatedPlayerMarketSnapshotsRequest,
@@ -43,6 +45,8 @@ import {
 import { mapSettledWithConcurrency, mapWithConcurrency } from './concurrency.js';
 import type { PlayerLoadLeases } from './player-load-leases.js';
 import type { AaContextService } from './aa-context.js';
+import type { DisplayedFixtureService } from './displayed-fixture.js';
+import { AppError } from '../errors.js';
 
 export interface StatsServiceResult {
   data: PlayerStats[];
@@ -50,6 +54,8 @@ export interface StatsServiceResult {
   source: 'sorare' | 'mock';
   deferredPlayerNames: string[];
   deferredPlayerSlugs: string[];
+  // Internal canonical name-resolution result, never serialized to the API.
+  displayedMatchHints?: Map<string, DisplayedMatch>;
   diagnostics: {
     requestedPlayers: number;
     resolvedPlayers: number;
@@ -92,6 +98,19 @@ function hasRequestedHistoricalWindows(
       stats.historicalGoals !== undefined &&
       stats.historicalDecisives !== undefined)
   );
+}
+
+function resolvedDisplayedMatches(request:ValidatedPlayerStatsRequest,targets:SourcePlayerRequest[],players:PlayerStats[]):Map<string,DisplayedMatch> {
+  const hints=new Map(Object.entries(request.displayedMatches??{}).map(([key,value])=>[key.trim().toLowerCase(),value]));
+  const output=new Map<string,DisplayedMatch>();
+  for(const stats of players) {
+    const names=[stats.slug,stats.displayName,...targets.filter(t=>t.slug===stats.slug&&(!t.position||t.position===stats.position)).flatMap(t=>t.resolvedFromName?[t.resolvedFromName]:[])];
+    const matches=names.flatMap(name=>{const hint=hints.get(name.trim().toLowerCase());return hint?[hint]:[];});
+    if(new Set(matches.map(displayedMatchKey)).size>1)throw new AppError(400,'INVALID_REQUEST','Conflicting displayed matches for the same player position');
+    if(new Set(matches.flatMap(m=>m.gameId?[m.gameId]:[])).size>1)throw new AppError(400,'INVALID_REQUEST','Conflicting displayed game IDs');
+    if(matches[0])output.set(playerMarketOddsKey(stats),matches[0]);
+  }
+  return output;
 }
 
 type StatsPhase = Exclude<keyof StatsServiceResult['diagnostics']['durationsMs'], 'total'>;
@@ -407,16 +426,32 @@ export class StatsService {
     private readonly playerLoadLeases?: PlayerLoadLeases,
     private readonly fixtureLifecycle?: FixtureLifecycle,
     private readonly aaContextService?: AaContextService,
+    private readonly displayedFixtureService?: DisplayedFixtureService,
   ) {}
 
   async getPlayerStats(
     request: ValidatedPlayerStatsRequest,
   ): Promise<StatsServiceResult> {
-    const result=await this.getPlayerStatsWithinBudget(request);
+    const scoped=Boolean(Object.keys(request.displayedMatches??{}).length);
+    if(scoped&&!this.displayedFixtureService)throw new AppError(400,'INVALID_REQUEST','Displayed fixture context is not supported by this backend');
+    // A displayed-game read must not warm bookmakers for an unrelated future
+    // `nextGame`. It only observes existing snapshots for the confirmed game.
+    const result=await this.getPlayerStatsWithinBudget(scoped?{...request,oddsCacheOnly:true,refreshFixtures:false,checkFixtureStatus:false}:request);
     let data = this.fixtureLifecycle ? await this.fixtureLifecycle.decorate(result.data) : result.data;
+    if(scoped&&this.displayedFixtureService&&result.displayedMatchHints) {
+      data=await this.displayedFixtureService.decorate(data,result.displayedMatchHints);
+      const confirmed=data.filter(p=>p.displayedFixture?.state==='confirmed');
+      if(confirmed.length) {
+        const odds=await this.loadCacheOnlyWithinBudget(this.marketOddsProvider.load(confirmed,{cacheOnly:true}));
+        data=data.map(p=>p.displayedFixture?.state==='confirmed'&&p.nextGame
+          ? {...p,nextGame:{...p.nextGame,marketOdds:odds.get(playerMarketOddsKey(p))??null}}:p);
+      }
+    }
     // Project only after club form/fixture loading and persistence have ended.
     // Legacy clients keep their existing club-scoped contract and tooltips.
     if (request.supportsAaContext && this.aaContextService) data = await this.aaContextService.decorate(data);
+    data=data.map(p=>p.displayedFixture&&p.displayedFixture.state!=='confirmed'
+      ? {...p,aaClub:p.aaClub??{aaL10:p.aaL10,aaL10TeamWinRate:p.aaL10TeamWinRate},aaL10:{value:null,sampleSize:0},aaL10TeamWinRate:{value:null,sampleSize:0}}:p);
     return {...result, data};
   }
 
@@ -451,6 +486,7 @@ export class StatsService {
       !progress.requests.some(target => target.resolvedFromName === name && !missing(target)));
     return {
       data,
+      ...(request.displayedMatches?{displayedMatchHints:resolvedDisplayedMatches(request,progress.requests,data)}:{}),
       cacheHits: progress.cacheHits,
       source: this.dataSource.source,
       deferredPlayerNames,
@@ -1259,6 +1295,7 @@ export class StatsService {
       deferredRequests.some(target => target.slug === slug));
     return {
       data,
+      ...(request.displayedMatches?{displayedMatchHints:resolvedDisplayedMatches(request,progress.requests,data)}:{}),
       cacheHits,
       source: this.dataSource.source,
       deferredPlayerNames,

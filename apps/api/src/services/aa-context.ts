@@ -46,7 +46,8 @@ export class AaContextService {
   ) {}
 
   private key(stats: PlayerStats): string {
-    return `player-aa-team:v1:${stats.slug}:${stats.position}:${this.excludeLowCoverage ? 'no-low' : 'all'}:${stats.nextGame!.playerTeamSlug}`;
+    const base=`player-aa-team:v1:${stats.slug}:${stats.position}:${this.excludeLowCoverage ? 'no-low' : 'all'}:${stats.nextGame!.playerTeamSlug}`;
+    return stats.displayedFixture?.state==='confirmed'&&stats.nextGame?.gameId ? `${base}:before:${stats.nextGame.gameId}` : base;
   }
 
   async decorate(players: PlayerStats[]): Promise<PlayerStats[]> {

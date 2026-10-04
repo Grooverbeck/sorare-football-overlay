@@ -123,7 +123,7 @@ export const privacyPage = page(
   'Datenschutzerklärung – Football Stats Overlay',
   'Datenschutzerklärung für das inoffizielle Football Stats Overlay.',
   `
-    <span class="eyebrow">Stand: 26. September 2026 · Version 1.4</span>
+    <span class="eyebrow">Stand: 4. Oktober 2026 · Version 1.5</span>
     <h1>Datenschutzerklärung</h1>
     <p class="lead">
       Diese Erklärung beschreibt, welche Daten das inoffizielle Football Stats Overlay
@@ -149,7 +149,7 @@ export const privacyPage = page(
     <ul>
       <li>öffentlicher Spielername und/oder öffentlicher Spieler-Slug,</li>
       <li>Position der angezeigten Karte, soweit auf der Seite erkennbar,</li>
-      <li>öffentliche Teamkennungen und Angaben zur Begegnung, soweit für die Zuordnung erforderlich,</li>
+      <li>öffentliche Teamkennungen, sichtbare Spielstände und Angaben zum Spielstatus, soweit für die Zuordnung der angezeigten Begegnung erforderlich,</li>
       <li>öffentliche Bild- und Kartenkennungen zur Wiedererkennung des Spielers.</li>
     </ul>
     <p>
@@ -220,6 +220,9 @@ export const privacyPage = page(
       Status-Prüfergebnisse und Daten bestätigter laufender oder unterbrochener Spiele können bis
       zu sieben Tage gespeichert bleiben. Das sind gemeinsam genutzte öffentliche Sportdaten,
       keine einer Person zugeordneten Nutzungsprofile.
+      Bestätigte Zuordnungen der auf einer Karte angezeigten Begegnung werden höchstens einen Tag
+      gespeichert; gemeinsam gelesene Spielkataloge der bestätigten Teams höchstens zwei Minuten.
+      AA-Werte für eine solche Begegnung haben getrennte Schlüssel und dieselbe Sieben-Tage-Frist.
       Bestätigte Zuordnungen öffentlicher Kartenbild-Kennungen zu Spieler-Slugs werden ohne
       automatisches Ablaufdatum im gemeinsamen Kartenkatalog gespeichert. Katalogabfragen werden
       nicht als kontobezogene Besitz- oder Aufstellungslisten gespeichert.
@@ -295,7 +298,10 @@ export const privacyPage = page(
       for lookup in a shared, public Sorare-derived identity catalogue. The local mapping list and
       card ownership identifiers are not uploaded. Club form values expire by the weekly rollover;
       national-team AA values and their team context expire no later than seven days after the last
-      successful refresh. Verified catalogue entries have no automatic
+      successful refresh. Public match scores and match-status hints can be sent to confirm the game
+      displayed on a card. Confirmed display-context records expire after at most one day,
+      and shared team match catalogs after two minutes. Match-scoped AA retains the seven-day limit.
+      Verified catalogue entries have no automatic
       expiration and are not linked to user accounts. Sorting includes already loaded offscreen cards. Page and interaction
       states are used locally for display, sorting and refresh scheduling, not behavioral profiling.
       No Sorare credentials, cookies, wallet or payment data are accessed. No separate account-linked

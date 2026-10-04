@@ -34,6 +34,7 @@ import {
   setLineupSortPosition,
 } from './lineup-sort.js';
 import { NativeMatchOddsReplacement, readNativeMatchOdds, type NativeMatchOddsReading } from './native-match-odds.js';
+import { displayedFixtureAttribute, displayedContextAttribute } from './displayed-match.js';
 import type {
   HistoricalAssistWindow,
   MarketBracketSide,
@@ -3683,6 +3684,8 @@ export class OverlayView {
       this.container.removeAttribute(fixtureIdentityAttribute);
       this.container.removeAttribute(fixtureRefreshAttribute);
       this.container.removeAttribute(marketRefreshAttribute);
+      this.container.removeAttribute(displayedFixtureAttribute);
+      this.container.removeAttribute(displayedContextAttribute);
       this.container.removeAttribute(retiredFixtureAttribute);
       setLineupGoalSortValue(this.container, null);
       setLineupAaSortValue(this.container, null);
@@ -3789,6 +3792,23 @@ export class OverlayView {
     fixtureCandidates: readonly PlayerStats[] = [],
   ): void {
     if (this.destroyed) return;
+    const context=stats.displayedFixture?.key??'';
+    if(context!==(this.container.getAttribute(displayedContextAttribute)??'')) {
+      clearGoalMarketState(this.container);
+      setLineupGoalSortValue(this.container,null);
+      setLineupCleanSheetSortValue(this.container,null);
+      setLineupAaSortValue(this.container,null);
+      this.container.removeAttribute(lineupSortLightweightReadyAttribute);
+      this.container.removeAttribute(fixtureIdentityAttribute);
+      this.container.removeAttribute(retiredFixtureAttribute);
+    }
+    if(stats.displayedFixture) {
+      this.container.setAttribute(displayedFixtureAttribute,JSON.stringify({...stats.displayedFixture,viewPath:location.pathname}));
+      this.container.setAttribute(displayedContextAttribute,context);
+    } else {
+      this.container.removeAttribute(displayedFixtureAttribute);
+      this.container.removeAttribute(displayedContextAttribute);
+    }
     const incomingIdentity=stats.nextGame?fixtureStatusKey(stats.nextGame):null;
     if(olderFixture(incomingIdentity,this.container.getAttribute(fixtureIdentityAttribute)) || retiredFixture(incomingIdentity,this.container.getAttribute(retiredFixtureAttribute))) return;
     if(!stats.nextGame && stats.fixtureRefresh)this.container.setAttribute(retiredFixtureAttribute,stats.fixtureRefresh.key);

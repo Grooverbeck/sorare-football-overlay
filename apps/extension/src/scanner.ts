@@ -8,8 +8,9 @@ import type {
   PlayerStats,
   PlayerStatsRequest,
   PlayerStatsSuccessResponse,
+  DisplayedMatch,
 } from '@sorare-overlay/shared';
-import { fixtureRolloverAtMs, hasAnyDisplayData } from '@sorare-overlay/shared';
+import { fixtureRolloverAtMs, hasAnyDisplayData, displayedMatchKey } from '@sorare-overlay/shared';
 import { fetchPlayerMarketSnapshots, fetchPlayerStats } from './api.js';
 import { mergeAaContext } from './aa-context.js';
 import {
@@ -114,6 +115,7 @@ export interface StatsBatchCoordinatorOptions {
 }
 
 interface PendingTarget {
+  displayedMatch?: DisplayedMatch;
   slug?: string;
   playerName?: string;
   position?: FootballPosition;
@@ -124,7 +126,7 @@ interface PendingTarget {
 
 type TargetIdentity = Pick<
   PendingTarget,
-  'slug' | 'playerName' | 'position' | 'teamSlug'
+  'slug' | 'playerName' | 'position' | 'teamSlug' | 'displayedMatch'
 >;
 
 interface ScheduledTargetWork {
@@ -202,10 +204,10 @@ function conflictFreeBatches(
 }
 
 function targetMatchesStats(
-  target: Pick<PendingTarget, 'slug' | 'playerName'>,
+  target: Pick<PendingTarget, 'slug' | 'playerName' | 'displayedMatch'>,
   stats: PlayerStats,
 ): boolean {
-  return (
+  return stats.displayedFixture?.key === (target.displayedMatch?displayedMatchKey(target.displayedMatch):undefined) && (
     (target.slug !== undefined && target.slug === stats.slug) ||
     (target.playerName !== undefined &&
       namesLikelyMatch(target.playerName, stats.displayName))
@@ -682,6 +684,7 @@ export class StatsBatchCoordinator {
         return;
       }
       const followUp = this.afterFlightTargets.get(key) ?? {
+        ...(target.displayedMatch ? {displayedMatch:target.displayedMatch} : {}),
         ...(target.slug ? { slug: target.slug } : {}),
         ...(target.playerName ? { playerName: target.playerName } : {}),
         ...(target.position ? { position: target.position } : {}),
@@ -695,6 +698,7 @@ export class StatsBatchCoordinator {
       return;
     }
     const pendingTarget = this.pending.get(key) ?? {
+      ...(target.displayedMatch ? {displayedMatch:target.displayedMatch} : {}),
       ...(target.slug ? { slug: target.slug } : {}),
       ...(target.playerName ? { playerName: target.playerName } : {}),
       ...(target.position ? { position: target.position } : {}),
@@ -820,6 +824,10 @@ export class StatsBatchCoordinator {
       }),
     );
     const includeHistoricalAssists = this.includeHistoricalAssists;
+    const displayedMatches=Object.fromEntries(batch.flatMap(target=>{
+      const identity=target.slug??target.playerName;
+      return identity&&target.displayedMatch?[[identity,target.displayedMatch]]:[];
+    }));
     const refreshFixtures = batch.some((target) =>
       this.fixtureRefreshTargets.has(targetKey(target)),
     );
@@ -840,6 +848,7 @@ export class StatsBatchCoordinator {
         slugs,
         playerNames,
         supportsPartialFormHistory: true,
+        ...(Object.keys(displayedMatches).length?{displayedMatches}:{}),
         ...(Object.keys(positions).length ? { positions } : {}),
         ...(Object.keys(playerTeams).length ? { playerTeams } : {}),
         ...(includeHistoricalAssists
@@ -1220,6 +1229,7 @@ export class StatsBatchCoordinator {
     for (const [key, stats] of this.cache) {
       if (
         stats.position === target.position &&
+        stats.displayedFixture?.key === (target.displayedMatch?displayedMatchKey(target.displayedMatch):undefined) &&
         targetMatchesStats(target, stats)
       ) {
         this.touchCachedAlias(key);
@@ -1338,7 +1348,7 @@ export class StatsBatchCoordinator {
     // the newest response. Position variants remain isolated because their
     // cached PlayerStats.position differs.
     for (const [key, cached] of this.cache) {
-      if (cached.slug !== stats.slug || cached.position !== stats.position) {
+      if (cached.slug !== stats.slug || cached.position !== stats.position || cached.displayedFixture?.key !== stats.displayedFixture?.key) {
         continue;
       }
       this.setCachedStats(key, stats, false);
@@ -1346,8 +1356,10 @@ export class StatsBatchCoordinator {
     }
 
     const matchingTargets = batch.filter((target) =>
-      targetMatchesStats(target, stats),
+      targetMatchesStats(target, stats) && stats.displayedFixture?.key === (target.displayedMatch?displayedMatchKey(target.displayedMatch):undefined),
     );
+    const displayedMatch=matchingTargets.find(t=>t.displayedMatch)?.displayedMatch;
+    if(stats.displayedFixture&&!displayedMatch)return changedKeys;
     const names = new Set([
       stats.displayName,
       ...matchingTargets.flatMap(({ playerName }) =>
@@ -1368,12 +1380,14 @@ export class StatsBatchCoordinator {
     for (const position of positions) {
       for (const teamSlug of teamSlugs) {
         setAlias({
+          ...(displayedMatch?{displayedMatch}:{}),
           slug: stats.slug,
           ...(position ? { position } : {}),
           ...(teamSlug ? { teamSlug } : {}),
         });
         for (const playerName of names) {
           setAlias({
+            ...(displayedMatch?{displayedMatch}:{}),
             playerName,
             ...(position ? { position } : {}),
             ...(teamSlug ? { teamSlug } : {}),
@@ -1512,10 +1526,9 @@ export class StatsBatchCoordinator {
   }
 
   private mergeWithCachedStats(incoming: PlayerStats): PlayerStats {
-    const cached = this.cachedStatsForTarget({
-      slug: incoming.slug,
-      position: incoming.position,
-    });
+    const cached = incoming.displayedFixture
+      ? this.cachedStatsValues().find(p=>p.slug===incoming.slug&&p.position===incoming.position&&p.displayedFixture?.key===incoming.displayedFixture?.key)
+      : this.cachedStatsForTarget({slug:incoming.slug,position:incoming.position});
     const isPartialFormRefresh =
       incoming.pendingRefreshes?.includes('formHistory') === true;
     const cachedIsPartialForm =

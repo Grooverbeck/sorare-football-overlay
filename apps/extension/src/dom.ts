@@ -1,4 +1,5 @@
-import type { FootballPosition } from '@sorare-overlay/shared';
+import type { FootballPosition, DisplayedMatch } from '@sorare-overlay/shared';
+import { readDisplayedMatch } from './displayed-match.js';
 import { inferLineupSlotPosition, readLineupPositionSelection } from './lineup-position.js';
 import {
   extractCardPictureId,
@@ -12,6 +13,7 @@ export interface CardTarget {
   playerName?: string;
   position?: FootballPosition;
   teamSlug?: string;
+  displayedMatch?: DisplayedMatch;
   container: HTMLElement;
 }
 
@@ -601,5 +603,5 @@ export function findCardTargets(
     targetContainers.add(container);
   }
 
-  return targets;
+  return targets.map(target=>{const displayedMatch=readDisplayedMatch(target.container);return displayedMatch?{...target,displayedMatch}:target;});
 }

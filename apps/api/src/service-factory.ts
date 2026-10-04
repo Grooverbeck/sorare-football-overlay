@@ -56,6 +56,8 @@ import {
 } from './providers/competition-odds-routes.js';
 import { AaContextService, InMemoryAaContextStore, type AaContextStore } from './services/aa-context.js';
 import { SorareAaContextSource } from './graphql/aa-context-source.js';
+import { DisplayedFixtureService } from './services/displayed-fixture.js';
+import { SorareDisplayedFixtureSource } from './graphql/displayed-fixture-source.js';
 import type {
   PlayerNameResolutionCache,
   PlayerStatsDataSource,
@@ -184,6 +186,7 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
   let marketOddsProvider: PlayerMarketOddsProvider;
   let fixtureMatchOddsProvider: FixtureMatchOddsProvider;
   let aaContextService: AaContextService | undefined;
+  let displayedFixtureService: DisplayedFixtureService | undefined;
 
   if (config.mockMode) {
     dataSource = new MockDataSource();
@@ -223,6 +226,16 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
     const marketSnapshotStore =
       options.marketSnapshotStore ??
       new InMemoryMarketSnapshotStore(config.oddsMissCacheTtlMs);
+    const displayedStore=options.aaContextStore??new InMemoryAaContextStore();
+    displayedFixtureService=new DisplayedFixtureService(
+      displayedStore,
+      new SorareDisplayedFixtureSource(new SorareGraphqlClient({
+        url:config.graphqlUrl,requestTimeoutMs:5_000,maxRetries:0,logger,
+        ...(config.apiKey?{apiKey:config.apiKey}:{}),
+        ...(config.authToken?{authToken:config.authToken}:{}),
+        ...(config.jwtAud?{jwtAud:config.jwtAud}:{}),
+      }),Date.now,displayedStore),options.scheduleBackground,Date.now,logger,
+    );
     const matchOddsSnapshotStore =
       options.matchOddsSnapshotStore ??
       new InMemoryMatchOddsSnapshotStore();
@@ -486,6 +499,7 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
       options.playerLoadLeases,
       options.fixtureLifecycle,
       aaContextService,
+      displayedFixtureService,
     ),
     marketOddsProvider,
     fixtureMatchOddsProvider,

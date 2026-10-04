@@ -4,6 +4,7 @@ import type { PlayerStats } from '@sorare-overlay/shared';
 // can finish in either order, independently of fixture/market responses.
 export function mergeAaContext(incoming: PlayerStats, cached?: PlayerStats): PlayerStats {
   if (!cached || incoming.slug !== cached.slug || incoming.position !== cached.position) return incoming;
+  if(incoming.displayedFixture?.key!==cached.displayedFixture?.key)return incoming;
   const partialClubHistory = incoming.pendingRefreshes?.includes('formHistory') &&
     !cached.pendingRefreshes?.includes('formHistory');
   const cachedClub = cached.aaClub ?? (cached.aaContext?.kind !== 'national'

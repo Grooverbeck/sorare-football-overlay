@@ -23,6 +23,15 @@ function source(): AaContextSource {
 }
 
 describe('independent club and national AA', () => {
+  it('keeps displayed-game AA separate from the normal national snapshot and preserves club backup',async()=>{
+    const store=new InMemoryAaContextStore(),src=source(),service=new AaContextService(store,src,true);
+    await service.decorate([player()]);
+    vi.mocked(src.national).mockResolvedValue({aaL10:{value:11,sampleSize:3},aaL10TeamWinRate:{value:1/3,sampleSize:3}});
+    const pinned={...player(),displayedFixture:{key:'context',state:'confirmed' as const,gameId:'Game:00000000-0000-0000-0000-000000000001'},nextGame:{...player().nextGame!,gameId:'Game:00000000-0000-0000-0000-000000000001'}};
+    const result=(await service.decorate([pinned]))[0]!;
+    expect(result.aaL10.value).toBe(11);expect(result.aaClub?.aaL10.value).toBe(1.455);
+    expect((await service.decorate([player()]))[0]?.aaL10.value).toBe(17.332);
+  });
   it('preserves club form and returns to it across club -> national -> club -> national', async () => {
     const store = new InMemoryAaContextStore(); const src = source();
     const service = new AaContextService(store, src, true);
@@ -167,5 +176,14 @@ describe('national AA source filtering', () => {
     const data=page([game('1',10)]);data.data.anyPlayer.activeNationalTeam.slug='other';
     await expect(new SorareAaContextSource(client(vi.fn().mockResolvedValue(Response.json(data))),true)
       .national(player(),national)).rejects.toThrow('membership changed');
+  });
+  it('excludes the displayed match and later games from that match\'s national AA context',async()=>{
+    const fetchImpl=vi.fn<typeof fetch>(async()=>Response.json(page([
+      game('1',10,{date:'2030-09-20T18:45:00Z'}),
+      game('2',100,{date:player().nextGame!.date}),
+      game('3',100,{date:'2030-09-25T18:45:00Z'}),
+    ])));
+    const scoped={...player(),displayedFixture:{key:'scope',state:'confirmed' as const,gameId:'Game:current'}};
+    expect((await new SorareAaContextSource(client(fetchImpl),true).national(scoped,national)).aaL10).toEqual({value:10,sampleSize:1});
   });
 });

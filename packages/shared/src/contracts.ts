@@ -1,4 +1,5 @@
 import * as z from 'zod';
+import { DisplayedMatchSchema } from './displayed-match.js';
 
 export const footballPositions = [
   'Goalkeeper',
@@ -20,11 +21,11 @@ export type HistoricalMarketWindow = z.infer<
 >;
 
 function validatePlayerMappings(
-  request: {slugs: string[]; playerNames: string[]; positions?: Record<string, unknown> | undefined; playerTeams?: Record<string, unknown> | undefined},
+  request: {slugs: string[]; playerNames: string[]; positions?: Record<string, unknown> | undefined; playerTeams?: Record<string, unknown> | undefined; displayedMatches?: Record<string, unknown> | undefined},
   context: z.RefinementCtx,
 ): void {
   const identities = new Set([...request.slugs, ...request.playerNames].map(value => value.trim().toLowerCase()));
-  for (const field of ['positions', 'playerTeams'] as const) {
+  for (const field of ['positions', 'playerTeams', 'displayedMatches'] as const) {
     const keys = Object.keys(request[field] ?? {});
     if (keys.length > 50 || keys.some(key => !identities.has(key.trim().toLowerCase()))) {
       context.addIssue({code: 'custom', path: [field], message: `${field} may contain at most 50 mappings for requested players only`});
@@ -54,6 +55,7 @@ export const PlayerStatsRequestSchema = z
       )
       .optional(),
     includeHistoricalAssists: z.boolean().default(false),
+    displayedMatches: z.record(z.string(), DisplayedMatchSchema).optional(),
     // Capability handshake for rollout safety. Older extension versions reject
     // the `formHistory` refresh hint, so the backend may only return an early
     // partial form window when the caller opts in explicitly.
@@ -196,6 +198,7 @@ export const PlayerMarketOddsSchema = z.object({
 });
 
 export const PlayerStatsSchema = z.object({
+  displayedFixture: z.object({key:z.string(),state:z.enum(['loading','confirmed','unavailable']),gameId:z.string().optional()}).optional(),
   fixtureRefresh: z.object({key:z.string(), nextCheckAt:z.string().datetime()}).optional(),
   marketRefresh: z.object({key:z.string(), nextCheckAt:z.string().datetime()}).optional(),
   slug: z.string(),

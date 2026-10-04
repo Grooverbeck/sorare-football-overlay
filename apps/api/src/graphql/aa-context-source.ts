@@ -44,6 +44,7 @@ export class SorareAaContextSource implements AaContextSource {
       const current = data.anyPlayer.activeNationalTeam;
       if (!current || current.id !== team.id || current.slug !== team.slug) throw new Error('National membership changed');
       for (const game of current.latestGames.nodes) {
+        if(stats.displayedFixture?.state==='confirmed'&&stats.nextGame&&Date.parse(game.date)>=Date.parse(stats.nextGame.date))continue;
         if (seen.has(game.id)) continue;
         seen.add(game.id);
         const score = game.playerGameScore;

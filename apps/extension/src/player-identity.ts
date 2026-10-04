@@ -1,10 +1,11 @@
-import type { FootballPosition } from '@sorare-overlay/shared';
+import {displayedMatchKey,type FootballPosition,type DisplayedMatch} from '@sorare-overlay/shared';
 
 export interface PlayerTargetIdentity {
   slug?: string;
   playerName?: string;
   position?: FootballPosition;
   teamSlug?: string;
+  displayedMatch?: DisplayedMatch;
 }
 
 export function normalizePlayerName(name: string): string {
@@ -53,7 +54,8 @@ export function playerTargetKey(target: PlayerTargetIdentity): string {
   const base = target.slug
     ? `slug:${target.slug}:${target.position ?? 'default'}`
     : `name:${normalizePlayerName(target.playerName ?? '')}:${target.position ?? 'default'}`;
-  return target.teamSlug ? `${base}:team:${target.teamSlug}` : base;
+  const teamKey=target.teamSlug ? `${base}:team:${target.teamSlug}` : base;
+  return target.displayedMatch ? `${teamKey}:displayed:${displayedMatchKey(target.displayedMatch)}` : teamKey;
 }
 
 export function playerRequestIdentity(

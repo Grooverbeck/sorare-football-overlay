@@ -9,3 +9,4 @@ export * from './historical-market-benchmarks.js';
 export * from './european-market-benchmarks.js';
 export * from './lineup-sort-values.js';
 export * from './mls-win-probability-benchmarks.js';
+export * from './displayed-match.js';

@@ -585,7 +585,9 @@ describe('public extension pages', () => {
     expect(html).toContain('Sorare-E-Mail-Adresse, Passwort, JWT, Cookies');
     expect(html).toContain('The Odds API');
     expect(html).toContain('keine Zugangsdaten');
-    expect(html).toContain('26. September 2026');
+    expect(html).toContain('4. Oktober 2026');
+    expect(html).toContain('sichtbare Spielstände');
+    expect(html).toContain('höchstens einen Tag');
     expect(html).toContain('Nationalteam-AA-Werte laufen spätestens');
     expect(html).toContain('national-team AA values and their team context expire');
     expect(html).toContain('Kartenbild-Kennungen gebündelt');
