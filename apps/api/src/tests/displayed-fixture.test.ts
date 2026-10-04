@@ -15,11 +15,11 @@ const germany={id:'NationalTeam:de',slug:'germany',shortName:'Germany',__typenam
 const greece={id:'NationalTeam:gr',slug:'greece',shortName:'Greece',__typename:'NationalTeam',country:{code:'GR'}};
 const stats={cleanSheetOdds:3,winOddsBasisPoints:5200,drawOddsBasisPoints:2500,loseOddsBasisPoints:2300};
 const game={id:'Game:00000000-0000-0000-0000-000000000001',date:'2026-10-04T18:45:00Z',statusTyped:'playing',homeGoals:0,awayGoals:1,competition:{slug:'uefa-nations-league'},homeTeam:greece,awayTeam:germany,homeStats:stats,awayStats:stats};
-function source(games=[game]) {
+function source(games=[game],now=clock) {
   const request=vi.fn(async(query:string)=>query.includes('DisplayedMemberships')
     ? {players:[{__typename:'Player',slug:'lennart-karl',activeClub:null,activeNationalTeam:germany}]}
     : {football:{t0:{id:germany.id,games:{nodes:games,pageInfo:{hasNextPage:false}}}}});
-  return {source:new SorareDisplayedFixtureSource({request},()=>clock),request};
+  return {source:new SorareDisplayedFixtureSource({request},()=>now),request};
 }
 it('confirms official membership, exact opponents and current game independently of nextGame',async()=>{
   const {source:s,request}=source();const result=await s.resolve([{slug:'lennart-karl',hint}]);
@@ -36,6 +36,14 @@ it('matches completed games by the displayed score rather than silently using an
   const completed={...hint,phase:'played' as const};
   expect((await source([{...game,statusTyped:'played'}]).source.resolve([{slug:'lennart-karl',hint:completed}])).get('lennart-karl:'+displayedMatchKey(completed))).toMatchObject({gameId:game.id});
   expect((await source([{...game,statusTyped:'played',awayGoals:3}]).source.resolve([{slug:'lennart-karl',hint:completed}])).get('lennart-karl:'+displayedMatchKey(completed))).toBeNull();
+});
+it('tolerates a stale live marker at full time only for a recent exact final score',async()=>{
+  const end=Date.parse(game.date)+2*3_600_000;
+  const completed={...game,statusTyped:'played'};
+  expect((await source([completed],end).source.resolve([{slug:'lennart-karl',hint}])).get('lennart-karl:'+displayedMatchKey(hint))).toMatchObject({gameId:game.id});
+  for(const [fixture,now] of [[{...completed,awayGoals:3},end],[completed,end+3_600_001],[{...completed,date:new Date(end+60_000).toISOString()},end]] as const) {
+    expect((await source([fixture],now).source.resolve([{slug:'lennart-karl',hint}])).get('lennart-karl:'+displayedMatchKey(hint))).toBeNull();
+  }
 });
 it('projects cached market quotes for the confirmed match without warming providers or changing the general stats cache',async()=>{
   const cache=new TtlCache<PlayerStats>(60000),base:PlayerStats={slug:'lennart-karl',displayName:'Lennart Karl',position:'Midfielder',aaL10:{value:6.4,sampleSize:10},goalL10:{value:0.2,sampleSize:10},cleanSheetL10:{value:0,sampleSize:0},excludedLowCoverage:0,nextGame:{date:'2026-10-10T13:30:00Z',playerTeamSlug:'bayern',homeTeamName:'Augsburg',awayTeamName:'Bayern',cleanSheetProbability:null,matchProbabilities:null}};

@@ -77,7 +77,12 @@ export class SorareDisplayedFixtureSource implements DisplayedFixtureSource {
       const candidates=[...games.values()].filter(g=>matches(hint.home,g.homeTeam)&&matches(hint.away,g.awayTeam)&&
         Number.isFinite(Date.parse(g.date))&&Date.parse(g.date)>=this.now()-21*86_400_000&&Date.parse(g.date)<=this.now()+86_400_000&&
         (!hint.gameId||g.id===hint.gameId)&&
-        (hint.gameId?['playing','played'].includes(g.statusTyped):hint.phase==='live'?g.statusTyped==='playing':g.statusTyped==='played'&&g.homeGoals===hint.homeScore&&g.awayGoals===hint.awayScore));
+        (hint.gameId?['playing','played'].includes(g.statusTyped):hint.phase==='live'
+          ? g.statusTyped==='playing'||(g.statusTyped==='played'&&Date.parse(g.date)<=this.now()&&Date.parse(g.date)>=this.now()-3*3_600_000&&g.homeGoals===hint.homeScore&&g.awayGoals===hint.awayScore)
+          : g.statusTyped==='played'&&g.homeGoals===hint.homeScore&&g.awayGoals===hint.awayScore));
+      // Sorare's score footer can retain its live marker briefly after the API
+      // reports full time. Accept only a recent, uniquely matched final score;
+      // an old live-looking footer must never select a historic same-team game.
       if(candidates.length!==1) {output.set(slug+':'+displayedMatchKey(hint),null);continue;}
       const game=candidates[0]!;
       const home=memberships.some(t=>t.id===game.homeTeam.id),away=memberships.some(t=>t.id===game.awayTeam.id);
