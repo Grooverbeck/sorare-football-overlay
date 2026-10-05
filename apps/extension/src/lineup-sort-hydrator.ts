@@ -36,6 +36,7 @@ import {
 } from './player-identity.js';
 import { logStatsDiagnostic } from './stats-diagnostics.js';
 import {clearGoalMarketState, goalMarketChangedEvent, goalMarketSignature, readGoalMarketState, rememberGoalMarketState, type GoalMarketState} from './goal-market-state.js';
+import {visibleFixtureContextDecision} from './lineup-fixture-context.js';
 
 type SortValuesFetcher = (
   request: LineupSortValuesRequest,
@@ -1019,13 +1020,15 @@ export class LineupSortHydrator {
     let fixtureChanged=false;
     if(value?.fixtureIdentity!==undefined) {
       const previous=container.getAttribute(fixtureIdentityAttribute);
-      if(olderFixture(value.fixtureIdentity,previous) || retiredFixture(value.fixtureIdentity,container.getAttribute(retiredFixtureAttribute))) {state.status='ready';return;}
+      const decision=visibleFixtureContextDecision(container,value.fixtureIdentity,previous,value.playerTeamSlug);
+      if(decision==='retain-context'||(decision!=='correct-context'&&olderFixture(value.fixtureIdentity,previous)) || retiredFixture(value.fixtureIdentity,container.getAttribute(retiredFixtureAttribute))) {state.status='ready';return;}
       if(value.fixtureIdentity===null && value.fixtureRefresh)container.setAttribute(retiredFixtureAttribute,value.fixtureRefresh.key);
       fixtureChanged=previous!==null && previous!==(value.fixtureIdentity??'');
       if(fixtureChanged) {
         clearGoalMarketState(container);
         setLineupGoalSortValue(container,null);
         setLineupCleanSheetSortValue(container,null);
+        if(decision==='correct-context')setLineupAaSortValue(container,null);
       }
       container.setAttribute(fixtureIdentityAttribute,value.fixtureIdentity??'');
       if(value.fixtureRefresh)container.setAttribute(fixtureRefreshAttribute,JSON.stringify(value.fixtureRefresh));

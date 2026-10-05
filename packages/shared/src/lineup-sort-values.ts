@@ -64,6 +64,7 @@ export function lineupSortValueForPlayer(
     ...(stats.fixtureRefresh ? {fixtureRefresh:stats.fixtureRefresh} : {}),
     ...(stats.marketRefresh ? {marketRefresh:stats.marketRefresh} : {}),
     fixtureIdentity: stats.nextGame ? fixtureStatusKey(stats.nextGame) : null,
+    ...(stats.nextGame?.playerTeamSlug ? {playerTeamSlug:stats.nextGame.playerTeamSlug} : {}),
     cleanSheet:
       stats.position === 'Goalkeeper' || stats.position === 'Defender'
         ? (stats.nextGame?.cleanSheetProbability ?? null)

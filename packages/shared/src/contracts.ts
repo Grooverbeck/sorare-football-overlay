@@ -425,6 +425,9 @@ export const LineupSortValueSchema = z.object({
   fixtureRefresh: z.object({key:z.string(), nextCheckAt:z.string().datetime()}).optional(),
   marketRefresh: z.object({key:z.string(), nextCheckAt:z.string().datetime()}).optional(),
   fixtureIdentity: z.string().nullable().optional(),
+  // Server-confirmed membership for local Club/Nationalteam correction gates.
+  // Optional keeps old workers and extensions compatible during deployment.
+  playerTeamSlug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).optional(),
   slug: z.string(),
   displayName: z.string(),
   position: FootballPositionSchema,

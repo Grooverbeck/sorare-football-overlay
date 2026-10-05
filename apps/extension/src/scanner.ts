@@ -878,7 +878,7 @@ export class StatsBatchCoordinator {
         mergeSharedFixtureTeamData(stats, fixtureCandidates),
       );
       const responseData = responseDataWithSharedFixtures.map((stats) =>
-        this.mergeWithCachedStats(stats),
+        this.mergeWithCachedStats(stats,batch),
       );
       for (const stats of responseData) {
         this.recordMarketSnapshotCheck(stats);
@@ -1525,7 +1525,7 @@ export class StatsBatchCoordinator {
     }
   }
 
-  private mergeWithCachedStats(incoming: PlayerStats): PlayerStats {
+  private mergeWithCachedStats(incoming: PlayerStats,batch:readonly PendingTarget[]=[]): PlayerStats {
     const cached = incoming.displayedFixture
       ? this.cachedStatsValues().find(p=>p.slug===incoming.slug&&p.position===incoming.position&&p.displayedFixture?.key===incoming.displayedFixture?.key)
       : this.cachedStatsForTarget({slug:incoming.slug,position:incoming.position});
@@ -1533,7 +1533,13 @@ export class StatsBatchCoordinator {
       incoming.pendingRefreshes?.includes('formHistory') === true;
     const cachedIsPartialForm =
       cached?.pendingRefreshes?.includes('formHistory') === true;
-    if(cached && incoming.nextGame && (cached.nextGame ? olderFixture(fixtureStatusKey(incoming.nextGame),fixtureStatusKey(cached.nextGame)) : retiredFixture(fixtureStatusKey(incoming.nextGame),cached.fixtureRefresh?.key??null))) {
+    const cachedFixture=cached?.nextGame?fixtureStatusKey(cached.nextGame):null;
+    const incomingFixture=incoming.nextGame?fixtureStatusKey(incoming.nextGame):null;
+    const decisions=cachedFixture&&incomingFixture!==cachedFixture?batch.filter(target=>targetMatchesStats(target,incoming)).flatMap(target=>[...target.views])
+      .map(view=>view.fixtureContextDecision?.(incoming,cachedFixture)):[];
+    const correctContext=decisions.includes('correct-context');
+    const retainContext=!correctContext&&decisions.includes('retain-context');
+    if(cached && incoming.nextGame && (retainContext || (cached.nextGame ? !correctContext&&olderFixture(fixtureStatusKey(incoming.nextGame),cachedFixture) : retiredFixture(fixtureStatusKey(incoming.nextGame),cached.fixtureRefresh?.key??null)))) {
       incoming={...incoming,nextGame:cached.nextGame,fixtureRefresh:cached.fixtureRefresh,marketRefresh:cached.marketRefresh,
         // AA now belongs to the fixture's team context, so reject the old
         // projection together with the retired fixture in either direction.

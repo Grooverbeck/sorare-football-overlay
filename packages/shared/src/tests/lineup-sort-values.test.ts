@@ -26,6 +26,13 @@ function stats(overrides: Partial<PlayerStats> = {}): PlayerStats {
 }
 
 describe('lineup sort values', () => {
+  it('carries confirmed player membership additively without trusting a client team hint',()=>{
+    const value=lineupSortValueForPlayer(stats({position:'Defender',nextGame:{date:'2032-10-05T18:45:00Z',homeTeamSlug:'france',awayTeamSlug:'belgium',playerTeamSlug:'france',cleanSheetProbability:.38,matchProbabilities:null}}));
+    expect(LineupSortValueSchema.parse(value).playerTeamSlug).toBe('france');
+    const {playerTeamSlug: _team,...legacy}=value;
+    expect(LineupSortValueSchema.parse(legacy).fixtureIdentity).toBe(value.fixtureIdentity);
+    expect(LineupSortValueSchema.omit({playerTeamSlug:true}).parse(value).cleanSheet).toBe(.38);
+  });
   it('carries goal provenance from the same cache snapshot without adding unrelated assist payloads', () => {
     const goal = {probability: .4, bookmakerCount: 1, bookmakerQuotes: [
       {key: 'book', title: 'Book', decimalOdds: 2.5, probability: .4},

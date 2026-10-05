@@ -35,6 +35,7 @@ import {
 } from './lineup-sort.js';
 import { NativeMatchOddsReplacement, readNativeMatchOdds, type NativeMatchOddsReading } from './native-match-odds.js';
 import { displayedFixtureAttribute, displayedContextAttribute } from './displayed-match.js';
+import {lineupBuilderTeamRow,lineupTeamSides,fixtureMatchesCanonicalLineupSides,visibleFixtureContextDecision,type LineupTeamSide,type FixtureContextDecision} from './lineup-fixture-context.js';
 import type {
   HistoricalAssistWindow,
   MarketBracketSide,
@@ -986,13 +987,6 @@ interface LineupOddsPresentation {
   awayTeamName: string;
 }
 
-interface LineupTeamSide {
-  slug?: string;
-  label: string;
-  selected: boolean;
-}
-
-const canonicalTeamSlug = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const genericTeamTokens = new Set([
   'afc',
   'cf',
@@ -1071,30 +1065,6 @@ function teamSlugsLikelyMatch(
     candidateNormalized.startsWith(`${expectedNormalized}-`) ||
     expectedNormalized.startsWith(`${candidateNormalized}-`)
   );
-}
-
-function lineupTeamSides(teamRow: HTMLElement): LineupTeamSide[] | null {
-  const teamNodes = Array.from(
-    teamRow.querySelectorAll<HTMLElement>(':scope > [aria-label="Team"]'),
-  );
-  if (teamNodes.length !== 2) return null;
-  return teamNodes.map((teamNode) => {
-    const slugs = new Set(
-      Array.from(teamNode.querySelectorAll<HTMLImageElement>('img[alt]'))
-        .map((image) => image.alt.trim().toLowerCase())
-        .filter((alt) => canonicalTeamSlug.test(alt)),
-    );
-    const slug = slugs.size === 1 ? [...slugs][0] : undefined;
-    return {
-      ...(slug ? { slug } : {}),
-      label: teamNode.textContent?.trim() ?? '',
-      selected:
-        teamNode.classList.contains('highlighted') ||
-        teamNode.getAttribute('aria-current') === 'true' ||
-        teamNode.getAttribute('aria-selected') === 'true' ||
-        teamNode.dataset.state === 'active',
-    };
-  });
 }
 
 function lineupTeamSideMatches(
@@ -1268,29 +1238,6 @@ function visualLineupProbabilities(
         sides[1]!.label) ||
       'Auswärtsteam',
   };
-}
-
-function fixtureMatchesCanonicalLineupSides(
-  nextGame: NonNullable<PlayerStats['nextGame']>,
-  sides: readonly LineupTeamSide[],
-): boolean | null {
-  if (
-    sides.length !== 2 ||
-    !sides[0]?.slug ||
-    !sides[1]?.slug ||
-    !nextGame.homeTeamSlug ||
-    !nextGame.awayTeamSlug
-  ) {
-    return null;
-  }
-
-  const homeIndex = sides.findIndex(({ slug }) =>
-    teamSlugsLikelyMatch(slug, nextGame.homeTeamSlug),
-  );
-  const awayIndex = sides.findIndex(({ slug }) =>
-    teamSlugsLikelyMatch(slug, nextGame.awayTeamSlug),
-  );
-  return homeIndex >= 0 && awayIndex >= 0 && homeIndex !== awayIndex;
 }
 
 function nativeLineupProbabilities(
@@ -1545,56 +1492,6 @@ function usesCompactMarketBrackets(container: HTMLElement): boolean {
     supportsCompactViewPath(window.location.pathname) &&
     Boolean(container.closest('[class~="slots5"]'))
   );
-}
-
-function lineupBuilderTeamRow(container: HTMLElement): HTMLElement | null {
-  // Sorare reuses the same semantic card footer in the lineup builder,
-  // captain selection and squad player picker, but those screens have
-  // different routes. Detect the concrete two-team row near this card
-  // instead of coupling the odds bar to `/compose-team`.
-  const fiveSlotLineup = container.closest<HTMLElement>('[class~="slots5"]');
-  if (fiveSlotLineup) {
-    const concreteSlot = Array.from(fiveSlotLineup.children).find((slot) =>
-      slot.contains(container),
-    );
-    if (!concreteSlot) return null;
-    const rows = new Map<HTMLElement, number>();
-    for (const teamNode of concreteSlot.querySelectorAll<HTMLElement>(
-      '[aria-label="Team"]',
-    )) {
-      const row = teamNode.parentElement;
-      if (row) rows.set(row, (rows.get(row) ?? 0) + 1);
-    }
-    const localRows = [...rows]
-      .filter(([, teamCount]) => teamCount === 2)
-      .map(([row]) => row);
-    return localRows.length === 1 ? localRows[0] ?? null : null;
-  }
-
-  let scope = container.parentElement;
-  for (let depth = 0; scope && depth < 6; depth += 1) {
-    const teamNodes = Array.from(
-      scope.querySelectorAll<HTMLElement>('[aria-label="Team"]'),
-    );
-    const teamsByRow = new Map<HTMLElement, HTMLElement[]>();
-    for (const teamNode of teamNodes) {
-      const row = teamNode.parentElement;
-      if (!row) continue;
-      const siblings = teamsByRow.get(row) ?? [];
-      siblings.push(teamNode);
-      teamsByRow.set(row, siblings);
-    }
-    const teamRows = [...teamsByRow]
-      .filter(([, teams]) => teams.length === 2)
-      .map(([row]) => row);
-    if (teamRows.length === 1) return teamRows[0] ?? null;
-    // Once a scope contains multiple fixtures, it is no longer the local
-    // card shell. Continuing with the first row would attach empty/recycled
-    // lineup slots to an unrelated player's fixture.
-    if (teamRows.length > 1) return null;
-    scope = scope.parentElement;
-  }
-  return null;
 }
 
 interface VisibleCardImage {
@@ -3787,6 +3684,10 @@ export class OverlayView {
     setSortReadiness(this.container, { goal: preservedMarketGoal ? 'ready' : 'unavailable', aa: 'unavailable', cleanSheet: 'unavailable' });
   }
 
+  fixtureContextDecision(stats:PlayerStats,currentIdentity=this.container.getAttribute(fixtureIdentityAttribute)):FixtureContextDecision {
+    return visibleFixtureContextDecision(this.container,stats.nextGame?fixtureStatusKey(stats.nextGame):null,currentIdentity,stats.nextGame?.playerTeamSlug);
+  }
+
   render(
     stats: PlayerStats,
     fixtureCandidates: readonly PlayerStats[] = [],
@@ -3810,7 +3711,8 @@ export class OverlayView {
       this.container.removeAttribute(displayedContextAttribute);
     }
     const incomingIdentity=stats.nextGame?fixtureStatusKey(stats.nextGame):null;
-    if(olderFixture(incomingIdentity,this.container.getAttribute(fixtureIdentityAttribute)) || retiredFixture(incomingIdentity,this.container.getAttribute(retiredFixtureAttribute))) return;
+    const fixtureDecision=this.fixtureContextDecision(stats);
+    if(fixtureDecision==='retain-context'||(fixtureDecision!=='correct-context'&&olderFixture(incomingIdentity,this.container.getAttribute(fixtureIdentityAttribute))) || retiredFixture(incomingIdentity,this.container.getAttribute(retiredFixtureAttribute))) return;
     if(!stats.nextGame && stats.fixtureRefresh)this.container.setAttribute(retiredFixtureAttribute,stats.fixtureRefresh.key);
     if(stats.fixtureRefresh) this.container.setAttribute(fixtureRefreshAttribute,JSON.stringify(stats.fixtureRefresh));
     else this.container.removeAttribute(fixtureRefreshAttribute);
@@ -3821,6 +3723,7 @@ export class OverlayView {
       clearGoalMarketState(this.container);
       setLineupGoalSortValue(this.container,null);
       setLineupCleanSheetSortValue(this.container,null);
+      if(fixtureDecision==='correct-context')setLineupAaSortValue(this.container,null);
       this.container.removeAttribute(lineupSortLightweightReadyAttribute);
     }
     this.container.setAttribute(fixtureIdentityAttribute,incomingIdentity??'');
