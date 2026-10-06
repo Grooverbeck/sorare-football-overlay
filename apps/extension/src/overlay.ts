@@ -6,6 +6,7 @@ import {
   EUROPEAN_MARKET_BENCHMARKS,
   hasAnyDisplayData,
   fixtureStatusKey,
+  displayedMatchKey,
   lineupGoalSortValue as sharedLineupGoalSortValue,
   lineupSortReadinessForPlayer,
   type MarketProbability,
@@ -34,7 +35,7 @@ import {
   setLineupSortPosition,
 } from './lineup-sort.js';
 import { NativeMatchOddsReplacement, readNativeMatchOdds, type NativeMatchOddsReading } from './native-match-odds.js';
-import { displayedFixtureAttribute, displayedContextAttribute } from './displayed-match.js';
+import { displayedFixtureAttribute, displayedContextAttribute, readDisplayedMatch } from './displayed-match.js';
 import {lineupBuilderTeamRow,lineupTeamSides,fixtureMatchesCanonicalLineupSides,visibleFixtureContextDecision,type LineupTeamSide,type FixtureContextDecision} from './lineup-fixture-context.js';
 import type {
   HistoricalAssistWindow,
@@ -3693,6 +3694,13 @@ export class OverlayView {
     fixtureCandidates: readonly PlayerStats[] = [],
   ): void {
     if (this.destroyed) return;
+    // A late normal next-game answer cannot clear a confirmed displayed-game
+    // scope. Recheck only this card's local score footer; navigation to a new
+    // visible match (or to a builder without such a footer) can still proceed.
+    if(this.container.hasAttribute(displayedContextAttribute)) {
+      const expected=readDisplayedMatch(this.container);
+      if(expected&&stats.displayedFixture?.key!==displayedMatchKey(expected))return;
+    }
     const context=stats.displayedFixture?.key??'';
     if(context!==(this.container.getAttribute(displayedContextAttribute)??'')) {
       clearGoalMarketState(this.container);

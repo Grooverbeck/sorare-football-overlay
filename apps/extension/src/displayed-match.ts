@@ -16,11 +16,12 @@ function teamReference(image:HTMLImageElement):string|null {
   return null;
 }
 
-// Only passive lineups with one visible score footer. Never infer national
+// Only passive team views with one visible score footer. Never infer national
 // allegiance from the country printed on a card or from private React state.
 export function readDisplayedMatch(container:HTMLElement):DisplayedMatch|undefined {
   const segments=location.pathname.split('/');
-  if(!segments.includes('football')||(!segments.includes('lineups')&&!segments.includes('squad'))||segments.some(s=>s==='compose-team'||s==='compose'))return undefined;
+  const passiveView=segments.some(s=>s==='lineups'||s==='squad'||s==='my-club');
+  if(!segments.includes('football')||!passiveView||segments.some(s=>s==='compose-team'||s==='compose'))return undefined;
   let scope:HTMLElement|null=container;
   for(let depth=0;scope&&depth<7;depth++,scope=scope.parentElement) {
     const footers=scope.querySelectorAll('footer');
