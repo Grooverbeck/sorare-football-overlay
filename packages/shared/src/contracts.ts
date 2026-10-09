@@ -235,6 +235,9 @@ export const PlayerStatsSchema = z.object({
   nextGame: z
     .object({
       gameId: z.string().min(1).max(200).optional(),
+      // Server observation time, captured BEFORE the actual Sorare request.
+      // Cache reads never renew it. Legacy clients/entries may omit it.
+      sorareObservedAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
       date: z.string().datetime(),
       // Optional while existing fixture cache entries migrate lazily.
       // New responses use the stable Sorare competition slug to decide

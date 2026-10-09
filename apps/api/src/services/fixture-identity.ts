@@ -2,6 +2,22 @@ import type { PlayerStats } from '@sorare-overlay/shared';
 
 export type PlayerFixture = NonNullable<PlayerStats['nextGame']>;
 
+// Separate from sameFixtureIdentity: bookmaker/snapshot keys remain strictly
+// kickoff-scoped. A reschedule must NOT copy player prices across those keys.
+export function sameSorareGame(left:PlayerFixture,right:PlayerFixture):boolean {
+  if(!left.gameId||!/^Game:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(left.gameId)||left.gameId!==right.gameId)return false;
+  const canonical=(value:string|undefined)=>value?.trim().toLowerCase();
+  const home=canonical(left.homeTeamSlug),away=canonical(left.awayTeamSlug),team=canonical(left.playerTeamSlug);
+  return Boolean(home&&away&&home!==away&&team&&(team===home||team===away)&&
+    home===canonical(right.homeTeamSlug)&&away===canonical(right.awayTeamSlug)&&team===canonical(right.playerTeamSlug)&&
+    (!left.competitionSlug||!right.competitionSlug||left.competitionSlug===right.competitionSlug));
+}
+
+export function sorareObservationTime(fixture:PlayerFixture):number {
+  const value=fixture.sorareObservedAt;
+  return value!==undefined&&Number.isSafeInteger(value)&&value>=0?value:0;
+}
+
 /**
  * Cache identity for Sorare team names. Unlike bookmaker matching this keeps
  * meaningful suffixes such as FC, CF and SC, so similarly named clubs cannot

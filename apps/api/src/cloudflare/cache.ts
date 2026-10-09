@@ -54,6 +54,8 @@ import type {
 import {
   playerTeamFixtureIdentity,
   sameFixtureIdentity,
+  sameSorareGame,
+  sorareObservationTime,
 } from '../services/fixture-identity.js';
 import {
   MlsAaBenchmarkSnapshotSchema,
@@ -1371,6 +1373,16 @@ class CloudflarePlayerFixtureCache
       await this.set(key, value);
       return (await this.get(key)) ?? value;
     }
+    if(existing&&value&&sameSorareGame(existing,value)) {
+      const before=sorareObservationTime(existing),incoming=sorareObservationTime(value);
+      // Equal/unknown observations cannot prove a changed kickoff is newer.
+      if(incoming<before||(existing.date!==value.date&&incoming<=before))return existing;
+      if(existing.date!==value.date&&incoming>before) {
+        const {marketOdds:_oldPrices,...corrected}=value;
+        await this.set(key,corrected);
+        return (await this.get(key))??corrected;
+      }
+    }
     if (
       existing !== null &&
       value !== null &&
@@ -1439,6 +1451,7 @@ class CloudflarePlayerFixtureCache
         : existing;
     const identityWasHydrated = identityHydrated !== existing;
     const refreshed = withFixtureTeamOdds(identityHydrated, mergedOdds);
+    if(sameSorareGame(existing,value)&&sorareObservationTime(value)>sorareObservationTime(existing))refreshed.sorareObservedAt=sorareObservationTime(value);
     if (hasFixtureTeamOdds(mergedOdds)) {
       await this.rememberFixtureTeamOdds(refreshed, mergedOdds);
     }
@@ -1554,6 +1567,7 @@ class CloudflarePlayerFixtureCache
       directOdds.matchProbabilities?.win ?? '',
       directOdds.matchProbabilities?.draw ?? '',
       directOdds.matchProbabilities?.loss ?? '',
+      fixture.sorareObservedAt??'',
     ].join('|');
     const existing = this.teamFixtureResolutions.get(resolutionKey);
     if (existing) return existing;
@@ -1615,7 +1629,8 @@ class CloudflarePlayerFixtureCache
       ? this.selectPlayerTeamFixture(existing, incomingFixture)
       : incomingFixture;
     const shouldPersist =
-      !existing || !sameFixtureIdentity(existing, selectedCandidate);
+      !existing || !sameFixtureIdentity(existing, selectedCandidate)||
+      (sameSorareGame(existing,selectedCandidate)&&sorareObservationTime(selectedCandidate)>sorareObservationTime(existing));
 
     let selected = selectedCandidate;
     if (shouldPersist) {
@@ -1642,7 +1657,7 @@ class CloudflarePlayerFixtureCache
         (await this.readPlayerTeamFixture(teamKey, expectedTeamSlug)) ??
         incomingFixture;
     }
-    if (sameFixtureIdentity(selected, candidate)) {
+    if (sameFixtureIdentity(selected, candidate)&&(!sameSorareGame(selected,candidate)||sorareObservationTime(candidate)>=sorareObservationTime(selected))) {
       const { marketOdds: _marketOdds, ...playerFixture } = candidate;
       return playerFixture;
     }
@@ -1697,12 +1712,16 @@ class CloudflarePlayerFixtureCache
     for (const key of this.teamFixtureReads.keys()) {
       if (key.startsWith(prefix)) this.teamFixtureReads.delete(key);
     }
+    for(const key of this.teamFixtureResolutions.keys()) {
+      if(key.startsWith(prefix))this.teamFixtureResolutions.delete(key);
+    }
   }
 
   private selectPlayerTeamFixture(
     existing: NonNullable<PlayerFixtureStats>,
     incoming: NonNullable<PlayerFixtureStats>,
   ): NonNullable<PlayerFixtureStats> {
+    if(sameSorareGame(existing,incoming))return sorareObservationTime(incoming)>sorareObservationTime(existing)?incoming:existing;
     if (sameFixtureIdentity(existing, incoming)) return existing;
 
     const existingKickoff = Date.parse(existing.date);

@@ -28,6 +28,39 @@ interface CacheWriteOptions {
   expirationTtl?: number;
 }
 
+function sameSorareGameSql(left:string,right:string):string {
+  const field=(value:string,name:string)=>`json_extract(${value}, '$.nextGame.${name}')`;
+  const slug=(value:string,name:string)=>`lower(trim(${field(value,name)}))`;
+  const id=field(left,'gameId'),home=slug(left,'homeTeamSlug'),away=slug(left,'awayTeamSlug'),team=slug(left,'playerTeamSlug');
+  return `(CASE WHEN json_valid(${left}) AND json_valid(${right}) THEN
+    length(${id})=41 AND ${id} GLOB 'Game:????????-????-????-????-????????????'
+    AND length(replace(substr(${id},6),'-',''))=32
+    AND lower(replace(substr(${id},6),'-','')) NOT GLOB '*[^0-9a-f]*'
+    AND ${id}=${field(right,'gameId')}
+    AND ${home}<>'' AND ${away}<>'' AND ${home}<>${away}
+    AND ${team} IN (${home},${away})
+    AND ${home}=${slug(right,'homeTeamSlug')} AND ${away}=${slug(right,'awayTeamSlug')}
+    AND ${team}=${slug(right,'playerTeamSlug')}
+    AND (${field(left,'competitionSlug')} IS NULL OR ${field(right,'competitionSlug')} IS NULL OR ${field(left,'competitionSlug')}=${field(right,'competitionSlug')})
+    ELSE 0 END)`;
+}
+
+function observationSql(value:string):string {
+  return `(CASE WHEN json_type(${value}, '$.nextGame.sorareObservedAt')='integer'
+    AND json_extract(${value}, '$.nextGame.sorareObservedAt') BETWEEN 0 AND 9007199254740991
+    THEN json_extract(${value}, '$.nextGame.sorareObservedAt') ELSE 0 END)`;
+}
+
+// Last line of defence across Worker isolates, independent of write arrival.
+function observationFenceSql():string {
+  return `(CASE WHEN json_valid(cache_entries.value) AND json_valid(excluded.value) THEN
+    NOT COALESCE(${sameSorareGameSql('cache_entries.value','excluded.value')},0)
+    OR ${observationSql('excluded.value')}>${observationSql('cache_entries.value')}
+    OR (${observationSql('excluded.value')}=${observationSql('cache_entries.value')}
+      AND json_extract(excluded.value,'$.nextGame.date')=json_extract(cache_entries.value,'$.nextGame.date'))
+    ELSE 1 END)`;
+}
+
 /**
  * Persistent cache backed by D1. The optional KV namespace is now an
  * outage-only fallback: production KV contains only obsolete migration keys,
@@ -192,7 +225,8 @@ export class D1JsonKeyValueStore implements JsonKeyValueStore {
          ON CONFLICT(cache_key) DO UPDATE SET
            value = excluded.value,
            expires_at = excluded.expires_at,
-           updated_at = excluded.updated_at`,
+           updated_at = excluded.updated_at
+         ${key.startsWith('player-fixture:')?`WHERE ${observationFenceSql()}`:''}`,
       )
       .bind(key, value, expiresAt, now)
       .run();
@@ -230,7 +264,8 @@ export class D1JsonKeyValueStore implements JsonKeyValueStore {
   }
 
   /**
-   * Atomically keeps the fixture with the earlier kickoff. This is used by
+   * Atomically keeps the earlier fixture unless a newer verified observation
+   * reschedules the SAME Sorare game and canonical player/team side.
    * the team fixture cache so concurrent Worker isolates cannot overwrite a
    * held match with the following fixture.
    */
@@ -254,14 +289,16 @@ export class D1JsonKeyValueStore implements JsonKeyValueStore {
            value = excluded.value,
            expires_at = excluded.expires_at,
            updated_at = excluded.updated_at
-         WHERE cache_entries.expires_at IS NOT NULL
-               AND cache_entries.expires_at <= ?4
+         WHERE ${observationFenceSql()} AND (
+            (cache_entries.expires_at IS NOT NULL AND cache_entries.expires_at <= ?4)
             OR ${completedFixtureSql('cache_entries.value')}
             OR json_extract(cache_entries.value, '$.nextGame.date') IS NULL
+            OR (${sameSorareGameSql('cache_entries.value','excluded.value')}
+                AND ${observationSql('excluded.value')}>${observationSql('cache_entries.value')})
             OR json_extract(excluded.value, '$.nextGame.date')
                < json_extract(cache_entries.value, '$.nextGame.date')
             OR (json_extract(excluded.value, '$.nextGame.date') = json_extract(cache_entries.value, '$.nextGame.date')
-                AND excluded.expires_at > cache_entries.expires_at)`,
+                AND excluded.expires_at > cache_entries.expires_at))`,
       )
       .bind(key, value, expiresAt, now)
       .run();

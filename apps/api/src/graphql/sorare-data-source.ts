@@ -653,6 +653,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
     requests: readonly SourcePlayerRequest[],
   ): Promise<SourcePlayerFixture[]> {
     const calls = chunks(requests, this.fixtureBatchSize).map(async (batch) => {
+      const observedAt=Date.now();
       const requestBySlug = new Map(
         batch.map((request) => [request.slug, request]),
       );
@@ -672,7 +673,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
         const expectedTeamSlug = matchingRequest?.resolvedFromName
           ? matchingRequest.teamSlug
           : undefined;
-        const nextGame = this.nextGame(player, expectedTeamSlug);
+        const nextGame = this.nextGame(player, expectedTeamSlug, observedAt);
         const playerTeamSlug =
           nextGame?.playerTeamSlug ?? player.activeClub?.slug;
         return [
@@ -914,6 +915,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
     includeHistoricalAssists: boolean,
     historyMode: HistoryLoadMode,
   ): Promise<SourcePlayer[]> {
+    const observedAt=Date.now();
     const variables: PlayerStatsBatchQueryVariables = {
       slugs: requests.map(({ slug }) => slug),
       position: requestedPosition ? toSorarePosition[requestedPosition] : null,
@@ -982,7 +984,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
                 appearances,
                 position,
               ),
-              nextGame: this.nextGame(player, expectedTeamSlug),
+              nextGame: this.nextGame(player, expectedTeamSlug, observedAt),
             },
             scoreWindowWasFull: player.playerGameScores.length >= 15,
           },
@@ -1186,6 +1188,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
           { __typename?: 'Player' }
         >,
     expectedTeamSlug?: string,
+    observedAt?: number,
   ) {
     const game = player.nextGame;
     if (!game || game.__typename !== 'Game') return null;
@@ -1220,6 +1223,7 @@ export class SorareDataSource implements PlayerStatsDataSource {
     const footballStats = stats?.__typename === 'FootballTeamGameStats' ? stats : null;
     return {
       gameId: game.id,
+      ...(observedAt!==undefined&&/^Game:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(game.id)&&playerTeamSlug?{sorareObservedAt:observedAt}:{}),
       date: game.date,
       ...(game.competition?.slug
         ? { competitionSlug: game.competition.slug }

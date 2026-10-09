@@ -167,6 +167,17 @@ D1-Sperre vor mehrfachen Prüfungen innerhalb von 15 Minuten. Neue Fixtures trag
 die Sorare-Spiel-ID; alte Einträge werden über eine begrenzte Club-Abfrage mit
 exakter Anpfiffzeit und beiden kanonischen Team-Slugs zugeordnet. Ohne zuverlässigen
 Status bleibt 09:00 Uhr deutscher Zeit (`Europe/Berlin`) die Rückfallgrenze.
+
+Korrigiert Sorare den Termin derselben Spiel-ID, darf eine neuere bestätigte
+Beobachtung den bisherigen Termin ersetzen – nur bei identischen kanonischen
+Heim-/Auswärtsteams und derselben Spielerseite. `sorareObservedAt` wird vor dem
+echten Sorare-Abruf gesetzt und beim Cachelesen nicht erneuert. Spieler- und
+Teamcache verwenden diese Reihenfolge; D1 verhindert atomar, dass verspätete
+ältere Schreibvorgänge den korrigierten Termin zurücksetzen. Andere Spiele
+unterliegen weiterhin der bisherigen Halte-/Rollover-Regel. Alte Einträge bleiben
+lesbar und werden ohne Cache-Policy-Bump oder flächige Löschung bei der nächsten
+fälligen Quellabfrage korrigiert. Tor-/Assist-Snapshots bleiben an ihren
+Anpfiff-Schlüsseln getrennt und werden bei einer Terminänderung nicht kopiert.
 Bestätigt laufende/unterbrochene Spiele werden auch über diese Grenze hinaus gehalten.
 
 Die aktualisierte Extension erhält den nächsten Prüfzeitpunkt. In sichtbaren Tabs

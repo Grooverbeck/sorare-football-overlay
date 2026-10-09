@@ -28,6 +28,13 @@ const fixture = {
 };
 
 describe('PlayerStatsSchema team fixture identity', () => {
+  it('keeps legacy fixture contracts compatible with server observation metadata',()=>{
+    const withObservation={...fixture.nextGame,gameId:'Game:07af3ee4-ada0-48a1-9021-8969ae54ef32',sorareObservedAt:Date.parse('2026-10-09T12:00:00Z')};
+    expect(PlayerStatsSchema.parse({...fixture,nextGame:withObservation}).nextGame?.sorareObservedAt).toBe(withObservation.sorareObservedAt);
+    const legacy=PlayerStatsSchema.shape.nextGame.unwrap().omit({sorareObservedAt:true});
+    expect(legacy.parse(withObservation)).toEqual({...fixture.nextGame,gameId:withObservation.gameId});
+    expect(PlayerStatsSchema.safeParse(fixture).success).toBe(true);
+  });
   it('keeps legacy fixtures without a team slug valid', () => {
     expect(PlayerStatsSchema.safeParse(fixture).success).toBe(true);
   });
