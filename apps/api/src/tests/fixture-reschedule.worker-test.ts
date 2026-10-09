@@ -88,3 +88,16 @@ it('does not renew source freshness or write identity rows on ordinary warm read
   }
   const after=await env.CACHE_DB.prepare("SELECT value,updated_at FROM cache_entries WHERE cache_key='player-team-fixture:v2:rijeka-rijeka'").first();expect(after).toEqual(before);
 });
+
+it('revalidates a passed placeholder through one shared source lease, but stops at rollover and for unknown game IDs',async()=>{
+  const after=Date.parse('2026-10-10T04:00:00Z');
+  const store=new D1JsonKeyValueStore(env.CACHE_DB,undefined,()=>after/1000),context=createExecutionContext();
+  const cache=new CloudflarePlayerStatsCache(store,604800,14400,context,()=>after);
+  expect(await cache.claimFixtureRefresh({...old,gameId:'unknown'})).toBe(false);
+  expect(await cache.claimFixtureRefresh(old)).toBe(true);
+  expect(await cache.claimFixtureRefresh(old)).toBe(false);
+  const later=Date.parse('2026-10-11T08:00:00Z');
+  const expired=new CloudflarePlayerStatsCache(new D1JsonKeyValueStore(env.CACHE_DB,undefined,()=>later/1000),604800,14400,context,()=>later);
+  expect(await expired.claimFixtureRefresh(old)).toBe(false);
+  await waitOnExecutionContext(context);
+});

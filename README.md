@@ -178,6 +178,11 @@ unterliegen weiterhin der bisherigen Halte-/Rollover-Regel. Alte Einträge bleib
 lesbar und werden ohne Cache-Policy-Bump oder flächige Löschung bei der nächsten
 fälligen Quellabfrage korrigiert. Tor-/Assist-Snapshots bleiben an ihren
 Anpfiff-Schlüsseln getrennt und werden bei einer Terminänderung nicht kopiert.
+Fehlen Teamquoten und liegt ein gespeicherter Platzhalter-Anpfiff schon zurück,
+darf eine bekannte Sorare-Spiel-ID noch bis zur morgendlichen Rückfallgrenze
+über die gemeinsame 15-Minuten-Prüfsperre erneut bestätigt werden. Dadurch
+blockiert der falsche Termin seine eigene Korrektur nicht. Buchmacher-Abrufe
+für tatsächlich bereits angepfiffene Begegnungen bleiben ausgeschlossen.
 Bestätigt laufende/unterbrochene Spiele werden auch über diese Grenze hinaus gehalten.
 
 Die aktualisierte Extension erhält den nächsten Prüfzeitpunkt. In sichtbaren Tabs

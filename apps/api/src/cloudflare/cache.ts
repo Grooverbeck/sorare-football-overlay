@@ -1338,7 +1338,14 @@ class CloudflarePlayerFixtureCache
       return false;
     }
     const kickoffMs = Date.parse(value.date);
-    if (!Number.isFinite(kickoffMs) || kickoffMs <= this.now()) return false;
+    if (!Number.isFinite(kickoffMs)) return false;
+    if(kickoffMs<=this.now()) {
+      // A stale midnight placeholder may already look "started" while the
+      // real game is still ahead. Revalidate only known Sorare games, using
+      // the existing shared lease and never beyond the morning boundary.
+      const rollover=fixtureRolloverExpiration(value.date);
+      if(!value.gameId||!/^Game:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value.gameId)||rollover===null||rollover<=Math.floor(this.now()/1000))return false;
+    }
     const key = fixtureOddsCheckKey(value);
     if (!key) return false;
     const leaseValue = JSON.stringify({
