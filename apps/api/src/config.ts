@@ -38,7 +38,6 @@ const EnvSchema = z.object({
     .string()
     .url()
     .default('https://api.the-odds-api.com/v4'),
-  ODDS_API_SPORT_KEY: z.string().trim().min(1).default('soccer_usa_mls'),
   ODDS_API_REGION: z.string().trim().min(1).default('us'),
   ODDS_API_FALLBACK_REGION: optionalString,
   ODDS_FETCH_WINDOW_HOURS: z.coerce.number().int().min(1).max(168).default(72),
@@ -55,7 +54,6 @@ const EnvSchema = z.object({
     .string()
     .url()
     .default('https://api.sportsgameodds.com/v2'),
-  SPORTS_GAME_ODDS_LEAGUE_ID: z.string().trim().min(1).default('MLS'),
   ODDS_API_IO_KEY: optionalString,
   ODDS_API_IO_BASE_URL: z
     .string()
@@ -102,7 +100,6 @@ export interface AppConfig {
   jwtAud?: string;
   oddsApiKey?: string;
   oddsApiBaseUrl: string;
-  oddsApiSportKey: string;
   oddsApiRegion: string;
   oddsApiFallbackRegion?: string;
   oddsFetchWindowMs: number;
@@ -111,7 +108,6 @@ export interface AppConfig {
   oddsMissCacheTtlMs: number;
   sportsGameOddsApiKey?: string;
   sportsGameOddsBaseUrl: string;
-  sportsGameOddsLeagueId: string;
   oddsApiIoKey?: string;
   oddsApiIoBaseUrl: string;
   oddsApiIoLeague: string;
@@ -147,7 +143,6 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): A
       ? { oddsApiKey: parsed.THE_ODDS_API_KEY }
       : {}),
     oddsApiBaseUrl: parsed.ODDS_API_BASE_URL,
-    oddsApiSportKey: parsed.ODDS_API_SPORT_KEY,
     oddsApiRegion: parsed.ODDS_API_REGION,
     ...(parsed.ODDS_API_FALLBACK_REGION
       ? { oddsApiFallbackRegion: parsed.ODDS_API_FALLBACK_REGION }
@@ -163,7 +158,6 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): A
       ? { sportsGameOddsApiKey: parsed.SPORTS_GAME_ODDS_API_KEY }
       : {}),
     sportsGameOddsBaseUrl: parsed.SPORTS_GAME_ODDS_BASE_URL,
-    sportsGameOddsLeagueId: parsed.SPORTS_GAME_ODDS_LEAGUE_ID,
     ...(parsed.ODDS_API_IO_KEY
       ? { oddsApiIoKey: parsed.ODDS_API_IO_KEY }
       : {}),

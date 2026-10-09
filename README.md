@@ -102,7 +102,6 @@ Alle Werte werden aus `apps/api/.env` oder der Prozessumgebung gelesen.
 | `SORARE_JWT_AUD` | leer | Optionaler `JWT-AUD`-Header |
 | `THE_ODDS_API_KEY` | leer | Serverseitiger Schlüssel für Tor-/Assist-Märkte und den H/D/A-Fallback |
 | `ODDS_API_BASE_URL` | `https://api.the-odds-api.com/v4` | Basis-URL von The Odds API |
-| `ODDS_API_SPORT_KEY` | `soccer_usa_mls` | Liga bei The Odds API |
 | `ODDS_API_REGION` | `us` | Primäre Buchmacherregion |
 | `ODDS_API_FALLBACK_REGION` | leer | Optionale zweite Region für weiterhin fehlende Spieler- oder H/D/A-Märkte; Produktion nutzt `uk` |
 | `ODDS_FETCH_WINDOW_HOURS` | `72` | Tor-/Assistquoten frühestens so viele Stunden vor Anpfiff abrufen |
@@ -111,7 +110,6 @@ Alle Werte werden aus `apps/api/.env` oder der Prozessumgebung gelesen.
 | `ODDS_MISS_CACHE_TTL_SECONDS` | `21600` | Legacy-Fallback für alte negative Quoten-Cacheeinträge; neue Einträge nutzen 12h/24h plus eine letzte Prüfung vier Stunden vor Anpfiff |
 | `SPORTS_GAME_ODDS_API_KEY` | leer | Serverseitiger Schlüssel für direkte Tor-, Assist-, Tor-oder-Assist- und H/D/A-Märkte |
 | `SPORTS_GAME_ODDS_BASE_URL` | `https://api.sportsgameodds.com/v2` | Basis-URL von SportsGameOdds |
-| `SPORTS_GAME_ODDS_LEAGUE_ID` | `MLS` | Überschreibbare SportsGameOdds-ID der MLS-Route; die europäischen IDs kommen aus der Routingmatrix |
 | `ODDS_API_IO_KEY` | leer | Serverseitiger Schlüssel für den zusätzlichen Torquoten-Fallback; mitgelieferte Assistquoten werden ohne eigenen Abruf übernommen |
 | `ODDS_API_IO_BASE_URL` | `https://api.odds-api.io/v3` | Basis-URL von Odds-API.io |
 | `ODDS_API_IO_LEAGUE` | `austria-bundesliga` | Überschreibbarer Odds-API.io-Slug für die österreichische Bundesliga |
@@ -204,9 +202,10 @@ möglichst wenigen Sammelabfragen geladen. Ist eine SportsGameOdds-Event-ID
 bekannt, wird eine spätere Ergänzungsprüfung direkt auf dieses Spiel begrenzt.
 Die Anbieter werden nicht bei jedem Kartenaufruf abgefragt. Innerhalb des
 konfigurierten Zeitfensters lädt das Backend die angebotenen Märkte einmalig.
-Ein täglich um 05:00 UTC laufender Cloudflare-Cron
-wärmt MLS-Begegnungen vor, die in den nächsten 72 Stunden beginnen. Erfolgreich
-erfasste Spielerwerte bleiben als unveränderlicher Begegnungs-Snapshot ohne
+Ein täglich um 05:00 UTC laufender Cloudflare-Cron entfernt abgelaufene
+Cacheeinträge und aktualisiert den Anbieter-Verbrauch, ohne Spiele vorab
+abzufragen. MLS-Quotenabrufe sind bei allen drei externen Anbietern deaktiviert.
+Erfolgreich erfasste Spielerwerte bleiben als unveränderlicher Begegnungs-Snapshot ohne
 Ablaufdatum gespeichert. Ein Ergänzungslauf kann später gelistete Spieler und
 Buchmacherdetails hinzufügen, verändert aber keine bereits eingefrorene
 Spielerwahrscheinlichkeit. Fehlende Märkte und konkret angefragte, noch nicht
@@ -235,7 +234,7 @@ The Odds API behält seine bisherigen wettbewerbsabhängigen Abruffenster und
 Monatscredit-Schutzregeln.
 
 Vor einem externen Abruf prüft das Backend zusätzlich die von Sorare gelieferte
-Competition. SportsGameOdds unterstützt gezielt MLS, Champions League,
+Competition. SportsGameOdds unterstützt gezielt Champions League,
 Europa League, La Liga, Ligue 1, Ligue 2 und Bundesliga. The Odds API ergänzt
 diese Wettbewerbe und deckt zusätzlich Leagues Cup, Conference League,
 2. Bundesliga und die österreichische Bundesliga ab. Odds-API.io wird über die
@@ -384,18 +383,14 @@ Copy-Item apps/extension/.env.cloudflare.example apps/extension/.env
 npm run build --workspace=@sorare-overlay/extension
 ```
 
-Die automatische Quoten-Vorwärmung wird mit dem Cron-Ausdruck `0 5 * * *`
-direkt beim Worker-Deployment aktiviert. Zusätzlich erzeugt
+Die tägliche Cache-Bereinigung und Verbrauchsprüfung wird mit dem Cron-Ausdruck
+`0 5 * * *` direkt beim Worker-Deployment aktiviert. Sie enthält keine
+MLS-Quoten-Vorwärmung. Zusätzlich erzeugt
 `0 10 * * MON` jeden Montag um 10:00 UTC den MLS-AA-Vergleich einschließlich
 Perzentilgrenzen und Top 3 je Position neu. Schlägt dieser Lauf fehl, bleibt der
 letzte gültige Snapshot aktiv; die Spielerstatistiken werden dadurch nicht
-blockiert. Für eine einmalige manuelle Quoten-Vorwärmung, etwa
-unmittelbar nach einem Deployment, kann ohne lokalen Odds-API-Key der
-Produktiv-Worker aufgerufen werden:
-
-```bash
-npm run prewarm:mls-props --workspace=@sorare-overlay/api
-```
+blockiert. Die historische AA-Auswertung bleibt unabhängig von der Entfernung
+der MLS-Quotenabrufe erhalten.
 
 Die aktuell veröffentlichte API ist unter
 `https://sorare-football-overlay-api.grooverbeck.workers.dev` erreichbar.

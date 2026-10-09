@@ -10,8 +10,8 @@ const EARLY_PLAYER_FETCH_WINDOW_MS = 72 * 60 * 60 * 1_000;
 /**
  * Sorare labels the MLS/Liga MX tournament as `leagues-cup-mls`, while
  * The Odds API exposes the same fixtures through its CONCACAF Leagues Cup
- * feed. Keep this separate from the regular MLS feed so a Leagues Cup card
- * never consumes an MLS request that cannot contain its fixture.
+ * feed. This is a separate competition and remains enabled even though
+ * regular MLS odds requests are disabled.
  */
 export const LEAGUES_CUP_COMPETITION_SLUGS = [
   'leagues-cup-mls',
@@ -308,12 +308,6 @@ export const EUROPEAN_THE_ODDS_API_PLAYER_ROUTES: readonly TheOddsApiPlayerRoute
 
 const BASE_SPORTS_GAME_ODDS_ROUTES = [
   {
-    competitionSlugs: ['mlspa'],
-    leagueId: 'MLS',
-    playerMarkets: ['goal', 'assist'],
-    matchOdds: true,
-  },
-  {
     competitionSlugs: ['uefa-champions-league'],
     leagueId: 'UEFA_CHAMPIONS_LEAGUE',
     playerMarkets: ['goal', 'assist'],
@@ -330,7 +324,7 @@ const BASE_SPORTS_GAME_ODDS_ROUTES = [
 /**
  * SportsGameOdds bills returned event objects rather than individual markets.
  * Align the new European H-D-A and player-prop windows so one event response
- * can populate both snapshots. Existing MLS/UEFA windows remain configurable.
+ * can populate both snapshots. Existing UEFA windows remain configurable.
  */
 export const SPORTS_GAME_ODDS_ROUTES: readonly SportsGameOddsRoute[] = [
   ...BASE_SPORTS_GAME_ODDS_ROUTES,
@@ -359,10 +353,6 @@ const BASE_ODDS_API_IO_ROUTES = [
     playerMarkets: ['goal'],
     matchOdds: true,
     playerFetchWindowMs: 96 * 60 * 60 * 1_000,
-  },
-  {
-    competitionSlugs: ['mlspa'],
-    leagueSlugs: ['usa-mls'],
   },
   {
     competitionSlugs: LEAGUES_CUP_COMPETITION_SLUGS,

@@ -92,7 +92,7 @@ export interface StatsRuntime {
 
 interface TheOddsPlayerProviderPlan {
   competitionSlugs: readonly string[];
-  sportKeys: readonly string[] | null;
+  sportKeys: readonly string[];
   region?: string;
   fallbackRegion?: string | null;
   markets?: readonly PlayerMarketField[];
@@ -102,17 +102,13 @@ interface TheOddsPlayerProviderPlan {
 }
 
 const THE_ODDS_PLAYER_PROVIDER_PLANS: readonly TheOddsPlayerProviderPlan[] = [
-  {
-    competitionSlugs: ['mlspa'],
-    sportKeys: null,
-    refreshUsage: true,
-  },
-  ...LEAGUES_CUP_THE_ODDS_API_ROUTES.map((route) => ({
+  ...LEAGUES_CUP_THE_ODDS_API_ROUTES.map((route, index) => ({
     competitionSlugs: route.competitionSlugs,
     sportKeys: route.sportKeys,
     region: route.region,
     fallbackRegion: route.fallbackRegion,
-    refreshUsage: false,
+    // Account-wide usage still needs one owner, independent of MLS routing.
+    refreshUsage: index === 0,
   })),
   {
     ...NATIONS_LEAGUE_THE_ODDS_API_PLAYER_ROUTE,
@@ -294,7 +290,7 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
     };
     const theOddsSources = config.oddsApiKey
       ? THE_ODDS_PLAYER_PROVIDER_PLANS.map((plan) => {
-          const sportKeys = plan.sportKeys ?? [config.oddsApiSportKey];
+          const sportKeys = plan.sportKeys;
           return createTheOddsProvider(
             sportKeys[0]!,
             plan.competitionSlugs,
@@ -331,9 +327,7 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
             new SportsGameOddsPlayerMarketOddsProvider({
               apiKey: config.sportsGameOddsApiKey!,
               baseUrl: config.sportsGameOddsBaseUrl,
-              leagueId: route.competitionSlugs.includes('mlspa')
-                ? config.sportsGameOddsLeagueId
-                : route.leagueId,
+              leagueId: route.leagueId,
               fetchWindowMs:
                 route.playerFetchWindowMs ?? config.oddsFetchWindowMs,
               matchOddsFetchWindowMs:
@@ -428,14 +422,6 @@ export function createStatsRuntime(options: CreateStatsRuntimeOptions): StatsRun
           apiKey: config.oddsApiKey,
           baseUrl: config.oddsApiBaseUrl,
           routes: [
-            {
-              sportKeys: [config.oddsApiSportKey],
-              competitionSlugs: ['mlspa'],
-              region: config.oddsApiRegion,
-              ...(config.oddsApiFallbackRegion
-                ? { fallbackRegion: config.oddsApiFallbackRegion }
-                : {}),
-            },
             ...LEAGUES_CUP_THE_ODDS_API_ROUTES,
             ...NATIONS_LEAGUE_THE_ODDS_API_MATCH_ROUTES,
             {

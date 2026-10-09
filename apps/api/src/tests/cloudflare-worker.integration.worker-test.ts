@@ -19,6 +19,7 @@ import {
 import { D1JsonKeyValueStore } from '../cloudflare/d1-cache.js';
 import { D1OddsBudget } from '../cloudflare/odds-budget.js';
 import { D1PlayerLoadLeases } from '../cloudflare/player-load-leases.js';
+import worker from '../cloudflare/worker.js';
 import { FixtureLifecycle, type Fixture } from '../services/fixture-lifecycle.js';
 import { fixtureStatusKey, PlayerStatsRequestSchema } from '@sorare-overlay/shared';
 import { StatsService } from '../services/stats-service.js';
@@ -62,6 +63,20 @@ beforeEach(async () => {
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe('Cloudflare Worker', () => {
+  it('runs daily cleanup without querying MLS fixtures or prewarming markets', async () => {
+    const store = new D1JsonKeyValueStore(env.CACHE_DB);
+    await store.put('expired-maintenance-test', JSON.stringify({ value: 1 }), {
+      expiration: Math.floor(Date.now() / 1_000) - 60,
+    });
+    await store.put('retained-maintenance-test', JSON.stringify({ value: 2 }));
+    const context = createExecutionContext();
+    worker.scheduled({ cron: '0 5 * * *' } as ScheduledController, env, context);
+    await waitOnExecutionContext(context);
+    expect(await env.CACHE_DB.prepare('SELECT cache_key FROM cache_entries WHERE cache_key=?1')
+      .bind('expired-maintenance-test').first()).toBeNull();
+    expect(await store.get('retained-maintenance-test', 'json')).toEqual({ value: 2 });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
   it('persists national AA independently in D1 while keeping the club form readable', async () => {
     const store=new D1JsonKeyValueStore(env.CACHE_DB);
     const context=createExecutionContext();

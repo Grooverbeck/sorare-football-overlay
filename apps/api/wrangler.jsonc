@@ -28,7 +28,6 @@
     "SORARE_MAX_RETRIES": "3",
     "SORARE_GRAPHQL_URL": "https://api.sorare.com/graphql",
     "ODDS_API_BASE_URL": "https://api.the-odds-api.com/v4",
-    "ODDS_API_SPORT_KEY": "soccer_usa_mls",
     "ODDS_API_REGION": "us",
     "ODDS_API_FALLBACK_REGION": "uk",
     "ODDS_FETCH_WINDOW_HOURS": "72",
@@ -36,7 +35,6 @@
     "MATCH_ODDS_MISS_CACHE_TTL_SECONDS": "3600",
     "ODDS_MISS_CACHE_TTL_SECONDS": "21600",
     "SPORTS_GAME_ODDS_BASE_URL": "https://api.sportsgameodds.com/v2",
-    "SPORTS_GAME_ODDS_LEAGUE_ID": "MLS",
     "ODDS_API_IO_BASE_URL": "https://api.odds-api.io/v3",
     "ODDS_API_IO_LEAGUE": "austria-bundesliga",
     // Both names must remain selected in the Odds-API.io account.

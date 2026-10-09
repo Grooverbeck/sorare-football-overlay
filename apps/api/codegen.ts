@@ -8,7 +8,6 @@ const config: CodegenConfig = {
   documents: [
     'src/graphql/**/*.ts',
     'src/services/mls-aa-benchmark.ts',
-    'src/services/mls-market-prewarmer.ts',
   ],
   generates: {
     'src/generated/sorare.ts': {

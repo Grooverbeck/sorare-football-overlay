@@ -35035,10 +35035,3 @@ export type WeeklyMlsAaScoresQueryVariables = Exact<{
 
 
 export type WeeklyMlsAaScoresQuery = { readonly __typename?: 'Query', readonly players: ReadonlyArray<{ readonly __typename: 'BaseballPlayer' } | { readonly __typename: 'NBAPlayer' } | { readonly __typename: 'Player', readonly slug: string, readonly activeClub?: { readonly __typename?: 'Club', readonly id: string } | null, readonly playerGameScores: ReadonlyArray<{ readonly __typename: 'BaseballPlayerGameScore', readonly positionTyped: Position } | { readonly __typename: 'BasketballPlayerGameScore', readonly positionTyped: Position } | { readonly __typename: 'PlayerGameScore', readonly allAroundScore: number, readonly positionTyped: Position, readonly footballGame: { readonly __typename?: 'Game', readonly date: any, readonly lowCoverage: boolean }, readonly footballPlayerGameStats: { readonly __typename?: 'PlayerGameStats', readonly playedInGame: boolean, readonly minsPlayed?: number | null, readonly anyTeam: { readonly __typename?: 'Club', readonly id: string } | { readonly __typename?: 'NationalTeam', readonly id: string } } } | { readonly __typename: 'So5Score', readonly positionTyped: Position } | null> }> };
-
-export type MlsUpcomingFixturesQueryVariables = Exact<{
-  first: Scalars['Int']['input'];
-}>;
-
-
-export type MlsUpcomingFixturesQuery = { readonly __typename?: 'Query', readonly football: { readonly __typename?: 'FootballRoot', readonly competition: { readonly __typename?: 'Competition', readonly futureGames: { readonly __typename?: 'GameConnection', readonly nodes: ReadonlyArray<{ readonly __typename?: 'Game', readonly id: string, readonly date: any, readonly homeTeam?: { readonly __typename?: 'Club', readonly slug: string, readonly shortName: string } | { readonly __typename?: 'NationalTeam', readonly slug: string, readonly shortName: string } | null, readonly awayTeam?: { readonly __typename?: 'Club', readonly slug: string, readonly shortName: string } | { readonly __typename?: 'NationalTeam', readonly slug: string, readonly shortName: string } | null }> } } } };

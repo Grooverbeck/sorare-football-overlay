@@ -164,12 +164,6 @@ describe('European competition odds capabilities', () => {
   it('uses SportsGameOdds for the five documented European league feeds', () => {
     expect(SPORTS_GAME_ODDS_ROUTES).toEqual([
       {
-        competitionSlugs: ['mlspa'],
-        leagueId: 'MLS',
-        playerMarkets: ['goal', 'assist'],
-        matchOdds: true,
-      },
-      {
         competitionSlugs: ['uefa-champions-league'],
         leagueId: 'UEFA_CHAMPIONS_LEAGUE',
         playerMarkets: ['goal', 'assist'],
@@ -266,13 +260,12 @@ describe('European competition odds capabilities', () => {
     ]);
   });
 
-  it('preserves the existing MLS, Leagues Cup and UEFA goalscorer fallbacks', () => {
+  it('preserves Leagues Cup and UEFA goalscorer fallbacks without MLS', () => {
     const competitions = ODDS_API_IO_ROUTES.flatMap(
       ({ competitionSlugs }) => competitionSlugs,
     );
     expect(competitions).toEqual(
       expect.arrayContaining([
-        'mlspa',
         'leagues-cup-mls',
         'uefa-champions-league',
         'uefa-europa-league',
@@ -280,6 +273,9 @@ describe('European competition odds capabilities', () => {
       ]),
     );
     expect(new Set(competitions).size).toBe(competitions.length);
+    expect(competitions).not.toContain('mlspa');
+    expect(ODDS_API_IO_ROUTES.flatMap(({ leagueSlugs }) => leagueSlugs)).not.toContain('usa-mls');
+    expect(SPORTS_GAME_ODDS_ROUTES.flatMap(({ competitionSlugs }) => competitionSlugs)).not.toContain('mlspa');
   });
 
   it('uses the live La Liga slug and checks current UEFA playoff feeds first', () => {

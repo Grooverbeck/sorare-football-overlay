@@ -29,7 +29,6 @@ describe('loadConfig cache TTLs', () => {
     expect(config.sportsGameOddsBaseUrl).toBe(
       'https://api.sportsgameodds.com/v2',
     );
-    expect(config.sportsGameOddsLeagueId).toBe('MLS');
     expect(config.oddsApiIoKey).toBeUndefined();
     expect(config.oddsApiIoBaseUrl).toBe('https://api.odds-api.io/v3');
     expect(config.oddsApiIoLeague).toBe('austria-bundesliga');
@@ -44,6 +43,19 @@ describe('loadConfig cache TTLs', () => {
     expect(config.playerFormCacheTtlMs).toBe(3_600_000);
     expect(config.cacheTtlMs).toBe(3_600_000);
     expect(config.fixtureCacheTtlMs).toBe(14_400_000);
+  });
+
+  it('ignores obsolete MLS provider overrides and removes them from deployment', () => {
+    const config = loadConfig({
+      ODDS_API_SPORT_KEY: 'soccer_usa_mls',
+      SPORTS_GAME_ODDS_LEAGUE_ID: 'MLS',
+    });
+    expect(config).not.toHaveProperty('oddsApiSportKey');
+    expect(config).not.toHaveProperty('sportsGameOddsLeagueId');
+    const deployment = parse(readFileSync(new URL('../../wrangler.jsonc', import.meta.url), 'utf8'));
+    expect(deployment.vars).not.toHaveProperty('ODDS_API_SPORT_KEY');
+    expect(deployment.vars).not.toHaveProperty('SPORTS_GAME_ODDS_LEAGUE_ID');
+    expect(deployment.triggers.crons).toContain('0 5 * * *');
   });
 
   it('allows each cache TTL to be configured independently', () => {

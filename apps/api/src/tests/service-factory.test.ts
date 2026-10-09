@@ -40,6 +40,92 @@ function player(competitionSlug: string): PlayerStats {
 }
 
 describe('createStatsRuntime European market routing', () => {
+  it.each([
+    { THE_ODDS_API_KEY: 'test-key' },
+    { SPORTS_GAME_ODDS_API_KEY: 'test-key' },
+    { ODDS_API_IO_KEY: 'test-key' },
+    {
+      THE_ODDS_API_KEY: 'test-key',
+      SPORTS_GAME_ODDS_API_KEY: 'test-key',
+      ODDS_API_IO_KEY: 'test-key',
+    },
+  ])('never fetches MLS odds, including legacy fixtures and old overrides (%j)', async (keys) => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected MLS request'));
+    try {
+      const runtime = createStatsRuntime({
+        config: loadConfig({
+          MOCK_MODE: 'false', ...keys,
+          ODDS_API_SPORT_KEY: 'soccer_usa_mls',
+          SPORTS_GAME_ODDS_LEAGUE_ID: 'MLS',
+        }),
+        logger,
+        statsCache: new TtlCache<PlayerStats>(60_000),
+      });
+      const mls = player('mlspa');
+      const { competitionSlug: _competition, ...legacyFixture } = mls.nextGame!;
+      const fixtures = [
+        mls,
+        {
+          ...mls, slug: 'legacy-mls-player', nextGame: {
+            ...legacyFixture, homeTeamName: 'Seattle Sounders FC', awayTeamName: 'Los Angeles FC',
+            playerTeamName: 'Seattle Sounders FC', opponentTeamName: 'Los Angeles FC',
+          },
+        },
+        { ...mls, slug: 'unknown-competition-player', nextGame: { ...mls.nextGame!, competitionSlug: null } },
+      ];
+      for (const stats of fixtures) {
+        expect(runtime.marketOddsProvider.supports?.(stats)).toBe(false);
+        expect(runtime.fixtureMatchOddsProvider.supports(stats)).toBe(false);
+        for (const market of ['goal', 'assist'] as const) {
+          expect(playerMarketFieldSupported(runtime.marketOddsProvider, stats, market)).toBe(false);
+          expect(playerMarketFieldDrivesRequest(runtime.marketOddsProvider, stats, market)).toBe(false);
+        }
+      }
+      for (const options of [undefined, { cacheOnly: true }]) {
+        const props = await runtime.marketOddsProvider.load(fixtures, options);
+        const matches = await runtime.fixtureMatchOddsProvider.load(fixtures, options);
+        for (const stats of fixtures) {
+          expect(props.get(playerMarketOddsKey(stats))).toBeNull();
+          expect(matches.get(playerMarketOddsKey(stats))).toBeNull();
+        }
+      }
+      await runtime.marketOddsProvider.refreshCachedPrices?.(fixtures);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('still refreshes account usage exactly once per provider without requesting any league odds', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      if (url.hostname === 'api.the-odds-api.com') {
+        expect(url.pathname).toBe('/v4/sports');
+        return Response.json([], { headers: { 'x-requests-used': '100', 'x-requests-remaining': '400' } });
+      }
+      expect(url.hostname).toBe('api.sportsgameodds.com');
+      expect(url.pathname).toBe('/v2/account/usage');
+      return Response.json({ success: true, data: { rateLimits: {
+        'per-month': { maxEntitiesPerInterval: 2_500, currentIntervalEntities: 1_000 },
+      } } });
+    });
+    try {
+      const runtime = createStatsRuntime({
+        config: loadConfig({ MOCK_MODE: 'false', THE_ODDS_API_KEY: 'test-key',
+          SPORTS_GAME_ODDS_API_KEY: 'test-key', ODDS_API_IO_KEY: 'test-key' }),
+        logger, statsCache: new TtlCache<PlayerStats>(60_000),
+      });
+      const usages = await runtime.marketOddsProvider.refreshUsage?.();
+      expect(usages).toEqual(expect.arrayContaining([
+        expect.objectContaining({ provider: 'the-odds-api', used: 100, limit: 500 }),
+        expect.objectContaining({ provider: 'sports-game-odds', used: 1_000, limit: 2_500 }),
+      ]));
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it('exposes opportunistic assists without letting them drive lower-league requests', () => {
     const runtime = createStatsRuntime({
       config: loadConfig({
@@ -139,7 +225,6 @@ describe('createStatsRuntime European market routing', () => {
     });
 
     for (const competitionSlug of [
-      'mlspa',
       'uefa-champions-league',
       'uefa-europa-league',
       'laliga-es',

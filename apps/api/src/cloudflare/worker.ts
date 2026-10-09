@@ -3,7 +3,6 @@ import { loadConfig, type AppConfig } from '../config.js';
 import { SorareGraphqlClient } from '../graphql/client.js';
 import type { AppLogger } from '../logger.js';
 import { createStatsRuntime } from '../service-factory.js';
-import { MlsMarketPrewarmer } from '../services/mls-market-prewarmer.js';
 import { MlsAaBenchmarkRefresher } from '../services/mls-aa-benchmark.js';
 import {
   CloudflareMarketSnapshotStore,
@@ -41,7 +40,6 @@ const configKeys = [
   'SORARE_JWT_AUD',
   'THE_ODDS_API_KEY',
   'ODDS_API_BASE_URL',
-  'ODDS_API_SPORT_KEY',
   'ODDS_API_REGION',
   'ODDS_API_FALLBACK_REGION',
   'ODDS_FETCH_WINDOW_HOURS',
@@ -50,7 +48,6 @@ const configKeys = [
   'ODDS_MISS_CACHE_TTL_SECONDS',
   'SPORTS_GAME_ODDS_API_KEY',
   'SPORTS_GAME_ODDS_BASE_URL',
-  'SPORTS_GAME_ODDS_LEAGUE_ID',
   'ODDS_API_IO_KEY',
   'ODDS_API_IO_BASE_URL',
   'ODDS_API_IO_LEAGUE',
@@ -61,7 +58,7 @@ const configKeys = [
 ] as const;
 
 const WEEKLY_MLS_AA_CRON = '0 10 * * MON';
-const DAILY_MARKET_PREWARM_CRON = '0 5 * * *';
+const DAILY_MAINTENANCE_CRON = '0 5 * * *';
 const CARD_CATALOG_CRON = '*/5 * * * *';
 const CACHE_CLEANUP_BATCH_SIZE = 2_000;
 const CACHE_CLEANUP_MAX_BATCHES = 12;
@@ -227,7 +224,7 @@ export default {
     }
     if (
       controller.cron !== WEEKLY_MLS_AA_CRON &&
-      controller.cron !== DAILY_MARKET_PREWARM_CRON
+      controller.cron !== DAILY_MAINTENANCE_CRON
     ) {
       logger.warn(
         { cron: controller.cron },
@@ -235,16 +232,16 @@ export default {
       );
       return;
     }
-    const client = new SorareGraphqlClient({
-      url: config.graphqlUrl,
-      requestTimeoutMs: config.requestTimeoutMs,
-      maxRetries: config.maxRetries,
-      logger,
-      ...(config.apiKey ? { apiKey: config.apiKey } : {}),
-      ...(config.authToken ? { authToken: config.authToken } : {}),
-      ...(config.jwtAud ? { jwtAud: config.jwtAud } : {}),
-    });
     if (controller.cron === WEEKLY_MLS_AA_CRON) {
+      const client = new SorareGraphqlClient({
+        url: config.graphqlUrl,
+        requestTimeoutMs: config.requestTimeoutMs,
+        maxRetries: config.maxRetries,
+        logger,
+        ...(config.apiKey ? { apiKey: config.apiKey } : {}),
+        ...(config.authToken ? { authToken: config.authToken } : {}),
+        ...(config.jwtAud ? { jwtAud: config.jwtAud } : {}),
+      });
       const cacheStore = new D1JsonKeyValueStore(
         env.CACHE_DB,
         undefined,
@@ -282,12 +279,6 @@ export default {
       logger,
       cacheStore,
     );
-    const prewarmer = new MlsMarketPrewarmer({
-      client,
-      marketOddsProvider: runtime.marketOddsProvider,
-      logger,
-      windowMs: config.oddsFetchWindowMs,
-    });
     context.waitUntil((async () => {
       try {
         let deleted = 0;
@@ -343,18 +334,6 @@ export default {
             error: error instanceof Error ? error.message : String(error),
           },
           'Bookmaker quota usage refresh failed; keeping last known protection state',
-        );
-      }
-
-      try {
-        await prewarmer.run();
-      } catch (error) {
-        logger.error(
-          {
-            cron: controller.cron,
-            error: error instanceof Error ? error.message : String(error),
-          },
-          'MLS market prewarm failed',
         );
       }
     })());

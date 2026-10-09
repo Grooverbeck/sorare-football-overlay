@@ -40,7 +40,7 @@ function configuredProvider<T>(
   const competitionSlug = player.nextGame?.competitionSlug;
   if (competitionSlug === undefined) {
     // Legacy fixture snapshots predate the competition slug. Preserve their
-    // deliberately narrow provider-level fallback (currently known MLS teams)
+    // deliberately narrow, explicitly opted-in provider-level fallback
     // without making every normal request scan the provider list.
     const index = providers.findIndex((provider) => supports(provider, player));
     const provider = providers[index];
